@@ -194,7 +194,7 @@ above the button that deletes (invariant 22):
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
 | How each recording ended | `app_event` |
@@ -1129,8 +1129,9 @@ nowhere is marked as such and belongs to review.
     an answer as the work); the owner switched both on on 2026-11-04
     (paulgsc/some-ui#2473). Every other kind is the work and is kept.
     Deleting one
-    removes the note, its audio, every transcript of it and its words, and
-    its set-aside mark in one transaction, and keeps a copy of its words
+    removes the note, its audio, every transcript of it and its words, its
+    vectors in the meaning index (invariant 35), and its set-aside mark in
+    one transaction, and keeps a copy of its words
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
@@ -1187,9 +1188,11 @@ nowhere is marked as such and belongs to review.
     (`voice_repo::takes::NEWEST`), each with its id, `ref`, `recorded_at`,
     `stored_at`, `size`, set-aside time and the words
     `GET /voice-notes/:id/heard` would answer (the same choice of hearing),
-    how many takes it holds, and with `q` (at most 200 characters, its
-    terms compared in Unicode lowercase) the takes whose words hold every
-    term and how many it found (`voice_repo::takes`, its one caller
+    how many takes it holds, and with `q` (at most 200 characters) the
+    takes it found and how many: nearest the asked words' meaning first,
+    when the meaning index is on and holds every heard take (invariant 35),
+    or else those whose words hold every term, compared in Unicode
+    lowercase, and `by` saying which (`voice_repo::takes`, its one caller
     `handlers::voice`). It answers no audio, no bite, no other kind's note
     and no other subject's, reads no other kind's transcript, and its span
     skips every argument, so neither the
@@ -1853,6 +1856,63 @@ nowhere is marked as such and belongs to review.
     `nothing_an_event_says_reaches_a_log_line`.
     *Not enforced:* that nothing else writes the table, which
     `git grep -n app_event -- '*.rs'` shows today.
+
+35. **A take's meaning is treated as what was said: subject-scoped, never
+    logged, never filed, never answered, and it leaves with the take.**
+    `voice_note_meaning` is the take library's meaning index
+    (paulgsc/some-ui#2590, ST32; docs/take-library.md, "Where the meaning
+    index lives"): for each Studio take (a `studio` note, invariant 23) a
+    model heard words in, one vector per embedding model, made on home's CPU
+    by a static model home holds (`file_host::meaning`, Model2Vec's
+    `potion-multilingual-128M`, mounted from `/models` and never downloaded
+    at run time) from the take's chosen words, the hearing
+    `GET /voice-notes/:id/heard` answers. A vector is a function of what was
+    said, so it is held as the words are. It holds nothing but the subject,
+    the note's id, the model's name and the vector (256 `f32`s,
+    little-endian): no `ref`, no text and no time. It is derived, so it is
+    not append-only: a take whose chosen words a better transcript replaces
+    has its vector replaced, and the table can be made again from the
+    transcripts. It is written only by `voice_repo::meaning::index`, for a
+    `studio` note the subject holds, in the statement that writes, from
+    `file_host`'s transcriber only (`transcribe::pass`, on only when both
+    `TRANSCRIBE_ENABLED` and `MEANING_ENABLED`): in the transaction that
+    keeps a hearing, and for a take heard before the index existed in a
+    catch-up of at most a batch a pass, each in its own transaction, both
+    under the deletion hold (invariant 9). It is read only by
+    `voice_repo::takes`' search (`voice_repo::meaning::vectors` is not
+    `pub`), whose one caller is `GET /voice-notes/takes?q=` (invariant 23):
+    the search answers takes, ranked by meaning, and `by` says `meaning`,
+    never a vector or a score. The asked words are embedded on that
+    request's path and kept nowhere. No vector, no asked words and no words
+    embedded reach a log line (the transcriber's pass logs how many takes it
+    gave a vector, a count; the handler's span skips every argument), no
+    vector is filed for the Jobs mailbox (invariant 19 files transcripts,
+    not this table), and no route answers one. A take's vectors leave with
+    it: My data's delete of a take (`voice_repo::delete`) removes them in
+    the transaction that removes its words, and the account sweep and the
+    migration's own trigger remove them with the account (invariants 9, 12
+    and 22). Off, or for a take with no vector yet, the search is by words
+    and `by` says `words`.
+    *Enforced by* `voice_repo::meaning`'s
+    `the_table_holds_exactly_its_described_columns`,
+    `only_a_heard_take_the_subject_holds_gets_a_vector`,
+    `a_takes_vector_is_made_from_the_words_the_library_lists`,
+    `the_takes_heard_before_the_index_wait_oldest_first_until_indexed` and
+    `a_subjects_vectors_are_its_own_and_leave_with_the_account`;
+    `voice_repo::takes`' `a_search_by_meaning_ranks_the_indexed_takes_best_first`
+    and `a_heard_take_not_indexed_yet_makes_the_search_one_by_words`;
+    `voice_repo::delete`'s `a_take_switched_on_goes_and_leaves_a_receipt`;
+    `transcribe::pass`'s `a_take_heard_is_given_its_vector_with_its_hearing`,
+    `the_takes_heard_before_the_index_get_their_vectors_a_batch_a_pass` and
+    `no_transcript_or_audio_reaches_a_log_line`; `meaning`'s
+    `a_vector_is_the_unit_mean_of_its_known_tokens_rows`; `handlers::voice`'s
+    `a_paired_phone_searches_its_takes_by_meaning`; and invariants 9, 12 and
+    22's own tests, which hold every subject-scoped table.
+    *Not enforced:* that nothing else writes or reads the table, which
+    `git grep -n voice_note_meaning -- '*.rs'` shows today and review keeps;
+    and that no log line holds an embedded text, which holds because
+    `meaning::StaticModel::embed` logs nothing and its callers log counts
+    only, by review.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

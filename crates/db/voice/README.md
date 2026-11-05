@@ -31,7 +31,13 @@ or scouts file naming it is what puts it in front of the routine
 kind the owner switched on (none yet; a Studio take is the one kind it can
 ever delete), leaving a receipt in `voice_note_deletion`
 (`migrations/20261103000100_create_voice_note_deletion.up.sql`,
-`src/delete.rs`). The rules are in `src/lib.rs` and `src/transcript.rs`, in
+`src/delete.rs`). The take library (`src/takes.rs`, docs/take-library.md)
+lists and searches the Studio takes, by meaning through the index in
+`voice_note_meaning`: one vector per take and embedding model, derived from
+the take's words, written only by `file_host`'s transcriber and read only by
+the library's search
+(`migrations/20261105000100_create_voice_note_meaning.up.sql`,
+`src/meaning.rs`, docs/identity.md invariant 35). The rules are in `src/lib.rs` and `src/transcript.rs`, in
 `migrations/20261025000100_create_voice_note.up.sql` and
 `migrations/20261025000200_create_voice_transcript.up.sql` (and the word
 table's migration above), and in

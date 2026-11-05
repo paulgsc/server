@@ -22,7 +22,12 @@
 //! - **Append-only.** Each attempt is a new row; nothing is updated, and a
 //!   note's audio is read, never written or deleted (`pass`).
 //! - **Nothing heard reaches a log line.** A pass logs the kind of each
-//!   attempt and how many, never a note's text, audio, id or subject.
+//!   attempt and how many, and how many takes it gave a vector, never a
+//!   note's text, audio, vector, id or subject.
+//! - **The take library's meaning index is written here** (`meaning`,
+//!   docs/take-library.md), when `MEANING_ENABLED`: a take's vector in the
+//!   transaction that keeps its hearing, and the takes heard before the
+//!   index existed a bounded batch a pass (`pass`).
 //!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
 //! 500 MB while loaded, for as long as the server runs, and hears a minute
@@ -34,12 +39,14 @@ pub mod engine;
 pub mod pass;
 
 use crate::auth::DeletionLock;
+use crate::meaning::{MeaningContext, StaticModel};
 use crate::{AppState, Config};
 use engine::Whisper;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
+use voice_repo::meaning::Embed;
 
 // The transcriber's engineering values: source constants, not variables
 // (#617). Each was its variable's default.
@@ -79,6 +86,10 @@ pub struct TranscribeContext {
 	pub deadline: Duration,
 	/// Account deletion's lock, shared with `AppState::auth`.
 	pub deletion: DeletionLock,
+	/// The take library's meaning model, when `MEANING_ENABLED`: each pass
+	/// embeds the words of each take it hears, in the transaction that keeps
+	/// the hearing, and catches up on takes heard before (`pass`).
+	pub meaning: Option<Arc<StaticModel>>,
 }
 
 impl TranscribeContext {
@@ -92,7 +103,7 @@ impl TranscribeContext {
 	/// # Errors
 	/// `TRANSCRIBE_ENABLED` with an engine that does not load
 	/// (`engine::Whisper::load`).
-	pub fn from_config(config: &Config, deletion: DeletionLock) -> anyhow::Result<Option<Self>> {
+	pub fn from_config(config: &Config, deletion: DeletionLock, meaning: Option<&MeaningContext>) -> anyhow::Result<Option<Self>> {
 		if !config.transcribe_enabled {
 			info!("voice-note transcription is not enabled; home keeps notes without hearing them");
 			return Ok(None);
@@ -103,6 +114,7 @@ impl TranscribeContext {
 			interval: INTERVAL,
 			deadline: DEADLINE,
 			deletion,
+			meaning: meaning.map(|meaning| Arc::clone(&meaning.model)),
 		}))
 	}
 }
@@ -142,7 +154,8 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 				}
 				_ = ticker.tick() => {
 					crate::metrics::transcribe::record_pass_started();
-					let result = pass::run_once(&db, &context.engine, &context.deletion, context.deadline, &cancel, &crate::mailbox::pass::now).await;
+					let meaning = context.meaning.as_deref().map(|model| model as &dyn Embed);
+					let result = pass::run_once(&db, &context.engine, meaning, &context.deletion, context.deadline, &cancel, &crate::mailbox::pass::now).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
 				}
@@ -155,7 +168,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 /// counted. Never a note's text, audio, id or subject.
 pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 	match result {
-		Ok(done) if done.kept.is_empty() => {}
+		Ok(done) if done.kept.is_empty() && done.indexed == 0 => {}
 		Ok(done) => {
 			let count = |kind: &str| done.kept.iter().filter(|kept| **kept == kind).count();
 			info!(
@@ -165,6 +178,7 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 				too_long = count("too_long"),
 				deadline = count("deadline"),
 				failed = count("failed"),
+				indexed = done.indexed,
 				cancelled = done.cancelled,
 				"voice-note transcription pass"
 			);

@@ -18,6 +18,7 @@ pub mod health;
 pub mod jobs_notice;
 pub mod listen;
 pub mod mailbox;
+pub mod meaning;
 pub mod metrics;
 pub mod models;
 pub mod net;
@@ -115,6 +116,9 @@ pub struct AppState {
 	/// `None` unless `TRANSCRIBE_ENABLED`: no voice note is heard, and home
 	/// keeps notes as they arrive.
 	pub transcribe: Option<transcribe::TranscribeContext>,
+	/// `None` unless `MEANING_ENABLED`: the take library is searched by
+	/// words, and no take is embedded.
+	pub meaning: Option<meaning::MeaningContext>,
 	/// `None` unless `RUST_ROUNDS_ENABLED`: home keeps rounds, and records
 	/// none of their programs.
 	pub rust_rounds: Option<rust_rounds::RustRoundsContext>,
@@ -175,7 +179,8 @@ impl AppState {
 
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
 		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
-		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock())?;
+		let meaning = meaning::MeaningContext::from_config(&config)?;
+		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock(), meaning.as_ref())?;
 		let rust_rounds = rust_rounds::RustRoundsContext::from_config(&config);
 		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
 
@@ -185,6 +190,7 @@ impl AppState {
 			nudge,
 			mailbox,
 			transcribe,
+			meaning,
 			rust_rounds,
 			game_feed,
 			auth,
@@ -295,6 +301,12 @@ impl FromRef<AppState> for Arc<Config> {
 impl FromRef<AppState> for SqlitePool {
 	fn from_ref(state: &AppState) -> Self {
 		state.core.shared_db.clone()
+	}
+}
+
+impl FromRef<AppState> for Option<meaning::MeaningContext> {
+	fn from_ref(state: &AppState) -> Self {
+		state.meaning.clone()
 	}
 }
 

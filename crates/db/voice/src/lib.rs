@@ -61,7 +61,10 @@
 //! What home keeps, counted for the phone's My data page, is [`kept`]'s.
 //!
 //! The take library, every Studio take with the words home heard in it and
-//! a search of them, is [`takes`]'s (docs/take-library.md).
+//! a search of them, by words or by meaning, is [`takes`]'s
+//! (docs/take-library.md). The meaning index it searches, one vector per
+//! take made from its words, is [`meaning`]'s: `voice_note_meaning`,
+//! written only by `file_host`'s transcriber.
 //!
 //! Deleting a note for good, only of a kind the owner switched on
 //! ([`delete::SWITCHED_ON`]: Studio takes and idea answers since
@@ -80,6 +83,7 @@
 
 pub mod delete;
 pub mod kept;
+pub mod meaning;
 pub mod on_drive;
 pub mod set_aside;
 pub mod takes;

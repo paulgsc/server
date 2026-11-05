@@ -12,8 +12,9 @@ then {
 else let
   # ===== CONFIGURATION (edit this) =====
   # What file_host's voice-note transcriber reads (`file_host::transcribe`,
-  # paulgsc/server#462), mounted into its container at /models by
-  # infra/compose/file_host.yml. `whisper fetch` downloads exactly these.
+  # paulgsc/server#462), and the take library's meaning model beside it,
+  # mounted into its container at /models by infra/compose/file_host.yml.
+  # `whisper fetch` downloads exactly these.
   # Multilingual, not `.en`: the notes mix Korean into English, and the
   # transcriber refuses an English-only model at startup. Each with its
   # source and SHA-256 (Hugging Face's own, from the file's `X-Linked-ETag`),
@@ -31,7 +32,31 @@ else let
       sha256 = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf";
       size = "1MB";
     }
-  ];
+  ]
+  # The take library's meaning index (`file_host::meaning`,
+  # docs/take-library.md), read only when MEANING_ENABLED: Model2Vec's
+  # potion-multilingual-128M (MIT), its three files in a directory of their
+  # own, which `file_host::meaning::DIR` names under /models. Pinned to one
+  # commit of the model's repository, so a fetch is the same bytes every
+  # time; the two large files' SHA-256 are Hugging Face's own
+  # (`X-Linked-ETag`), and config.json's is of the bytes at that commit.
+  ++ (map (m: m // {url = "https://huggingface.co/minishlab/potion-multilingual-128M/resolve/73908c3438cf03b6a01bcb9611d62b23d0726f08/${baseNameOf m.name}";}) [
+    {
+      name = "potion-multilingual-128M/model.safetensors";
+      sha256 = "14b5eb39cb4ce5666da8ad1f3dc6be4346e9b2d601c073302fa0a31bf7943397";
+      size = "512MB";
+    }
+    {
+      name = "potion-multilingual-128M/tokenizer.json";
+      sha256 = "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1";
+      size = "19MB";
+    }
+    {
+      name = "potion-multilingual-128M/config.json";
+      sha256 = "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54";
+      size = "1KB";
+    }
+  ]);
 
   # What `whisper prune` keeps and `whisper list` shows as active.
   activeModels = map (m: m.name) pinnedModels;
@@ -84,6 +109,7 @@ else let
           echo "✓ ${m.name} already there"
         else
           echo "⬇️  ${m.name} (${m.size})"
+          mkdir -p "$(dirname "$MODELS_DIR/${m.name}")"
           PART="$MODELS_DIR/${m.name}.part"
           ${pkgs.curl}/bin/curl -fL --progress-bar -o "$PART" "${m.url}"
           if ! echo "${m.sha256}  $PART" | ${pkgs.coreutils}/bin/sha256sum --check --status; then
@@ -100,7 +126,8 @@ else let
       pinnedModels)}
     echo ""
     echo "Models are in $MODELS_DIR. file_host reads them from /models when"
-    echo "TRANSCRIBE_ENABLED=true (infra/compose/file_host.yml mounts this directory)."
+    echo "TRANSCRIBE_ENABLED=true, and the meaning model when MEANING_ENABLED=true"
+    echo "(infra/compose/file_host.yml mounts this directory)."
   '';
 
   listModels = pkgs.writeShellScriptBin "whisper-list" ''

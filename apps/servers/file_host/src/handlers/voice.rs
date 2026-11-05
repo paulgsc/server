@@ -32,13 +32,15 @@
 //!
 //! [`get_takes`] is the only reader of the take library
 //! (`voice_repo::takes`): what each Studio take is and the words home heard
-//! in it, never its audio.
+//! in it, never its audio, and never a vector of the meaning index it
+//! searches (docs/identity.md invariant 35).
 //!
 //! **The deletion hold.** The handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
 
 use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modified};
+use crate::meaning::MeaningContext;
 use crate::subject::{Paired, SubjectId};
 use crate::FileHostError;
 use axum::{
@@ -59,6 +61,7 @@ use tracing::instrument;
 use voice_repo::{
 	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
 	kept::{KindKept, NoteKept, WeekKept},
+	meaning::Embed as _,
 	set_aside::SetAside,
 	takes::{Library, Search},
 	transcript::{Hearing, Transcript},
@@ -396,9 +399,12 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 ///
 /// The caller's take library (paulgsc/some-ui#2590, ST32; the owner's
 /// decision 8 on paulgsc/some-ui#2248): every Studio take home keeps, newest
-/// first, each with the words home heard in it, or with `q` the takes whose
-/// words hold every term of it (`voice_repo::takes`). It answers what each
-/// take is, never its audio, which `GET /voice-notes/:id/audio` plays.
+/// first, each with the words home heard in it, or with `q` the takes it
+/// finds (`voice_repo::takes`): by meaning when the meaning index is on and
+/// holds every heard take, the asked words embedded here, on the request's
+/// path (`crate::meaning`); else the takes whose words hold every term of
+/// it. `by` says which. It answers what each take is, never its audio, which
+/// `GET /voice-notes/:id/audio` plays, and never a vector.
 ///
 /// The query is read as its pairs, so `q` said twice is refused as a blank
 /// one is; other keys are ignored.
@@ -410,12 +416,23 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 /// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_takes_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_takes(paired: Paired, State(db): State<SqlitePool>, Query(query): Query<Vec<(String, String)>>) -> Result<Json<Library>, FileHostError> {
+pub async fn get_takes(
+	paired: Paired,
+	State(db): State<SqlitePool>,
+	State(meaning): State<Option<MeaningContext>>,
+	Query(query): Query<Vec<(String, String)>>,
+) -> Result<Json<Library>, FileHostError> {
 	let refused = || FileHostError::unprocessable_entity([("q", "words to search for, at most 200 characters, said once")]);
 	let asked: Vec<&str> = query.iter().filter(|(key, _)| key == "q").map(|(_, value)| value.as_str()).collect();
 	let search = match asked.as_slice() {
 		[] => None,
-		[words] => Some(Search::parse(words).ok_or_else(refused)?),
+		[words] => {
+			let search = Search::parse(words).ok_or_else(refused)?;
+			Some(match meaning {
+				Some(meaning) => search.with_meaning(meaning.model.model(), meaning.model.embed(words)),
+				None => search,
+			})
+		}
 		_ => return Err(refused()),
 	};
 	let mut conn = db.acquire().await?;
@@ -556,6 +573,7 @@ mod tests {
 		cookie::{Carrier, SessionToken},
 		now, AuthContext,
 	};
+	use crate::meaning::MeaningContext;
 	use crate::routes::table::Module;
 	use axum::{
 		body::Body,
@@ -582,6 +600,13 @@ mod tests {
 	struct TestState {
 		pool: SqlitePool,
 		auth: AuthContext,
+		meaning: Option<MeaningContext>,
+	}
+
+	impl FromRef<TestState> for Option<MeaningContext> {
+		fn from_ref(state: &TestState) -> Self {
+			state.meaning.clone()
+		}
 	}
 
 	impl FromRef<TestState> for SqlitePool {
@@ -606,6 +631,7 @@ mod tests {
 		TestState {
 			auth: AuthContext::for_tests(pool.clone(), 100),
 			pool,
+			meaning: None,
 		}
 	}
 
@@ -1134,6 +1160,65 @@ mod tests {
 		assert_eq!(get(&app, "/voice-notes/takes", Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
 		let (status, theirs) = get(&app, "/voice-notes/takes", Some(&other)).await;
 		assert_eq!((status, &theirs["total"]), (StatusCode::OK, &json!(0)), "one subject's takes are never another's");
+	}
+
+	/// ST32 (docs/take-library.md): with the meaning index on, `q` is
+	/// embedded on the request's path and the takes come back nearest its
+	/// meaning first, `by` saying `meaning`, with no vector in the answer;
+	/// while a heard take has no vector yet, the search is by words.
+	#[tokio::test]
+	async fn a_paired_phone_searches_its_takes_by_meaning() {
+		let mut state = state().await;
+		state.meaning = Some(MeaningContext {
+			model: std::sync::Arc::new(crate::meaning::tests::fixture()),
+		});
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state.clone());
+		for (id, path, words) in [
+			("t1", "/voice-notes/t1?of=studio&ref=ep04:s1:1&at=2026-11-04T18:20:00Z", "our new logo"),
+			("t2", "/voice-notes/t2?of=studio&ref=ep04:s1:2&at=2026-11-04T18:21:00Z", "한국어 again"),
+		] {
+			let (status, answer) = put(&app, path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+			assert_eq!(status, StatusCode::OK, "{answer}");
+			sqlx::query(
+				"INSERT INTO voice_transcript
+				   (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+				 VALUES (?1, ?2, 'small', 'whisper.cpp', 1, 'heard', 'en', 0.9, 1000, ?3, 5, '2026-11-04T18:30:00Z')",
+			)
+			.bind(A)
+			.bind(id)
+			.bind(words)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+
+		let (status, found) = get(&app, "/voice-notes/takes?q=Brand", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{found}");
+		assert_eq!(
+			(&found["by"], &found["matched"]),
+			(&json!("words"), &json!(0)),
+			"not indexed yet: words, and none hold `brand`"
+		);
+
+		let mut conn = pool.acquire().await.unwrap();
+		for id in ["t1", "t2"] {
+			voice_repo::meaning::index(&mut conn, A, id, &*state.meaning.as_ref().unwrap().model).await.unwrap();
+		}
+		drop(conn);
+		let (status, found) = get(&app, "/voice-notes/takes?q=Brand", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{found}");
+		assert_eq!(
+			(&found["by"], &found["matched"], &found["total"], &found["takes"][0]["id"]),
+			(&json!("meaning"), &json!(1), &json!(2), &json!("t1")),
+			"the logo take, though it never says `brand`"
+		);
+		let mut keys: Vec<&String> = found["takes"][0].as_object().unwrap().keys().collect();
+		keys.sort();
+		assert_eq!(keys, ["heard", "id", "recordedAt", "ref", "setAsideAt", "size", "storedAt"], "no vector");
+		let (_, listed) = get(&app, "/voice-notes/takes", Some(&phone)).await;
+		assert_eq!((&listed["by"], &listed["total"]), (&json!("newest"), &json!(2)));
 	}
 
 	/// A delete from a paired phone deletes a Studio take, switched on since

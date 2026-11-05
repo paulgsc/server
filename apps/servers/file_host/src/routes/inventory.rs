@@ -110,6 +110,7 @@ where
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
+	Option<crate::meaning::MeaningContext>: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -161,6 +162,7 @@ where
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
+	Option<crate::meaning::MeaningContext>: FromRef<S>,
 {
 	split(|module| module.into_router(config))
 }
@@ -171,6 +173,7 @@ where
 	AppState: FromRef<S>,
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
+	Option<crate::meaning::MeaningContext>: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

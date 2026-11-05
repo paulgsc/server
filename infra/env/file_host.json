@@ -398,6 +398,19 @@
       "bounds": null
     },
     {
+      "name": "MEANING_ENABLED",
+      "group": "Take library meaning index",
+      "required": false,
+      "default": "false",
+      "kind": "bool",
+      "values": [],
+      "delimiter": null,
+      "secret": false,
+      "help": "Whether the take library is searched by meaning. On, the server refuses to start unless the model loads and `TRANSCRIBE_ENABLED` is on. Get the model with `nix develop .#whisper -c whisper fetch`",
+      "required_when": null,
+      "bounds": null
+    },
+    {
       "name": "RUST_ROUNDS_ENABLED",
       "group": "Rust Rounds recording",
       "required": false,

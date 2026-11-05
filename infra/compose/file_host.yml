@@ -39,7 +39,9 @@ services:
       # The voice-note transcriber's models, read-only: the multilingual
       # Whisper model and the Silero VAD model `nix/whisper-manager`'s
       # `whisper fetch` downloads. transcribe::MODEL and transcribe::VAD_MODEL
-      # name these under /models. TRANSCRIBE_MODELS_DIR: that
+      # name these under /models, and meaning::DIR the take library's
+      # meaning model, which the same fetch puts in its own directory beside
+      # them (read only when MEANING_ENABLED). TRANSCRIBE_MODELS_DIR: that
       # directory on the host, set in each role's compose.sops.env (#614).
       - ${TRANSCRIBE_MODELS_DIR:?set TRANSCRIBE_MODELS_DIR in deploy/<role>/compose.sops.env}:/models:ro
       # The rust-runner's socket (infra/compose/rust_runner.yml), where

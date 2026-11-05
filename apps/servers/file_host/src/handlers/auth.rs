@@ -1130,6 +1130,56 @@ mod tests {
 		assert_eq!(status, StatusCode::UNAUTHORIZED, "and a write after it finds no session");
 	}
 
+	// A row in every other scoped table, each binding the subject as `?1`.
+	// The test below seeds them so that "deleted mine, kept theirs" is a
+	// claim about all of them, and not only about the ones it happened to
+	// fill: an empty table passes both halves.
+	const OTHER_SCOPED_ROWS: &[&str] = &[
+		"INSERT INTO engagement_charge (subject_id, class, level, as_of) VALUES (?1, 0, 0.5, 'now')",
+		"INSERT INTO engagement_gate (subject_id, eligible_at) VALUES (?1, 'now')",
+		"INSERT INTO intervention_log (subject_id, action_kind, action, decided_at) VALUES (?1, 'k', '{}', 'now')",
+		"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome)
+		 VALUES (?1, 's-' || ?1, 'a', 0, 't0', 't1', 1000, 900, 'completed')",
+		"INSERT INTO push_subscriptions (endpoint, subject_id, p256dh, auth, consented_at, created_at)
+		 VALUES ('https://push.example.test/' || ?1, ?1, 'p', 'a', 'now', 'now')",
+		"INSERT INTO aph_entry (subject_id, entry_id, revision, day, checkpoint, plain, body, written_at) VALUES (?1, 'e', 1, 'd', NULL, 0, '{}', 'now')",
+		"INSERT INTO aph_settings (subject_id, revision, body, written_at) VALUES (?1, 1, '{}', 'now')",
+		"INSERT INTO jobs_event (subject_id, event_id, at, body, written_at) VALUES (?1, 'e', 'now', '{}', 'now')",
+		"INSERT INTO korean_entry (subject_id, kind, entry_key, revision, body, sha256, written_at) VALUES (?1, 'set', 'k', 1, '{}', 's', 'now')",
+		"INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, 's', 'e', 'now', 'parked', '{}', 'now')",
+		"INSERT INTO studio_sitting_event (subject_id, sitting_id, event_id, at, type, kind, body, written_at) VALUES (?1, 's', 'e', 'now', 'page_hidden', 'record', '{}', 'now')",
+		"INSERT INTO studio_friction (subject_id, report_id, sitting_id, at, how, body, written_at) VALUES (?1, 'f', 's', 'now', 'smooth', '{}', 'now')",
+		"INSERT INTO app_event (subject_id, event_id, family, at, body, written_at) VALUES (?1, 'e', 'outcome', 'now', '{}', 'now')",
+		"INSERT INTO study_note (subject_id, kind, note_id, body, sha256, stored_at) VALUES (?1, 'leetype', 'n', '{}', 's', 'now')",
+		"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', 'n', 1, 's', 2, x'7b7d', 'now')",
+		"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",
+		"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'n', 'added', 'now')",
+		"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'n', 1, 's', 2, 'then', x'7b7d', 'now')",
+		"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at) VALUES (?1, 'reflection', 'n', 'archived', 'now')",
+		"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
+		"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
+		"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at) VALUES (?1, 'n', 'reflection', 'r', 'then', 'audio/webm', 1, 's', 'now')",
+		"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'n', x'00')",
+		"INSERT INTO game_bite (subject_id, note_id, how, live_strip, watching, started_at, mode, catalog_version) VALUES (?1, 'n', 'said-first', '', 1, 'then', 'light', 1)",
+		"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+		 VALUES (?1, 'n', 'm', 'e', 1, 'silent', 1, 1, 'now')",
+		"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, 'n', 'm', 0, 'w', 0, 1)",
+		"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
+		"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
+		"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, 'r', '{}', 'h', 'now')",
+		"INSERT INTO written_reflection (subject_id, reflection_id, session_id, at, at_ms, text, written_at) VALUES (?1, 'r', 's', 'then', NULL, 't', 'now')",
+		"INSERT INTO drama_prompt (subject_id, stamp, text, written_at) VALUES (?1, 'drama-20261101T000000000Z', 't', 'now')",
+		"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at) VALUES (?1, 't', 'then', 'drive-takes-20261101T000000Z.json', 'now')",
+		"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n', 'then', 'now')",
+		"INSERT INTO voice_note_meaning (subject_id, note_id, model, vector) VALUES (?1, 'n', 'm', zeroblob(1024))",
+		"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed) VALUES (?1, 'gone', 'studio', 'then', 1, 'then', 'now', '[]', '[]')",
+		"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at) VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
+		"INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'n', NULL)",
+		"INSERT INTO idea_furnishing (subject_id, idea_id, seq, furnishing, stored_at) VALUES (?1, 'i', 1, 1, 'now')",
+		"INSERT INTO idea_set_aside (subject_id, idea_id, stored_at) VALUES (?1, 'i', 'now')",
+		"INSERT INTO idea_list_mark (subject_id, list, entry, seq, listed, stored_at) VALUES (?1, 'topic', 'Cooking', 1, 1, 'now')",
+	];
+
 	#[tokio::test]
 	async fn deleting_an_account_removes_its_rows_from_every_subject_scoped_table_and_nobody_elses() {
 		let pool = pool().await;
@@ -1160,53 +1210,7 @@ mod tests {
 				.execute(&pool)
 				.await
 				.unwrap();
-			// Every other scoped table. Seeded so that "deleted mine, kept theirs"
-			// below is a claim about all of them, and not only about the ones this
-			// test happened to fill: an empty table passes both halves.
-			for statement in [
-				"INSERT INTO engagement_charge (subject_id, class, level, as_of) VALUES (?1, 0, 0.5, 'now')",
-				"INSERT INTO engagement_gate (subject_id, eligible_at) VALUES (?1, 'now')",
-				"INSERT INTO intervention_log (subject_id, action_kind, action, decided_at) VALUES (?1, 'k', '{}', 'now')",
-				"INSERT INTO activity_outcome (subject_id, session_id, activity_id, block_index, started_at, ended_at, planned_ms, elapsed_ms, outcome)
-				 VALUES (?1, 's-' || ?1, 'a', 0, 't0', 't1', 1000, 900, 'completed')",
-				"INSERT INTO push_subscriptions (endpoint, subject_id, p256dh, auth, consented_at, created_at)
-				 VALUES ('https://push.example.test/' || ?1, ?1, 'p', 'a', 'now', 'now')",
-				"INSERT INTO aph_entry (subject_id, entry_id, revision, day, checkpoint, plain, body, written_at) VALUES (?1, 'e', 1, 'd', NULL, 0, '{}', 'now')",
-				"INSERT INTO aph_settings (subject_id, revision, body, written_at) VALUES (?1, 1, '{}', 'now')",
-				"INSERT INTO jobs_event (subject_id, event_id, at, body, written_at) VALUES (?1, 'e', 'now', '{}', 'now')",
-				"INSERT INTO korean_entry (subject_id, kind, entry_key, revision, body, sha256, written_at) VALUES (?1, 'set', 'k', 1, '{}', 's', 'now')",
-				"INSERT INTO leetype_session_event (subject_id, session_id, event_id, at, type, body, written_at) VALUES (?1, 's', 'e', 'now', 'parked', '{}', 'now')",
-				"INSERT INTO studio_sitting_event (subject_id, sitting_id, event_id, at, type, kind, body, written_at) VALUES (?1, 's', 'e', 'now', 'page_hidden', 'record', '{}', 'now')",
-				"INSERT INTO studio_friction (subject_id, report_id, sitting_id, at, how, body, written_at) VALUES (?1, 'f', 's', 'now', 'smooth', '{}', 'now')",
-				"INSERT INTO app_event (subject_id, event_id, family, at, body, written_at) VALUES (?1, 'e', 'outcome', 'now', '{}', 'now')",
-				"INSERT INTO study_note (subject_id, kind, note_id, body, sha256, stored_at) VALUES (?1, 'leetype', 'n', '{}', 's', 'now')",
-				"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES (?1, 'brief', 'n', 1, 's', 2, x'7b7d', 'now')",
-				"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at) VALUES (?1, 'decisions', 'n', 's', x'7b7d', 'now')",
-				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'decisions', 'n', 'added', 'now')",
-				"INSERT INTO mailbox_archive (subject_id, folder, name, seq, sha256, size, put_at, body, kept_at) VALUES (?1, 'brief', 'n', 1, 's', 2, 'then', x'7b7d', 'now')",
-				"INSERT INTO mailbox_archive_answer (subject_id, folder, name, answer, answered_at) VALUES (?1, 'reflection', 'n', 'archived', 'now')",
-				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'm', 1, 'now')",
-				"INSERT INTO mailbox_leetype_log (subject_id, session_id, through, n, decided_at) VALUES (?1, 's', 1, 1, 'now')",
-				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at) VALUES (?1, 'n', 'reflection', 'r', 'then', 'audio/webm', 1, 's', 'now')",
-				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'n', x'00')",
-				"INSERT INTO game_bite (subject_id, note_id, how, live_strip, watching, started_at, mode, catalog_version) VALUES (?1, 'n', 'said-first', '', 1, 'then', 'light', 1)",
-				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
-				 VALUES (?1, 'n', 'm', 'e', 1, 'silent', 1, 1, 'now')",
-				"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, 'n', 'm', 0, 'w', 0, 1)",
-				"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
-				"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
-				"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, 'r', '{}', 'h', 'now')",
-				"INSERT INTO written_reflection (subject_id, reflection_id, session_id, at, at_ms, text, written_at) VALUES (?1, 'r', 's', 'then', NULL, 't', 'now')",
-				"INSERT INTO drama_prompt (subject_id, stamp, text, written_at) VALUES (?1, 'drama-20261101T000000000Z', 't', 'now')",
-				"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at) VALUES (?1, 't', 'then', 'drive-takes-20261101T000000Z.json', 'now')",
-				"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n', 'then', 'now')",
-				"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed) VALUES (?1, 'gone', 'studio', 'then', 1, 'then', 'now', '[]', '[]')",
-				"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at) VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
-				"INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'n', NULL)",
-				"INSERT INTO idea_furnishing (subject_id, idea_id, seq, furnishing, stored_at) VALUES (?1, 'i', 1, 1, 'now')",
-				"INSERT INTO idea_set_aside (subject_id, idea_id, stored_at) VALUES (?1, 'i', 'now')",
-				"INSERT INTO idea_list_mark (subject_id, list, entry, seq, listed, stored_at) VALUES (?1, 'topic', 'Cooking', 1, 1, 'now')",
-			] {
+			for statement in OTHER_SCOPED_ROWS {
 				sqlx::query(statement).bind(subject).execute(&pool).await.unwrap();
 			}
 		}
