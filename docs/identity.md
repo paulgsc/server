@@ -573,8 +573,8 @@ nowhere is marked as such and belongs to review.
     aborts an `UPDATE`) and never deleted but with the account. A revision is
     the entry as the phone wrote it, checked and re-serialised (the figures,
     labels and note, and whether the owner removed it from the log), the day
-    and checkpoint and whether it stands plain (the columns the one-entry-a-time
-    checks read), and when it was written. Removing an entry is one more
+    and checkpoint and whether it stands plain (the columns the one-plain-figure
+    check reads), and when it was written. Removing an entry is one more
     revision: the earlier ones stay. It is
     written only by `PUT /aph/entries/:id`, `PUT /aph/settings` and
     `POST /sync/aph/batch` (entries, each as its own route), readable

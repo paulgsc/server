@@ -416,7 +416,6 @@ mod tests {
 			..removed.clone()
 		};
 		assert_eq!(fields(&breaches(&removed, &noted)), ["removed"], "and unchanged");
-		assert!(!removed.is_plain() && !removed.is_live() && live.is_plain());
 	}
 
 	#[test]
