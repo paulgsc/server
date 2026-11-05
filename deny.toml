@@ -96,4 +96,12 @@ ignore = [
   # 0.11.0 is the latest release and pins `jwt-simple` 0.12, so no version
   # bump reaches it. Accepted by the owner (2026-10-24), as above.
   { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via web-push 0.11.0 (latest) -> jwt-simple 0.12 -> elliptic-curve 0.13; fixed only in the 0.7 line, which web-push does not reach; push_kit genuinely uses web-push" },
+  # `paste` is unmaintained (archived by its author), not vulnerable: the
+  # advisory is informational and names no flaw. It is a proc-macro, so it
+  # runs only at compile time and nothing of it is in the binary. Reachable
+  # only via `tokenizers` 0.23.2 (the latest stable release; the 1.0 line is
+  # a release candidate split into other crates), which the take library's
+  # meaning index needs to read its model's tokenizer (`file_host::meaning`,
+  # docs/take-library.md). Revisit when `tokenizers` drops it.
+  { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained, compile-time proc-macro only) via tokenizers 0.23.2, the latest stable release; needed by file_host::meaning" },
 ]

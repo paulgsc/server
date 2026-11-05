@@ -12,6 +12,14 @@
 //! - **A shutdown keeps nothing.** An attempt cancelled midway says nothing
 //!   about the note, so it is not written, and the note waits for the next
 //!   start.
+//! - **The meaning index is written with the words** (docs/take-library.md,
+//!   docs/identity.md invariant 35), when there is a model: a take heard is
+//!   embedded in the transaction that keeps its hearing, so it is searchable
+//!   by meaning as soon as it is heard, and a pass first gives a vector to
+//!   at most [`BATCH`] takes heard before the index existed
+//!   (`voice_repo::meaning::unindexed`), each in its own transaction under
+//!   the deletion hold. Embedding is a lookup per token, so neither holds a
+//!   transaction longer than its write.
 
 use super::engine::{Cancelled, Hear, Heard};
 use crate::auth::DeletionLock;
@@ -19,6 +27,7 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+use voice_repo::meaning::{self, Embed, Indexed};
 use voice_repo::transcript::{self, Attempt, Kept, Outcome};
 use voice_repo::VoiceError;
 
@@ -32,24 +41,33 @@ pub const BATCH: i64 = 20;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Pass {
 	pub kept: Vec<&'static str>,
+	/// How many takes it gave a vector in the meaning index, heard in this
+	/// pass or before the index existed.
+	pub indexed: usize,
 	/// The server began shutting down during the pass.
 	pub cancelled: bool,
 }
 
-/// Hears up to [`BATCH`] waiting notes with `hear`, each by `per_note`.
+/// Hears up to [`BATCH`] waiting notes with `hear`, each by `per_note`,
+/// and with a `meaning` model, first gives up to [`BATCH`] takes heard
+/// before the index existed their vectors.
 ///
 /// # Errors
-/// A storage failure, which ends the pass; the attempts kept before it stay
-/// kept, and the next pass carries on from them.
+/// A storage failure, which ends the pass; the attempts and vectors kept
+/// before it stay kept, and the next pass carries on from them.
 pub async fn run_once<H: Hear>(
 	db: &SqlitePool,
 	hear: &Arc<H>,
+	meaning: Option<&dyn Embed>,
 	deletion: &DeletionLock,
 	per_note: Duration,
 	cancel: &CancellationToken,
 	now: &(dyn Fn() -> String + Sync),
 ) -> Result<Pass, VoiceError> {
 	let mut pass = Pass::default();
+	if let Some(embed) = meaning {
+		pass.indexed += catch_up(db, embed, deletion).await?;
+	}
 	let waiting = {
 		let mut conn = db.acquire().await?;
 		transcript::waiting(&mut conn, hear.model(), ATTEMPTS, BATCH).await?
@@ -92,9 +110,13 @@ pub async fn run_once<H: Hear>(
 			duration_ms: heard.duration_ms,
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
-		if let Kept::Added(_) = keep(db, deletion, &note.subject, &note.note_id, &attempt, &now()).await? {
+		let (kept, indexed) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &now()).await?;
+		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(kind, took);
 			pass.kept.push(kind);
+		}
+		if indexed == Indexed::Kept {
+			pass.indexed += 1;
 		}
 	}
 	Ok(pass)
@@ -102,13 +124,48 @@ pub async fn run_once<H: Hear>(
 
 /// One write, under the deletion hold (docs/identity.md invariant 9):
 /// `keep_attempt` checks the note is still held in the transaction that
-/// writes, and the hold keeps a deletion from landing between the two.
-async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, note_id: &str, attempt: &Attempt<'_>, now: &str) -> Result<Kept, VoiceError> {
+/// writes, and the hold keeps a deletion from landing between the two. A
+/// take heard gets its vector in the same transaction, when there is a
+/// `meaning` model.
+async fn keep(
+	db: &SqlitePool,
+	deletion: &DeletionLock,
+	meaning: Option<&dyn Embed>,
+	subject: &str,
+	note_id: &str,
+	attempt: &Attempt<'_>,
+	now: &str,
+) -> Result<(Kept, Indexed), VoiceError> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let kept = transcript::keep_attempt(&mut tx, subject, note_id, attempt, now).await?;
+	let indexed = match (&kept, &attempt.outcome, meaning) {
+		(Kept::Added(_), Outcome::Heard { .. }, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
+		_ => Indexed::NoWords,
+	};
 	tx.commit().await?;
-	Ok(kept)
+	Ok((kept, indexed))
+}
+
+/// Gives up to [`BATCH`] takes heard before `embed`'s index existed their
+/// vectors, each in its own transaction under the deletion hold, and says
+/// how many it gave one.
+async fn catch_up(db: &SqlitePool, embed: &dyn Embed, deletion: &DeletionLock) -> Result<usize, VoiceError> {
+	let unindexed = {
+		let mut conn = db.acquire().await?;
+		meaning::unindexed(&mut conn, embed.model(), BATCH).await?
+	};
+	let mut indexed = 0;
+	for take in unindexed {
+		let _hold = deletion.hold().await;
+		let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+		// A take gone since the list was read writes nothing.
+		if meaning::index(&mut tx, &take.subject, &take.note_id, embed).await? == Indexed::Kept {
+			indexed += 1;
+		}
+		tx.commit().await?;
+	}
+	Ok(indexed)
 }
 
 #[cfg(test)]
@@ -120,6 +177,7 @@ mod tests {
 	use std::sync::{Arc, Mutex};
 	use std::time::{Duration, Instant};
 	use tokio_util::sync::CancellationToken;
+	use voice_repo::meaning::Embed as _;
 	use voice_repo::transcript::Outcome;
 	use voice_repo::{describe, put_note, Said, SaidBite};
 
@@ -196,8 +254,12 @@ mod tests {
 	}
 
 	async fn note(pool: &SqlitePool, subject: &str, id: &str, stored_at: &str, audio: &[u8]) {
+		said_for(pool, subject, id, "reflection", stored_at, audio).await;
+	}
+
+	async fn said_for(pool: &SqlitePool, subject: &str, id: &str, of: &str, stored_at: &str, audio: &[u8]) {
 		let said = Said {
-			of: Some("reflection"),
+			of: Some(of),
 			of_ref: Some("session-7f2a"),
 			at: Some("2026-10-25T03:10:00Z"),
 			content_type: Some("audio/webm"),
@@ -209,7 +271,7 @@ mod tests {
 	}
 
 	async fn pass(pool: &SqlitePool, fake: &Arc<Fake>, per_note: Duration, cancel: &CancellationToken) -> Pass {
-		run_once(pool, fake, &DeletionLock::default(), per_note, cancel, &|| String::from("2026-10-25T16:00:00.000Z"))
+		run_once(pool, fake, None, &DeletionLock::default(), per_note, cancel, &|| String::from("2026-10-25T16:00:00.000Z"))
 			.await
 			.unwrap()
 	}
@@ -286,6 +348,7 @@ mod tests {
 			done,
 			Pass {
 				kept: vec!["heard"],
+				indexed: 0,
 				cancelled: true
 			}
 		);
@@ -344,6 +407,7 @@ mod tests {
 		let done = run_once(
 			&pool,
 			&Arc::new(Deleting(pool.clone())),
+			None,
 			&DeletionLock::default(),
 			Duration::from_secs(60),
 			&CancellationToken::new(),
@@ -355,6 +419,69 @@ mod tests {
 		assert!(rows(&pool).await.is_empty());
 	}
 
+	async fn vectors(pool: &SqlitePool) -> Vec<(String, String, String, Vec<u8>)> {
+		sqlx::query_as("SELECT subject_id, note_id, model, vector FROM voice_note_meaning ORDER BY subject_id, note_id")
+			.fetch_all(pool)
+			.await
+			.unwrap()
+	}
+
+	/// ST32 (docs/take-library.md): with a meaning model, a take heard gets
+	/// its vector in the transaction that keeps its hearing, from what was
+	/// heard; any other kind of note, and a take found silent, get none.
+	#[tokio::test]
+	async fn a_take_heard_is_given_its_vector_with_its_hearing() {
+		let pool = pool().await;
+		said_for(&pool, A, "take", "studio", "2026-10-25T01:00:00.000Z", b"words").await;
+		said_for(&pool, A, "quiet", "studio", "2026-10-25T02:00:00.000Z", b"silence").await;
+		note(&pool, A, "reflection", "2026-10-25T03:00:00.000Z", b"words").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let model = crate::meaning::tests::fixture();
+
+		let done = run_once(&pool, &fake, Some(&model), &DeletionLock::default(), Duration::from_secs(60), &cancel, &|| {
+			String::from("now")
+		})
+		.await
+		.unwrap();
+		assert_eq!((done.kept.len(), done.indexed), (3, 1));
+		let kept = vectors(&pool).await;
+		assert_eq!(kept.len(), 1, "the take heard, only");
+		assert_eq!((kept[0].1.as_str(), kept[0].2.as_str()), ("take", "fixture"));
+		let expected: Vec<u8> = model.embed(SAID).iter().flat_map(|x| x.to_le_bytes()).collect();
+		assert_eq!(kept[0].3, expected);
+	}
+
+	/// A take heard before the index existed gets its vector from a later
+	/// pass, at most a batch a pass, and a pass with nothing to hear still
+	/// catches up.
+	#[tokio::test]
+	async fn the_takes_heard_before_the_index_get_their_vectors_a_batch_a_pass() {
+		let pool = pool().await;
+		for n in 0..=BATCH {
+			let id = String::from("t") + &n.to_string();
+			let at = String::from("2026-10-25T01:00:") + &format_args!("{n:02}").to_string() + ".000Z";
+			said_for(&pool, A, &id, "studio", &at, b"words").await;
+		}
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		assert!(vectors(&pool).await.is_empty(), "no model, no index");
+
+		let model = crate::meaning::tests::fixture();
+		let now = || String::from("now");
+		let lock = DeletionLock::default();
+		let mut indexed = Vec::new();
+		for _ in 0..3 {
+			let done = run_once(&pool, &fake, Some(&model), &lock, Duration::from_secs(60), &cancel, &now).await.unwrap();
+			assert!(done.kept.is_empty(), "nothing left to hear");
+			indexed.push(done.indexed);
+		}
+		assert_eq!(indexed, [usize::try_from(BATCH).unwrap(), 1, 0], "a batch, then the rest a pass later");
+		assert_eq!(vectors(&pool).await.len(), usize::try_from(BATCH).unwrap() + 1);
+	}
+
 	/// docs/identity.md invariant 23: what was heard, and the audio, reach no
 	/// log line; a pass and its summary log kinds and counts only.
 	#[tokio::test]
@@ -363,9 +490,16 @@ mod tests {
 		let pool = pool().await;
 		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"words").await;
 		note(&pool, A, "n2", "2026-10-25T02:00:00.000Z", b"noise").await;
+		said_for(&pool, A, "take", "studio", "2026-10-25T03:00:00.000Z", b"words").await;
 		let cancel = CancellationToken::new();
 		let fake = Fake::new(&cancel);
-		let done = pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		let model = crate::meaning::tests::fixture();
+		let done = run_once(&pool, &fake, Some(&model), &DeletionLock::default(), Duration::from_secs(60), &cancel, &|| {
+			String::from("now")
+		})
+		.await
+		.unwrap();
+		assert_eq!(done.indexed, 1, "sanity check: a vector was made");
 		crate::transcribe::log_pass(&Ok(done));
 		let lines = captured.lines();
 		assert!(lines.iter().any(|line| line.contains("heard")), "sanity check: the summary was captured: {lines:?}");

@@ -18,23 +18,29 @@
 //!   ([`crate::transcript::heard`]): the newest transcript that heard
 //!   something, by `heard_at` then model, or else the newest silent ending as
 //!   empty text, so the library and a take's own read never disagree.
-//! - **A search by words, for now.** [`Search`] keeps a take whose words hold
-//!   every term asked, compared in Unicode lowercase, so Korean and English
-//!   both match. Search by meaning is the index of
-//!   docs/take-library.md, "Where the meaning index lives", which is not
-//!   built yet; [`By`] says which search answered, so the phone never says
-//!   meaning when it searched words.
+//! - **A search by meaning, or by words.** With the asked words' vector
+//!   ([`Search::with_meaning`]), a search ranks the takes by the cosine of
+//!   that vector with each take's in the meaning index ([`crate::meaning`]),
+//!   best first, and finds those it points the same way as (a cosine above
+//!   zero). It does so only when every take home heard words in has a
+//!   vector under that model: off, or with a take not indexed yet, or with
+//!   asked words the model knows nothing of, [`Search`] keeps a take whose
+//!   words hold every term asked, compared in Unicode lowercase, so Korean
+//!   and English both match. [`By`] says which search answered, so the phone
+//!   never says meaning when it searched words. No vector is answered.
 //! - **Cost.** One statement walks the subject's note descriptions (no
 //!   audio), keeps the `studio` ones, and reads each one's chosen words by
-//!   the transcripts' key; then at most [`NEWEST`] are kept. It reads no
+//!   the transcripts' key; a search by meaning reads the subject's vectors
+//!   under one model too, 1 KiB a take; then at most [`NEWEST`] are kept. It reads no
 //!   other kind's transcript, and only the owner's own phone asks it
 //!   (docs/take-library.md, "Cost").
 //! - **Its one caller** is `file_host`'s `handlers::voice`
 //!   (`GET /api/v1/voice-notes/takes`).
 
-use crate::{transcript::Transcript, Of, VoiceError};
+use crate::{meaning, transcript::Transcript, Of, VoiceError};
 use serde::Serialize;
 use sqlx::SqliteConnection;
+use std::collections::HashMap;
 
 /// The most takes [`library`] answers.
 pub const NEWEST: usize = 50;
@@ -43,10 +49,20 @@ pub const NEWEST: usize = 50;
 pub const MAX_SEARCH_CHARS: usize = 200;
 
 /// A search of the library, as [`Search::parse`] reads one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Search {
 	/// Each term asked, in Unicode lowercase; never empty.
 	terms: Vec<String>,
+	/// The asked words' vector and the model that made it, to search by
+	/// meaning; none to search by words only.
+	meaning: Option<Asked>,
+}
+
+/// The asked words' vector, by the model whose index it is compared with.
+#[derive(Debug, Clone, PartialEq)]
+struct Asked {
+	model: String,
+	vector: Vec<f32>,
 }
 
 impl Search {
@@ -60,7 +76,17 @@ impl Search {
 			return None;
 		}
 		let terms: Vec<String> = asked.split_whitespace().map(str::to_lowercase).collect();
-		(!terms.is_empty()).then_some(Self { terms })
+		(!terms.is_empty()).then_some(Self { terms, meaning: None })
+	}
+
+	/// The same search, by meaning where it can be: `vector` is the asked
+	/// words' vector by `model` ([`meaning::Embed`]).
+	#[must_use]
+	pub fn with_meaning(self, model: &str, vector: Vec<f32>) -> Self {
+		Self {
+			meaning: Some(Asked { model: model.to_owned(), vector }),
+			..self
+		}
 	}
 
 	/// Whether `words` hold every term of the search.
@@ -78,6 +104,9 @@ pub enum By {
 	Newest,
 	/// A search kept the takes whose words hold every term.
 	Words,
+	/// A search ranked the takes by how near their meaning is to the asked
+	/// words', best first.
+	Meaning,
 }
 
 /// One take, as the library lists it.
@@ -120,11 +149,12 @@ pub struct Library {
 /// `subject`'s take library, or the part of it `search` finds.
 ///
 /// Newest recorded first (then newest to reach home, then by id), at most
-/// [`NEWEST`].
+/// [`NEWEST`]; by meaning, best first, then in that order.
 ///
 /// # Errors
-/// [`VoiceError::Unreadable`] for a heard transcript with no text, which this
-/// crate never writes, and [`VoiceError::Storage`] for any `sqlx` failure.
+/// [`VoiceError::Unreadable`] for a heard transcript with no text or a
+/// stored vector of the wrong size, which this crate never writes, and
+/// [`VoiceError::Storage`] for any `sqlx` failure.
 pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<&Search>) -> Result<Library, VoiceError> {
 	let studio = Of::Studio.as_str();
 	// `transcript::heard`'s ORDER BY, kept equal by
@@ -153,26 +183,24 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 	.fetch_all(&mut *conn)
 	.await?;
 	let total = rows.len();
-	let mut found = 0;
-	let mut takes = Vec::new();
+	let mut all = Vec::with_capacity(total);
 	for row in rows {
 		let heard = match (row.outcome, row.model, row.heard_at) {
-			(Some(outcome), Some(model), Some(heard_at)) => Some(Transcript {
-				text: if outcome == "heard" { row.text.ok_or(VoiceError::Unreadable)? } else { String::new() },
-				language: row.language,
-				model,
-				heard_at,
-			}),
+			(Some(outcome), Some(model), Some(heard_at)) => Some((
+				outcome == "heard",
+				Transcript {
+					text: if outcome == "heard" { row.text.ok_or(VoiceError::Unreadable)? } else { String::new() },
+					language: row.language,
+					model,
+					heard_at,
+				},
+			)),
 			_ => None,
 		};
-		if let Some(search) = search {
-			if !heard.as_ref().is_some_and(|heard| search.finds(&heard.text)) {
-				continue;
-			}
-			found += 1;
-		}
-		if takes.len() < NEWEST {
-			takes.push(Take {
+		let (words, heard) = heard.map_or((false, None), |(words, heard)| (words, Some(heard)));
+		all.push((
+			words,
+			Take {
 				id: row.id,
 				of_ref: row.of_ref,
 				recorded_at: row.recorded_at,
@@ -180,15 +208,68 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 				size: row.size,
 				set_aside_at: row.set_aside_at,
 				heard,
-			});
-		}
+			},
+		));
 	}
+	let Some(search) = search else {
+		all.truncate(NEWEST);
+		return Ok(Library {
+			takes: all.into_iter().map(|(_, take)| take).collect(),
+			total,
+			matched: None,
+			by: By::Newest,
+		});
+	};
+	if let Some(ranked) = by_meaning(conn, subject, search, &all).await? {
+		let matched = ranked.len();
+		let mut takes: Vec<Option<Take>> = all.into_iter().map(|(_, take)| Some(take)).collect();
+		let takes = ranked.into_iter().take(NEWEST).filter_map(|at| takes.get_mut(at).and_then(Option::take)).collect();
+		return Ok(Library {
+			takes,
+			total,
+			matched: Some(matched),
+			by: By::Meaning,
+		});
+	}
+	let found: Vec<Take> = all
+		.into_iter()
+		.filter(|(_, take)| take.heard.as_ref().is_some_and(|heard| search.finds(&heard.text)))
+		.map(|(_, take)| take)
+		.collect();
+	let matched = found.len();
 	Ok(Library {
-		takes,
+		takes: found.into_iter().take(NEWEST).collect(),
 		total,
-		matched: search.map(|_| found),
-		by: if search.is_some() { By::Words } else { By::Newest },
+		matched: Some(matched),
+		by: By::Words,
 	})
+}
+
+/// Where in `all` (each take, and whether a model heard words in it) the
+/// takes `search` finds by meaning are, best first, ties newest first; or
+/// `None` when it cannot search by meaning: no asked vector, one with no
+/// direction (the model knew none of the asked words), no take heard yet,
+/// or a take heard and not indexed under the asked model yet.
+async fn by_meaning(conn: &mut SqliteConnection, subject: &str, search: &Search, all: &[(bool, Take)]) -> Result<Option<Vec<usize>>, VoiceError> {
+	let Some(asked) = search.meaning.as_ref() else {
+		return Ok(None);
+	};
+	if meaning::norm(&asked.vector) <= 0.0 || !all.iter().any(|(words, _)| *words) {
+		return Ok(None);
+	}
+	let vectors: HashMap<String, Vec<f32>> = meaning::vectors(conn, subject, &asked.model).await?.into_iter().collect();
+	if all.iter().any(|(words, take)| *words && !vectors.contains_key(&take.id)) {
+		return Ok(None);
+	}
+	let mut found: Vec<(usize, f32)> = all
+		.iter()
+		.enumerate()
+		.filter_map(|(at, (_, take))| vectors.get(&take.id).map(|vector| (at, meaning::cosine(&asked.vector, vector))))
+		.filter(|(_, cosine)| *cosine > 0.0)
+		.collect();
+	// Stable, so takes as near as each other keep the newest first.
+	found.sort_by(|(_, a), (_, b)| b.total_cmp(a));
+	Ok(Some(found.into_iter().map(|(at, _)| at).collect()))
 }
 
 #[cfg(test)]
@@ -263,7 +344,8 @@ mod tests {
 		assert_eq!(
 			Search::parse("  The BRAND  intro "),
 			Some(Search {
-				terms: vec!["the".into(), "brand".into(), "intro".into()]
+				terms: vec!["the".into(), "brand".into(), "intro".into()],
+				meaning: None,
 			})
 		);
 		assert_eq!(Search::parse(" \t "), None, "no term is no search");
@@ -355,6 +437,75 @@ mod tests {
 
 		let none = library(&mut conn, A, Search::parse("nowhere").as_ref()).await.unwrap();
 		assert_eq!((none.takes.len(), none.matched), (0, Some(0)));
+	}
+
+	/// ST32's search by meaning: with every heard take indexed, the asked
+	/// words' vector ranks the takes best first and finds those that point
+	/// its way, whatever words they used; a take not heard, or heard as
+	/// silence, is never found.
+	#[tokio::test]
+	async fn a_search_by_meaning_ranks_the_indexed_takes_best_first() {
+		use crate::meaning::{index, tests::Words, Embed as _};
+		let pool = pool().await;
+		note(&pool, A, "logo", "studio", "ep:s:1", "2026-11-01T10:00:00Z").await;
+		note(&pool, A, "both", "studio", "ep:s:2", "2026-11-02T10:00:00Z").await;
+		note(&pool, A, "korean", "studio", "ep:s:3", "2026-11-03T10:00:00Z").await;
+		note(&pool, A, "brand", "studio", "ep:s:4", "2026-11-04T10:00:00Z").await;
+		note(&pool, A, "quiet", "studio", "ep:s:5", "2026-11-05T10:00:00Z").await;
+		note(&pool, A, "waiting", "studio", "ep:s:6", "2026-11-06T10:00:00Z").await;
+		note(&pool, B, "theirs", "studio", "ep:s:1", "2026-11-07T10:00:00Z").await;
+		hearing(&pool, A, "logo", "small", Some("our new logo"), "2026-11-08T00:00:00Z").await;
+		hearing(&pool, A, "both", "small", Some("the brand in 한국어"), "2026-11-08T00:00:00Z").await;
+		hearing(&pool, A, "korean", "small", Some("korean practice"), "2026-11-08T00:00:00Z").await;
+		hearing(&pool, A, "brand", "small", Some("the brand"), "2026-11-08T00:00:00Z").await;
+		hearing(&pool, A, "quiet", "small", None, "2026-11-08T00:00:00Z").await;
+		hearing(&pool, B, "theirs", "small", Some("the brand"), "2026-11-08T00:00:00Z").await;
+		let mut conn = pool.acquire().await.unwrap();
+		for (subject, id) in [(A, "logo"), (A, "both"), (A, "korean"), (A, "brand"), (A, "quiet"), (B, "theirs")] {
+			index(&mut conn, subject, id, &Words).await.unwrap();
+		}
+
+		let asked = |words: &str| Search::parse(words).unwrap().with_meaning(Words.model(), Words.embed(words));
+		let found = library(&mut conn, A, Some(&asked("branding"))).await;
+		let found = found.unwrap();
+		assert_eq!(found.by, By::Words, "the model knows no asked word: words answer");
+
+		let found = library(&mut conn, A, Some(&asked("brand"))).await.unwrap();
+		let ids: Vec<&str> = found.takes.iter().map(|take| take.id.as_str()).collect();
+		assert_eq!(ids, ["brand", "logo", "both"], "best first, the nearest newest first, and never the Korean take");
+		assert_eq!((found.total, found.matched, found.by), (6, Some(3), By::Meaning));
+		assert_eq!(
+			found.takes[1].heard.as_ref().map(|heard| heard.text.as_str()),
+			Some("our new logo"),
+			"found without the word"
+		);
+
+		let other_model = Search::parse("brand").unwrap().with_meaning("another-model", Words.embed("brand"));
+		assert_eq!(library(&mut conn, A, Some(&other_model)).await.unwrap().by, By::Words, "no index under that model");
+		assert_eq!(library(&mut conn, A, Search::parse("brand").as_ref()).await.unwrap().by, By::Words, "meaning off");
+		assert_eq!(library(&mut conn, B, Some(&asked("korean"))).await.unwrap().matched, Some(0), "B's own takes only");
+	}
+
+	/// A take heard and not indexed yet would be missed by meaning, so the
+	/// whole search is by words until the catch-up has indexed it.
+	#[tokio::test]
+	async fn a_heard_take_not_indexed_yet_makes_the_search_one_by_words() {
+		use crate::meaning::{index, tests::Words, Embed as _};
+		let pool = pool().await;
+		note(&pool, A, "indexed", "studio", "ep:s:1", "2026-11-01T10:00:00Z").await;
+		note(&pool, A, "later", "studio", "ep:s:2", "2026-11-02T10:00:00Z").await;
+		hearing(&pool, A, "indexed", "small", Some("our logo"), "2026-11-08T00:00:00Z").await;
+		hearing(&pool, A, "later", "small", Some("the brand"), "2026-11-08T00:00:00Z").await;
+		let mut conn = pool.acquire().await.unwrap();
+		index(&mut conn, A, "indexed", &Words).await.unwrap();
+
+		let asked = Search::parse("brand").unwrap().with_meaning(Words.model(), Words.embed("brand"));
+		let found = library(&mut conn, A, Some(&asked)).await.unwrap();
+		assert_eq!((found.by, found.matched, found.takes[0].id.as_str()), (By::Words, Some(1), "later"));
+
+		index(&mut conn, A, "later", &Words).await.unwrap();
+		let found = library(&mut conn, A, Some(&asked)).await.unwrap();
+		assert_eq!((found.by, found.matched), (By::Meaning, Some(2)));
 	}
 
 	/// `i` as two digits, without `format!` (banned repo-wide).

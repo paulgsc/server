@@ -153,6 +153,10 @@ voice_repo = { workspace = true }
 rust_round_repo = { workspace = true }
 rust_rounds_wire = { workspace = true }
 whisper-rs = { workspace = true }
+# The take library's meaning index (`meaning`): the embedding model's
+# tokenizer and its matrix.
+tokenizers = { workspace = true }
+safetensors = { workspace = true }
 # The transcriber's private scratch directory, and (in tests) a real on-disk
 # database for the waker's lock-classification test: two connections to
 # `:memory:` would be two databases, not one contended one.

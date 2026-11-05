@@ -342,6 +342,19 @@ pub struct Config {
 	#[arg(long, env = "TRANSCRIBE_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Voice-note transcription")]
 	pub transcribe_enabled: bool,
 
+	// ── The take library's meaning index ─────────────────────────────────────
+	//
+	// See `meaning`. The transcriber embeds each Studio take's words with a
+	// static embedding model on home's CPU, so the take library can be
+	// searched by meaning (docs/take-library.md). Off unless
+	// `MEANING_ENABLED`; on, the server refuses to start unless the model
+	// loads and the transcriber is on.
+	/// Whether the take library is searched by meaning. On, the server refuses
+	/// to start unless the model loads and `TRANSCRIBE_ENABLED` is on. Get the
+	/// model with `nix develop .#whisper -c whisper fetch`.
+	#[arg(long, env = "MEANING_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Take library meaning index")]
+	pub meaning_enabled: bool,
+
 	// ── Rust Rounds recording ─────────────────────────────────────────────────
 	//
 	// See `rust_rounds`. Home hands each program of each round the phone puts
@@ -448,7 +461,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 16] = [
+	const REFUSED: [(&str, &str); 17] = [
 		("RUST_LOG", "info,=[bad"),
 		("RATE_LIMIT", "-1"),
 		("NUDGE_ENABLED", "on"),
@@ -462,6 +475,7 @@ mod tests {
 		("MAILBOX_ENABLED", "on"),
 		("MAILBOX_ARCHIVE_DAYS", "90d"),
 		("TRANSCRIBE_ENABLED", "on"),
+		("MEANING_ENABLED", "on"),
 		("RUST_ROUNDS_ENABLED", "on"),
 		("GAME_FEED_ENABLED", "on"),
 		("NUDGE_TIMEZONE", "America/Denvr"),

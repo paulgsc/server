@@ -168,6 +168,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each of the owner's Studio takes home holds that the build-journal session found in Drive's takes folder too (paulgsc/some-ui#2401): the take's id, when the session looked and the mailbox list that said so; no audio and nothing of Drive's; see docs/identity.md invariant 23",
 	),
 	(
+		"voice_note_meaning",
+		"the take library's meaning index (paulgsc/some-ui#2590, ST32): for each of the owner's Studio takes home heard words in, a vector made from those words by a static embedding model, under that model's name; no ref, no text, no time; see docs/identity.md invariant 35",
+	),
+	(
 		"voice_note_set_aside",
 		"each of the owner's voice notes the owner let go of on the phone (paulgsc/some-ui#2372, D3): the note's id, when it was let go and when home recorded it; the note itself is kept; see docs/identity.md invariant 23",
 	),

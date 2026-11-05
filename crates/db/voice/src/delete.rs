@@ -18,7 +18,8 @@
 //!   owner turns on, one kind at a time; what goes with each is recorded on
 //!   paulgsc/some-ui#2265 and in that repo's `docs/discard-sites.md`.
 //! - **What goes:** the note, its audio, what home heard in it (every
-//!   transcript and its words) and its set-aside mark, in one transaction.
+//!   transcript, its words and the take's vectors in the meaning index,
+//!   which are made from them) and its set-aside mark, in one transaction.
 //!   **What stays:** a copy of its words already filed for the Jobs mailbox
 //!   (the mailbox keeps a name's body for good), the record that Drive
 //!   holds it, the idea an answer belongs to (`idea_answer` still names the
@@ -211,6 +212,11 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 	)
 	.fetch_one(&mut *conn)
 	.await?;
+	// The take's meaning (docs/identity.md invariant 35) is made from its
+	// words, so it goes with them.
+	sqlx::query!("DELETE FROM voice_note_meaning WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.execute(&mut *conn)
+		.await?;
 	sqlx::query!("DELETE FROM voice_transcript_word WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
 		.await?;
@@ -367,14 +373,15 @@ mod tests {
 		run(pool, "INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, ?2, x'00')", subject, id).await;
 	}
 
-	/// What home heard in it, a word of it, its Let go mark, its words
-	/// filed for the mailbox and Drive's listing of it.
+	/// What home heard in it, a word of it, its Let go mark, its meaning,
+	/// its words filed for the mailbox and Drive's listing of it.
 	async fn everything_beside(pool: &SqlitePool, subject: &str, id: &str) {
 		for statement in [
 			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
 			 VALUES (?1, ?2, 'm', 'e', 1, 'heard', 'ko', 0.9, 1, 'w', 1, 'now')",
 			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, ?2, 'm', 0, 'w', 0, 1)",
 			"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, ?2, 'then', 'now')",
+			"INSERT INTO voice_note_meaning (subject_id, note_id, model, vector) VALUES (?1, ?2, 'm', zeroblob(1024))",
 			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, ?2, 'm', 1, 'now')",
 			"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at) VALUES (?1, ?2, 'then', 'drive-takes-20261101T000000Z.json', 'now')",
 		] {
@@ -451,14 +458,15 @@ mod tests {
 			assert_eq!(rows(&pool, "voice_note", A, id).await, 1, "{id}");
 			assert_eq!(rows(&pool, "voice_note_audio", A, id).await, 1, "{id}");
 		}
-		for table in ["voice_transcript", "voice_transcript_word", "voice_note_set_aside"] {
+		for table in ["voice_transcript", "voice_transcript_word", "voice_note_set_aside", "voice_note_meaning"] {
 			assert_eq!(rows(&pool, table, A, "take").await, 1, "{table}");
 		}
 		let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_deletion").fetch_one(&pool).await.unwrap();
 		assert_eq!(receipts, 0);
 	}
 
-	/// Switched on, a take goes with its audio, its words and its mark; its
+	/// Switched on, a take goes with its audio, its words, its meaning and
+	/// its mark (docs/identity.md invariant 35); its
 	/// mailbox copy and Drive's listing stay; the receipt says so, and a
 	/// repeat answers with the same receipt. Another subject's take is
 	/// neither deleted nor named.
@@ -477,7 +485,14 @@ mod tests {
 		assert_eq!((first.recorded_at.as_str(), first.size, first.deleted_at.as_str()), ("2026-11-01T10:00:00.000Z", 120, NOW));
 		assert_eq!(first.went, [RECORDING, WORDS, SET_ASIDE_MARK]);
 		assert_eq!(first.stayed, [MAILBOX_COPY, DRIVE_COPY]);
-		for table in ["voice_note", "voice_note_audio", "voice_transcript", "voice_transcript_word", "voice_note_set_aside"] {
+		for table in [
+			"voice_note",
+			"voice_note_audio",
+			"voice_transcript",
+			"voice_transcript_word",
+			"voice_note_set_aside",
+			"voice_note_meaning",
+		] {
 			assert_eq!(rows(&pool, table, A, "take").await, 0, "{table}");
 		}
 		for table in ["mailbox_transcript", "studio_take_on_drive"] {

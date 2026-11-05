@@ -27,8 +27,10 @@
 //!                                      take library, every Studio take
 //!                                      home keeps with the words it heard,
 //!                                      newest first, at most 50, or with
-//!                                      `q` the takes whose words hold every
-//!                                      term, to a paired phone
+//!                                      `q` the takes nearest its meaning,
+//!                                      best first, or else those whose
+//!                                      words hold every term, `by` saying
+//!                                      which, to a paired phone
 //!                                      (paulgsc/some-ui#2590, ST32)
 //! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
 //!                                      notes of each kind home keeps,
@@ -88,6 +90,7 @@
 
 use crate::auth::AuthContext;
 use crate::handlers::voice as handlers;
+use crate::meaning::MeaningContext;
 use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
 use crate::Config;
@@ -106,6 +109,7 @@ where
 	S: Clone + Send + Sync + 'static,
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
+	Option<MeaningContext>: FromRef<S>,
 {
 	let table = RouteTable::new()
 		.put("/voice-notes/:id", handlers::put_note)

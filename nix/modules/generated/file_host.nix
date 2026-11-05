@@ -123,6 +123,11 @@
       default = null;
       description = "Whether home transcribes voice notes at all. On, the server refuses to start unless both models load and ffmpeg runs. Get the models with `nix develop .#whisper -c whisper fetch`\n\nUnset (null), the binary's default: `false`.";
     };
+    MEANING_ENABLED = lib.mkOption {
+      type = lib.types.nullOr lib.types.bool;
+      default = null;
+      description = "Whether the take library is searched by meaning. On, the server refuses to start unless the model loads and `TRANSCRIBE_ENABLED` is on. Get the model with `nix develop .#whisper -c whisper fetch`\n\nUnset (null), the binary's default: `false`.";
+    };
     RUST_ROUNDS_ENABLED = lib.mkOption {
       type = lib.types.nullOr lib.types.bool;
       default = null;
@@ -174,6 +179,7 @@
     ROUTINE_SCHEDULE = "jobs 07:52 America/Los_Angeles; reflections 09:00 America/Los_Angeles";
     MAILBOX_ARCHIVE_DAYS = "90";
     TRANSCRIBE_ENABLED = "false";
+    MEANING_ENABLED = "false";
     RUST_ROUNDS_ENABLED = "false";
     GAME_FEED_ENABLED = "false";
     ENVIRONMENT = "development";

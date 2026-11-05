@@ -218,6 +218,13 @@ tempfile = "3.3.0"
 # whisper.cpp, built from source into file_host for its voice-note transcriber
 # (`file_host::transcribe`). No GPU feature: home transcribes on its CPU.
 whisper-rs = { version = "0.16.0", default-features = false }
+# The take library's meaning index (`file_host::meaning`, docs/take-library.md):
+# a static embedding model's tokenizer and its embedding matrix, both read from
+# /models at start. No progress bar, no trainer (`esaxx_fast`), no HTTP
+# download: home reads the files it is given and downloads nothing. `onig` is
+# the regex engine the tokenizer's normalizer needs (the crate requires one).
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+safetensors = { version = "0.8.0", default-features = false, features = ["std"] }
 thiserror = "1.0.48"
 tokio = "1.41.0"
 tokio-util = "0.7.17"
