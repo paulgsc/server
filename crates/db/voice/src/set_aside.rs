@@ -96,9 +96,31 @@ pub async fn set_aside_at(conn: &mut SqliteConnection, subject: &str, note_id: &
 	)
 }
 
+/// Whether `subject` holds `note_id` as a `studio` take it has not set aside.
+///
+/// That is what a record naming a take by id may name: an idea's answer
+/// (`idea_repo`) and a queued video's take (`studio_video_repo`) are each held
+/// to it, so the two read one rule.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn studio_take_held(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<bool, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"SELECT EXISTS (
+		     SELECT 1 FROM voice_note note
+		     WHERE note.subject_id = ?1 AND note.note_id = ?2 AND note.of_kind = 'studio'
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
+		   ) AS "held!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{set_aside, set_aside_at, when, SetAside};
+	use super::{set_aside, set_aside_at, studio_take_held, when, SetAside};
 	use crate::transcript::waiting;
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -189,6 +211,32 @@ mod tests {
 		assert_eq!(rows(&pool, "voice_note_set_aside").await, 1);
 		assert_eq!(rows(&pool, "voice_note").await, 2, "nothing is let go of on home");
 		assert_eq!(rows(&pool, "voice_note_audio").await, 2);
+	}
+
+	/// A take a record may name is the subject's own `studio` note, not set
+	/// aside: another kind, another subject's note, a note never sent and a
+	/// note let go of are not.
+	#[tokio::test]
+	async fn a_studio_take_is_held_until_it_is_set_aside() {
+		let pool = pool().await;
+		note(&pool, A, "reflection", "2026-10-31T10:00:00.000Z").await;
+		for (subject, id) in [(A, "take"), (A, "let-go"), (B, "b-take")] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'studio', 'p:s:t', 'then', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(subject)
+			.bind(id)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		assert_eq!(mark(&pool, A, "let-go", AT).await, SetAside::Marked);
+		let mut conn = pool.acquire().await.unwrap();
+		for (id, held) in [("take", true), ("let-go", false), ("reflection", false), ("b-take", false), ("never-sent", false)] {
+			assert_eq!(studio_take_held(&mut conn, A, id).await.unwrap(), held, "{id}");
+		}
+		assert!(studio_take_held(&mut conn, B, "b-take").await.unwrap(), "B's own take is B's");
 	}
 
 	#[tokio::test]

@@ -144,6 +144,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"the owner's Studio time log (paulgsc/some-ui ST9), every event of every sitting sent home: the sitting and its kind, each screen entered and left by name, the page hidden and shown, the sitting opened and closed, and when each was recorded and reached home; see docs/identity.md invariant 26",
 	),
 	(
+		"studio_video_queued",
+		"each revision of a finished Studio video the owner queued on home (paulgsc/some-ui ST33): its DNA as the phone sent it (the template it goes through, the shape built in Studio, the takes by voice note id only, and the data that fills it), its SHA-256, the title, which template and version, when the owner finished it and when it reached home; never logged or filed for the mailbox; see docs/identity.md invariant 36",
+	),
+	(
 		"study_note",
 		"the text the owner's phone keeps beside a soundbite or a LeetType spoken answer (paulgsc/some-ui#2180), as the phone sent it: a soundbite's record (when it was recorded, how long it ran, how it came to be recorded, the sessions the phone knew of and its time zone), and an answer's note (the session file and screen, the prompt, the rubric, the points ticked, the answer typed and the take it notes), and when each reached home; see docs/identity.md invariant 30",
 	),

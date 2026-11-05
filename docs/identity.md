@@ -191,6 +191,7 @@ above the button that deletes (invariant 22):
 | LeetType sessions | `leetype_session_event` |
 | Studio's time log and friction reports | `studio_sitting_event`, `studio_friction` |
 | Studio's ideas, their marks and the lists they pick from | `idea_revision`, `idea_answer`, `idea_furnishing`, `idea_set_aside`, `idea_list_mark` |
+| Studio's finished videos, queued to be made | `studio_video_queued` |
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
@@ -1166,9 +1167,13 @@ nowhere is marked as such and belongs to review.
     The routes that
     read its row,
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
-    (both below), and `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
-    (invariant 32), read only whether the caller's subject holds it, and,
-    for an idea, whether it is a `studio` note and whether it was set aside;
+    (both below), `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
+    (invariant 32), and `PUT /studio/videos/:video/queued/:rev` (invariant
+    36), read only whether the caller's subject holds it, and, for an idea
+    or a queued video, whether it is a `studio` note and whether it was set
+    aside; `PUT /ideas/:id` and `PUT /studio/videos/:video/queued/:rev`
+    read both through `voice_repo::set_aside::studio_take_held`, the one
+    rule the two PUTs share;
     and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12). `GET /voice-notes/kept`
     (paulgsc/some-ui#2476, MY-DATA MD2), a `Paired` phone's (a browser's
@@ -1756,7 +1761,9 @@ nowhere is marked as such and belongs to review.
     /idea-lists/{topics,keywords}/:name`, and read only by `GET /ideas`,
     `GET /ideas/:id` and `GET /idea-lists`, each for the caller's own
     subject (another subject's idea is a `404`), and `idea_revision` counted
-    by `GET /subjects/me/kept` (invariant 33). `GET /ideas` lists at most
+    by `GET /subjects/me/kept` (invariant 33). A send's notes are held by
+    `voice_repo::set_aside::studio_take_held`, the rule a queued video's
+    takes are held to (invariant 36). `GET /ideas` lists at most
     the 1,000 newest begun of the ideas not set aside, and says `more` when
     it holds others back. A read carries, for each answer's note, what home
     heard in it (invariant 23), unless the owner set the note aside after
@@ -1806,8 +1813,9 @@ nowhere is marked as such and belongs to review.
     and key; `written_at`), `jobs_event` (rows; `at`), `aph_entry`
     (distinct entries; `written_at`), `leetype_session_event` (distinct
     sessions; `at`), `rust_round` (rows; `received_at`), `drama_prompt`
-    (rows; the earliest stamp, as the moment it names) and
-    `studio_sitting_event` (distinct sittings; `at`). Each part filters on
+    (rows; the earliest stamp, as the moment it names),
+    `studio_sitting_event` (distinct sittings; `at`) and
+    `studio_video_queued` (distinct videos; `queued_at`). Each part filters on
     `subject_id` and reads by a key or index that starts with it, so the
     read is a range read of that subject's rows, and its answer is at most
     one row per kind. It reads no body, text, title, key or id out of any
@@ -1915,6 +1923,72 @@ nowhere is marked as such and belongs to review.
     and that no log line holds an embedded text, which holds because
     `meaning::StaticModel::embed` logs nothing and its callers log counts
     only, by review.
+
+36. **A finished video's DNA is append-only, one row per revision queued,
+    names its takes only by id, and stays on home.** Finishing a video on
+    the phone queues its DNA on home (STUDIO ST33, slice 1:
+    paulgsc/some-ui#2591; the owner's decision 9 on paulgsc/some-ui#2248,
+    2026-11-04: "it's a promise, it's not concurrent with my work in
+    studio"). `studio_video_queued` keeps one row per revision the phone
+    queues: the phone's id for the video, the revision, the title (trimmed,
+    1 to 200 characters), when the owner finished it (`queuedAt`, ISO-8601
+    UTC to the millisecond), the template's kind, id and version, the DNA's
+    bytes exactly as sent (`some-ui.video-dna/1`, at most 256 KiB) with
+    their SHA-256, and when it reached home. Home checks only the schema,
+    that `video` and `rev` are the path's, the title, `queuedAt`, the
+    template, that `takes` is a list of `{ scene, note }` (at most 200) and
+    that `shape` and `data` are JSON objects; it reads nothing inside
+    `shape` or `data`, and a field version 1 does not carry is refused. A
+    take names a voice note by the phone's id and nothing else: the note
+    must already be one of the subject's own `studio` notes on home and not
+    one the owner set aside (`voice_note_set_aside`, invariant 23), read in
+    the transaction that writes by `voice_repo::set_aside::studio_take_held`,
+    the rule an idea's answer is held to (invariant 32), or the DNA is a
+    `409` (`conflict`, as an idea's send naming a note home lacks) naming
+    each such note by id under `details.notes`, and writes nothing. Its
+    audio is `voice_note_audio`'s, went home only through
+    `PUT /voice-notes/:id` (invariant 23), and a take carries only its note
+    id, beside the scene it plays in, and no other field. The table is
+    never updated (a trigger aborts an `UPDATE`) or replaced: the same
+    bytes under a queued revision (by their SHA-256) are
+    `unchanged`, other bytes a `409`. Nothing is deleted but with the
+    account, by both the sweep and the migration's trigger (invariant 12),
+    and rolling back the migration that creates it fails once it holds a
+    row. It is written only by `PUT /studio/videos/:video/queued/:rev` and
+    read only by `GET /studio/videos` (the newest 200 queued, each with
+    its title, times and `stage`, `queued` in this slice), each for the
+    caller's own subject, and counted by `GET /subjects/me/kept` (invariant
+    33). No routine reads it and no file the poller files carries it, so a
+    queued DNA never leaves home for the mailbox. A title, a shape and a
+    video's data are the owner's own, so none reaches a log line: every
+    handler records only `otel.kind` (invariant 6), and a refusal names
+    fields in fixed words and notes by id.
+    *Enforced by* `studio_video_repo`'s
+    `the_table_holds_exactly_its_described_columns`,
+    `a_revision_is_queued_once_as_sent`, `no_row_is_ever_updated`,
+    `a_take_home_lacks_is_named_once_and_nothing_is_written`,
+    `the_list_is_the_subjects_newest_queued`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`, its model's
+    `each_checked_field_is_held_to_its_rule` and
+    `the_shape_of_the_whole_is_held`, `voice_repo::set_aside`'s
+    `a_studio_take_is_held_until_it_is_set_aside`, and
+    `handlers::studio_videos`'s
+    `refusals_name_their_fields_and_records_stay_apart` and
+    `nothing_a_dna_says_reaches_a_log_line`.
+    *Not enforced:* that nothing else writes or reads the table, and that
+    nothing files it for the mailbox, which
+    `git grep -n studio_video_queued -- '*.rs'` shows today; that the
+    phone's `dna.ts` (paulgsc/some-ui `@some-ui/video-render`) sends the
+    version 1 shape `studio_video_repo` reads, which a change on either side
+    breaks until the other follows; that no words of a take appear anywhere
+    in `shape` or `data`, a property of the phone's `dna.ts` that home, which
+    reads nothing inside them, cannot check; and that a take a queued video
+    names stays held: a take a queued video names stays deletable from My
+    data (`voice_repo::delete::delete`, the owner's own act, which reads
+    nothing of this table); the video then can't be made with it,
+    re-queuing a DNA that names it is the `409` above, and slice 2/3 must
+    say so to the owner (paulgsc/some-ui#2591).
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

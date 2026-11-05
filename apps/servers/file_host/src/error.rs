@@ -77,8 +77,9 @@ pub enum FileHostError {
 	Conflict(&'static str),
 
 	// A 409 that names what it conflicts with, by field, as a 422 names its
-	// fields: an idea's send naming voice notes home does not hold
-	// (`handlers::ideas`). Only ids go in `details`, never what a person said.
+	// fields: an idea's send or a queued video's takes naming voice notes
+	// home does not hold (`handlers::ideas`, `handlers::studio_videos`). Only
+	// ids go in `details`, never what a person said.
 	#[error("conflicts with what home holds: {reason}")]
 	ConflictNaming {
 		reason: &'static str,
