@@ -58,11 +58,14 @@ pub enum Record {
 	/// `studio_sitting_event`: each Studio sitting; since its earliest
 	/// event's `at`.
 	StudioLog,
+	/// `studio_video_queued`: each video queued on home, however many
+	/// revisions; since the earliest `queued_at`.
+	QueuedVideos,
 }
 
 impl Record {
 	/// Every kind, in the page's order.
-	pub const ALL: [Self; 11] = [
+	pub const ALL: [Self; 12] = [
 		Self::Sessions,
 		Self::Reflections,
 		Self::Ideas,
@@ -74,6 +77,7 @@ impl Record {
 		Self::RustRounds,
 		Self::SceneAsks,
 		Self::StudioLog,
+		Self::QueuedVideos,
 	];
 
 	/// The name the answer gives the kind.
@@ -91,6 +95,7 @@ impl Record {
 			Self::RustRounds => "rust-rounds",
 			Self::SceneAsks => "scene-asks",
 			Self::StudioLog => "studio-log",
+			Self::QueuedVideos => "queued-videos",
 		}
 	}
 
@@ -142,7 +147,9 @@ pub async fn kept(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Held
 		   UNION ALL
 		   SELECT 'scene-asks', COUNT(*), MIN(stamp) FROM drama_prompt WHERE subject_id = ?1
 		   UNION ALL
-		   SELECT 'studio-log', COUNT(DISTINCT sitting_id), MIN(at) FROM studio_sitting_event WHERE subject_id = ?1"#,
+		   SELECT 'studio-log', COUNT(DISTINCT sitting_id), MIN(at) FROM studio_sitting_event WHERE subject_id = ?1
+		   UNION ALL
+		   SELECT 'queued-videos', COUNT(DISTINCT video_id), MIN(queued_at) FROM studio_video_queued WHERE subject_id = ?1"#,
 		subject
 	)
 	.fetch_all(&mut *conn)
@@ -336,6 +343,19 @@ mod tests {
 				.await
 				.unwrap();
 		}
+		for (video, rev, at) in [("v1", 1, "2026-09-18T10:00:00.000Z"), ("v1", 2, "2026-09-19T10:00:00.000Z")] {
+			sqlx::query(
+				"INSERT INTO studio_video_queued (subject_id, video_id, rev, title, queued_at, template_kind, template_id, template_version, dna, dna_sha256, stored_at)
+				 VALUES (?1, ?2, ?3, 't', ?4, 'show-format', 'playoff-delta', 1, '{}', 'h', ?4)",
+			)
+			.bind(A)
+			.bind(video)
+			.bind(rev)
+			.bind(at)
+			.execute(pool)
+			.await
+			.unwrap();
+		}
 	}
 
 	fn held(record: Record, count: i64, since: &str) -> Held {
@@ -366,6 +386,7 @@ mod tests {
 				held(Record::RustRounds, 1, "2026-09-15T10:00:00.000Z"),
 				held(Record::SceneAsks, 1, "2026-09-16T07:15:03.120Z"),
 				held(Record::StudioLog, 1, "2026-09-17T10:00:00.000Z"),
+				held(Record::QueuedVideos, 1, "2026-09-18T10:00:00.000Z"),
 			],
 			"every kind, revisions and events counted as their records, B's in none"
 		);

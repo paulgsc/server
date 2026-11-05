@@ -1769,6 +1769,7 @@ dependencies = [
  "sqlx",
  "storage_repo",
  "studio_log_repo",
+ "studio_video_repo",
  "study_domain",
  "study_note_repo",
  "tempfile",
@@ -5271,6 +5272,20 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "studio_video_repo"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "studio_log_repo",
+ "tokio",
+ "voice_repo",
 ]
 
 [[package]]
