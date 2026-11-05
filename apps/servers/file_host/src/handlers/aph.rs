@@ -1,6 +1,6 @@
 //! Handlers for `routes::aph`: the validate-and-answer half. The record's own
 //! rules (append-only, what a revision may change, one plain entry per
-//! checkpoint a day, removal as a revision) are `aph_repo`'s.
+//! checkpoint a day) are `aph_repo`'s.
 //!
 //! **Refusals.** A write that breaks a rule is a `422` naming each field and
 //! why, and writes nothing, so the phone can say which entry home refused and
