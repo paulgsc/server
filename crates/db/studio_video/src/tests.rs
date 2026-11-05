@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
-const PREVIOUS_MIGRATION: i64 = 20_261_103_001_700;
+const PREVIOUS_MIGRATION: i64 = 20_261_105_000_100;
 const NOW: &str = "2026-11-05T17:03:00.000Z";
 const A: &str = "subject-a";
 const B: &str = "subject-b";
@@ -18,21 +18,20 @@ async fn pool() -> SqlitePool {
 			.execute(&pool)
 			.await
 			.unwrap();
-		for (note, kind) in [("n1", "studio"), ("n2", "studio"), ("r1", "reflection")] {
-			note_held(&pool, subject, note, kind).await;
+		for note in ["n1", "n2"] {
+			note_held(&pool, subject, note).await;
 		}
 	}
 	pool
 }
 
-async fn note_held(pool: &SqlitePool, subject: &str, note: &str, kind: &str) {
+async fn note_held(pool: &SqlitePool, subject: &str, note: &str) {
 	sqlx::query(
 		"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
-		 VALUES (?1, ?2, ?3, 'p1:division:t1', 'then', 'audio/webm', 1, 's', 'now')",
+		 VALUES (?1, ?2, 'studio', 'p1:division:t1', 'then', 'audio/webm', 1, 's', 'now')",
 	)
 	.bind(subject)
 	.bind(note)
-	.bind(kind)
 	.execute(pool)
 	.await
 	.unwrap();
@@ -175,52 +174,28 @@ async fn no_row_is_ever_updated() {
 	assert!(update.unwrap_err().to_string().contains("append-only"));
 }
 
-/// Each take must be the subject's own `studio` note on home, not set
-/// aside; a refusal names each note once, in the order the takes first
-/// name them, and writes nothing.
+/// A refusal names each note home does not hold once, in the order the
+/// takes first name it, and writes nothing; once home holds them, the same
+/// DNA is queued. Which notes count as held is
+/// `voice_repo::set_aside::studio_take_held`'s, tested there.
 #[tokio::test]
-async fn every_take_must_be_the_subjects_own_studio_note_on_home() {
+async fn a_take_home_lacks_is_named_once_and_nothing_is_written() {
 	let pool = pool().await;
-	note_held(&pool, B, "b-only", "studio").await;
-	note_held(&pool, A, "let-go", "studio").await;
-	sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'let-go', 'then', 'now')")
-		.bind(A)
-		.execute(&pool)
-		.await
-		.unwrap();
 	let mut sent = dna("v1", 1, "2026-11-05T17:02:11.123Z");
 	sent["takes"] = json!([
-		{ "scene": "division", "note": "never-sent" },
-		{ "scene": "recap", "note": "r1" },
-		{ "scene": "outro", "note": "b-only" },
-		{ "scene": "intro", "note": "let-go" },
-		{ "scene": "cold-open", "note": "never-sent" },
-		{ "scene": "close", "note": "n2" }
+		{ "scene": "division", "note": "later" },
+		{ "scene": "recap", "note": "n1" },
+		{ "scene": "outro", "note": "sooner" },
+		{ "scene": "cold-open", "note": "later" }
 	]);
 	match put(&pool, A, &sent).await {
-		Err(DnaError::TakesNotHeld(notes)) => assert_eq!(notes, ["never-sent", "r1", "b-only", "let-go"]),
+		Err(DnaError::TakesNotHeld(notes)) => assert_eq!(notes, ["later", "sooner"]),
 		other => panic!("{other:?}"),
 	}
 	assert_eq!(count(&pool).await, 0, "nothing refused is written");
-	note_held(&pool, A, "never-sent", "studio").await;
-	note_held(&pool, A, "b-only", "studio").await;
-	sent["takes"] = json!([{ "scene": "division", "note": "never-sent" }, { "scene": "outro", "note": "b-only" }]);
+	note_held(&pool, A, "later").await;
+	note_held(&pool, A, "sooner").await;
 	assert_eq!(put(&pool, A, &sent).await.unwrap().0, Change::Added, "once home holds them");
-}
-
-#[tokio::test]
-async fn a_dna_breaking_a_rule_is_refused_by_field() {
-	let pool = pool().await;
-	let mut bad = dna("v1", 1, "soon");
-	bad["shape"] = json!(null);
-	match put(&pool, A, &bad).await {
-		Err(DnaError::Invalid(problems)) => {
-			let fields: Vec<&str> = problems.iter().map(|(field, _)| *field).collect();
-			assert_eq!(fields, ["queuedAt", "shape"]);
-		}
-		other => panic!("{other:?}"),
-	}
-	assert_eq!(count(&pool).await, 0);
 }
 
 /// Newest queued first, at most `VIDEOS_LISTED`, and only the subject's own.

@@ -1167,10 +1167,11 @@ nowhere is marked as such and belongs to review.
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`
     (both below), `PUT /ideas/:id`, `GET /ideas` and `GET /ideas/:id`
     (invariant 32), and `PUT /studio/videos/:video/queued/:rev` (invariant
-    35), read only whether the caller's subject holds it, and, for an idea
+    36), read only whether the caller's subject holds it, and, for an idea
     or a queued video, whether it is a `studio` note and whether it was set
-    aside (`voice_repo::set_aside::studio_take_held`, the one rule both
-    read);
+    aside; `PUT /ideas/:id` and `PUT /studio/videos/:video/queued/:rev`
+    read both through `voice_repo::set_aside::studio_take_held`, the one
+    rule the two PUTs share;
     and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12). `GET /voice-notes/kept`
     (paulgsc/some-ui#2476, MY-DATA MD2), a `Paired` phone's (a browser's
@@ -1941,11 +1942,13 @@ nowhere is marked as such and belongs to review.
     one the owner set aside (`voice_note_set_aside`, invariant 23), read in
     the transaction that writes by `voice_repo::set_aside::studio_take_held`,
     the rule an idea's answer is held to (invariant 32), or the DNA is a
-    `422` naming `takes` and each such note by id and writes nothing. Its
+    `409` (`conflict`, as an idea's send naming a note home lacks) naming
+    each such note by id under `details.notes`, and writes nothing. Its
     audio is `voice_note_audio`'s, went home only through
-    `PUT /voice-notes/:id` (invariant 23), and the DNA carries no audio and
-    no words of a take. The table is never updated (a trigger aborts an
-    `UPDATE`) or replaced: the same bytes under a queued revision are
+    `PUT /voice-notes/:id` (invariant 23), and a take carries only its note
+    id, beside the scene it plays in, and no other field. The table is
+    never updated (a trigger aborts an `UPDATE`) or replaced: the same
+    bytes under a queued revision (by their SHA-256) are
     `unchanged`, other bytes a `409`. Nothing is deleted but with the
     account, by both the sweep and the migration's trigger (invariant 12),
     and rolling back the migration that creates it fails once it holds a
@@ -1953,16 +1956,15 @@ nowhere is marked as such and belongs to review.
     read only by `GET /studio/videos` (the newest 200 queued, each with
     its title, times and `stage`, `queued` in this slice), each for the
     caller's own subject, and counted by `GET /subjects/me/kept` (invariant
-    33). Until slice 2 amends this invariant, no routine reads it and no
-    file the poller files carries it, so a queued DNA never leaves home for
-    the mailbox. A title, a shape and a video's data are the owner's own,
-    so none reaches a log line: every handler records only `otel.kind`
-    (invariant 6), and a refusal names fields in fixed words and notes by
-    id.
+    33). No routine reads it and no file the poller files carries it, so a
+    queued DNA never leaves home for the mailbox. A title, a shape and a
+    video's data are the owner's own, so none reaches a log line: every
+    handler records only `otel.kind` (invariant 6), and a refusal names
+    fields in fixed words and notes by id.
     *Enforced by* `studio_video_repo`'s
     `the_table_holds_exactly_its_described_columns`,
     `a_revision_is_queued_once_as_sent`, `no_row_is_ever_updated`,
-    `every_take_must_be_the_subjects_own_studio_note_on_home`,
+    `a_take_home_lacks_is_named_once_and_nothing_is_written`,
     `the_list_is_the_subjects_newest_queued`,
     `the_migration_round_trips_and_refuses_to_drop_a_record` and
     `the_record_leaves_with_the_account`, its model's
@@ -1974,10 +1976,17 @@ nowhere is marked as such and belongs to review.
     `nothing_a_dna_says_reaches_a_log_line`.
     *Not enforced:* that nothing else writes or reads the table, and that
     nothing files it for the mailbox, which
-    `git grep -n studio_video_queued -- '*.rs'` shows today; and that the
+    `git grep -n studio_video_queued -- '*.rs'` shows today; that the
     phone's `dna.ts` (paulgsc/some-ui `@some-ui/video-render`) sends the
     version 1 shape `studio_video_repo` reads, which a change on either side
-    breaks until the other follows.
+    breaks until the other follows; that no words of a take appear anywhere
+    in `shape` or `data`, a property of the phone's `dna.ts` that home, which
+    reads nothing inside them, cannot check; and that a take a queued video
+    names stays held: a take a queued video names stays deletable from My
+    data (`voice_repo::delete::delete`, the owner's own act, which reads
+    nothing of this table); the video then can't be made with it,
+    re-queuing a DNA that names it is the `409` above, and slice 2/3 must
+    say so to the owner (paulgsc/some-ui#2591).
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

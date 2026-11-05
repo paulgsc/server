@@ -1,31 +1,18 @@
 //! `/api/v1/studio/videos` — finished Studio videos, queued on home as their
-//! DNA.
-//!
-//! From STUDIO ST33, slice 1 (paulgsc/some-ui#2591; the owner's decision 9
-//! on paulgsc/some-ui#2248): finishing a video on the phone files a promise,
-//! not a session. Its DNA (the template and version it goes through, the
-//! shape built in Studio, the takes by voice note id, and the data that
-//! fills it) goes home as one record per revision, and Studio reads back
-//! where each one stands.
+//! DNA (STUDIO ST33: paulgsc/some-ui#2591).
 //!
 //! ```text
 //! GET /studio/videos                     → { videos: [{ video, rev, title, queuedAt, storedAt, stage }] }: newest queued first, at most 200
 //! PUT /studio/videos/:video/queued/:rev  → { change, video }: the body is the DNA, `some-ui.video-dna/1`, at most 256 KiB
 //! ```
 //!
-//! `stage` is `queued` in this slice. Slice 2 adds the routine that fills a
-//! DNA (`filling`, `filled`, `problem`) and files it for the mailbox; slice 3
-//! adds the render (`made`). Until slice 2 amends docs/identity.md invariant
-//! 35, nothing reads a queued DNA for a routine or the mailbox.
-//!
 //! **Trust model:** a subject route, as `routes::ideas`. Every handler takes
 //! a `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
 //! token.
 //!
-//! **Append-only.** A `PUT` adds a revision or changes nothing, and other
-//! bytes under a queued revision are a `409`; there is no `DELETE`. What a DNA
-//! may hold is `studio_video_repo`'s. See `handlers::studio_videos`.
+//! The record's rules are docs/identity.md invariant 36's; the answers are
+//! `handlers::studio_videos`'s.
 
 use crate::auth::AuthContext;
 use crate::handlers::studio_videos as handlers;

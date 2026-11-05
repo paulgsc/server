@@ -1,28 +1,15 @@
 //! Handlers for `routes::studio_videos`: the validate-and-answer half. The
-//! record's own rules (append-only, what a DNA holds, which takes it may
-//! name) are `studio_video_repo`'s.
-//!
-//! **Refusals.** A DNA that breaks one of those rules is a `422` naming each
-//! field and why. A DNA whose takes name a voice note that is not the
-//! subject's own `studio` note on home, or one the owner set aside, is a
-//! `422` naming `takes`, with each such note by id under `details.notes`, so
-//! the phone can say which take has not reached home, send it, and queue
-//! again. Other bytes under a queued revision are a `409`. Every refusal
-//! writes nothing.
+//! record's rules are docs/identity.md invariant 36's, held by
+//! `studio_video_repo`.
 //!
 //! **The deletion hold.** Each handler takes a [`SubjectId`] first and keeps
 //! it until it returns, so a write holds off `DELETE /auth/account` as every
 //! other subject-scoped write does (docs/identity.md, invariant 9).
 //!
-//! **Nothing the DNA says reaches a log.** A title, a shape and a video's
-//! data are the owner's own. Every handler here is `#[instrument(skip_all)]`
-//! and records only `otel.kind` (invariant 6), and refusals carry fixed words
-//! and note ids, never a value sent; `nothing_a_dna_says_reaches_a_log_line`
-//! checks it.
-//!
-//! **No other writer, and never filed.** [`put_queued`] is the one caller of
-//! `studio_video_repo::queue`, and nothing reads the record for a routine or
-//! the mailbox in this slice (invariant 36).
+//! **Nothing the DNA says reaches a log.** Every handler here is
+//! `#[instrument(skip_all)]` and records only `otel.kind` (invariant 6), and
+//! refusals carry fixed words and note ids, never a value sent;
+//! `nothing_a_dna_says_reaches_a_log_line` checks it.
 
 use crate::subject::SubjectId;
 use crate::FileHostError;
@@ -34,7 +21,7 @@ use axum::{
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use sqlx::SqlitePool;
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 use studio_video_repo::{DnaError, Queued, Videos, REWRITTEN, TAKES_NOT_HELD};
 use tracing::instrument;
 
@@ -55,9 +42,10 @@ fn now() -> String {
 fn refusal(err: DnaError) -> FileHostError {
 	match err {
 		DnaError::Invalid(problems) => FileHostError::unprocessable_entity(problems),
-		DnaError::TakesNotHeld(notes) => FileHostError::unprocessable_entity(
-			std::iter::once((Cow::Borrowed("takes"), Cow::Borrowed(TAKES_NOT_HELD))).chain(notes.into_iter().map(|note| (Cow::Borrowed("notes"), Cow::Owned(note)))),
-		),
+		DnaError::TakesNotHeld(notes) => FileHostError::ConflictNaming {
+			reason: TAKES_NOT_HELD,
+			details: HashMap::from([(Cow::Borrowed("notes"), notes.into_iter().map(Cow::Owned).collect())]),
+		},
 		DnaError::Rewritten => FileHostError::Conflict(REWRITTEN),
 		DnaError::Storage(err) => FileHostError::Sqlite(err),
 	}
@@ -71,7 +59,7 @@ fn refusal(err: DnaError) -> FileHostError {
 #[instrument(name = "studio_videos_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_videos(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Videos>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	studio_video_repo::videos(&mut conn, subject.as_str()).await.map(Json).map_err(refusal)
+	Ok(Json(studio_video_repo::videos(&mut conn, subject.as_str()).await?))
 }
 
 /// `PUT /studio/videos/:video/queued/:rev`, the request body being the DNA
@@ -80,9 +68,10 @@ pub async fn get_videos(subject: SubjectId, State(db): State<SqlitePool>) -> Res
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming each
-/// refused field, 422 naming `takes` and each voice note home does not hold
-/// as the subject's `studio` note or holds set aside, 409 for other bytes
-/// under a queued revision, 413 for a body longer than one byte past
+/// refused field, 409 `conflict` with `TAKES_NOT_HELD` as its message and
+/// each voice note home does not hold as the subject's `studio` note, or
+/// holds set aside, by id under `details.notes`, 409 for other bytes under a
+/// queued revision, 413 for a body longer than one byte past
 /// `DNA_CEILING` (refused before it is read whole, by the route's
 /// `DefaultBodyLimit`), and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
@@ -123,7 +112,7 @@ mod tests {
 	};
 	use serde_json::{json, Value};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
-	use studio_video_repo::DNA_CEILING;
+	use studio_video_repo::{DNA_CEILING, REWRITTEN, TAKES_NOT_HELD};
 	use tower::ServiceExt;
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -301,10 +290,10 @@ mod tests {
 		assert_eq!(listed["videos"][1], held);
 	}
 
-	/// A DNA that breaks a rule is a 422 naming each field, a take home does
-	/// not hold a 422 naming `takes` and each note, other bytes under a
-	/// queued revision a 409, a body past the ceiling a 422 or a 413, and one
-	/// subject's record is never another's.
+	/// A DNA that breaks a rule is a 422 naming each field (which rules is
+	/// the model's to test), a body past the ceiling a 422 or a 413, a take
+	/// home does not hold a 409 naming each note, other bytes under a queued
+	/// revision a 409, and one subject's record is never another's.
 	#[tokio::test]
 	async fn refusals_name_their_fields_and_records_stay_apart() {
 		let state = state().await;
@@ -321,35 +310,8 @@ mod tests {
 			fields
 		};
 		let mut bad = dna("v2", 1, "soon");
-		bad["schema"] = json!("some-ui.video-dna/2");
-		bad["title"] = json!("x".repeat(201));
 		bad["shape"] = json!([]);
-		assert_eq!(
-			named(call(&app, Method::PUT, &path("v2", 1), Some(&a), bad.to_string()).await),
-			["queuedAt", "schema", "shape", "title"]
-		);
-		assert_eq!(
-			named(call(&app, Method::PUT, &path("other", 1), Some(&a), dna("v2", 1, "2026-11-05T17:02:11.123Z").to_string()).await),
-			["video"]
-		);
-		assert_eq!(
-			named(call(&app, Method::PUT, &path("v2", 2), Some(&a), dna("v2", 1, "2026-11-05T17:02:11.123Z").to_string()).await),
-			["rev"]
-		);
-		assert_eq!(
-			named(
-				call(
-					&app,
-					Method::PUT,
-					"/studio/videos/v2/queued/one",
-					Some(&a),
-					dna("v2", 1, "2026-11-05T17:02:11.123Z").to_string()
-				)
-				.await
-			),
-			["rev"]
-		);
-		assert_eq!(named(call(&app, Method::PUT, &path("v2", 1), Some(&a), String::from("\"dna\"")).await), ["body"]);
+		assert_eq!(named(call(&app, Method::PUT, &path("v2", 1), Some(&a), bad.to_string()).await), ["queuedAt", "shape"]);
 		let mut padded = dna("v2", 1, "2026-11-05T17:02:11.123Z").to_string();
 		padded.push_str(&" ".repeat(DNA_CEILING + 1 - padded.len()));
 		assert_eq!(
@@ -367,9 +329,14 @@ mod tests {
 		let mut unheld = dna("v2", 1, "2026-11-05T17:02:11.123Z");
 		unheld["takes"] = json!([{ "scene": "division", "note": "r1" }, { "scene": "outro", "note": "never-sent" }, { "scene": "recap", "note": "n1" }]);
 		let (status, answer) = call(&app, Method::PUT, &path("v2", 1), Some(&a), unheld.to_string()).await;
-		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
-		assert_eq!(answer["error"]["details"]["notes"], json!(["r1", "never-sent"]), "each named by id");
-		assert_eq!(answer["error"]["details"]["takes"].as_array().unwrap().len(), 1);
+		assert_eq!(
+			(status, answer),
+			(
+				StatusCode::CONFLICT,
+				json!({ "error": { "code": "conflict", "message": TAKES_NOT_HELD, "details": { "notes": ["r1", "never-sent"] } } })
+			),
+			"each named by id, as an idea's send"
+		);
 		assert_eq!(
 			call(&app, Method::PUT, &path("v1", 1), Some(&b), sent.to_string()).await.0,
 			StatusCode::OK,
@@ -380,9 +347,9 @@ mod tests {
 		rewritten["title"] = json!("Another title");
 		let (status, answer) = call(&app, Method::PUT, &path("v1", 1), Some(&a), rewritten.to_string()).await;
 		assert_eq!(
-			(status, &answer["error"]["code"]),
-			(StatusCode::CONFLICT, &json!("conflict")),
-			"a queued revision is one DNA"
+			(status, answer),
+			(StatusCode::CONFLICT, json!({ "error": { "code": "conflict", "message": REWRITTEN } })),
+			"a queued revision is one DNA, and names no note"
 		);
 
 		for (who, expected) in [(&a, 1), (&b, 1)] {
@@ -422,10 +389,7 @@ mod tests {
 		);
 		said["title"] = json!(SAID);
 		said["rev"] = json!(2);
-		assert_eq!(
-			call(&app, Method::PUT, &path("v1", 2), Some(&phone), said.to_string()).await.0,
-			StatusCode::UNPROCESSABLE_ENTITY
-		);
+		assert_eq!(call(&app, Method::PUT, &path("v1", 2), Some(&phone), said.to_string()).await.0, StatusCode::CONFLICT);
 		assert_eq!(call(&app, Method::GET, "/studio/videos", Some(&phone), String::new()).await.0, StatusCode::OK);
 
 		let lines = captured.lines();

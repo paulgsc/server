@@ -2,9 +2,8 @@
 //! passes before it is stored. Pure: no database.
 //!
 //! The wire form is `some-ui.video-dna/1`, the one paulgsc/some-ui ST33
-//! (#2591) sends: one JSON object, its keys `camelCase`. Home checks the
-//! fields listed below and keeps the bytes as sent; `shape` and `data` must be
-//! JSON objects, and home reads nothing inside them.
+//! (#2591) sends: one JSON object, its keys `camelCase`. What home checks is
+//! docs/identity.md invariant 36's.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -14,7 +13,7 @@ use studio_log_repo::instant;
 pub type Problem = (&'static str, &'static str);
 
 /// The one schema home takes.
-pub const SCHEMA: &str = "some-ui.video-dna/1";
+const SCHEMA: &str = "some-ui.video-dna/1";
 
 /// The most bytes one DNA may hold. A shape and its data are text: a cut
 /// list, a pin and each scene's point and facts, well under this.
@@ -33,7 +32,7 @@ const MAX_ID_CHARS: usize = 64;
 /// Which template a video goes through, as the DNA names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Template {
-	/// `show-format` today; ST29's templates widen it.
+	/// `show-format` today.
 	pub(crate) kind: String,
 	pub(crate) id: String,
 	pub(crate) version: i64,
@@ -187,7 +186,6 @@ pub(crate) fn parse_dna(video: &str, rev: &str, body: &[u8]) -> Result<Dna, Vec<
 	if !wire.data.is_object() {
 		problems.push(("data", "must be a JSON object"));
 	}
-	problems.dedup();
 	if !problems.is_empty() {
 		return Err(problems);
 	}
