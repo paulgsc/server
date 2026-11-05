@@ -13,8 +13,15 @@
 //!   phone's store makes (`violations` and `breaches` in its model.ts), so
 //!   what is stored is a record the phone can open: one entry's own rules
 //!   ([`parse_entry`]), what a revision may not change ([`breaches`]), at most
-//!   one plain entry per checkpoint a day, and settings that keep every
-//!   checkpoint an entry stands at.
+//!   one plain entry standing per checkpoint a day, and settings that keep
+//!   every checkpoint an entry stands at. The phone also refuses a second
+//!   entry at a checkpoint, labelled or not; home cannot hold that one,
+//!   because a phone moving its record here sends entries home has never
+//!   seen, a labelled one beside a plain one among them.
+//! - **Removing is a revision.** The owner removes an entry from the log by
+//!   writing it again with `"removed": true`: it then stands nowhere (its
+//!   `plain` column is 0, and the slot checks pass it by), the record still
+//!   keeps every revision of it, and [`breaches`] refuses any revision after.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer.** The callers are `file_host`'s `handlers::aph`
@@ -123,7 +130,8 @@ async fn standing_entry(conn: &mut SqliteConnection, subject: &str, id: &str) ->
 	row.map(|row| Ok((row.revision, read_body(&row.body)?))).transpose()
 }
 
-/// Whether an entry other than `id` stands plain at `day`'s `checkpoint`.
+/// Whether an entry other than `id` stands plain at `day`'s `checkpoint`. A
+/// removed entry stands nowhere: its revision is written `plain = 0`.
 async fn slot_taken(conn: &mut SqliteConnection, subject: &str, day: &str, checkpoint: &str, id: &str) -> Result<bool, AphError> {
 	let taken = sqlx::query_scalar!(
 		r#"
@@ -151,7 +159,7 @@ async fn slot_taken(conn: &mut SqliteConnection, subject: &str, day: &str, check
 /// # Errors
 /// [`AphError::Invalid`] naming every problem: the entry's own
 /// ([`parse_entry`]), a change [`breaches`] refuses, or a second plain entry
-/// at its checkpoint that day. [`AphError::Storage`] for any `sqlx` failure.
+/// standing at its checkpoint that day. [`AphError::Storage`] for any `sqlx` failure.
 /// A refusal is decided before anything is written, so a caller that goes on
 /// after one (a batch, `file_host`'s `handlers::sync`) keeps nothing of it.
 pub async fn put_entry(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<(Change, Entry), AphError> {
@@ -400,7 +408,7 @@ mod tests {
 		assert_eq!(
 			put(&pool, A, &second, T1).await.unwrap(),
 			Change::Kept,
-			"a labelled one compares, so it may stand beside it"
+			"a labelled one beside it, as a phone moving its record here sends one"
 		);
 		second["labels"] = json!([]);
 		assert_eq!(
@@ -408,6 +416,9 @@ mod tests {
 			["labels"],
 			"and may not drop its label while the other stands plain"
 		);
+		second["labels"] = json!(["no-bs"]);
+		second["removed"] = json!(true);
+		assert_eq!(put(&pool, A, &second, T1).await.unwrap(), Change::Revised, "it may be removed");
 		assert_eq!(
 			put(&pool, B, &entry("e2"), T1).await.map_err(|err| err.to_string()).unwrap_err(),
 			"not a write the aph record takes: checkpoint is not one of the settings' checkpoints;",
@@ -417,27 +428,28 @@ mod tests {
 		let mut fewer = settings();
 		fewer["checkpoints"] = json!([{ "id": "12", "label": "12:00", "minutes": 720, "goal": 5100 }]);
 		assert_eq!(refused(set(&pool, A, &fewer).await), ["checkpoints"], "7:00 holds entries");
-		assert_eq!((rows(&pool, "aph_entry").await, rows(&pool, "aph_settings").await), (2, 1), "nothing refused was written");
+		assert_eq!((rows(&pool, "aph_entry").await, rows(&pool, "aph_settings").await), (3, 1), "nothing refused was written");
 	}
 
 	#[tokio::test]
-	async fn the_record_leaves_with_the_account() {
+	async fn a_removed_entry_frees_its_time_and_the_record_keeps_it() {
 		let pool = pool().await;
-		for subject in [A, B] {
-			sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
-				.bind(subject)
-				.bind(subject.as_bytes())
-				.execute(&pool)
-				.await
-				.unwrap();
-			set(&pool, subject, &settings()).await.unwrap();
-			put(&pool, subject, &entry("e1"), T0).await.unwrap();
-		}
-		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
-		let left: Vec<String> = sqlx::query_scalar("SELECT subject_id FROM aph_entry UNION ALL SELECT subject_id FROM aph_settings")
-			.fetch_all(&pool)
-			.await
-			.unwrap();
-		assert_eq!(left, [B, B], "A's record went with A's account, B's stayed");
+		set(&pool, A, &settings()).await.unwrap();
+		let mut wrong = entry("e1");
+		put(&pool, A, &wrong, T0).await.unwrap();
+		wrong["removed"] = json!(true);
+		assert_eq!(put(&pool, A, &wrong, T1).await.unwrap(), Change::Revised, "removing is a revision");
+		assert_eq!(put(&pool, A, &entry("e2"), T1).await.unwrap(), Change::Kept, "it no longer stands plain there");
+		let mut back = wrong.clone();
+		back["removed"] = json!(false);
+		assert_eq!(
+			refused(put(&pool, A, &back, T1).await),
+			["labels", "removed"],
+			"and stays removed (e2 stands plain there now too)"
+		);
+
+		let held = record(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+		assert_eq!(serde_json::to_value(&held.entries).unwrap(), json!([wrong, entry("e2")]), "the record shows the removal");
+		assert_eq!(rows(&pool, "aph_entry").await, 3, "and keeps every revision");
 	}
 }
