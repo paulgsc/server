@@ -64,13 +64,26 @@ pub struct Entry {
 	pub labels: Vec<String>,
 	pub note: Option<String>,
 	pub review: Option<Review>,
+	/// Removed by the owner from the log: it stops counting, and the record
+	/// keeps it, as every revision before it. Absent on the wire while false,
+	/// so a body written before removal existed reads and re-serialises as
+	/// it was.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub removed: bool,
 }
 
 impl Entry {
-	/// Carries no label: the entry that stands for its checkpoint that day.
+	/// Stands in the log: not removed.
+	#[must_use]
+	pub const fn is_live(&self) -> bool {
+		!self.removed
+	}
+
+	/// Stands in the log and carries no label: the entry that stands for its
+	/// checkpoint that day.
 	#[must_use]
 	pub const fn is_plain(&self) -> bool {
-		self.labels.is_empty()
+		self.is_live() && self.labels.is_empty()
 	}
 }
 
@@ -215,10 +228,14 @@ pub fn parse_entry(id: &str, body: &[u8], settings: Option<&Settings>) -> Result
 /// What a revision of an entry must not change from the one before it.
 ///
 /// As `breaches` in the phone's model.ts: its day, checkpoint, clock time and
-/// goal stay as logged, and their figure, once reported, stays.
+/// goal stay as logged, their figure, once reported, stays, and a removed
+/// entry stays as it was removed.
 #[must_use]
 pub fn breaches(was: &Entry, is: &Entry) -> Vec<Problem> {
 	let mut problems = Vec::new();
+	if was.removed && is != was {
+		problems.push(("removed", "is revised: a removed entry stays as it was removed"));
+	}
 	if is.day != was.day {
 		problems.push(("day", "is rewritten: an entry stays on the day it was logged"));
 	}
@@ -315,6 +332,7 @@ mod tests {
 			labels: vec![],
 			note: None,
 			review: None,
+			removed: false,
 		}
 	}
 
@@ -384,6 +402,35 @@ mod tests {
 			..entry()
 		};
 		assert!(breaches(&unreported, &reported).is_empty(), "their figure may come in");
+	}
+
+	#[test]
+	fn a_removal_is_a_revision_and_the_last_one() {
+		let live = entry();
+		let removed = Entry { removed: true, ..entry() };
+		assert!(breaches(&live, &removed).is_empty(), "an entry may be removed");
+		assert!(breaches(&removed, &removed).is_empty());
+		assert_eq!(fields(&breaches(&removed, &live)), ["removed"], "and stays removed");
+		let noted = Entry {
+			note: Some("late".to_owned()),
+			..removed.clone()
+		};
+		assert_eq!(fields(&breaches(&removed, &noted)), ["removed"], "and unchanged");
+		assert!(!removed.is_plain() && !removed.is_live() && live.is_plain());
+	}
+
+	#[test]
+	fn removed_is_on_the_wire_only_when_true() {
+		let body = serde_json::to_value(entry()).unwrap();
+		assert!(body.get("removed").is_none(), "a live entry reads as it did before removal existed");
+		let mut gone = body;
+		gone["removed"] = json!(true);
+		let read = parse_entry("e1", gone.to_string().as_bytes(), Some(&settings())).unwrap();
+		assert!(read.removed);
+		assert_eq!(serde_json::to_value(&read).unwrap()["removed"], json!(true));
+		let mut kept = serde_json::to_value(entry()).unwrap();
+		kept["removed"] = json!(false);
+		assert_eq!(parse_entry("e1", kept.to_string().as_bytes(), Some(&settings())).unwrap(), entry());
 	}
 
 	#[test]

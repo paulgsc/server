@@ -12,9 +12,16 @@
 //! - **The phone's rules, held here too.** A write passes the same checks the
 //!   phone's store makes (`violations` and `breaches` in its model.ts), so
 //!   what is stored is a record the phone can open: one entry's own rules
-//!   ([`parse_entry`]), what a revision may not change ([`breaches`]), at most
-//!   one plain entry per checkpoint a day, and settings that keep every
+//!   ([`parse_entry`]), what a revision may not change ([`breaches`]), no new
+//!   entry at a checkpoint where one already stands that day, at most one
+//!   plain entry per checkpoint a day, and settings that keep every
 //!   checkpoint an entry stands at.
+//! - **Removing is a revision.** The owner removes an entry from the log by
+//!   writing it again with `"removed": true`: it then stands nowhere (its
+//!   `plain` column is 0, and the slot checks pass it by), the record still
+//!   keeps every revision of it, and [`breaches`] refuses any revision after.
+//!   Earlier entries stand where they were: a time holding two entries from
+//!   before the one-entry rule keeps both until the owner removes one.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer.** The callers are `file_host`'s `handlers::aph`
@@ -123,12 +130,16 @@ async fn standing_entry(conn: &mut SqliteConnection, subject: &str, id: &str) ->
 	row.map(|row| Ok((row.revision, read_body(&row.body)?))).transpose()
 }
 
-/// Whether an entry other than `id` stands plain at `day`'s `checkpoint`.
-async fn slot_taken(conn: &mut SqliteConnection, subject: &str, day: &str, checkpoint: &str, id: &str) -> Result<bool, AphError> {
-	let taken = sqlx::query_scalar!(
+/// Who else stands at `day`'s `checkpoint`: how many entries other than `id`
+/// stand there at all, and how many of those stand plain. A removed entry
+/// stands nowhere: its standing revision is written `plain = 0` and carries
+/// `"removed": true` in its body.
+async fn slot_held(conn: &mut SqliteConnection, subject: &str, day: &str, checkpoint: &str, id: &str) -> Result<(i64, i64), AphError> {
+	let row = sqlx::query!(
 		r#"
-		SELECT COUNT(*) AS "count!: i64" FROM aph_entry e
-		WHERE e.subject_id = ?1 AND e.day = ?2 AND e.checkpoint = ?3 AND e.entry_id <> ?4 AND e.plain = 1
+		SELECT COUNT(*) AS "live!: i64", COALESCE(SUM(e.plain), 0) AS "plain!: i64" FROM aph_entry e
+		WHERE e.subject_id = ?1 AND e.day = ?2 AND e.checkpoint = ?3 AND e.entry_id <> ?4
+		  AND json_extract(e.body, '$.removed') IS NULL
 		  AND e.revision = (SELECT MAX(r.revision) FROM aph_entry r WHERE r.subject_id = e.subject_id AND r.entry_id = e.entry_id)
 		"#,
 		subject,
@@ -138,7 +149,7 @@ async fn slot_taken(conn: &mut SqliteConnection, subject: &str, day: &str, check
 	)
 	.fetch_one(&mut *conn)
 	.await?;
-	Ok(taken > 0)
+	Ok((row.live, row.plain))
 }
 
 /// Writes `body` as entry `id`'s next revision for `subject`, as of `now`,
@@ -150,8 +161,9 @@ async fn slot_taken(conn: &mut SqliteConnection, subject: &str, day: &str, check
 ///
 /// # Errors
 /// [`AphError::Invalid`] naming every problem: the entry's own
-/// ([`parse_entry`]), a change [`breaches`] refuses, or a second plain entry
-/// at its checkpoint that day. [`AphError::Storage`] for any `sqlx` failure.
+/// ([`parse_entry`]), a change [`breaches`] refuses, a new entry at a
+/// checkpoint where one already stands that day, or a second plain entry
+/// there. [`AphError::Storage`] for any `sqlx` failure.
 /// A refusal is decided before anything is written, so a caller that goes on
 /// after one (a batch, `file_host`'s `handlers::sync`) keeps nothing of it.
 pub async fn put_entry(conn: &mut SqliteConnection, subject: &str, id: &str, body: &[u8], now: &str) -> Result<(Change, Entry), AphError> {
@@ -165,8 +177,11 @@ pub async fn put_entry(conn: &mut SqliteConnection, subject: &str, id: &str, bod
 		}
 		problems.extend(breaches(was, &entry));
 	}
-	if let (Some(checkpoint), true) = (&entry.checkpoint, entry.is_plain()) {
-		if slot_taken(conn, subject, &entry.day, checkpoint, id).await? {
+	if let (Some(checkpoint), true) = (&entry.checkpoint, entry.is_live()) {
+		let (live, plain) = slot_held(conn, subject, &entry.day, checkpoint, id).await?;
+		if standing.is_none() && live > 0 {
+			problems.push(("checkpoint", "another entry already stands at this checkpoint that day: change or remove that one"));
+		} else if entry.is_plain() && plain > 0 {
 			problems.push(("labels", "another entry already stands plain at this checkpoint that day: label one of them"));
 		}
 	}
@@ -395,19 +410,9 @@ mod tests {
 		assert_eq!(refused(put(&pool, A, &moved, T1).await), ["day", "goal", "theirs"]);
 
 		let mut second = entry("e2");
-		assert_eq!(refused(put(&pool, A, &second, T1).await), ["labels"], "a second plain figure at 7:00 that day");
+		assert_eq!(refused(put(&pool, A, &second, T1).await), ["checkpoint"], "a second figure at 7:00 that day");
 		second["labels"] = json!(["no-bs"]);
-		assert_eq!(
-			put(&pool, A, &second, T1).await.unwrap(),
-			Change::Kept,
-			"a labelled one compares, so it may stand beside it"
-		);
-		second["labels"] = json!([]);
-		assert_eq!(
-			refused(put(&pool, A, &second, T1).await),
-			["labels"],
-			"and may not drop its label while the other stands plain"
-		);
+		assert_eq!(refused(put(&pool, A, &second, T1).await), ["checkpoint"], "labelled or not: one entry a time");
 		assert_eq!(
 			put(&pool, B, &entry("e2"), T1).await.map_err(|err| err.to_string()).unwrap_err(),
 			"not a write the aph record takes: checkpoint is not one of the settings' checkpoints;",
@@ -417,7 +422,53 @@ mod tests {
 		let mut fewer = settings();
 		fewer["checkpoints"] = json!([{ "id": "12", "label": "12:00", "minutes": 720, "goal": 5100 }]);
 		assert_eq!(refused(set(&pool, A, &fewer).await), ["checkpoints"], "7:00 holds entries");
-		assert_eq!((rows(&pool, "aph_entry").await, rows(&pool, "aph_settings").await), (2, 1), "nothing refused was written");
+		assert_eq!((rows(&pool, "aph_entry").await, rows(&pool, "aph_settings").await), (1, 1), "nothing refused was written");
+	}
+
+	#[tokio::test]
+	async fn a_removed_entry_frees_its_time_and_the_record_keeps_it() {
+		let pool = pool().await;
+		set(&pool, A, &settings()).await.unwrap();
+		let mut wrong = entry("e1");
+		put(&pool, A, &wrong, T0).await.unwrap();
+		wrong["removed"] = json!(true);
+		assert_eq!(put(&pool, A, &wrong, T1).await.unwrap(), Change::Revised, "removing is a revision");
+		assert_eq!(put(&pool, A, &entry("e2"), T1).await.unwrap(), Change::Kept, "the time is free again");
+		let mut back = wrong.clone();
+		back["removed"] = json!(false);
+		assert_eq!(
+			refused(put(&pool, A, &back, T1).await),
+			["labels", "removed"],
+			"and stays removed (e2 stands plain there now too)"
+		);
+
+		let held = record(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+		assert_eq!(serde_json::to_value(&held.entries).unwrap(), json!([wrong, entry("e2")]), "the record shows the removal");
+		assert_eq!(rows(&pool, "aph_entry").await, 3, "and keeps every revision");
+	}
+
+	#[tokio::test]
+	async fn two_entries_at_a_time_from_before_the_rule_stand_until_one_is_removed() {
+		let pool = pool().await;
+		set(&pool, A, &settings()).await.unwrap();
+		put(&pool, A, &entry("e1"), T0).await.unwrap();
+		let mut compared = entry("e2");
+		compared["labels"] = json!(["no-bs"]);
+		// Written as `put_entry` wrote a labelled comparison before the rule.
+		sqlx::query("INSERT INTO aph_entry (subject_id, entry_id, revision, day, checkpoint, plain, body, written_at) VALUES (?1, 'e2', 1, '2026-10-17', '7', 0, ?2, ?3)")
+			.bind(A)
+			.bind(compared.to_string())
+			.bind(T0)
+			.execute(&pool)
+			.await
+			.unwrap();
+		compared["theirs"] = json!({ "value": 4250 });
+		assert_eq!(put(&pool, A, &compared, T1).await.unwrap(), Change::Revised, "it is revised as before");
+		compared["labels"] = json!([]);
+		assert_eq!(refused(put(&pool, A, &compared, T1).await), ["labels"], "it may not go plain beside a plain one");
+		compared["labels"] = json!(["no-bs"]);
+		compared["removed"] = json!(true);
+		assert_eq!(put(&pool, A, &compared, T1).await.unwrap(), Change::Revised, "it may be removed");
 	}
 
 	#[tokio::test]

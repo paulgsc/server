@@ -1,6 +1,6 @@
 //! Handlers for `routes::aph`: the validate-and-answer half. The record's own
-//! rules (append-only, what a revision may change, one plain entry per
-//! checkpoint a day) are `aph_repo`'s.
+//! rules (append-only, what a revision may change, one entry per checkpoint
+//! a day, removal as a revision) are `aph_repo`'s.
 //!
 //! **Refusals.** A write that breaks a rule is a `422` naming each field and
 //! why, and writes nothing, so the phone can say which entry home refused and
@@ -313,8 +313,8 @@ mod tests {
 		assert_eq!(named(call(&app, Method::PUT, "/aph/entries/e1", Some(&a), &rewritten).await), ["day", "theirs"]);
 		assert_eq!(
 			named(call(&app, Method::PUT, "/aph/entries/e2", Some(&a), &entry("e2")).await),
-			["labels"],
-			"a second plain figure"
+			["checkpoint"],
+			"a second figure at the same time that day"
 		);
 		assert_eq!(named(call(&app, Method::PUT, "/aph/entries/other", Some(&a), &entry("e3")).await), ["id"]);
 		assert_eq!(named(call(&app, Method::PUT, "/aph/settings", Some(&a), &json!("settings")).await), ["body"]);
