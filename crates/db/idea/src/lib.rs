@@ -16,13 +16,13 @@
 //! - **An answer's audio is a voice note's.** A send names `studio` notes by
 //!   id, and only ones the subject already holds; their audio went home
 //!   through `PUT /voice-notes/:id` and only there (docs/identity.md
-//!   invariant 23), and none the owner set aside. This crate reads
-//!   `voice_note`'s kind, whether a note is set aside
-//!   (`voice_repo::set_aside::set_aside_at`) and, for a read, what home heard
-//!   in it (`voice_repo::transcript::heard`) and when the owner deleted it
-//!   (`voice_note_deletion`'s receipt), and writes none of them. An answer
-//!   whose note was deleted keeps its place, and a later send may keep it
-//!   there.
+//!   invariant 23), and none the owner set aside. This crate reads whether a
+//!   note is such a take (`voice_repo::set_aside::studio_take_held`), whether
+//!   a note is set aside (`voice_repo::set_aside::set_aside_at`) and, for a
+//!   read, what home heard in it (`voice_repo::transcript::heard`) and when
+//!   the owner deleted it (`voice_note_deletion`'s receipt), and writes none
+//!   of them. An answer whose note was deleted keeps its place, and a later
+//!   send may keep it there.
 //! - **The lists are seeds and marks.** A list is its seeds
 //!   (`SEED_TOPICS`, `SEED_KEYWORDS`) with each entry's latest mark applied.
 //!   A topic or keyword a send adds to the idea must be on the lists as they
@@ -518,10 +518,7 @@ async fn notes_not_held(conn: &mut SqliteConnection, subject: &str, content: &Co
 			if carried.contains(answer) && deleted_at(conn, subject, note).await?.is_some() {
 				continue;
 			}
-			let kind = sqlx::query_scalar!("SELECT of_kind FROM voice_note WHERE subject_id = ?1 AND note_id = ?2", subject, note)
-				.fetch_optional(&mut *conn)
-				.await?;
-			if kind.as_deref() != Some("studio") || note_set_aside(conn, subject, note).await? {
+			if !voice_repo::set_aside::studio_take_held(conn, subject, note).await? {
 				missing.push(note.clone());
 			}
 		}

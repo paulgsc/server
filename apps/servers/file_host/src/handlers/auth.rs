@@ -1178,6 +1178,7 @@ mod tests {
 		"INSERT INTO idea_furnishing (subject_id, idea_id, seq, furnishing, stored_at) VALUES (?1, 'i', 1, 1, 'now')",
 		"INSERT INTO idea_set_aside (subject_id, idea_id, stored_at) VALUES (?1, 'i', 'now')",
 		"INSERT INTO idea_list_mark (subject_id, list, entry, seq, listed, stored_at) VALUES (?1, 'topic', 'Cooking', 1, 1, 'now')",
+		"INSERT INTO studio_video_queued (subject_id, video_id, rev, title, queued_at, template_kind, template_id, template_version, dna, dna_sha256, stored_at) VALUES (?1, 'v', 1, 't', 'then', 'k', 'i', 1, '{}', 's', 'now')",
 	];
 
 	#[tokio::test]
