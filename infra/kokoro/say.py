@@ -22,7 +22,6 @@ and voice, never its words.
 import hashlib
 import io
 import json
-import re
 import sys
 import wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -40,7 +39,6 @@ SEED = 0
 RATE = 24_000
 MOST_CHARS = 4_000
 MOST_BODY = 64 * 1024
-VOICE_NAME = re.compile(r"^[a-z]{2}_[a-z0-9_]{1,32}$")
 
 
 def sha256(path: Path) -> str:
@@ -58,11 +56,14 @@ def load():
     torch.set_num_threads(1)
     model = KModel(repo_id="hexgrad/Kokoro-82M", config=str(MODELS / "config.json"), model=str(MODELS / "kokoro-v1_0.pth")).eval()
     pipelines = {}
-    voices = sorted(path.stem for path in VOICES.glob("*.pt"))
-    return model, pipelines, voices
+    # Every voice is loaded here, from the image, so a request only picks one
+    # by name and never names a file.
+    packs = {path.stem: torch.load(path, weights_only=True) for path in sorted(VOICES.glob("*.pt"))}
+    return model, pipelines, packs
 
 
-MODEL, PIPELINES, VOICE_NAMES = load()
+MODEL, PIPELINES, PACKS = load()
+VOICE_NAMES = sorted(PACKS)
 
 
 def say(text: str, voice: str) -> bytes:
@@ -70,7 +71,7 @@ def say(text: str, voice: str) -> bytes:
     lang = voice[0]
     if lang not in PIPELINES:
         PIPELINES[lang] = KPipeline(lang_code=lang, repo_id="hexgrad/Kokoro-82M", model=MODEL)
-    pack = torch.load(VOICES / f"{voice}.pt", weights_only=True)
+    pack = PACKS[voice]
     torch.manual_seed(SEED)
     with torch.no_grad():
         parts = [result.audio.numpy() for result in PIPELINES[lang](text, voice=pack, speed=1.0) if result.audio is not None]
@@ -117,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
         text, voice = asked["text"], asked["voice"]
         if not isinstance(text, str) or not text.strip() or len(text) > MOST_CHARS:
             return self.refuse(422, f"text is 1 to {MOST_CHARS} characters")
-        if not isinstance(voice, str) or not VOICE_NAME.match(voice) or voice not in VOICE_NAMES:
+        if not isinstance(voice, str) or voice not in PACKS:
             return self.refuse(422, "voice is one /health lists")
         try:
             audio = say(text, voice)
