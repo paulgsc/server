@@ -1,0 +1,44 @@
+# Home's render worker (GWB10, paulgsc/some-ui#2084), with the weekly call's
+# job (ST36, paulgsc/some-ui#2635): infra/render/render-calls.sh.
+#
+# Everything that decides a video's bytes is pinned, so the same week gives
+# the same video:
+# - Node and Chromium: Playwright's image for the version paulgsc/some-ui pins
+#   (@playwright/test 1.62.1), by digest;
+# - ffmpeg: Ubuntu noble's, from that image's apt sources;
+# - the recorder and renderer: paulgsc/some-ui at SOME_UI_COMMIT. Bump it when
+#   the call's recorder or renderer changes, as call-stage's pin is bumped
+#   when its stage does.
+#
+# The image builds only what the recorder needs (@some-ui/video-render and its
+# dependencies), never the app: the stage is the published image.
+FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+
+# paulgsc/some-ui#2642 (merged): record:call --app and --week-file.
+ARG SOME_UI_COMMIT=ec03eaf0d9ae426dfc3028e829282f64ed906eb6
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --filter=blob:none https://github.com/paulgsc/some-ui.git /opt/some-ui \
+    && git -C /opt/some-ui checkout --detach "$SOME_UI_COMMIT"
+
+WORKDIR /opt/some-ui
+RUN corepack enable \
+    && pnpm install --frozen-lockfile --filter "www..." \
+    && pnpm exec turbo run build --filter="@some-ui/video-render^..."
+
+COPY infra/render/render-calls.sh /usr/local/bin/render-calls
+
+# The `call_weeks` volume's mount point, owned by file_host's uid, so a new
+# volume first mounted here is still writable by file_host.
+RUN mkdir -p /weeks && chown 10000:10001 /weeks
+
+# The root is read-only at run time (call-render.yml); tsx and the renderer
+# write only under /tmp.
+ENV HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache \
+    TSX_CACHE_DIR=/tmp/tsx
+
+ENTRYPOINT ["/usr/local/bin/render-calls"]

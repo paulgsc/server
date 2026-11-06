@@ -1,0 +1,126 @@
+# Home makes the weekly call's video (paulgsc/some-ui#2635, ST36): every
+# deterministic step after the written week runs here, the same bytes for the
+# same week. Three services on one network that reaches nothing else:
+#
+# - `kokoro`, the speaker: Kokoro v1.0, seeded per line
+#   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
+# - `call-stage`, the stage: the published home-network app image, pinned by
+#   digest (the owner's choice on paulgsc/some-ui#2639), serving `/call`.
+#   Bump the pin when the call's stage changes.
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084): for each week
+#   `file_host` writes to the `call_weeks` volume (`call_weeks::RENDER_FOLDER`) that
+#   has no video yet, it records the stage with each scene said by the
+#   speaker and renders it (infra/render/render-calls.sh). Every video is kept
+#   for good in data/renders/call/<from>/ (the owner's choice on
+#   paulgsc/some-ui#2640).
+#
+#   make compose ARGS="up -d --build kokoro call-stage render"
+#   curl -s http://127.0.0.1:8880/health
+services:
+  kokoro:
+    image: some-kokoro:local
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.kokoro
+    container_name: kokoro
+    restart: unless-stopped
+    networks:
+      - call-render-network
+      # A port can't be published from an internal network alone.
+      - kokoro-network
+    # On the box only, for `record:call --voices kokoro` run by hand.
+    ports:
+      - '127.0.0.1:8880:8880'
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2G
+    cpus: 2.0
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+          pids: 64
+    healthcheck:
+      test: ['CMD', '/app/.venv/bin/python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8880/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  call-stage:
+    image: pgathondu/www:0.1.58@sha256:b583c771ae97b6ce8c8581138ba01f58df113585a5bd2b825835dc7f6d160805
+    container_name: call-stage
+    restart: unless-stopped
+    networks:
+      - call-render-network
+    # Only the static files are served; infra/render/call-stage.nginx.conf
+    # says why the image's own config is not used. nginx's entrypoint writes
+    # its cache at start, so its root stays writable.
+    volumes:
+      - ../render/call-stage.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    mem_limit: 256M
+    cpus: 0.5
+    pids_limit: 32
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 32
+
+  render:
+    image: some-render:local
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.render
+    container_name: render
+    restart: unless-stopped
+    depends_on:
+      - kokoro
+      - call-stage
+    networks:
+      - call-render-network
+    volumes:
+      # Written by file_host (`call_weeks::RENDER_FOLDER`), read here only.
+      - call_weeks:/weeks:ro
+      # Every video and what it was made from, kept for good.
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/data/renders:/renders:rw
+    read_only: true
+    tmpfs:
+      - /tmp:size=4G
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4G
+    cpus: 2.0
+    pids_limit: 512
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+          pids: 512
+
+volumes:
+  # Each week home holds, written by file_host at /app/call-weeks. A named
+  # volume, not a folder under data/: a new one takes its owner from the
+  # first image that mounts it, and both images make that directory owned
+  # by file_host's uid (10000), whichever service starts first.
+  call_weeks: {}
+
+networks:
+  # Internal: none of the three reaches the internet or the rest of the stack.
+  # The stage's reads of paulgsc/testing are answered by the recorder from
+  # the week file, and the speaker needs nothing.
+  call-render-network:
+    internal: true
+  kokoro-network:
+    internal: false
