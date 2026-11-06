@@ -33,7 +33,8 @@
 //!   (`leetype-log`), with no soundbite, both of which it files itself, and
 //!   the Jobs routine's index (`index`), its bookkeeping computed from those
 //!   same tables ([`index`]): a view, not a record, which home keeps no copy
-//!   of and never archives.
+//!   of and never archives. The weekly call's index is the same kind of view,
+//!   of `call_week` ([`index::call`]), the weeks [`crate::call_weeks`] keeps.
 //! - It keeps only bytes that match their listing's SHA-256 and parse as
 //!   JSON, and holds `auth::DeletionLock` across each write, which checks the
 //!   subject's account in the same statement (invariant 9). The lock is

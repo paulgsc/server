@@ -583,6 +583,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "call_week_repo"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "capture_repo"
 version = "0.0.0"
 dependencies = [
@@ -1712,6 +1722,7 @@ dependencies = [
  "auth_repo",
  "axum",
  "base64 0.22.1",
+ "call_week_repo",
  "capture_repo",
  "chrono",
  "chrono-tz",

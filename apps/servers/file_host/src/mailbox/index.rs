@@ -73,6 +73,9 @@
 //! **The reflections routine's index** is [`reflections`]'s, built the same
 //! way: a pure function of home's rows and the moment, put only when what it
 //! counts moves or a moment it carries (`validUntil`) passes.
+//!
+//! **The weekly call's index** is [`call`]'s: every week of the call home
+//! holds, put only when home takes a new one.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
@@ -84,8 +87,10 @@ use std::sync::{Mutex, PoisonError};
 
 use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
 
+pub mod call;
 pub mod reflections;
 
+pub(super) use call::put_call_index;
 pub(super) use reflections::put_reflections_index;
 
 /// What an index put to the mailbox's `index` folder is (paulgsc/some-ui
@@ -790,6 +795,7 @@ impl LastIndex {
 pub struct LastIndexes {
 	pub jobs: LastIndex,
 	pub reflections: LastIndex,
+	pub call: LastIndex,
 }
 
 /// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),

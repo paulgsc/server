@@ -9,6 +9,7 @@ use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
 pub mod auth;
 pub mod cache;
+pub mod call_weeks;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -124,6 +125,7 @@ pub struct AppState {
 	pub rust_rounds: Option<rust_rounds::RustRoundsContext>,
 	/// `None` unless `GAME_FEED_ENABLED`: home follows no NFL game.
 	pub game_feed: Option<game_feed::GameFeedContext>,
+	pub call_weeks: Option<call_weeks::CallWeeksContext>,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
 	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
 	/// and with auth on but unconfigured the server does not start (see
@@ -183,6 +185,7 @@ impl AppState {
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock(), meaning.as_ref())?;
 		let rust_rounds = rust_rounds::RustRoundsContext::from_config(&config);
 		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
+		let call_weeks = call_weeks::CallWeeksContext::from_config(&config)?;
 
 		Ok(Self {
 			core,
@@ -193,6 +196,7 @@ impl AppState {
 			meaning,
 			rust_rounds,
 			game_feed,
+			call_weeks,
 			auth,
 		})
 	}
@@ -271,12 +275,14 @@ impl AppState {
 /// - Rust Rounds' recorder (`rust_rounds`), which asks the rust-runner over
 ///   its socket to record each stored program;
 /// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
-///   which games are live.
+///   which games are live;
+/// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
 	rust_rounds::start(state);
 	game_feed::start(state);
+	call_weeks::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

@@ -406,7 +406,8 @@ pub async fn run_once<T: MailboxTransport>(
 	} else {
 		let jobs = super::index::put_jobs_index(db, mailbox, subject, &last_index.jobs, now, &mut outcome).await;
 		let reflections = super::index::put_reflections_index(db, mailbox, subject, &last_index.reflections, now, &mut outcome).await;
-		jobs.and(reflections)
+		let call = super::index::put_call_index(db, mailbox, subject, &last_index.call, now, &mut outcome).await;
+		jobs.and(reflections).and(call)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,

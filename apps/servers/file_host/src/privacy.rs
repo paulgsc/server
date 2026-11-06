@@ -61,6 +61,10 @@ use tracing_subscriber::{
 const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("_sqlx_migrations", "sqlx's own migration ledger"),
 	("activities", "the activity catalogue — corpus-wide"),
+	(
+		"call_week",
+		"each week of the weekly call, as paulgsc/testing served it — what merged in two public repositories, nobody's record",
+	),
 	("curriculum", "lesson content — corpus-wide"),
 	("curriculum_publication", "curriculum release ledger"),
 	(

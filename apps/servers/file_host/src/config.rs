@@ -377,6 +377,15 @@ pub struct Config {
 	#[arg(long, env = "GAME_FEED_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "NFL game feed")]
 	pub game_feed_enabled: bool,
 
+	// ── The weekly call's weeks ───────────────────────────────────────────────
+	//
+	// See `call_weeks`. Home keeps every week of the weekly call, read hourly
+	// from `paulgsc/testing`'s public `call/` folder. On by default, since the
+	// routine lets a week leave that repository only once home holds it.
+	/// Whether home keeps the weekly call's weeks.
+	#[arg(long, env = "CALL_WEEKS_ENABLED", default_value_t = true, action = clap::ArgAction::Set, help_heading = "Weekly call")]
+	pub call_weeks_enabled: bool,
+
 	// ── Shared with the other binaries (`app_config`) ─────────────────────────
 	/// `NATS_URL`. The container sets it (`infra/compose/file_host.yml`).
 	#[command(flatten)]
@@ -461,7 +470,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 17] = [
+	const REFUSED: [(&str, &str); 18] = [
 		("RUST_LOG", "info,=[bad"),
 		("RATE_LIMIT", "-1"),
 		("NUDGE_ENABLED", "on"),
@@ -478,6 +487,7 @@ mod tests {
 		("MEANING_ENABLED", "on"),
 		("RUST_ROUNDS_ENABLED", "on"),
 		("GAME_FEED_ENABLED", "on"),
+		("CALL_WEEKS_ENABLED", "on"),
 		("NUDGE_TIMEZONE", "America/Denvr"),
 	];
 	// The URLs, keys and paths are checked by what uses them, which refuses

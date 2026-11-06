@@ -852,6 +852,16 @@ nowhere is marked as such and belongs to review.
       has arrived or left, or a moment it carries has passed, since the last
       one the mailbox answered (a group's two hours, a note's two-day wait, a
       lesson leaving the unopened window), so an idle pass puts none.
+      The poller puts the weekly call's index as `index-call-<stamp>.json` in
+      the same schema, a view of the same kind (paulgsc/some-ui#2635, ST36),
+      computed from `call_week` alone: every week of the call home holds, by
+      its first and last day and the SHA-256 of the bytes home keeps, newest
+      first, and when home last took one. `call_week` is not subject-scoped
+      (the weeks say what merged in two public repositories, read from
+      `paulgsc/testing` by `call_weeks`), so the index is the same whichever
+      subject the pass is for. No week's words. It is put only when home has
+      taken a week since the last one the mailbox answered, so an idle pass
+      puts none, and none at all before home holds a week.
     - `mailbox_transcript`, written only by the poller, in the transaction
       that files the transcript: which transcript (note and model) it filed
       and the number `n` its name carries, decided once as the note's next,
