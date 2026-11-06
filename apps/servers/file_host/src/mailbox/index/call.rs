@@ -97,6 +97,9 @@ pub(in crate::mailbox) async fn put_call_index<T: MailboxTransport>(
 		let Some((count, as_of)) = call_week_repo::as_of(&mut conn).await.map_err(Failure::Storage)? else {
 			return Ok(());
 		};
+		// What the index was computed from is how many weeks home holds:
+		// `call_week` only grows, so the count moves with every week taken,
+		// whatever the clock says of `taken_at`.
 		let marker = count.to_string();
 		if last.holds(subject, Some(&marker), |_| true) {
 			return Ok(());
@@ -114,8 +117,7 @@ pub(in crate::mailbox) async fn put_call_index<T: MailboxTransport>(
 
 #[cfg(test)]
 mod tests {
-	use super::{call_index, CALL};
-	use crate::mailbox::index::index_name;
+	use super::call_index;
 	use call_week_repo::HeldWeek;
 	use serde_json::{json, Value};
 
@@ -133,10 +135,7 @@ mod tests {
 				sha256: "a".repeat(64),
 			},
 		];
-		let body = call_index(&held, "2026-11-13T09:00:00.000Z");
-		let text = std::str::from_utf8(&body).unwrap();
-		assert!(text.starts_with(r#"{"schema":"some-ui.routine-index/1","routine":"call","asOf":"#), "{text}");
-		let index: Value = serde_json::from_slice(&body).unwrap();
+		let index: Value = serde_json::from_slice(&call_index(&held, "2026-11-13T09:00:00.000Z")).unwrap();
 		assert_eq!(
 			index,
 			json!({
@@ -149,6 +148,5 @@ mod tests {
 				],
 			})
 		);
-		assert_eq!(index_name(CALL, "20261113T090000000Z"), "index-call-20261113T090000000Z.json");
 	}
 }

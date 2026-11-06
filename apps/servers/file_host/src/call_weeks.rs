@@ -16,16 +16,9 @@
 //! The mailbox's note of a new week (MBP, paulgsc/some-ui#2142) can make it
 //! immediate later.
 //!
-//! What this module promises:
-//!
-//! - **It reads one public folder and writes one table.** `paulgsc/testing`'s
-//!   `call/` on `main`, without a token, and `call_week`, append-only. No
-//!   person's data is read or written.
-//! - **A week is kept once, as first served.** One home holds is never
-//!   fetched again, and a later edit in the repository is not taken.
-//! - **Logs carry counts and kinds,** never a URL, a body or a week's words.
-//! - **It backs off** after a pass that went wrong: [`RETRY`] doubled per
-//!   failure in a row, to at most [`INTERVAL`].
+//! It reads one public folder, `paulgsc/testing`'s `call/` on `main`,
+//! without a token, and writes one table, `call_week`, append-only; a week is
+//! kept once, as first served ([`pass`]'s module doc has the rest).
 
 pub mod pass;
 
@@ -36,8 +29,8 @@ use tracing::{error, info, warn};
 /// How often home reads the index: a week arrives once a week.
 pub const INTERVAL: Duration = Duration::from_secs(3600);
 
-/// How soon a pass that went wrong is tried again, doubled per failure in a
-/// row, to at most [`INTERVAL`].
+/// A pass that went wrong is tried again after this doubled per failure in a
+/// row (ten minutes, then twenty, ...), to at most [`INTERVAL`].
 pub const RETRY: Duration = Duration::from_secs(300);
 
 /// How often the worker looks at its schedule. Nothing is fetched unless due.
@@ -83,7 +76,7 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 
 	tokio::spawn(async move {
 		info!(interval_secs = INTERVAL.as_secs(), "call weeks worker started");
-		let mut schedule = pass::Schedule::new(chrono::Utc::now());
+		let mut schedule = crate::game_feed::pass::Target::now(chrono::Utc::now());
 		let mut ticker = tokio::time::interval(TICK);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		loop {
@@ -98,8 +91,11 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 						continue;
 					}
 					let result = pass::run_once(&db, &context.fetch, &chrono::Utc::now).await;
-					let failed = result.as_ref().map_or(true, |done| !done.failures.is_empty());
-					schedule.after(now, failed, INTERVAL, RETRY);
+					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
+						schedule.succeeded(now, INTERVAL);
+					} else {
+						schedule.failed(now, RETRY, INTERVAL);
+					}
 					log_pass(&result);
 				}
 			}
@@ -107,8 +103,7 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 	});
 }
 
-/// The pass's one log line, when it added a week or something went wrong:
-/// counts and kinds, never a URL, a body or a week's words.
+/// The pass's one log line, when it added a week or something went wrong.
 fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	match result {
 		Ok(done) if done.added == 0 && done.failures.is_empty() => {}

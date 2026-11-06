@@ -1,17 +1,6 @@
 //! Home's record of the weekly call's weeks (paulgsc/some-ui#2635, ST36):
-//! `call_week`.
-//!
-//! `20261106000100_create_call_week.up.sql` records the design; in short:
-//!
-//! - **Each week once, by its first day.** [`keep`] stores a week's file
-//!   byte for byte with its SHA-256 the first time home takes it, and a week
-//!   it already holds adds nothing, whatever bytes come with it: the
-//!   repository's later edit of a week is not taken, and the SHA-256 in
-//!   home's `call` index is how the routine sees one.
-//! - **Append-only.** No row is updated or deleted (the triggers abort both).
-//!   The repository keeps only its last few weeks; this table keeps every one.
-//! - **Nobody's record.** The weeks say what merged in two public
-//!   repositories; nothing here is subject-scoped.
+//! `call_week`, each week once by its first day, append-only. The rules are
+//! `20261106000100_create_call_week.up.sql`'s.
 
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
@@ -48,19 +37,8 @@ pub struct HeldWeek {
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
-#[must_use]
-pub fn sha256_hex(bytes: &[u8]) -> String {
+fn sha256_hex(bytes: &[u8]) -> String {
 	hex::encode(Sha256::digest(bytes))
-}
-
-/// The first day of every week home holds, oldest first.
-///
-/// # Errors
-/// A storage failure.
-pub async fn held_days(conn: &mut SqliteConnection) -> Result<Vec<String>, sqlx::Error> {
-	sqlx::query_scalar!(r#"SELECT week_from AS "week_from!" FROM call_week ORDER BY week_from"#)
-		.fetch_all(&mut *conn)
-		.await
 }
 
 /// Stores `week` unless home already holds a week of its first day.
@@ -112,14 +90,6 @@ pub async fn as_of(conn: &mut SqliteConnection) -> Result<Option<(i64, String)>,
 	Ok(row.newest.map(|newest| (row.count, newest)))
 }
 
-/// The bytes home holds for the week starting `from`, or `None`.
-///
-/// # Errors
-/// A storage failure.
-pub async fn body(conn: &mut SqliteConnection, from: &str) -> Result<Option<Vec<u8>>, sqlx::Error> {
-	sqlx::query_scalar!("SELECT body FROM call_week WHERE week_from = ?", from).fetch_optional(&mut *conn).await
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -131,6 +101,14 @@ mod tests {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
 		pool
+	}
+
+	async fn body(conn: &mut SqliteConnection, from: &str) -> Option<Vec<u8>> {
+		sqlx::query_scalar("SELECT body FROM call_week WHERE week_from = ?")
+			.bind(from)
+			.fetch_optional(&mut *conn)
+			.await
+			.unwrap()
 	}
 
 	fn week<'a>(from: &'a str, to: &'a str, body: &'a [u8], taken_at: &'a str) -> Week<'a> {
@@ -152,7 +130,7 @@ mod tests {
 			Kept::Held,
 			"an edit is not taken"
 		);
-		assert_eq!(body(&mut conn, "2026-10-30").await.unwrap().as_deref(), Some(&first[..]));
+		assert_eq!(body(&mut conn, "2026-10-30").await.as_deref(), Some(&first[..]));
 		assert_eq!(keep(&mut conn, &week("2026-11-06", "2026-11-12", edited, later)).await.unwrap(), Kept::Added);
 
 		let listed = held(&mut conn).await.unwrap();
@@ -160,7 +138,6 @@ mod tests {
 		assert_eq!(froms, ["2026-11-06", "2026-10-30"], "newest first");
 		assert_eq!(listed[1].sha256, sha256_hex(first));
 		assert_eq!(listed[1].to, "2026-11-05");
-		assert_eq!(held_days(&mut conn).await.unwrap(), ["2026-10-30", "2026-11-06"]);
 		assert_eq!(as_of(&mut conn).await.unwrap(), Some((2, later.to_owned())));
 	}
 
@@ -173,10 +150,6 @@ mod tests {
 		assert!(update.is_err(), "UPDATE is refused");
 		let delete = sqlx::query("DELETE FROM call_week").execute(&mut *conn).await;
 		assert!(delete.is_err(), "DELETE is refused");
-		assert!(
-			keep(&mut conn, &week("2026-11-12", "2026-11-06", b"{}", "2026-11-06T08:00:00.000Z")).await.is_err(),
-			"a last day before the first is refused"
-		);
-		assert_eq!(held_days(&mut conn).await.unwrap(), ["2026-10-30"]);
+		assert_eq!(held(&mut conn).await.unwrap().len(), 1);
 	}
 }

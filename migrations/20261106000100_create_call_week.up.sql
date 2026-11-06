@@ -25,8 +25,8 @@
 --   body      -- the week's file, exactly as the repository served it.
 --   taken_at  -- ISO-8601 UTC, when home stored it.
 CREATE TABLE call_week (
-    week_from TEXT    NOT NULL PRIMARY KEY CHECK (length(week_from) = 10),
-    week_to   TEXT    NOT NULL CHECK (length(week_to) = 10 AND week_to >= week_from),
+    week_from TEXT    NOT NULL PRIMARY KEY CHECK (week_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+    week_to   TEXT    NOT NULL CHECK (week_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND week_to >= week_from),
     sha256    TEXT    NOT NULL CHECK (length(sha256) = 64),
     size      INTEGER NOT NULL CHECK (size = length(body)),
     body      BLOB    NOT NULL,

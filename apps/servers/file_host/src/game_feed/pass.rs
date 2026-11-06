@@ -88,25 +88,30 @@ pub struct Cadence {
 }
 
 /// When one thing is next fetched, and how many fetches of it in a row went
-/// wrong.
+/// wrong. `call_weeks` schedules its pass with it too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Target {
+pub(crate) struct Target {
 	next_at: DateTime<Utc>,
 	failures: u32,
 }
 
 impl Target {
-	const fn now(now: DateTime<Utc>) -> Self {
+	pub(crate) const fn now(now: DateTime<Utc>) -> Self {
 		Self { next_at: now, failures: 0 }
 	}
 
-	fn succeeded(&mut self, now: DateTime<Utc>, every: Duration) {
+	/// Whether it is due at `now`.
+	pub(crate) fn due(&self, now: DateTime<Utc>) -> bool {
+		self.next_at <= now
+	}
+
+	pub(crate) fn succeeded(&mut self, now: DateTime<Utc>, every: Duration) {
 		self.failures = 0;
 		self.next_at = now + span(every);
 	}
 
 	/// `every` doubled per failure in a row, to at most `cap`.
-	fn failed(&mut self, now: DateTime<Utc>, every: Duration, cap: Duration) {
+	pub(crate) fn failed(&mut self, now: DateTime<Utc>, every: Duration, cap: Duration) {
 		self.failures = self.failures.saturating_add(1);
 		let factor = 2_u32.saturating_pow(self.failures.min(16));
 		self.next_at = now + span(every.saturating_mul(factor).min(cap));
