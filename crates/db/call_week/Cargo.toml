@@ -1,0 +1,29 @@
+[package]
+name = "call_week_repo"
+description = "Home's append-only record of the weekly call's weeks, as paulgsc/testing served them — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["weekly-call", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+hex = "0.4.3"
+sha2 = "0.10.9"
+sqlx = { workspace = true, features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

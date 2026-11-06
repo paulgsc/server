@@ -120,6 +120,7 @@ auth_repo = { workspace = true }
 capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }
 game_feed_repo = { workspace = true }
+call_week_repo = { workspace = true }
 jobs_repo = { workspace = true }
 korean_repo = { workspace = true }
 study_note_repo = { workspace = true }

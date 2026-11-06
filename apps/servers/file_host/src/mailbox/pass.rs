@@ -406,7 +406,8 @@ pub async fn run_once<T: MailboxTransport>(
 	} else {
 		let jobs = super::index::put_jobs_index(db, mailbox, subject, &last_index.jobs, now, &mut outcome).await;
 		let reflections = super::index::put_reflections_index(db, mailbox, subject, &last_index.reflections, now, &mut outcome).await;
-		jobs.and(reflections)
+		let call = super::index::put_call_index(db, mailbox, subject, &last_index.call, now, &mut outcome).await;
+		jobs.and(reflections).and(call)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
@@ -2869,6 +2870,46 @@ mod tests {
 		assert_eq!(pass_at(&pool, &restarted, "2026-10-23T15:15:00.000Z").await.unwrap().indexed, ["added"]);
 		assert!(pass_at(&pool, &restarted, "2026-10-23T15:30:00.000Z").await.unwrap().indexed.is_empty());
 		assert_eq!(last_put(&restarted), last_put(&fake), "the same rows give the same index");
+	}
+
+	/// ST36 (paulgsc/some-ui#2635): home puts the call index only once it
+	/// holds a week, and a new one only when it takes another.
+	#[tokio::test]
+	async fn the_call_index_is_put_once_a_week_is_held_and_again_for_each_new_week() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let calls = |fake: &Fake| -> Vec<serde_json::Value> {
+			let puts = fake.indexes.lock().unwrap();
+			puts
+				.iter()
+				.filter(|(name, _)| name.starts_with("index-call-"))
+				.map(|(_, body)| serde_json::from_str(body).unwrap())
+				.collect()
+		};
+		let keep = |from: &'static str, to: &'static str| {
+			let pool = pool.clone();
+			async move {
+				let week = call_week_repo::Week {
+					from,
+					to,
+					body: b"{}",
+					taken_at: "2026-10-23T15:10:00.000Z",
+				};
+				call_week_repo::keep(&mut pool.acquire().await.unwrap(), &week).await.unwrap();
+			}
+		};
+		pass(&pool, &fake).await.unwrap();
+		assert!(calls(&fake).is_empty(), "none before home holds a week");
+		keep("2026-10-16", "2026-10-22").await;
+		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().indexed, ["added"]);
+		assert!(
+			pass_at(&pool, &fake, "2026-10-30T15:15:00.000Z").await.unwrap().indexed.is_empty(),
+			"nothing taken, nothing put"
+		);
+		keep("2026-10-23", "2026-10-29").await;
+		assert_eq!(pass_at(&pool, &fake, "2026-10-30T15:30:00.000Z").await.unwrap().indexed, ["added"]);
+		let puts = calls(&fake);
+		let held: Vec<&str> = puts[1]["held"].as_array().unwrap().iter().map(|week| week["from"].as_str().unwrap()).collect();
+		assert_eq!(held, ["2026-10-23", "2026-10-16"]);
 	}
 
 	/// The index is a view, never archived or asked for (owner, #509).
