@@ -120,9 +120,11 @@ async fn fetched<F: Fetch>(fetch: &F, url: &str, pass: &mut Pass) -> Option<Vec<
 	}
 }
 
-/// One pass: take each week the repository lists that home lacks
-/// ([`take_new`]), then write each week home holds that `folder` lacks
-/// ([`export`]), so the render worker sees every week, a restart included.
+/// One pass: [`take_new`], then [`export`].
+///
+/// It takes each week the repository lists that home lacks, then writes each
+/// week home holds that `folder` lacks, so the render worker sees every week,
+/// a restart included.
 ///
 /// # Errors
 /// A storage failure, which ends the pass.
