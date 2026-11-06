@@ -19,13 +19,16 @@ WEEKS=/weeks
 RENDERS=/renders/call
 WORK=/tmp/render
 EVERY=3600
-RECORDER=(pnpm --dir /opt/some-ui/apps/www exec tsx tests/record/call.ts
+# tsx (a root devDependency of some-ui), not through pnpm: Corepack would fetch
+# pnpm at run time, and nothing here reaches the internet.
+APP_DIR=/opt/some-ui/apps/www
+RECORDER=(/opt/some-ui/node_modules/.bin/tsx tests/record/call.ts
   --app http://call-stage --voices kokoro --speaker http://kokoro:8880)
 
 render_week() {
   local file=$1 from=$2
   rm -rf "$WORK" && mkdir -p "$WORK" || return 1
-  "${RECORDER[@]}" --week-file "$file" --out "$WORK" || return 1
+  (cd "$APP_DIR" && "${RECORDER[@]}" --week-file "$file" --out "$WORK") || return 1
   # The renderer's intermediates can be made again from what is kept.
   rm -rf "$WORK/$from/cache"
   mkdir -p "$RENDERS" && rm -rf "$RENDERS/.$from" || return 1
