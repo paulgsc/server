@@ -94,15 +94,14 @@ services:
     networks:
       - call-render-network
     volumes:
-      # Written by file_host (`call_weeks::RENDER_FOLDER`), read here only.
-      # Docker may not make it: a folder it made would be root's, and
-      # file_host could never write there.
-      - type: bind
-        source: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/call-weeks
+      # Written by file_host (`call_weeks::RENDER_FOLDER`), read here only,
+      # through `call_week_files` (below).
+      - type: volume
+        source: call_week_files
         target: /weeks
         read_only: true
-        bind:
-          create_host_path: false
+        volume:
+          nocopy: true
       # Every video and what it was made from, kept for good. The worker runs
       # as root, so a folder Docker makes here is one it can write.
       - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/renders:/renders:rw
@@ -122,6 +121,21 @@ services:
           cpus: '2.0'
           memory: 4G
           pids: 512
+
+volumes:
+  # ${STORAGE}/call-weeks, where file_host writes each week, beside its
+  # database. A volume bound to the folder, not a bind mount: Docker mounts a
+  # volume when the worker starts, which is after file_host is healthy and has
+  # made the folder (call_weeks::start), while a bind mount's folder must
+  # exist when compose creates the worker, before anything starts, and one
+  # Docker made would be root's, where file_host could never write. A folder
+  # still missing then fails the start, and Docker never makes it.
+  call_week_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/call-weeks
 
 networks:
   # Internal: none of the three reaches the internet or the rest of the stack.
