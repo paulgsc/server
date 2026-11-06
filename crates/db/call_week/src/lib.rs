@@ -90,6 +90,14 @@ pub async fn as_of(conn: &mut SqliteConnection) -> Result<Option<(i64, String)>,
 	Ok(row.newest.map(|newest| (row.count, newest)))
 }
 
+/// The bytes home holds for the week starting `from`, or `None`.
+///
+/// # Errors
+/// A storage failure.
+pub async fn body(conn: &mut SqliteConnection, from: &str) -> Result<Option<Vec<u8>>, sqlx::Error> {
+	sqlx::query_scalar!("SELECT body FROM call_week WHERE week_from = ?", from).fetch_optional(&mut *conn).await
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -101,14 +109,6 @@ mod tests {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
 		pool
-	}
-
-	async fn body(conn: &mut SqliteConnection, from: &str) -> Option<Vec<u8>> {
-		sqlx::query_scalar("SELECT body FROM call_week WHERE week_from = ?")
-			.bind(from)
-			.fetch_optional(&mut *conn)
-			.await
-			.unwrap()
 	}
 
 	fn week<'a>(from: &'a str, to: &'a str, body: &'a [u8], taken_at: &'a str) -> Week<'a> {
@@ -130,7 +130,7 @@ mod tests {
 			Kept::Held,
 			"an edit is not taken"
 		);
-		assert_eq!(body(&mut conn, "2026-10-30").await.as_deref(), Some(&first[..]));
+		assert_eq!(body(&mut conn, "2026-10-30").await.unwrap().as_deref(), Some(&first[..]));
 		assert_eq!(keep(&mut conn, &week("2026-11-06", "2026-11-12", edited, later)).await.unwrap(), Kept::Added);
 
 		let listed = held(&mut conn).await.unwrap();

@@ -18,7 +18,9 @@
 //!
 //! It reads one public folder, `paulgsc/testing`'s `call/` on `main`,
 //! without a token, and writes one table, `call_week`, append-only; a week is
-//! kept once, as first served ([`pass`]'s module doc has the rest).
+//! kept once, as first served ([`pass`]'s module doc has the rest). It also
+//! writes each week it holds to [`RENDER_FOLDER`] for home's render worker,
+//! which records and renders the call from it (`infra/compose/render.yml`).
 
 pub mod pass;
 
@@ -32,6 +34,11 @@ pub const INTERVAL: Duration = Duration::from_secs(3600);
 /// A pass that went wrong is tried again after this doubled per failure in a
 /// row (ten minutes, then twenty, ...), to at most [`INTERVAL`].
 pub const RETRY: Duration = Duration::from_secs(300);
+
+/// Where each week home holds is written for the render worker
+/// (`infra/compose/render.yml` mounts it read-only), `<from>.json`, byte for
+/// byte. `/app/data` is `${REPO_ROOT}/data` on home (`file_host.yml`).
+pub const RENDER_FOLDER: &str = "/app/data/call-weeks";
 
 /// How often the worker looks at its schedule. Nothing is fetched unless due.
 pub const TICK: Duration = Duration::from_secs(60);
@@ -90,7 +97,7 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 					if !schedule.due(now) {
 						continue;
 					}
-					let result = pass::run_once(&db, &context.fetch, &chrono::Utc::now).await;
+					let result = pass::run_once(&db, &context.fetch, std::path::Path::new(RENDER_FOLDER), &chrono::Utc::now).await;
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
 						schedule.succeeded(now, INTERVAL);
 					} else {
@@ -106,9 +113,9 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 /// The pass's one log line, when it added a week or something went wrong.
 fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	match result {
-		Ok(done) if done.added == 0 && done.failures.is_empty() => {}
-		Ok(done) if done.failures.is_empty() => info!(added = done.added, held = done.held, "call weeks pass"),
-		Ok(done) => warn!(added = done.added, held = done.held, failures = ?done.failures, "call weeks pass"),
+		Ok(done) if done.added == 0 && done.exported == 0 && done.failures.is_empty() => {}
+		Ok(done) if done.failures.is_empty() => info!(added = done.added, held = done.held, exported = done.exported, "call weeks pass"),
+		Ok(done) => warn!(added = done.added, held = done.held, exported = done.exported, failures = ?done.failures, "call weeks pass"),
 		Err(_) => error!(error = "storage", "call weeks pass failed"),
 	}
 }
