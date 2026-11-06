@@ -31,6 +31,10 @@ RUN corepack enable \
 
 COPY infra/render/render-calls.sh /usr/local/bin/render-calls
 
+# The `call_weeks` volume's mount point, owned by file_host's uid, so a new
+# volume first mounted here is still writable by file_host.
+RUN mkdir -p /weeks && chown 10000:10001 /weeks
+
 # The root is read-only at run time (call-render.yml); tsx and the renderer
 # write only under /tmp.
 ENV HOME=/tmp \

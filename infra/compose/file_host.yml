@@ -50,6 +50,9 @@ services:
       # connecting needs no write to the volume, and file-host may put
       # nothing beside the socket (RX2 checks the directory holds only it).
       - rust_runner_socket:/run/rust-runner:ro
+      # Each week of the call home holds, for the render worker
+      # (call_weeks::RENDER_FOLDER; infra/compose/call-render.yml).
+      - call_weeks:/app/call-weeks
     networks:
       - monitoring-network
     restart: unless-stopped

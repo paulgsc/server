@@ -154,7 +154,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Create required runtime directories
-RUN mkdir -p /app/data /app/config \
+# /app/call-weeks is the `call_weeks` volume (call_weeks::RENDER_FOLDER):
+# made here owned by nonroot, so a new volume takes that ownership.
+RUN mkdir -p /app/data /app/config /app/call-weeks \
     && chown -R nonroot:nonroot /app
 
 # Copy only the final binary from builder stage

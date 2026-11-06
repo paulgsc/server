@@ -35,10 +35,10 @@ pub const INTERVAL: Duration = Duration::from_secs(3600);
 /// row (ten minutes, then twenty, ...), to at most [`INTERVAL`].
 pub const RETRY: Duration = Duration::from_secs(300);
 
-/// Where each week home holds is written for the render worker
-/// (`infra/compose/render.yml` mounts it read-only), `<from>.json`, byte for
-/// byte. `/app/data` is `${REPO_ROOT}/data` on home (`file_host.yml`).
-pub const RENDER_FOLDER: &str = "/app/data/call-weeks";
+/// Where each week home holds is written for the render worker, `<from>.json`,
+/// byte for byte: the `call_weeks` volume, which `infra/compose/call-render.yml`
+/// mounts read-only into the worker.
+pub const RENDER_FOLDER: &str = "/app/call-weeks";
 
 /// How often the worker looks at its schedule. Nothing is fetched unless due.
 pub const TICK: Duration = Duration::from_secs(60);

@@ -8,7 +8,7 @@
 #   digest (the owner's choice on paulgsc/some-ui#2639), serving `/call`.
 #   Bump the pin when the call's stage changes.
 # - `render`, the worker (GWB10, paulgsc/some-ui#2084): for each week
-#   `file_host` writes to data/call-weeks/ (`call_weeks::RENDER_FOLDER`) that
+#   `file_host` writes to the `call_weeks` volume (`call_weeks::RENDER_FOLDER`) that
 #   has no video yet, it records the stage with each scene said by the
 #   speaker and renders it (infra/render/render-calls.sh). Every video is kept
 #   for good in data/renders/call/<from>/ (the owner's choice on
@@ -89,7 +89,7 @@ services:
       - call-render-network
     volumes:
       # Written by file_host (`call_weeks::RENDER_FOLDER`), read here only.
-      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/data/call-weeks:/weeks:ro
+      - call_weeks:/weeks:ro
       # Every video and what it was made from, kept for good.
       - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/data/renders:/renders:rw
     read_only: true
@@ -108,6 +108,13 @@ services:
           cpus: '2.0'
           memory: 4G
           pids: 512
+
+volumes:
+  # Each week home holds, written by file_host at /app/call-weeks. A named
+  # volume, not a folder under data/: a new one takes its owner from the
+  # first image that mounts it, and both images make that directory owned
+  # by file_host's uid (10000), whichever service starts first.
+  call_weeks: {}
 
 networks:
   # Internal: none of the three reaches the internet or the rest of the stack.
