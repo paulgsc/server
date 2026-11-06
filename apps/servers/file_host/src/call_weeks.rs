@@ -21,8 +21,14 @@
 //! kept once, as first served ([`pass`]'s module doc has the rest). It also
 //! writes each week it holds to [`RENDER_FOLDER`] for home's render worker,
 //! which records and renders the call from it (`infra/compose/call-render.yml`).
+//!
+//! **What it says.** Each pass's start and whether it failed (CW2), and each
+//! minute what the render worker has made of the weeks held ([`render`],
+//! CW5): the CALL dashboard and the `CallWeeks*` and `CallRender*` alerts in
+//! `infra/prometheus/rules/home.yml`, which reach the owner on Slack.
 
 pub mod pass;
+pub mod render;
 
 use crate::AppState;
 use std::time::Duration;
@@ -74,8 +80,10 @@ impl CallWeeksContext {
 	}
 }
 
-/// Start the worker. The render folder is made first, before the server
-/// answers its health check, so the render worker never finds it missing.
+/// Start the worker.
+///
+/// The render folder is made first, before the server answers its health
+/// check, so the render worker never finds it missing.
 /// A folder that cannot be made is logged here and counted by every pass.
 pub fn start(state: &AppState) {
 	if std::fs::create_dir_all(RENDER_FOLDER).is_err() {
@@ -92,6 +100,7 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 
 	tokio::spawn(async move {
 		info!(interval_secs = INTERVAL.as_secs(), "call weeks worker started");
+		crate::metrics::call_weeks::record_started();
 		let mut schedule = crate::game_feed::pass::Target::now(chrono::Utc::now());
 		let mut ticker = tokio::time::interval(TICK);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -102,11 +111,14 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 					return;
 				}
 				_ = ticker.tick() => {
+					observe_renders(&db).await;
 					let now = chrono::Utc::now();
 					if !schedule.due(now) {
 						continue;
 					}
+					crate::metrics::call_weeks::record_pass_started();
 					let result = pass::run_once(&db, &context.fetch, std::path::Path::new(RENDER_FOLDER), &chrono::Utc::now).await;
+					crate::metrics::call_weeks::record_pass(&result);
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
 						schedule.succeeded(now, INTERVAL);
 					} else {
@@ -117,6 +129,17 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 			}
 		}
 	});
+}
+
+/// What the render worker has made of the weeks held, as metrics. A
+/// failing read leaves the last values and logs.
+async fn observe_renders(db: &sqlx::SqlitePool) {
+	let (renders, status) = (std::path::Path::new(render::RENDERS_FOLDER), std::path::Path::new(render::STATUS_FOLDER));
+	if let Ok(seen) = render::observe(db, renders, status).await {
+		crate::metrics::call_weeks::record_renders(&seen);
+	} else {
+		warn!(error = "storage", "call render observation failed");
+	}
 }
 
 /// The pass's one log line, when it added a week or something went wrong.

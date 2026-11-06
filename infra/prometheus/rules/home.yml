@@ -162,6 +162,70 @@ groups:
           objective: RR2
           says: "A routine was due more than 30 minutes ago, and home has no record of its run."
 
+      - alert: CallWeeksStale
+        # CW2 (some-ui#2635, server#684): the call weeks worker reads
+        # paulgsc/testing's index every hour (call_weeks::INTERVAL), sooner
+        # after a failure, and stamps each pass it starts. Two hours without
+        # one is a task that stopped, not a slow pass: a pass is a few
+        # requests of at most 30 s each.
+        expr: |
+          (time() - max(call_weeks_last_attempt_timestamp_seconds)) > 7200
+        labels:
+          objective: CW2
+          says: "Home has not read the weekly call's weeks for 2 hours (it reads them hourly)."
+
+      - alert: CallWeeksFailing
+        # CW2: every pass for 3 hours failed, on storage or on a week it
+        # could not read or write; a failing pass is retried after 5, 10, 20
+        # and 40 minutes, then hourly, so that is about six passes. A
+        # failing source that recovers clears it on its next pass.
+        expr: |
+          max(call_weeks_pass_failing) == 1
+        for: 3h
+        labels:
+          objective: CW2
+          says: "Every pass reading the weekly call's weeks has failed for 3 hours; file-host-server's log names what failed."
+
+      - alert: CallRenderFailed
+        # CW5: a week home holds has no video and the render worker's last
+        # attempt at it failed (infra/render/render-calls.sh keeps that
+        # attempt's whole output, and removes it once the week renders).
+        # file_host reads that each minute (call_weeks::render). The worker
+        # tries again hourly, so a failure that clears on its own stops this.
+        expr: |
+          max(call_render_weeks_failed) > 0
+        labels:
+          objective: CW5
+          says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+
+      - alert: CallRenderOverdue
+        # CW5: a week has waited 3 hours since home took it, with no failed
+        # attempt, so the worker is not trying it: stopped, or stuck in a
+        # render. The worker passes hourly and a render takes well under an
+        # hour, so 3 hours is past any pass that started. A week whose
+        # attempt failed is CallRenderFailed's.
+        expr: |
+          max(call_render_weeks_waiting) > 0
+          and on() (time() - max(call_render_oldest_waiting_taken_timestamp_seconds)) > 10800
+          and on() max(call_render_weeks_failed) == 0
+        labels:
+          objective: CW5
+          says: "A week of the call has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+
+      - alert: CallRenderWorkerStale
+        # CW5: the worker stamps each pass it starts and sleeps an hour after
+        # one ends, so a pass with a render in it spaces two stamps by the
+        # render and an hour. Four hours is a worker that stopped, which this
+        # catches even with no week waiting. A worker that never stamped
+        # (not deployed) is not this; a week it leaves waiting is
+        # CallRenderOverdue's.
+        expr: |
+          max(call_render_worker_last_pass_timestamp_seconds) > 0
+          and on() (time() - max(call_render_worker_last_pass_timestamp_seconds)) > 14400
+        labels:
+          objective: CW5
+          says: "Home's render worker has not started a pass for 4 hours (it starts one hourly): docker logs render says why."
+
   - name: home-health
     rules:
       - alert: DatabaseBehindBuild

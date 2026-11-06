@@ -68,7 +68,7 @@ services:
     container_name: render
     hoist_set: false
     scrape:
-      reason: 'a batch worker with no endpoint; each video it finishes is a file in ${STORAGE}/renders/call, and each week without one is retried hourly (paulgsc/some-ui#2635)'
+      reason: 'a batch worker with no endpoint; it writes its videos and how each pass went to ${STORAGE}/renders, which file_host reads each minute into the call_render_* metrics (call_weeks::render, paulgsc/some-ui#2635)'
 
   # Rust Rounds' sandboxed recorder (paulgsc/some-ui#2234, RR3).
   - service: rust-runner

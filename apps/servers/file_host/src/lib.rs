@@ -277,7 +277,8 @@ impl AppState {
 /// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
 ///   which games are live;
 /// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`;
-///   always on, and no metric says it runs yet (paulgsc/server#684).
+///   always on, its metrics (`metrics::call_weeks`) also saying what the
+///   render worker has made of each week.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
