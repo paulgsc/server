@@ -29,7 +29,7 @@
 
 pub mod pass;
 
-use crate::{AppState, Config};
+use crate::AppState;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -48,34 +48,31 @@ const _: () = assert!(RETRY.as_secs() <= INTERVAL.as_secs() && TICK.as_secs() <=
 /// How long one request may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Everything the worker needs, or `None` when the deployment turned it off.
+/// Everything the worker needs.
+///
+/// Always on: it reads one public folder and needs no secret, so it is not a
+/// variable (`.sops.yaml`, #613's first principle).
 #[derive(Clone)]
 pub struct CallWeeksContext {
 	pub fetch: crate::game_feed::pass::ReqwestFetch,
 }
 
 impl CallWeeksContext {
-	/// The worker's context once, at startup. Off is fine and logged.
+	/// The worker's context once, at startup.
 	///
 	/// # Errors
-	/// `CALL_WEEKS_ENABLED` with an HTTP client that does not build.
-	pub fn from_config(config: &Config) -> anyhow::Result<Option<Self>> {
-		if !config.call_weeks_enabled {
-			info!("CALL_WEEKS_ENABLED is off; home keeps no week of the call");
-			return Ok(None);
-		}
+	/// An HTTP client that does not build.
+	pub fn new() -> anyhow::Result<Self> {
 		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-		Ok(Some(Self {
+		Ok(Self {
 			fetch: crate::game_feed::pass::ReqwestFetch::new(client),
-		}))
+		})
 	}
 }
 
-/// Start the worker if the deployment left it on.
+/// Start the worker.
 pub fn start(state: &AppState) {
-	if let Some(context) = state.call_weeks.clone() {
-		spawn(state, context);
-	}
+	spawn(state, state.call_weeks.clone());
 }
 
 /// Spawn the worker, cancelled through the shared token. Its first pass is

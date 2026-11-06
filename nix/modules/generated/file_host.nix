@@ -138,11 +138,6 @@
       default = null;
       description = "Whether home follows the games of the week at all\n\nUnset (null), the binary's default: `false`.";
     };
-    CALL_WEEKS_ENABLED = lib.mkOption {
-      type = lib.types.nullOr lib.types.bool;
-      default = null;
-      description = "Whether home keeps the weekly call's weeks\n\nUnset (null), the binary's default: `true`.";
-    };
     NATS_URL = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -187,7 +182,6 @@
     MEANING_ENABLED = "false";
     RUST_ROUNDS_ENABLED = "false";
     GAME_FEED_ENABLED = "false";
-    CALL_WEEKS_ENABLED = "true";
     ENVIRONMENT = "development";
     RUST_LOG = "info,async_nats=warn";
   };

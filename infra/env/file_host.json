@@ -437,19 +437,6 @@
       "bounds": null
     },
     {
-      "name": "CALL_WEEKS_ENABLED",
-      "group": "Weekly call",
-      "required": false,
-      "default": "true",
-      "kind": "bool",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Whether home keeps the weekly call's weeks",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "NATS_URL",
       "group": "NATS",
       "required": true,

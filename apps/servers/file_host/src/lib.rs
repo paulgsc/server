@@ -125,7 +125,7 @@ pub struct AppState {
 	pub rust_rounds: Option<rust_rounds::RustRoundsContext>,
 	/// `None` unless `GAME_FEED_ENABLED`: home follows no NFL game.
 	pub game_feed: Option<game_feed::GameFeedContext>,
-	pub call_weeks: Option<call_weeks::CallWeeksContext>,
+	pub call_weeks: call_weeks::CallWeeksContext,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
 	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
 	/// and with auth on but unconfigured the server does not start (see
@@ -185,7 +185,7 @@ impl AppState {
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock(), meaning.as_ref())?;
 		let rust_rounds = rust_rounds::RustRoundsContext::from_config(&config);
 		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
-		let call_weeks = call_weeks::CallWeeksContext::from_config(&config)?;
+		let call_weeks = call_weeks::CallWeeksContext::new()?;
 
 		Ok(Self {
 			core,
@@ -276,7 +276,8 @@ impl AppState {
 ///   its socket to record each stored program;
 /// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
 ///   which games are live;
-/// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`.
+/// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`;
+///   always on, and no metric says it runs yet (paulgsc/server#684).
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
