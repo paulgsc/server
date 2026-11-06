@@ -489,3 +489,122 @@ tests:
       - eval_time: 10m
         alertname: DatabaseBehindBuild
         exp_alerts: []
+
+  - name: the call weeks worker that stopped stamping is stale past 2 hours (CW2)
+    interval: 1m
+    input_series:
+      - series: 'call_weeks_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x130'
+    alert_rule_test:
+      - eval_time: 115m
+        alertname: CallWeeksStale
+        exp_alerts: []
+      - eval_time: 125m
+        alertname: CallWeeksStale
+        exp_alerts:
+          - exp_labels:
+              objective: CW2
+              says: "Home has not read the weekly call's weeks for 2 hours (it reads them hourly)."
+
+  - name: a call weeks worker stamping each hour is not stale (CW2)
+    interval: 1m
+    input_series:
+      - series: 'call_weeks_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x59 3600x60 7200x60 10800x60 14400x60 18000x60 21600x60 25200x60 28800x60 32400x60'
+    alert_rule_test:
+      - eval_time: 9h50m
+        alertname: CallWeeksStale
+        exp_alerts: []
+
+  - name: call weeks passes failing for 3 hours alert, and one that recovers does not (CW2)
+    interval: 1m
+    input_series:
+      - series: 'call_weeks_pass_failing{job="file_host",instance="a"}'
+        values: '1x200'
+      - series: 'call_weeks_pass_failing{job="file_host",instance="b"}'
+        values: '1x60 0x140'
+    alert_rule_test:
+      - eval_time: 2h55m
+        alertname: CallWeeksFailing
+        exp_alerts: []
+      - eval_time: 3h05m
+        alertname: CallWeeksFailing
+        exp_alerts:
+          - exp_labels:
+              objective: CW2
+              says: "Every pass reading the weekly call's weeks has failed for 3 hours; file-host-server's log names what failed."
+
+  - name: a week whose render failed alerts at once, and not as overdue (CW5)
+    interval: 1m
+    input_series:
+      - series: 'call_render_weeks_waiting{job="file_host"}'
+        values: '1x300'
+      - series: 'call_render_weeks_failed{job="file_host"}'
+        values: '0 1x299'
+      - series: 'call_render_oldest_waiting_taken_timestamp_seconds{job="file_host"}'
+        values: '0x300'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: CallRenderFailed
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: CallRenderFailed
+        exp_alerts:
+          - exp_labels:
+              objective: CW5
+              says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+      - eval_time: 4h
+        alertname: CallRenderOverdue
+        exp_alerts: []
+
+  - name: a week waiting 3 hours with no failed attempt is overdue, and a rendered one is not (CW5)
+    interval: 1m
+    input_series:
+      - series: 'call_render_weeks_waiting{job="file_host"}'
+        values: '1x200 0x60'
+      - series: 'call_render_weeks_failed{job="file_host"}'
+        values: '0x260'
+      - series: 'call_render_oldest_waiting_taken_timestamp_seconds{job="file_host"}'
+        values: '0x260'
+    alert_rule_test:
+      - eval_time: 2h55m
+        alertname: CallRenderOverdue
+        exp_alerts: []
+      - eval_time: 3h05m
+        alertname: CallRenderOverdue
+        exp_alerts:
+          - exp_labels:
+              objective: CW5
+              says: "A week of the call has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+      - eval_time: 3h35m
+        alertname: CallRenderOverdue
+        exp_alerts: []
+      - eval_time: 3h35m
+        alertname: CallRenderFailed
+        exp_alerts: []
+
+  - name: a render worker that stopped stamping is stale past 4 hours, and one never deployed is not (CW5)
+    interval: 1m
+    input_series:
+      - series: 'call_render_worker_last_pass_timestamp_seconds{job="file_host"}'
+        values: '60x300'
+    alert_rule_test:
+      - eval_time: 3h55m
+        alertname: CallRenderWorkerStale
+        exp_alerts: []
+      - eval_time: 4h05m
+        alertname: CallRenderWorkerStale
+        exp_alerts:
+          - exp_labels:
+              objective: CW5
+              says: "Home's render worker has not started a pass for 4 hours (it starts one hourly): docker logs render says why."
+
+  - name: a render worker that never stamped is not stale (CW5)
+    interval: 1m
+    input_series:
+      - series: 'call_render_worker_last_pass_timestamp_seconds{job="file_host"}'
+        values: '0x700'
+    alert_rule_test:
+      - eval_time: 11h
+        alertname: CallRenderWorkerStale
+        exp_alerts: []

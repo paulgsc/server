@@ -36,6 +36,15 @@ pub struct HeldWeek {
 	pub sha256: String,
 }
 
+/// When home took a week it holds: `call_weeks::render` reads how long a
+/// week has waited for its video from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakenWeek {
+	pub from: String,
+	/// ISO-8601 UTC, as [`Week::taken_at`] stored it.
+	pub taken_at: String,
+}
+
 /// Lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
 	hex::encode(Sha256::digest(bytes))
@@ -75,6 +84,16 @@ pub async fn held(conn: &mut SqliteConnection) -> Result<Vec<HeldWeek>, sqlx::Er
 	)
 	.fetch_all(&mut *conn)
 	.await
+}
+
+/// Every week home holds and when it took each, oldest week first.
+///
+/// # Errors
+/// A storage failure.
+pub async fn taken(conn: &mut SqliteConnection) -> Result<Vec<TakenWeek>, sqlx::Error> {
+	sqlx::query_as!(TakenWeek, r#"SELECT week_from AS "from!", taken_at AS "taken_at!" FROM call_week ORDER BY week_from"#)
+		.fetch_all(&mut *conn)
+		.await
 }
 
 /// How many weeks home holds, and when it last took one; `None` when it
@@ -139,6 +158,9 @@ mod tests {
 		assert_eq!(listed[1].sha256, sha256_hex(first));
 		assert_eq!(listed[1].to, "2026-11-05");
 		assert_eq!(as_of(&mut conn).await.unwrap(), Some((2, later.to_owned())));
+		let weeks = taken(&mut conn).await.unwrap();
+		let taken: Vec<(&str, &str)> = weeks.iter().map(|week| (week.from.as_str(), week.taken_at.as_str())).collect();
+		assert_eq!(taken, [("2026-10-30", at), ("2026-11-06", later)], "oldest first, each as first taken");
 	}
 
 	#[tokio::test]
