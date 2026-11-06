@@ -20,7 +20,7 @@
 //! without a token, and writes one table, `call_week`, append-only; a week is
 //! kept once, as first served ([`pass`]'s module doc has the rest). It also
 //! writes each week it holds to [`RENDER_FOLDER`] for home's render worker,
-//! which records and renders the call from it (`infra/compose/render.yml`).
+//! which records and renders the call from it (`infra/compose/call-render.yml`).
 
 pub mod pass;
 
@@ -37,9 +37,12 @@ pub const RETRY: Duration = Duration::from_secs(300);
 
 /// Where each week home holds is written for the render worker.
 ///
-/// Each week is `<from>.json`, byte for byte, in the `call_weeks` volume,
-/// which `infra/compose/call-render.yml` mounts read-only into the worker.
-pub const RENDER_FOLDER: &str = "/app/call-weeks";
+/// Each week is `<from>.json`, byte for byte, in `call-weeks/` beside the
+/// database: on the host, `${STORAGE}/call-weeks`, on the same drive as
+/// everything else home keeps. `infra/compose/call-render.yml` mounts it
+/// read-only into the worker, which starts only once this server is healthy,
+/// so the folder is always made here, by this server's uid ([`start`]).
+pub const RENDER_FOLDER: &str = "/app/dbs/call-weeks";
 
 /// How often the worker looks at its schedule. Nothing is fetched unless due.
 pub const TICK: Duration = Duration::from_secs(60);
@@ -71,8 +74,13 @@ impl CallWeeksContext {
 	}
 }
 
-/// Start the worker.
+/// Start the worker. The render folder is made first, before the server
+/// answers its health check, so the render worker never finds it missing.
+/// A folder that cannot be made is logged here and counted by every pass.
 pub fn start(state: &AppState) {
+	if std::fs::create_dir_all(RENDER_FOLDER).is_err() {
+		error!(error = "render folder", "call weeks worker cannot make its render folder");
+	}
 	spawn(state, state.call_weeks.clone());
 }
 

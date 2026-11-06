@@ -31,7 +31,9 @@ services:
     volumes:
       # STORAGE: the host directory holding file_host's SQLite database, mounted
       # at /app/dbs (DATABASE_URL above). A deployment constant, so it has no
-      # default here: each role's compose.sops.env sets it (#614).
+      # default here: each role's compose.sops.env sets it (#614). The call's
+      # weeks are written beside it, in call-weeks/ (call_weeks::RENDER_FOLDER),
+      # for the render worker (infra/compose/call-render.yml).
       - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}:/app/dbs
       - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/data:/app/data:rw
       - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/config:/app/config:ro
@@ -50,9 +52,6 @@ services:
       # connecting needs no write to the volume, and file-host may put
       # nothing beside the socket (RX2 checks the directory holds only it).
       - rust_runner_socket:/run/rust-runner:ro
-      # Each week of the call home holds, for the render worker
-      # (call_weeks::RENDER_FOLDER; infra/compose/call-render.yml).
-      - call_weeks:/app/call-weeks
     networks:
       - monitoring-network
     restart: unless-stopped
