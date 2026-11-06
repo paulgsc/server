@@ -53,6 +53,13 @@ services:
     scrape:
       reason: 'unmeasured — the single largest declared consumer in the stack; [HM-COVER] C2 (#144) is the story that adds this job, not landed yet'
 
+  # The weekly call's speaker (paulgsc/some-ui#2635, ST36).
+  - service: kokoro
+    container_name: kokoro
+    hoist_set: false
+    scrape:
+      reason: 'a plain HTTP speaker with no metrics endpoint; it answers only when the call is recorded, and the recorder fails loudly when it does not'
+
   # Rust Rounds' sandboxed recorder (paulgsc/some-ui#2234, RR3).
   - service: rust-runner
     container_name: rust-runner

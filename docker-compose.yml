@@ -7,5 +7,6 @@ include:
   - path: ./infra/compose/rust_runner.yml
   - path: ./infra/compose/orchestrator.yml
   - path: ./infra/compose/ollama.yml
+  - path: ./infra/compose/kokoro.yml
   - path: ./infra/compose/monitoring.yml
   - path: ./infra/compose/analytics.yml
