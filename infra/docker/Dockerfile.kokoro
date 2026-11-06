@@ -1,0 +1,20 @@
+# Home's speaker for the weekly call (paulgsc/some-ui#2635, ST36's third
+# slice): Kokoro v1.0, seeded per line so the same words in the same voice
+# give the same audio (infra/kokoro/say.py says why the stock server can't).
+#
+# Everything comes from one image pinned by digest: Kokoro-FastAPI v0.9.2's
+# CPU build, with the `kokoro` library (0.9.4), the model
+# (hexgrad/Kokoro-82M, kokoro-v1_0.pth, checked by SHA-256 at start) and
+# its voices. Only its runtime is used; its own server is not run.
+FROM ghcr.io/remsky/kokoro-fastapi-cpu@sha256:cbcc28802fb5d1eaaba8b91e38b0e872a669e85831c513cf6a29c709cbe25405
+
+COPY --chown=appuser:appuser infra/kokoro/say.py /app/say.py
+
+ENV OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    HF_HUB_OFFLINE=1
+
+USER appuser
+EXPOSE 8880
+ENTRYPOINT []
+CMD ["/app/.venv/bin/python", "/app/say.py"]
