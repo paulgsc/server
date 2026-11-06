@@ -55,13 +55,16 @@ services:
       start_period: 60s
 
   call-stage:
-    image: pgathondu/www:0.1.58@sha256:${CALL_STAGE_DIGEST_PIN}
+    image: pgathondu/www:0.1.58@sha256:b583c771ae97b6ce8c8581138ba01f58df113585a5bd2b825835dc7f6d160805
     container_name: call-stage
     restart: unless-stopped
     networks:
       - call-render-network
-    # nginx as the image ships it: its entrypoint writes its own config and
-    # cache at start, so its root stays writable.
+    # Only the static files are served; infra/render/call-stage.nginx.conf
+    # says why the image's own config is not used. nginx's entrypoint writes
+    # its cache at start, so its root stays writable.
+    volumes:
+      - ../render/call-stage.nginx.conf:/etc/nginx/conf.d/default.conf:ro
     mem_limit: 256M
     cpus: 0.5
     pids_limit: 32
