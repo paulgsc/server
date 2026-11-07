@@ -110,14 +110,20 @@ services:
       # as root, so a folder Docker makes here is one it can write.
       - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/renders:/renders:rw
     read_only: true
+    # Chromium's profile and the tools' caches only: a render's own files are
+    # written on the drive (render-calls.sh's WORK), since what is written
+    # here counts against mem_limit.
     tmpfs:
-      - /tmp:size=4G
+      - /tmp:size=1G
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     mem_limit: 4G
     cpus: 2.0
+    # A quarter of the default weight: when home's own services want the CPU,
+    # they get it first, and the render takes what is left over.
+    cpu_shares: 256
     pids_limit: 512
     deploy:
       resources:
