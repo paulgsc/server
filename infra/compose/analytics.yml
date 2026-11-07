@@ -2,6 +2,9 @@ services:
   metabase:
     image: metabase/metabase:latest
     container_name: metabase
+    # Who the kernel kills first when home runs out of memory: tooling
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 500
     restart: unless-stopped
     ports:
       # Box only: Caddy on the host (paulgsc/dotfiles, nixos/subdomains)

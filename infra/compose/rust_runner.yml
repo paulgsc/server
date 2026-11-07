@@ -27,6 +27,9 @@ services:
       context: ../..
       dockerfile: infra/docker/Dockerfile.rust-runner
     container_name: rust-runner
+    # Who the kernel kills first when home runs out of memory: interactive
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 0
     # RX1: no network at all, not an internal one. A program shares the
     # runner's network namespace, so on any network it could reach whatever
     # else is on it (file_host included). The only way in is the socket.

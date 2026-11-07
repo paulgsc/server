@@ -23,6 +23,9 @@ services:
       context: ../..
       dockerfile: infra/docker/Dockerfile.kokoro
     container_name: kokoro
+    # Who the kernel kills first when home runs out of memory: batch
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 800
     restart: unless-stopped
     networks:
       - call-render-network
@@ -44,6 +47,10 @@ services:
     # line's memory (infra/kokoro/say.py now hands it back).
     mem_limit: 3G
     cpus: 2.0
+    # The render's weight (below), since the speaker is the render's work:
+    # at the default weight it took home's CPU at full share while each
+    # line was said, so the render yielded only in its ffmpeg phase (#707).
+    cpu_shares: 256
     pids_limit: 64
     deploy:
       resources:
@@ -61,6 +68,9 @@ services:
   call-stage:
     image: pgathondu/www:0.1.58@sha256:b583c771ae97b6ce8c8581138ba01f58df113585a5bd2b825835dc7f6d160805
     container_name: call-stage
+    # Who the kernel kills first when home runs out of memory: batch
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 800
     restart: unless-stopped
     networks:
       - call-render-network
@@ -85,6 +95,9 @@ services:
       context: ../..
       dockerfile: infra/docker/Dockerfile.render
     container_name: render
+    # Who the kernel kills first when home runs out of memory: batch
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 800
     restart: unless-stopped
     depends_on:
       kokoro:

@@ -687,3 +687,119 @@ tests:
           - exp_labels:
               objective: CW6
               says: "Home's database drive, which keeps the call's videos and caches, has under a tenth of its space free."
+
+  # LN2 (#707): every kill the kernel makes for memory is heard.
+  - name: a container's OOM kill names it, and is not also said as unattributed (LN2)
+    interval: 1m
+    input_series:
+      - series: 'node_vmstat_oom_kill{job="node"}'
+        values: '5x10 6x90'
+      - series: 'container_oom_events_total{name="kokoro"}'
+        values: '0x10 1x90'
+      - series: 'container_oom_events_total{name="file-host-server"}'
+        values: '0x100'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HomeOomKill
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: HomeOomKill
+        exp_alerts:
+          - exp_labels:
+              objective: LN2
+              name: kokoro
+              says: "Home's kokoro lost a process to the kernel for memory in the last hour: docs/home-compute.md (What a kill costs) says what that cost and what retries it."
+      - eval_time: 15m
+        alertname: HomeOomKillUnattributed
+        exp_alerts: []
+      - eval_time: 80m
+        alertname: HomeOomKill
+        exp_alerts: []
+
+  - name: a kill no container is named for is still heard (LN2)
+    interval: 1m
+    input_series:
+      - series: 'node_vmstat_oom_kill{job="node"}'
+        values: '5x10 6x90'
+      - series: 'container_oom_events_total{name="kokoro"}'
+        values: '0x100'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HomeOomKillUnattributed
+        exp_alerts:
+          - exp_labels:
+              objective: LN2
+              says: "The kernel killed a process on home for memory in the last hour that no container is named for: the WHO DUNNIT dashboard's OOM tile counts it, and journalctl -k on home names it."
+      - eval_time: 15m
+        alertname: HomeOomKill
+        exp_alerts: []
+      - eval_time: 80m
+        alertname: HomeOomKillUnattributed
+        exp_alerts: []
+
+  - name: a kill is heard when cAdvisor names no container at all (LN2)
+    interval: 1m
+    input_series:
+      - series: 'node_vmstat_oom_kill{job="node"}'
+        values: '5x10 6x90'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HomeOomKillUnattributed
+        exp_alerts:
+          - exp_labels:
+              objective: LN2
+              says: "The kernel killed a process on home for memory in the last hour that no container is named for: the WHO DUNNIT dashboard's OOM tile counts it, and journalctl -k on home names it."
+
+  - name: two kills with one named are one named and one unattributed (LN2)
+    interval: 1m
+    input_series:
+      - series: 'node_vmstat_oom_kill{job="node"}'
+        values: '5x10 7x90'
+      - series: 'container_oom_events_total{name="render"}'
+        values: '0x10 1x90'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HomeOomKill
+        exp_alerts:
+          - exp_labels:
+              objective: LN2
+              name: render
+              says: "Home's render lost a process to the kernel for memory in the last hour: docs/home-compute.md (What a kill costs) says what that cost and what retries it."
+      - eval_time: 15m
+        alertname: HomeOomKillUnattributed
+        exp_alerts:
+          - exp_labels:
+              objective: LN2
+              says: "The kernel killed a process on home for memory in the last hour that no container is named for: the WHO DUNNIT dashboard's OOM tile counts it, and journalctl -k on home names it."
+
+  - name: no kill since boot says nothing (LN2)
+    interval: 1m
+    input_series:
+      - series: 'node_vmstat_oom_kill{job="node"}'
+        values: '3x100'
+      - series: 'container_oom_events_total{name="kokoro"}'
+        values: '0x100'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: HomeOomKill
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: HomeOomKillUnattributed
+        exp_alerts: []
+
+  # The kernel's count is scraped a minute before cAdvisor names the kill:
+  # the gap is under the rule's 2 m, so nothing is said as unattributed.
+  - name: a container named a scrape after the kernel counted it is not unattributed (LN2)
+    interval: 1m
+    input_series:
+      - series: 'node_vmstat_oom_kill{job="node"}'
+        values: '5x10 6x90'
+      - series: 'container_oom_events_total{name="kokoro"}'
+        values: '0x11 1x89'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HomeOomKillUnattributed
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: HomeOomKillUnattributed
+        exp_alerts: []
