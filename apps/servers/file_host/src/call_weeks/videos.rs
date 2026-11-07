@@ -11,13 +11,24 @@
 //! - [`video_file`]: where a rendered week's `call.mp4` is, for the download.
 //! - [`let_go`]: one step of letting a week go, with its receipt.
 //!
-//! **What a step deletes, and in what order.** The video's step first
-//! removes the week's file from `call_weeks::RENDER_FOLDER`, so the render
-//! worker is never given it again, then its `call.mp4`; the rest's step
-//! removes the week's folder under `renders/call`. Each writes its receipt
-//! (`call_week_repo::video`) in the transaction it deletes under, so a step
-//! whose delete fails writes nothing. A step already done answers with its
-//! receipt and deletes nothing more. The week's words stay in `call_week`.
+//! **What a step deletes, and in what order.** The video's step removes the
+//! week's file from `call_weeks::RENDER_FOLDER`, so the render worker is
+//! never given it again, then its `call.mp4`; the rest's step removes the
+//! week's folder under `renders/call`. The week's words stay in `call_week`.
+//!
+//! **The receipt first, then the files.** A transaction cannot take back a
+//! deleted file, so each step commits its receipt (`call_week_repo::video`)
+//! before it touches the drive, and answers only once the files are gone. A
+//! step whose files did not all go (the drive refused, or the process
+//! stopped) is finished the next time it is asked for: a step that has a
+//! receipt removes what is left of it again, then answers with that receipt.
+//! So a receipt never stands without its delete under way, and a delete
+//! never happens without its receipt.
+//!
+//! **One at a time with the export pass.** [`super::FOLDERS`] is held for a
+//! whole step, as the export pass holds it for a whole pass, so a pass never
+//! writes a week's file back between reading which weeks were let go and
+//! writing the ones that are missing.
 //!
 //! **Paths.** A week's folder is joined only after `call_week` says home
 //! holds the week, and the table holds only `YYYY-MM-DD` days, so a path
@@ -149,14 +160,19 @@ pub enum LetGoError {
 }
 
 /// Lets one step of a week go (the module doc), under `BEGIN IMMEDIATE` so
-/// two phones asking at once do it once.
+/// two phones asking at once write one receipt.
 ///
 /// # Errors
-/// A storage failure, or a file the drive would not remove: then nothing is
-/// written, and the step can be asked for again.
+/// A storage failure, or a file the drive would not remove. The receipt is
+/// kept then, and asking for the step again finishes it.
 pub async fn let_go(db: &SqlitePool, renders: &Path, weeks: &Path, from: &str, step: Step, now: &str) -> Result<LetGo, LetGoError> {
+	let _folders = super::FOLDERS.lock().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	// A receipt names a week home holds (its foreign key), so the path below
+	// is one of `renders/call`'s.
 	if let Some(receipt) = video::receipt(&mut tx, from, step).await? {
+		tx.commit().await?;
+		finish(renders, weeks, from, step).await?;
 		return Ok(LetGo::Gone(receipt));
 	}
 	if call_week_repo::body(&mut tx, from).await?.is_none() {
@@ -168,24 +184,10 @@ pub async fn let_go(db: &SqlitePool, renders: &Path, weeks: &Path, from: &str, s
 	let folder = renders.join(from);
 	let size = match step {
 		Step::Video => {
-			let file = folder.join(VIDEO);
-			let Ok(meta) = tokio::fs::metadata(&file).await else {
+			let Ok(meta) = tokio::fs::metadata(folder.join(VIDEO)).await else {
 				return Ok(LetGo::NotRendered);
 			};
-			let receipt = Receipt {
-				from: from.to_owned(),
-				step,
-				youtube_id: link.youtube_id.clone(),
-				size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
-				deleted_at: now.to_owned(),
-			};
-			video::write_receipt(&mut tx, &receipt).await?;
-			// The week's file first: the worker renders any week it is given
-			// that has no video.
-			remove_file(&weeks.join(String::from(from) + ".json")).await?;
-			remove_file(&file).await?;
-			tx.commit().await?;
-			return Ok(LetGo::Gone(receipt));
+			meta.len()
 		}
 		Step::Rest => {
 			if video::receipt(&mut tx, from, Step::Video).await?.is_none() {
@@ -202,12 +204,26 @@ pub async fn let_go(db: &SqlitePool, renders: &Path, weeks: &Path, from: &str, s
 		deleted_at: now.to_owned(),
 	};
 	video::write_receipt(&mut tx, &receipt).await?;
-	match tokio::fs::remove_dir_all(&folder).await {
-		Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
-		_ => {}
-	}
 	tx.commit().await?;
+	finish(renders, weeks, from, step).await?;
 	Ok(LetGo::Gone(receipt))
+}
+
+/// Removes what a step lets go; what is already gone is fine.
+async fn finish(renders: &Path, weeks: &Path, from: &str, step: Step) -> std::io::Result<()> {
+	let folder = renders.join(from);
+	match step {
+		Step::Video => {
+			// The week's file first: the worker renders any week it is given
+			// that has no video.
+			remove_file(&weeks.join(String::from(from) + ".json")).await?;
+			remove_file(&folder.join(VIDEO)).await
+		}
+		Step::Rest => match tokio::fs::remove_dir_all(&folder).await {
+			Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+			_ => Ok(()),
+		},
+	}
 }
 
 /// Removes a file; one already gone is fine.
@@ -327,18 +343,26 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_video_the_drive_will_not_remove_writes_no_receipt() {
+	async fn a_step_the_drive_refuses_keeps_its_receipt_and_is_finished_when_asked_again() {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let (renders, weeks) = (dir.path().join("call"), dir.path().join("call-weeks"));
 		hold(&pool, "2026-10-30", "2026-11-05").await;
 		record_link(&pool, "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap();
-		// A folder where the week's file would be: removing it as a file fails.
-		std::fs::create_dir_all(weeks.join("2026-10-30.json").join("x")).unwrap();
+		// A folder where the week's file would be: removing it as a file fails,
+		// as a drive that refuses would.
+		let blocked = weeks.join("2026-10-30.json");
+		std::fs::create_dir_all(blocked.join("x")).unwrap();
 		render(&renders, "2026-10-30");
 
-		assert!(let_go(&pool, &renders, &weeks, "2026-10-30", Step::Video, NOW).await.is_err());
+		assert!(let_go(&pool, &renders, &weeks, "2026-10-30", Step::Video, NOW).await.is_err(), "not answered as done");
 		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(video::receipt(&mut conn, "2026-10-30", Step::Video).await.unwrap(), None);
-		assert!(renders.join("2026-10-30").join(VIDEO).exists());
+		let kept = video::receipt(&mut conn, "2026-10-30", Step::Video).await.unwrap().unwrap();
+		drop(conn);
+		assert_eq!(kept.size, 10, "the receipt stands, so the step is never lost");
+
+		std::fs::remove_dir_all(&blocked).unwrap();
+		let later = "2026-11-07T13:00:00.000Z";
+		assert_eq!(let_go(&pool, &renders, &weeks, "2026-10-30", Step::Video, later).await.unwrap(), LetGo::Gone(kept));
+		assert!(!renders.join("2026-10-30").join(VIDEO).exists(), "asked again, it is finished");
 	}
 }
