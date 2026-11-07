@@ -26,7 +26,7 @@ mod model;
 
 use std::collections::BTreeMap;
 
-pub use model::{instant, parse_event, Event, Outcome, Problem, Went, BODY_CEILING, MAX_MS};
+pub use model::{instant, parse_event, Engagement, Event, Kind, Outcome, Problem, Surface, Went, BODY_CEILING, MAX_MS};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
@@ -188,6 +188,25 @@ pub struct ProcessLast {
 	pub failed: Option<Last>,
 }
 
+/// One affordance on one surface over the window.
+///
+/// How often each event was written, and when it was last taken over
+/// everything home holds (paulgsc/some-ui ENG11, #2544). How long since it
+/// was last taken is the reader's to work out from `lastTaken`, when it reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AffordanceUse {
+	pub pipeline: String,
+	pub affordance: String,
+	pub surface: String,
+	pub offered: i64,
+	pub taken: i64,
+	pub passed_over: i64,
+	pub left: i64,
+	pub said: i64,
+	pub last_taken: Option<String>,
+}
+
 /// What `GET /app-events/summary` answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Summary {
@@ -202,6 +221,9 @@ pub struct Summary {
 	/// The window held more than [`WINDOW_READ`] outcomes, so `outcomes`
 	/// counts only the newest of them.
 	pub partial: bool,
+	/// Per pipeline, affordance and surface, in that order: every one with
+	/// an engagement event in the window, or ever taken.
+	pub engagement: Vec<AffordanceUse>,
 }
 
 /// One process and screen's outcomes as a summary reads them.
@@ -259,7 +281,9 @@ pub async fn summary(conn: &mut SqliteConnection, subject: &str, since: &str) ->
 	let partial = i64::try_from(bodies.len()).unwrap_or(i64::MAX) > WINDOW_READ;
 	let mut by_screen: BTreeMap<(String, String), Tally> = BTreeMap::new();
 	for body in bodies.iter().take(usize::try_from(WINDOW_READ).unwrap_or(usize::MAX)) {
-		let Event::Outcome(outcome) = read_body(body)?;
+		let Event::Outcome(outcome) = read_body(body)? else {
+			return Err(EventError::Unreadable);
+		};
 		let entry = by_screen.entry((outcome.process, outcome.screen)).or_default();
 		match outcome.went {
 			Went::Worked => entry.worked += 1,
@@ -292,7 +316,9 @@ pub async fn summary(conn: &mut SqliteConnection, subject: &str, since: &str) ->
 	.await?;
 	let mut last: BTreeMap<String, ProcessLast> = BTreeMap::new();
 	for row in lasts {
-		let Event::Outcome(outcome) = read_body(&row.body)?;
+		let Event::Outcome(outcome) = read_body(&row.body)? else {
+			return Err(EventError::Unreadable);
+		};
 		let entry = last.entry(outcome.process.clone()).or_insert_with(|| ProcessLast {
 			process: outcome.process.clone(),
 			worked: None,
@@ -316,7 +342,69 @@ pub async fn summary(conn: &mut SqliteConnection, subject: &str, since: &str) ->
 		outcomes,
 		last: last.into_values().collect(),
 		partial,
+		engagement: engagement(conn, subject, since).await?,
 	})
+}
+
+/// `subject`'s engagement events counted per affordance and kind over the
+/// window, by one grouped read, and each affordance's last `taken` over
+/// everything home holds, by another. Neither reads a body into memory.
+async fn engagement(conn: &mut SqliteConnection, subject: &str, since: &str) -> Result<Vec<AffordanceUse>, EventError> {
+	type Key = (String, String, String);
+	let counts = sqlx::query!(
+		r#"SELECT json_extract(body, '$.pipeline') AS "pipeline!: String",
+			json_extract(body, '$.affordance') AS "affordance!: String",
+			json_extract(body, '$.surface') AS "surface!: String",
+			json_extract(body, '$.kind') AS "kind!: String",
+			COUNT(*) AS "events!: i64"
+		FROM app_event WHERE subject_id = ?1 AND family = 'engagement' AND at >= ?2
+		GROUP BY 1, 2, 3, 4"#,
+		subject,
+		since
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let lasts = sqlx::query!(
+		r#"SELECT json_extract(body, '$.pipeline') AS "pipeline!: String",
+			json_extract(body, '$.affordance') AS "affordance!: String",
+			json_extract(body, '$.surface') AS "surface!: String",
+			MAX(at) AS "at!: String"
+		FROM app_event WHERE subject_id = ?1 AND family = 'engagement' AND json_extract(body, '$.kind') = 'taken'
+		GROUP BY 1, 2, 3"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let blank = |pipeline: String, affordance: String, surface: String| AffordanceUse {
+		pipeline,
+		affordance,
+		surface,
+		offered: 0,
+		taken: 0,
+		passed_over: 0,
+		left: 0,
+		said: 0,
+		last_taken: None,
+	};
+	let mut uses: BTreeMap<Key, AffordanceUse> = BTreeMap::new();
+	for row in counts {
+		let key = (row.pipeline.clone(), row.affordance.clone(), row.surface.clone());
+		let counted = uses.entry(key).or_insert_with(|| blank(row.pipeline, row.affordance, row.surface));
+		let slot = match row.kind.as_str() {
+			"offered" => &mut counted.offered,
+			"taken" => &mut counted.taken,
+			"passed-over" => &mut counted.passed_over,
+			"left" => &mut counted.left,
+			"said" => &mut counted.said,
+			_ => return Err(EventError::Unreadable),
+		};
+		*slot += row.events;
+	}
+	for row in lasts {
+		let key = (row.pipeline.clone(), row.affordance.clone(), row.surface.clone());
+		uses.entry(key).or_insert_with(|| blank(row.pipeline, row.affordance, row.surface)).last_taken = Some(row.at);
+	}
+	Ok(uses.into_values().collect())
 }
 
 #[cfg(test)]
@@ -453,6 +541,48 @@ mod tests {
 		let empty = summary(&mut pool.acquire().await.unwrap(), "nobody", "2026-11-01T00:00:00.000Z").await.unwrap();
 		assert!(empty.families.is_empty() && empty.outcomes.is_empty() && empty.last.is_empty());
 		assert_eq!(super::median_of(vec![5, 1, 3, 9]), Some(Timing { median: 5, max: 9, of: 4 }));
+	}
+
+	fn engaged(id: &str, at: &str, affordance: &str, kind: &str) -> Value {
+		let mut event = json!({
+			"family": "engagement", "id": id, "at": at, "build": null,
+			"kind": kind, "pipeline": "topik", "affordance": affordance, "surface": "apk"
+		});
+		if kind == "passed-over" {
+			event["offeredAt"] = json!(at);
+			event["ending"] = json!("took-another");
+		}
+		event
+	}
+
+	#[tokio::test]
+	async fn the_summary_counts_engagement_per_affordance_and_keeps_the_last_taken() {
+		let pool = pool().await;
+		for event in [
+			engaged("g1", "2026-10-01T09:00:00.000Z", "routine-lens", "taken"),
+			engaged("g2", "2026-11-02T09:00:00.000Z", "routine-lens", "offered"),
+			engaged("g3", "2026-11-02T09:00:00.000Z", "routine-read-aloud", "offered"),
+			engaged("g4", "2026-11-02T09:01:00.000Z", "routine-read-aloud", "taken"),
+			engaged("g5", "2026-11-02T09:01:00.000Z", "routine-lens", "passed-over"),
+			outcome("e1", "2026-11-02T09:02:00.000Z", "jobs.pass", "kept", "worked", None),
+		] {
+			put(&pool, A, &event).await.unwrap();
+		}
+		put(&pool, B, &engaged("g9", "2026-11-02T09:00:00.000Z", "routine-drama", "taken")).await.unwrap();
+		let held = summary(&mut pool.acquire().await.unwrap(), A, "2026-11-01T00:00:00.000Z").await.unwrap();
+		assert_eq!(
+			serde_json::to_value(&held.families).unwrap(),
+			json!([{ "family": "engagement", "events": 4 }, { "family": "outcome", "events": 1 }])
+		);
+		assert_eq!(held.outcomes.len(), 1, "engagement is not read as an outcome");
+		assert_eq!(
+			serde_json::to_value(&held.engagement).unwrap(),
+			json!([
+				{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "offered": 1, "taken": 0, "passedOver": 1, "left": 0, "said": 0, "lastTaken": "2026-10-01T09:00:00.000Z" },
+				{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "offered": 1, "taken": 1, "passedOver": 0, "left": 0, "said": 0, "lastTaken": "2026-11-02T09:01:00.000Z" }
+			]),
+			"the lens was last taken before the window, and B's drama is B's"
+		);
 	}
 
 	#[tokio::test]

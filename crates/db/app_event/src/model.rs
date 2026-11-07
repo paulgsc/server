@@ -79,14 +79,97 @@ pub struct Outcome {
 	pub peak: Option<f64>,
 }
 
+/// Which of the vocabulary's five events an engagement event is
+/// (paulgsc/some-ui `packages/engagement`, ENG1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+	/// An affordance was put in front of the owner.
+	Offered,
+	/// It was started.
+	Taken,
+	/// It was offered, and the visit ended without it (`ending` says how).
+	PassedOver,
+	/// It was started and stopped (`place` says where).
+	Left,
+	/// A friction answer the owner gave (`answer`, one of the affordance's).
+	Said,
+}
+
+impl Kind {
+	/// The wire name.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Offered => "offered",
+			Self::Taken => "taken",
+			Self::PassedOver => "passed-over",
+			Self::Left => "left",
+			Self::Said => "said",
+		}
+	}
+}
+
+/// Where an affordance is: the Android app, or the desktop web.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+	Apk,
+	Web,
+}
+
+/// Whether the owner used something the app offered (paulgsc/some-ui ENGAGE,
+/// ENG2 #2535): one of ENG1's five events, naming the pipeline and
+/// affordance by the registry's ids, the surface, and when.
+///
+/// Which optional fields an event carries is its kind's: `offeredAt` and
+/// `ending` for `passed-over`, `startedAt` and `place` for `left`, `answer`
+/// for `said`, none for `offered` and `taken`. They are left out of the body
+/// when absent, so each kind is stored as exactly its own fields. Which ids
+/// the registry lists is the phone's to check (`checkEvent`); home holds
+/// that each is a name from the app's code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Engagement {
+	/// The phone's id for the event.
+	pub id: String,
+	/// When it happened, as RFC 3339 UTC.
+	pub at: String,
+	/// The build that sent it (its commit), when the build knows it.
+	#[serde(default)]
+	pub build: Option<String>,
+	pub kind: Kind,
+	/// The pipeline, by the registry's id (`topik`).
+	pub pipeline: String,
+	/// The affordance, by the registry's id in its pipeline (`routine-lens`).
+	pub affordance: String,
+	pub surface: Surface,
+	/// When it was offered: a `passed-over`'s visit start.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub offered_at: Option<String>,
+	/// How the visit ended, for a `passed-over`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ending: Option<String>,
+	/// When it was taken, for a `left`; `at` less this is how long it lasted.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub started_at: Option<String>,
+	/// Where a `left` stopped: one of the affordance's places.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub place: Option<String>,
+	/// A `said`'s answer: one of the affordance's answers.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub answer: Option<String>,
+}
+
 /// An app event: its family, and the shape that family has.
 ///
 /// A family is a variant here and nowhere else: the table has no column per
-/// family (paulgsc/some-ui ENG2, #2535, adds the second).
+/// family.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "family", rename_all = "snake_case")]
 pub enum Event {
 	Outcome(Outcome),
+	Engagement(Engagement),
 }
 
 impl Event {
@@ -95,6 +178,7 @@ impl Event {
 	pub const fn family(&self) -> &'static str {
 		match self {
 			Self::Outcome(_) => "outcome",
+			Self::Engagement(_) => "engagement",
 		}
 	}
 
@@ -103,6 +187,7 @@ impl Event {
 	pub fn id(&self) -> &str {
 		match self {
 			Self::Outcome(outcome) => &outcome.id,
+			Self::Engagement(engagement) => &engagement.id,
 		}
 	}
 
@@ -111,6 +196,7 @@ impl Event {
 	pub fn at(&self) -> &str {
 		match self {
 			Self::Outcome(outcome) => &outcome.at,
+			Self::Engagement(engagement) => &engagement.at,
 		}
 	}
 }
@@ -140,13 +226,19 @@ pub fn instant(at: &str) -> Option<String> {
 		.map(|at| at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
-fn outcome_problems(outcome: &Outcome, problems: &mut Vec<Problem>) {
-	if outcome.build.as_deref().is_some_and(|build| !is_id(build)) {
+fn build_problems(build: Option<&str>, problems: &mut Vec<Problem>) {
+	if build.is_some_and(|build| !is_id(build)) {
 		problems.push(("build", "must be the build's commit: 1 to 64 letters, digits, `-` or `_`, or none"));
 	}
+}
+
+const NAME: &str = "must be a name from the app's code: 1 to 64 lowercase letters, digits, `-` or `.`";
+
+fn outcome_problems(outcome: &Outcome, problems: &mut Vec<Problem>) {
+	build_problems(outcome.build.as_deref(), problems);
 	for (field, value) in [("process", &outcome.process), ("screen", &outcome.screen), ("ending", &outcome.ending)] {
 		if !is_name(value) {
-			problems.push((field, "must be a name from the app's code: 1 to 64 lowercase letters, digits, `-` or `.`"));
+			problems.push((field, NAME));
 		}
 	}
 	for (field, value) in [("readyMs", outcome.ready_ms), ("durationMs", outcome.duration_ms)] {
@@ -156,6 +248,50 @@ fn outcome_problems(outcome: &Outcome, problems: &mut Vec<Problem>) {
 	}
 	if outcome.peak.is_some_and(|peak| !(0.0..=1.0).contains(&peak)) {
 		problems.push(("peak", "must be a level from 0 to 1, or none"));
+	}
+}
+
+/// An earlier instant of a `passed-over` or `left`: in UTC, and not after
+/// the event's own `at`.
+fn earlier_problems(field: &'static str, earlier: &str, at: &str, problems: &mut Vec<Problem>) {
+	match (instant(earlier), instant(at)) {
+		(None, _) => problems.push((field, "must be an RFC 3339 instant in UTC, ending `Z`")),
+		(Some(earlier), Some(at)) if earlier > at => problems.push((field, "must come before `at`")),
+		_ => {}
+	}
+}
+
+fn engagement_problems(event: &Engagement, problems: &mut Vec<Problem>) {
+	build_problems(event.build.as_deref(), problems);
+	for (field, value) in [("pipeline", &event.pipeline), ("affordance", &event.affordance)] {
+		if !is_name(value) {
+			problems.push((field, NAME));
+		}
+	}
+	// Each kind's own fields, and no other kind's.
+	let own: &[&str] = match event.kind {
+		Kind::Offered | Kind::Taken => &[],
+		Kind::PassedOver => &["offeredAt", "ending"],
+		Kind::Left => &["startedAt", "place"],
+		Kind::Said => &["answer"],
+	};
+	for (field, value) in [
+		("offeredAt", &event.offered_at),
+		("ending", &event.ending),
+		("startedAt", &event.started_at),
+		("place", &event.place),
+		("answer", &event.answer),
+	] {
+		match (own.contains(&field), value) {
+			(true, None) => problems.push((field, "is what this kind of event carries")),
+			(false, Some(_)) => problems.push((field, "is not a field this kind of event carries")),
+			(true, Some(text)) => match field {
+				"offeredAt" | "startedAt" => earlier_problems(field, text, &event.at, problems),
+				_ if !is_name(text) => problems.push((field, NAME)),
+				_ => {}
+			},
+			(false, None) => {}
+		}
 	}
 }
 
@@ -183,6 +319,7 @@ pub fn parse_event(id: &str, body: &[u8]) -> Result<Event, Vec<Problem>> {
 	}
 	match &event {
 		Event::Outcome(outcome) => outcome_problems(outcome, &mut problems),
+		Event::Engagement(engagement) => engagement_problems(engagement, &mut problems),
 	}
 	if problems.is_empty() {
 		Ok(event)
@@ -276,6 +413,56 @@ mod tests {
 		assert!(parse_event("e1", twice.as_bytes()).is_err(), "a key written twice is refused");
 		let big = json!({ "family": "outcome", "id": "e1", "pad": "x".repeat(BODY_CEILING) });
 		assert_eq!(fields("e1", &big), ["body"]);
+	}
+
+	fn engagement(kind: &str) -> Value {
+		let mut event = json!({
+			"family": "engagement", "id": "g1", "at": "2026-11-03T09:15:00.000Z", "build": "42a72b958",
+			"kind": kind, "pipeline": "topik", "affordance": "routine-lens", "surface": "apk"
+		});
+		let extra = match kind {
+			"passed-over" => json!({ "offeredAt": "2026-11-03T09:10:00.000Z", "ending": "took-another" }),
+			"left" => json!({ "startedAt": "2026-11-03T09:00:00.000Z", "place": "quiz" }),
+			"said" => json!({ "answer": "too-many-repeats" }),
+			_ => json!({}),
+		};
+		event.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+		event
+	}
+
+	#[test]
+	fn each_engagement_kind_reads_and_writes_back_as_it_came() {
+		for kind in ["offered", "taken", "passed-over", "left", "said"] {
+			let sent = engagement(kind);
+			let parsed = parse_event("g1", sent.to_string().as_bytes()).unwrap_or_else(|problems| panic!("{sent}: {problems:?}"));
+			assert_eq!(serde_json::to_value(&parsed).unwrap(), sent, "{kind} is stored as exactly its own fields");
+			assert_eq!(parsed.family(), "engagement");
+		}
+	}
+
+	#[test]
+	fn an_engagement_carries_its_kinds_fields_and_no_others() {
+		let mut missing = engagement("passed-over");
+		missing.as_object_mut().unwrap().remove("ending");
+		assert_eq!(fields("g1", &missing), ["ending"]);
+		let mut borrowed = engagement("taken");
+		borrowed["place"] = json!("quiz");
+		borrowed["answer"] = json!("rough");
+		assert_eq!(fields("g1", &borrowed), ["answer", "place"]);
+		let mut late = engagement("left");
+		late["startedAt"] = json!("2026-11-03T10:00:00.000Z");
+		assert_eq!(fields("g1", &late), ["startedAt"], "taken after it was left");
+		let mut wrong = engagement("said");
+		wrong["pipeline"] = json!("TOPIK");
+		wrong["affordance"] = json!("the lens");
+		wrong["answer"] = json!("it was too long and I gave up");
+		wrong["build"] = json!("a b");
+		assert_eq!(fields("g1", &wrong), ["affordance", "answer", "build", "pipeline"]);
+		for (key, value) in [("surface", json!("ios")), ("kind", json!("came-back")), ("words", json!("hello"))] {
+			let mut off = engagement("offered");
+			off[key] = value;
+			assert_eq!(fields("g1", &off), ["body"], "{key}");
+		}
 	}
 
 	#[test]
