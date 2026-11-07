@@ -56,8 +56,10 @@ EVERY=3600
 # tsx (a root devDependency of some-ui), not through pnpm: Corepack would fetch
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
+# /brand is home's folder of the owner's files a series names (its music
+# bed), read-only (call-render.yml); a series that names none never reads it.
 RECORDER=(/opt/some-ui/node_modules/.bin/tsx tests/record/call.ts
-  --app http://call-stage --voices kokoro --speaker http://kokoro:8880
+  --app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
 render_week() {

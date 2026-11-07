@@ -111,6 +111,10 @@ services:
       # folders under it (call_weeks::start) before it answers its health
       # check, as its own uid, which the worker runs as too (`user` below).
       - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/renders:/renders:rw
+      # The owner's files a template's series names, by their sums (the music
+      # bed, paulgsc/some-ui#2673), read only. Never a repository's: the owner
+      # puts them on home's drive.
+      - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/brand:/brand:ro
     # file_host's uid and gid (infra/docker/Dockerfile.server's `nonroot`):
     # what the worker writes is file_host's to delete when the owner lets a
     # week go, and nothing here runs as root.
