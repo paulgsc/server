@@ -65,6 +65,14 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 		"call_week",
 		"each week of the weekly call, as paulgsc/testing served it — what merged in two public repositories, nobody's record",
 	),
+	(
+		"call_video_deletion",
+		"a receipt for each step of a week of the call the owner let go from My data: the week, the step, its public YouTube video's id, the bytes and when; nobody's record",
+	),
+	(
+		"call_video_link",
+		"each week of the call's public YouTube video id, as the owner recorded it; nobody's record",
+	),
 	("curriculum", "lesson content — corpus-wide"),
 	("curriculum_publication", "curriculum release ledger"),
 	(

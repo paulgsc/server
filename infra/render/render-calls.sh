@@ -6,13 +6,16 @@
 # there, `call_weeks::RENDER_FOLDER`) with no video in /renders/call/<from>/,
 # it records the call's stage (`call-stage`, the pinned home-network app) with
 # each scene said by home's speaker (`kokoro`), renders it, and keeps the
-# result for good: the video, its takes and stills, its cut list and the week
-# it was made from. The same week gives the same files.
+# result: the video, its takes and stills, its cut list and the week it was
+# made from. The same week gives the same files.
 #
 # One week at a time, oldest first. A week that fails is left as it was and
 # tried again next pass; a finished one is moved into place whole, so a
 # folder in /renders/call/ is always a finished video. Nothing here deletes a
-# finished video.
+# finished video: the owner lets a week go from My data, once its YouTube
+# link is recorded, and file_host deletes it (`call_weeks::videos`), first
+# taking the week's file out of /weeks so it is never rendered again
+# (paulgsc/some-ui#2661).
 #
 # What it reports, for file_host to read (`call_weeks::render`; the CALL
 # dashboard and the Call* alerts): /renders/call-worker/last-pass, the Unix

@@ -29,10 +29,16 @@
 
 pub mod pass;
 pub mod render;
+pub mod videos;
 
 use crate::AppState;
 use std::time::Duration;
 use tracing::{error, info, warn};
+
+/// Held by the export pass for a whole pass (`pass::export`) and by a
+/// week's let go for a whole step (`videos::let_go`), so neither writes or
+/// removes a week's files in the middle of the other.
+pub(crate) static FOLDERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// How often home reads the index: a week arrives once a week.
 pub const INTERVAL: Duration = Duration::from_secs(3600);
@@ -85,9 +91,19 @@ impl CallWeeksContext {
 /// The render folder is made first, before the server answers its health
 /// check, so the render worker never finds it missing.
 /// A folder that cannot be made is logged here and counted by every pass.
+///
+/// So are the render worker's own folders (`render::RENDERS_FOLDER`,
+/// `WORK_FOLDER`, `STATUS_FOLDER`): made by this server's uid, which the
+/// worker runs as too (`infra/compose/call-render.yml`), so a week the owner
+/// lets go from My data is one this server can delete (`videos::let_go`).
 pub fn start(state: &AppState) {
 	if std::fs::create_dir_all(RENDER_FOLDER).is_err() {
 		error!(error = "render folder", "call weeks worker cannot make its render folder");
+	}
+	for folder in [render::RENDERS_FOLDER, render::WORK_FOLDER, render::STATUS_FOLDER] {
+		if std::fs::create_dir_all(folder).is_err() {
+			error!(error = "render folder", "call weeks worker cannot make the render worker's folders");
+		}
 	}
 	spawn(state, state.call_weeks.clone());
 }

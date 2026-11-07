@@ -10,6 +10,9 @@
 //! reads those against `call_week` for the CALL dashboard and the
 //! `CallRender*` alerts (`metrics::call_weeks::record_renders`).
 //!
+//! A week whose video the owner let go from My data (`videos::let_go`) is
+//! counted apart, never as waiting (CW8).
+//!
 //! It reads file names and one number, never a week's words or a log's.
 //! Cost: one read of `call_week`'s days and up to two `stat`s per week held,
 //! each minute; the table grows by a week a week.
@@ -61,7 +64,7 @@ pub async fn disk(renders: &Path, work: &Path, status: &Path) -> Disk {
 
 /// Every file's bytes under `dir`, not following links; nothing when it is
 /// missing.
-async fn bytes_under(dir: &Path) -> u64 {
+pub(crate) async fn bytes_under(dir: &Path) -> u64 {
 	let mut total = 0_u64;
 	let mut folders = vec![dir.to_path_buf()];
 	while let Some(folder) = folders.pop() {
@@ -115,7 +118,10 @@ fn drive(path: &Path) -> Option<(u64, u64)> {
 pub struct Renders {
 	/// Weeks home holds.
 	pub held: usize,
-	/// Of those, weeks with no video yet.
+	/// Of those, weeks whose video the owner let go from My data (CW8): never
+	/// waiting, and never rendered again.
+	pub let_go: usize,
+	/// Of those, weeks with no video yet, and not let go.
 	pub waiting: usize,
 	/// Of those, weeks whose last attempt failed.
 	pub failed: usize,
@@ -132,9 +138,9 @@ pub struct Renders {
 /// A storage failure reading `call_week`. A file that cannot be read counts
 /// as missing: a video that cannot be seen is a week still waiting.
 pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<Renders, sqlx::Error> {
-	let weeks = {
+	let (weeks, let_go) = {
 		let mut conn = db.acquire().await?;
-		call_week_repo::taken(&mut conn).await?
+		(call_week_repo::taken(&mut conn).await?, call_week_repo::video::let_go(&mut conn).await?)
 	};
 	let mut seen = Renders {
 		held: weeks.len(),
@@ -142,6 +148,10 @@ pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<R
 		..Renders::default()
 	};
 	for week in &weeks {
+		if let_go.contains(&week.from) {
+			seen.let_go += 1;
+			continue;
+		}
 		// `week_from` is a day by the table's own check, so it is one plain
 		// path segment.
 		if exists(&renders.join(&week.from).join("call.mp4")).await {
@@ -242,6 +252,7 @@ mod tests {
 			seen,
 			Renders {
 				held: 3,
+				let_go: 0,
 				waiting: 2,
 				failed: 1,
 				oldest_waiting_taken: Some(DateTime::parse_from_rfc3339("2026-11-06T08:00:00.000Z").unwrap().timestamp()),
@@ -256,5 +267,23 @@ mod tests {
 		let done = observe(&pool, &renders, &status).await.unwrap();
 		assert_eq!((done.waiting, done.failed, done.oldest_waiting_taken), (0, 0, None), "a video counts whatever log is left");
 		assert_eq!(done.worker_last_pass, None, "a stamp that is not a time reads as none");
+
+		// A week whose video was let go is counted apart, never as waiting.
+		std::fs::remove_file(renders.join("2026-10-23").join("call.mp4")).unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		call_week_repo::video::record_link(&mut conn, "2026-10-23", "dQw4w9WgXcQ", "2026-11-07T12:00:00.000Z")
+			.await
+			.unwrap();
+		let receipt = call_week_repo::video::Receipt {
+			from: "2026-10-23".to_owned(),
+			step: call_week_repo::video::Step::Video,
+			youtube_id: "dQw4w9WgXcQ".to_owned(),
+			size: 1,
+			deleted_at: "2026-11-07T12:00:00.000Z".to_owned(),
+		};
+		call_week_repo::video::write_receipt(&mut conn, &receipt).await.unwrap();
+		drop(conn);
+		let after = observe(&pool, &renders, &status).await.unwrap();
+		assert_eq!((after.held, after.let_go, after.waiting, after.oldest_waiting_taken), (3, 1, 0, None));
 	}
 }

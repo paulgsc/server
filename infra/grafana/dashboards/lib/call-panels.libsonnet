@@ -68,7 +68,7 @@ local count(title, description, expr, steps) =
 
   waiting: count(
     'WAITING FOR A VIDEO',
-    'Weeks home holds with no video yet in renders/call/<week>/ on its database drive. A new week waits until the render worker next passes, within the hour.',
+    'Weeks home holds with no video yet in renders/call/<week>/ on its database drive, not counting a week you let go from My data. A new week waits until the render worker next passes, within the hour.',
     'call_render_weeks_waiting',
     [{ color: 'green', value: null }, { color: 'orange', value: 1 }],
   ),
@@ -180,14 +180,15 @@ local count(title, description, expr, steps) =
   },
 
   weeks: {
-    title: 'Weeks held, waiting and failed',
-    description: 'Over time: a week arrives, waits for the render worker, and leaves waiting once its video is kept.',
+    title: 'Weeks held, waiting, failed and let go',
+    description: 'Over time: a week arrives, waits for the render worker, and leaves waiting once its video is kept. A week whose video you let go from My data, once its YouTube link was recorded, counts as let go, never as waiting.',
     type: 'timeseries',
     datasource: ds,
     targets: [
       { expr: 'call_weeks_held', legendFormat: 'held', refId: 'A' },
       { expr: 'call_render_weeks_waiting', legendFormat: 'waiting', refId: 'B' },
       { expr: 'call_render_weeks_failed', legendFormat: 'failed', refId: 'C' },
+      { expr: 'call_render_weeks_let_go', legendFormat: 'let go', refId: 'D' },
     ],
     fieldConfig: {
       defaults: {

@@ -1,6 +1,7 @@
 pub mod aph;
 pub mod app_events;
 pub mod auth;
+pub mod call_videos;
 pub mod cors;
 pub mod db;
 pub mod health;
