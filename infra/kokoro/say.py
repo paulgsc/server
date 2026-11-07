@@ -92,7 +92,10 @@ LIBC = ctypes.CDLL("libc.so.6")
 
 
 # Said with the word after it, never the one before: "$5", "(the".
-LEADS = set("$#([{\u201c\u2018\"'")
+LEADS = set("$#([{\u201c\u2018")
+# A straight quote opens or closes: it closes when nothing came between it
+# and the word before it, and opens otherwise.
+QUOTES = set("\"'")
 
 
 def spoken(token) -> bool:
@@ -109,29 +112,42 @@ def timed_words(chunks) -> list:
     its tokens). A token's times are its part's, so each part is offset by the
     parts before it. A token Kokoro says is a word, a symbol it reads out
     included; punctuation joins the word before it, and a silent lead-in
-    ("$", an opening bracket or quote) the word after it. A word Kokoro gave
+    ("$", an opening bracket or quote) the word after it. A straight quote
+    closes when it follows a word with no space between, and opens
+    otherwise. A word Kokoro gave
     no time starts and ends where the word before it ended.
     """
     words = []
     offset = 0.0
     lead = ""
+    # Whether the token before this one ended with a space, so a straight
+    # quote here opens rather than closes.
+    spaced = True
     for length, tokens in chunks:
         for token in tokens:
             text = token.text.strip()
             if not text:
                 continue
+            after = bool(token.whitespace)
             if not spoken(token):
-                if text in LEADS:
+                closes = text in QUOTES and not spaced and words
+                if (text in LEADS or text in QUOTES) and not closes:
                     lead += text
                 elif words:
                     words[-1]["text"] += text
+                spaced = after
                 continue
+            spaced = after
             last = words[-1]["endMs"] if words else 0
             start = last if token.start_ts is None else round((offset + token.start_ts) * 1000)
             end = start if token.end_ts is None else round((offset + token.end_ts) * 1000)
             words.append({"text": lead + text, "startMs": max(start, last), "endMs": max(end, start, last)})
             lead = ""
         offset += length
+    # A lead-in nothing followed (a quote opened at the line's end) stays
+    # with the last word rather than being lost.
+    if lead and words:
+        words[-1]["text"] += lead
     return words
 
 
