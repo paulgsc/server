@@ -855,6 +855,65 @@ pub async fn leetype_file(conn: &mut SqliteConnection, subject: &str, name: &str
 	Ok(file)
 }
 
+/// One week of Rust Rounds home holds (paulgsc/some-ui#2687, RR12): a
+/// `brief` file named `rust-week-<id>.json`, as `rust_round_repo::week`
+/// names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldWeek {
+	/// The week's id, `2026-w46`, from its name.
+	pub id: String,
+	/// Lowercase hex SHA-256 of the mailbox item, as the mailbox listed it.
+	pub sha256: String,
+	/// When home read it.
+	pub pulled_at: String,
+}
+
+/// `subject`'s newest weeks of Rust Rounds, newest week first, at most
+/// `limit`. Nothing of a body is read.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn rust_weeks(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+	let weeks = sqlx::query_as!(
+		HeldWeek,
+		r#"SELECT substr(name, 11, 8) AS "id!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String"
+		   FROM mailbox_item
+		   WHERE subject_id = ?1 AND folder = 'brief' AND name GLOB 'rust-week-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json'
+		   ORDER BY name DESC
+		   LIMIT ?2"#,
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(weeks)
+}
+
+/// One week home holds, whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeekFile {
+	pub sha256: String,
+	pub pulled_at: String,
+	/// The week as the mailbox held it.
+	pub body: Vec<u8>,
+}
+
+/// `subject`'s week named `name` in `brief`, if home holds it.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn rust_week(conn: &mut SqliteConnection, subject: &str, name: &str) -> Result<Option<WeekFile>, MailboxError> {
+	let week = sqlx::query_as!(
+		WeekFile,
+		"SELECT sha256, pulled_at, body FROM mailbox_item WHERE subject_id = ?1 AND folder = 'brief' AND name = ?2",
+		subject,
+		name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(week)
+}
+
 /// The folder home's `LeetType` session logs go to.
 pub const LEETYPE_LOG: &str = "leetype-log";
 

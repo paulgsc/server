@@ -18,8 +18,9 @@
 //! - **Checked for what home needs, not more** ([`round::read`]): its size,
 //!   its tag, its id, and every program to run.
 //! - **One row per distinct program** (`rust_round_source`), stored with the
-//!   round that first holds it, in the same transaction. It is the recording
-//!   pass's queue, in the order programs arrived.
+//!   round or the week ([`queue_week`], RR12) that first holds it, in the
+//!   same transaction. It is the recording pass's queue, in the order
+//!   programs arrived.
 //! - **Runs are keyed to the bytes and the toolchain** (EX2, RX4):
 //!   `rust_round_run` holds one row per program and toolchain, written only
 //!   by [`keep_run`].
@@ -37,6 +38,7 @@
 //!   round that holds the same program, whoever put it.
 
 pub mod round;
+pub mod week;
 
 use crate::round::Round;
 use serde::Serialize;
@@ -213,17 +215,40 @@ pub async fn put_round(conn: &mut SqliteConnection, subject: &str, round: &Round
 	.execute(&mut *conn)
 	.await?;
 	for program in &round.programs {
-		let source_hash = content_hash(program.source.as_bytes());
-		sqlx::query!(
-			"INSERT INTO rust_round_source (source_hash, source, queued_at) VALUES (?1, ?2, ?3) ON CONFLICT (source_hash) DO NOTHING",
-			source_hash,
-			program.source,
-			now
-		)
-		.execute(&mut *conn)
-		.await?;
+		queue(conn, &program.source, now).await?;
 	}
 	Ok(Change::Added)
+}
+
+/// Queue `source` for the recording pass, unless home holds those bytes
+/// already: one row per distinct program, whatever brought it.
+async fn queue(conn: &mut SqliteConnection, source: &str, now: &str) -> Result<(), sqlx::Error> {
+	let source_hash = content_hash(source.as_bytes());
+	sqlx::query!(
+		"INSERT INTO rust_round_source (source_hash, source, queued_at) VALUES (?1, ?2, ?3) ON CONFLICT (source_hash) DO NOTHING",
+		source_hash,
+		source,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(())
+}
+
+/// Queue each of `week`'s programs home does not hold yet, received `now`.
+///
+/// RR12, paulgsc/some-ui#2687. The week itself is kept by the mailbox pass,
+/// as the routine's files are (`mailbox_repo`'s `rust-week` folder); call
+/// this in the transaction that keeps it, so a week is never held with its
+/// programs unqueued.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn queue_week(conn: &mut SqliteConnection, week: &week::Week, now: &str) -> Result<(), sqlx::Error> {
+	for program in &week.programs {
+		queue(conn, &program.source, now).await?;
+	}
+	Ok(())
 }
 
 /// `subject`'s newest `limit` rounds, newest first.

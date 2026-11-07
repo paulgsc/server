@@ -1,8 +1,16 @@
-//! `/api/v1/rust-rounds` — Rust Rounds' rounds on home, and what the
-//! rust-runner recorded for each of their programs (paulgsc/some-ui#2234,
-//! RR3).
+//! `/api/v1/rust-rounds` and `/api/v1/rust-weeks` — Rust Rounds' rounds and
+//! weeks on home, and what the rust-runner recorded for each of their
+//! programs (paulgsc/some-ui#2234, RR3; #2687, RR12).
+//!
+//! A week is the routine's: it arrives through the mailbox (`mailbox::pass`
+//! keeps it in `brief` as `rust-week-<id>.json` and queues its programs), so
+//! there is no `PUT` for one, and these routes only read it.
 //!
 //! ```text
+//! GET /rust-weeks        → { weeks: [{ id, sha256, receivedAt }] }: the caller's, newest week first
+//! GET /rust-weeks/:id    → { id, sha256, receivedAt, week, tickets: [{ ticket, sourceHash,
+//!                            runs: [{ toolchain, ended, refusal, rustc: RustcRun }] }] },
+//!                          with an ETag, `304` on `If-None-Match`, or a JSON 404
 //! GET /rust-rounds       → { rounds: [{ id, contentHash, receivedAt }] }: the caller's, newest first
 //! GET /rust-rounds/:id   → { id, contentHash, receivedAt, round, programs: [{ card, sourceHash,
 //!                            runs: [{ toolchain, ended, refusal, rustc: RustcRun }] }] },
@@ -59,7 +67,9 @@ where
 		// so a body of exactly one byte too many still gets the 422 that
 		// names the ceiling, and anything longer a 413 before it is buffered,
 		// well inside the server-wide `RequestBodyLimitLayer`.
-		.put("/rust-rounds/:id", handlers::put_round.layer(DefaultBodyLimit::max(ROUND_CEILING + 1)));
+		.put("/rust-rounds/:id", handlers::put_round.layer(DefaultBodyLimit::max(ROUND_CEILING + 1)))
+		.get("/rust-weeks", handlers::list_weeks)
+		.get("/rust-weeks/:id", handlers::get_week);
 
 	Module::versioned("rust_rounds", table).with_cors(cors)
 }

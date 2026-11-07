@@ -115,7 +115,7 @@ fn now() -> String {
 }
 
 fn unreadable() -> FileHostError {
-	FileHostError::OperationError(String::from("a stored round does not read back"))
+	FileHostError::OperationError(String::from("a stored round or week does not read back"))
 }
 
 /// `GET /rust-rounds`
@@ -146,19 +146,7 @@ pub async fn get_round(paired: Paired, State(db): State<SqlitePool>, headers: He
 	let read = rust_round_repo::round::read(stored.text.as_bytes()).map_err(|_| unreadable())?;
 	let mut programs = Vec::with_capacity(read.programs.len());
 	for program in read.programs {
-		let source_hash = content_hash(program.source.as_bytes());
-		let runs = rust_round_repo::runs(&mut conn, &source_hash)
-			.await?
-			.into_iter()
-			.map(|run: StoredRun| {
-				Ok(RunKept {
-					toolchain: run.toolchain,
-					ended: run.ended,
-					refusal: run.refusal,
-					rustc: RawValue::from_string(run.rustc).map_err(|_| unreadable())?,
-				})
-			})
-			.collect::<Result<Vec<_>, FileHostError>>()?;
+		let (source_hash, runs) = runs_of(&mut conn, &program.source).await?;
 		programs.push(ProgramRuns {
 			card: program.card,
 			source_hash,
@@ -176,14 +164,158 @@ pub async fn get_round(paired: Paired, State(db): State<SqlitePool>, headers: He
 	// its tag.
 	#[allow(clippy::disallowed_methods)]
 	let body = serde_json::to_vec(&round)?;
+	tagged(&headers, body)
+}
+
+/// The hash of `source` and every run kept for it, under any toolchain, in
+/// the order kept: what a round's card and a week's ticket both show.
+async fn runs_of(conn: &mut sqlx::SqliteConnection, source: &str) -> Result<(String, Vec<RunKept>), FileHostError> {
+	let source_hash = content_hash(source.as_bytes());
+	let runs = rust_round_repo::runs(conn, &source_hash)
+		.await?
+		.into_iter()
+		.map(|run: StoredRun| {
+			Ok(RunKept {
+				toolchain: run.toolchain,
+				ended: run.ended,
+				refusal: run.refusal,
+				rustc: RawValue::from_string(run.rustc).map_err(|_| unreadable())?,
+			})
+		})
+		.collect::<Result<Vec<_>, FileHostError>>()?;
+	Ok((source_hash, runs))
+}
+
+/// A JSON body with its `ETag`, the hash of the body, or `304` when
+/// `If-None-Match` names it.
+fn tagged(headers: &HeaderMap, body: Vec<u8>) -> Result<Response, FileHostError> {
 	let etag = etag_value(&content_hash(&body))?;
-	if if_none_match_hits(&headers, &etag) {
+	if if_none_match_hits(headers, &etag) {
 		return Ok(not_modified(etag));
 	}
 	let mut response = Response::new(Body::from(body));
 	response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 	response.headers_mut().insert(ETAG, etag);
 	Ok(response)
+}
+
+/// `GET /rust-weeks`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WeekList {
+	/// The weeks home holds, newest week first, at most [`LIST_LIMIT`]: the
+	/// first is the current one.
+	pub weeks: Vec<WeekEntry>,
+}
+
+/// A week home holds, as the list names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekEntry {
+	/// The ISO week it opens, `2026-w46`.
+	pub id: String,
+	/// The hex SHA-256 of the week as home keeps it.
+	pub sha256: String,
+	/// When home read it from the mailbox.
+	pub received_at: String,
+}
+
+/// `GET /rust-weeks/:id`
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekWithRuns {
+	pub id: String,
+	pub sha256: String,
+	pub received_at: String,
+	/// The week, byte for byte as the routine put it.
+	pub week: Box<RawValue>,
+	/// Each ticket's program, in ticket order, and every run kept for it.
+	pub tickets: Vec<TicketRuns>,
+}
+
+/// One ticket's program and its runs.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketRuns {
+	/// The ticket's key, `QM-311`.
+	pub ticket: String,
+	/// The hex SHA-256 of the program as the runner is sent it.
+	pub source_hash: String,
+	/// Every run kept for these bytes, under any toolchain, in the order
+	/// kept; empty until the pass records it.
+	pub runs: Vec<RunKept>,
+}
+
+/// `GET /rust-weeks`: the weeks the routine put in the mailbox and home
+/// read, under the caller's subject, newest first.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's, 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "rust_weeks", skip_all, fields(otel.kind = "server"))]
+pub async fn list_weeks(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<WeekList>, FileHostError> {
+	let mut conn = db.acquire().await?;
+	let weeks = mailbox_repo::rust_weeks(&mut conn, paired.subject.as_str(), LIST_LIMIT)
+		.await
+		.map_err(mailbox_failure)?
+		.into_iter()
+		.map(|held| WeekEntry {
+			id: held.id,
+			sha256: held.sha256,
+			received_at: held.pulled_at,
+		})
+		.collect();
+	Ok(Json(WeekList { weeks }))
+}
+
+/// `GET /rust-weeks/:id`: the week as home keeps it, and every run kept
+/// for each ticket's program. The `ETag` is the hash of the body, so it
+/// changes when a run is kept; `If-None-Match` answers `304`.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's, 404 for a week the caller's
+/// subject does not hold, 500 for a storage failure or a held week that does
+/// not read back.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "rust_week", skip_all, fields(otel.kind = "server"))]
+pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
+	if !rust_round_repo::week::is_week_id(&id) {
+		return Err(FileHostError::NotFound);
+	}
+	let mut conn = db.acquire().await?;
+	let held = mailbox_repo::rust_week(&mut conn, paired.subject.as_str(), &rust_round_repo::week::mailbox_name(&id))
+		.await
+		.map_err(mailbox_failure)?
+		.ok_or(FileHostError::NotFound)?;
+	let read = rust_round_repo::week::read(&held.body).map_err(|_| unreadable())?;
+	let mut tickets = Vec::with_capacity(read.programs.len());
+	for program in read.programs {
+		let (source_hash, runs) = runs_of(&mut conn, &program.source).await?;
+		tickets.push(TicketRuns {
+			ticket: program.ticket,
+			source_hash,
+			runs,
+		});
+	}
+	let text = String::from_utf8(held.body).map_err(|_| unreadable())?;
+	let week = WeekWithRuns {
+		id: read.id,
+		sha256: held.sha256,
+		received_at: held.pulled_at,
+		week: RawValue::from_string(text).map_err(|_| unreadable())?,
+		tickets,
+	};
+	// Disallowed for tracing; this is the response body itself, hashed for
+	// its tag.
+	#[allow(clippy::disallowed_methods)]
+	let body = serde_json::to_vec(&week)?;
+	tagged(&headers, body)
+}
+
+fn mailbox_failure(err: mailbox_repo::MailboxError) -> FileHostError {
+	match err {
+		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
+		mailbox_repo::MailboxError::Rewritten => unreadable(),
+	}
 }
 
 /// `PUT /rust-rounds/:id`, the body being the round's JSON as the tutor
@@ -253,6 +385,7 @@ mod tests {
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 	const ROUND: &str = "/rust-rounds/indexing-01";
+	const WEEK: &str = "/rust-weeks/2026-w46";
 
 	#[derive(Clone)]
 	struct TestState {
@@ -347,9 +480,15 @@ mod tests {
 		let state = state().await;
 		let browser = session(&state, A, Carrier::Cookie).await;
 		let app = module().into_table_router().with_state(state);
-		assert_eq!(module().descriptors().count(), 3);
+		assert_eq!(module().descriptors().count(), 5);
 		let body = round("indexing-01", "fn main() {}\n");
-		for (method, path) in [(Method::GET, "/rust-rounds"), (Method::GET, ROUND), (Method::PUT, ROUND)] {
+		for (method, path) in [
+			(Method::GET, "/rust-rounds"),
+			(Method::GET, ROUND),
+			(Method::PUT, ROUND),
+			(Method::GET, "/rust-weeks"),
+			(Method::GET, WEEK),
+		] {
 			assert_eq!(call(&app, method.clone(), path, None, None, &body).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 			assert_eq!(
 				call(&app, method.clone(), path, Some(&browser), None, &body).await.0,
@@ -487,6 +626,84 @@ mod tests {
 		assert_eq!((&run["ended"], &run["refusal"]), (&json!("recorded"), &json!(null)));
 		assert_eq!(run["rustc"], json!({ "outcome": "prints", "toolchain": "1.97.0", "compileStderr": "", "stdout": "ok\n" }));
 		assert_eq!(call(&app, Method::GET, "/rust-rounds/nope", Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND);
+	}
+
+	/// A week as the mailbox pass keeps it for `subject`: in `brief`, its
+	/// programs queued in the same transaction.
+	async fn hold_week(pool: &SqlitePool, subject: &str, seq: i64, id: &str, programs: &[&str]) -> Value {
+		let tickets: Vec<_> = programs
+			.iter()
+			.enumerate()
+			.map(|(n, program)| json!({ "id": String::from("QM-31") + &n.to_string(), "program": program, "speakTo": ["a", "b"] }))
+			.collect();
+		let week = json!({ "schema": "some-ui.rust-week/1", "id": id, "company": { "name": "Quillmoss" }, "tickets": tickets });
+		let body = week.to_string();
+		let name = rust_round_repo::week::mailbox_name(id);
+		let sha256 = rust_round_repo::content_hash(body.as_bytes());
+		let mut tx = pool.begin().await.unwrap();
+		let item = mailbox_repo::ItemIn {
+			folder: "brief",
+			name: &name,
+			seq,
+			sha256: &sha256,
+			body: body.as_bytes(),
+		};
+		mailbox_repo::keep_item(&mut tx, subject, item, "2026-11-09T08:00:00.000Z").await.unwrap();
+		let read = rust_round_repo::week::read(body.as_bytes()).unwrap();
+		rust_round_repo::queue_week(&mut tx, &read, "2026-11-09T08:00:00.000Z").await.unwrap();
+		tx.commit().await.unwrap();
+		week
+	}
+
+	/// The weeks home holds list newest first; one reads back with each
+	/// ticket's program and its runs under an `ETag` that changes when a run
+	/// is kept. Another subject's week, an unknown week and an id that is not
+	/// a week are `404`s.
+	#[tokio::test]
+	async fn a_week_reads_back_with_each_tickets_runs_and_only_for_its_subject() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let theirs = session(&state, B, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		hold_week(&pool, A, 1, "2026-w45", &["fn main() {}\n"]).await;
+		let week = hold_week(&pool, A, 2, "2026-w46", &["fn main() {}\n", "fn main() { 1; }\n"]).await;
+
+		let (status, _, list) = call(&app, Method::GET, "/rust-weeks", Some(&phone), None, b"").await;
+		assert_eq!(status, StatusCode::OK);
+		let ids: Vec<&str> = list["weeks"].as_array().unwrap().iter().map(|entry| entry["id"].as_str().unwrap()).collect();
+		assert_eq!(ids, ["2026-w46", "2026-w45"], "newest week first");
+		assert_eq!(list["weeks"][0]["receivedAt"], "2026-11-09T08:00:00.000Z");
+
+		let (status, etag, got) = call(&app, Method::GET, WEEK, Some(&phone), None, b"").await;
+		assert_eq!(status, StatusCode::OK);
+		let etag = etag.unwrap();
+		assert_eq!(got["week"], week);
+		let tickets: Vec<&str> = got["tickets"].as_array().unwrap().iter().map(|ticket| ticket["ticket"].as_str().unwrap()).collect();
+		assert_eq!(tickets, ["QM-310", "QM-311"]);
+		assert!(got["tickets"].as_array().unwrap().iter().all(|ticket| ticket["runs"] == json!([])));
+
+		let done = crate::rust_rounds::pass::run_once(
+			&pool,
+			&Arc::new(Prints),
+			Duration::from_secs(600),
+			crate::rust_rounds::pass::Waits::SERVER,
+			&CancellationToken::new(),
+			&|| String::from("now"),
+		)
+		.await
+		.unwrap();
+		assert_eq!(done.recorded, 2, "the two weeks hold two programs between them");
+
+		let (status, newer, got) = call(&app, Method::GET, WEEK, Some(&phone), Some((IF_NONE_MATCH, &etag)), b"").await;
+		assert_eq!(status, StatusCode::OK, "a kept run is a new tag");
+		assert_ne!(newer.unwrap(), etag);
+		assert_eq!(got["tickets"][1]["runs"][0]["rustc"]["stdout"], "ok\n");
+
+		assert_eq!(call(&app, Method::GET, WEEK, Some(&theirs), None, b"").await.0, StatusCode::NOT_FOUND);
+		assert_eq!(call(&app, Method::GET, "/rust-weeks", Some(&theirs), None, b"").await.2, json!({ "weeks": [] }));
+		assert_eq!(call(&app, Method::GET, "/rust-weeks/2026-w47", Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND);
+		assert_eq!(call(&app, Method::GET, "/rust-weeks/indexing-01", Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND);
 	}
 
 	/// A round is its putter's: another subject lists none of it, reads its
