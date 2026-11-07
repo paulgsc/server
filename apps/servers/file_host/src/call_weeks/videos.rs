@@ -2,7 +2,7 @@
 //! the owner's decisions of 2026-11-07).
 //!
 //! The owner watches each week's video on the phone, shares it to the
-//! YouTube app, records the week's YouTube link, and then lets home's copy
+//! `YouTube` app, records the week's `YouTube` link, and then lets home's copy
 //! go from My data in two steps: the video, then the rest of the folder.
 //! This is what `handlers::call_videos` answers a paired phone with:
 //!
@@ -40,7 +40,7 @@ pub struct WeekVideo {
 	pub video_bytes: Option<u64>,
 	/// Bytes of the rest of its folder, while home has it.
 	pub rest_bytes: Option<u64>,
-	/// The week's YouTube link, once recorded.
+	/// The week's `YouTube` link, once recorded.
 	pub link: Option<video::Link>,
 	/// Each step let go, video first.
 	pub receipts: Vec<Receipt>,
@@ -103,13 +103,13 @@ async fn holds(db: &SqlitePool, from: &str) -> Result<bool, sqlx::Error> {
 pub enum LinkRecorded {
 	/// Kept (or already held): the week's link is now this video's.
 	Kept(String),
-	/// The pasted text names no YouTube video.
+	/// The pasted text names no `YouTube` video.
 	NotAVideo,
 	/// Home holds no week of that first day.
 	NoWeek,
 }
 
-/// Records a pasted link as the week's YouTube link.
+/// Records a pasted link as the week's `YouTube` link.
 ///
 /// # Errors
 /// A storage failure.
@@ -131,7 +131,7 @@ pub enum LetGo {
 	Gone(Receipt),
 	/// Home holds no week of that first day.
 	NoWeek,
-	/// The video goes only once the week's YouTube link is recorded.
+	/// The video goes only once the week's `YouTube` link is recorded.
 	NoLink,
 	/// The rest goes only once the video has.
 	VideoFirst,

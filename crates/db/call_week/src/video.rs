@@ -1,10 +1,11 @@
-//! The weekly call's videos once they are on YouTube (STUDIO ST38:
-//! paulgsc/some-ui#2661): each week's YouTube link, and a receipt for each
-//! step of a week the owner let go from My data. The rules are
+//! The weekly call's videos once they are on `YouTube` (ST38).
+//!
+//! Each week's `YouTube` link, and a receipt for each step of a week the
+//! owner let go from My data (paulgsc/some-ui#2661). The rules are
 //! `20261107000100_create_call_video.up.sql`'s; this module is the one that
 //! writes `call_video_link` and `call_video_deletion`.
 //!
-//! - **A link is a YouTube video's id,** read from a link the owner pasted
+//! - **A link is a `YouTube` video's id,** read from a link the owner pasted
 //!   ([`youtube_id`]), and kept once per week and video; the newest recorded
 //!   is the week's link ([`links`]). Nothing is rewritten.
 //! - **A week is let go in two steps,** the video and then the rest
@@ -68,10 +69,12 @@ pub struct Link {
 	pub recorded_at: String,
 }
 
-/// The YouTube video a pasted link names: its eleven-character id, from
-/// `youtube.com/watch?v=<id>`, `youtu.be/<id>` or `youtube.com/shorts/<id>`
-/// (with or without `https://`, `www.` or `m.`, and with any further query
-/// or fragment). A channel, a playlist or anything else names none.
+/// The `YouTube` video a pasted link names: its eleven-character id.
+///
+/// From `youtube.com/watch?v=<id>`, `youtu.be/<id>` or
+/// `youtube.com/shorts/<id>` (with or without `https://`, `www.` or `m.`,
+/// and with any further query or fragment). A channel, a playlist or
+/// anything else names none.
 #[must_use]
 pub fn youtube_id(link: &str) -> Option<String> {
 	let link = link.trim();
@@ -98,7 +101,7 @@ pub fn youtube_id(link: &str) -> Option<String> {
 /// A video's link, as home gives it back.
 #[must_use]
 pub fn link_of(youtube_id: &str) -> String {
-	format!("https://youtu.be/{youtube_id}")
+	String::from("https://youtu.be/") + youtube_id
 }
 
 /// What [`record_link`] did.
@@ -175,7 +178,7 @@ pub async fn receipts(conn: &mut SqliteConnection) -> Result<Vec<Receipt>, sqlx:
 	rows
 		.into_iter()
 		.map(|row| {
-			let step = Step::parse(&row.step).ok_or_else(|| sqlx::Error::Decode(format!("unknown step {}", row.step).into()))?;
+			let step = Step::parse(&row.step).ok_or_else(|| sqlx::Error::Decode((String::from("unknown step ") + &row.step).into()))?;
 			Ok(Receipt {
 				from: row.from,
 				step,

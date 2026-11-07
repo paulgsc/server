@@ -7,7 +7,7 @@
 //! watches, publishes and lets go from the phone.
 //!
 //! **Nothing pasted reaches a log.** Every handler is
-//! `#[instrument(skip_all)]`, and a link that names no YouTube video is
+//! `#[instrument(skip_all)]`, and a link that names no `YouTube` video is
 //! refused in fixed words, never echoed.
 
 use crate::call_weeks::{
@@ -117,9 +117,11 @@ pub struct Weeks {
 	pub weeks: Vec<WeekView>,
 }
 
-/// `GET /call/videos`: each week of the call home holds, newest first, with
-/// the bytes of its video and of the rest of its folder while home has them,
-/// its YouTube link once recorded, and a receipt for each step let go.
+/// `GET /call/videos`: each week of the call home holds, newest first.
+///
+/// Each has the bytes of its video and of the rest of its folder while home
+/// has them, its `YouTube` link once recorded, and a receipt for each step
+/// let go.
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's, and 500 for a storage failure.
@@ -150,7 +152,8 @@ pub async fn get_video(_paired: Paired, State(db): State<SqlitePool>, Path(from)
 		Err(never) => match never {},
 	};
 	let mut response = served.map(Body::new).into_response();
-	if let Ok(disposition) = HeaderValue::from_str(&format!("attachment; filename=\"call-{from}.mp4\"")) {
+	let disposition = String::from("attachment; filename=\"call-") + &from + ".mp4\"";
+	if let Ok(disposition) = HeaderValue::from_str(&disposition) {
 		response.headers_mut().insert(CONTENT_DISPOSITION, disposition);
 	}
 	Ok(response)
@@ -171,12 +174,12 @@ pub struct LinkKept {
 	pub url: String,
 }
 
-/// `PUT /call/videos/:from/link`: records the week's YouTube link. Kept once
+/// `PUT /call/videos/:from/link`: records the week's `YouTube` link. Kept once
 /// per video, append-only; the newest recorded is the week's.
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's, 404 for a week home doesn't
-/// hold, 422 for a link that names no YouTube video, and 500 for a storage
+/// hold, 422 for a link that names no `YouTube` video, and 500 for a storage
 /// failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "call_videos_link_put", skip_all, fields(otel.kind = "server"))]
@@ -194,9 +197,11 @@ pub struct LetGoAnswer {
 	pub receipt: ReceiptView,
 }
 
-/// `DELETE /call/videos/:from/video`: lets the week's `call.mp4` go from My
-/// data, once its YouTube link is recorded, and answers with the receipt. A
-/// repeat answers with the same receipt and deletes nothing more.
+/// `DELETE /call/videos/:from/video`: lets the week's `call.mp4` go.
+///
+/// From My data, once the week's `YouTube` link is recorded; the answer is
+/// the receipt. A repeat answers with the same receipt and deletes nothing
+/// more.
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's, 404 for a week home doesn't
@@ -320,13 +325,10 @@ mod tests {
 		if let Some((name, value)) = auth {
 			request = request.header(name, value);
 		}
-		let body = match body {
-			Some(json) => {
-				request = request.header(CONTENT_TYPE, "application/json");
-				Body::from(json.to_string())
-			}
-			None => Body::empty(),
-		};
+		if body.is_some() {
+			request = request.header(CONTENT_TYPE, "application/json");
+		}
+		let body = body.map_or_else(Body::empty, |json| Body::from(json.to_string()));
 		let response = app.clone().oneshot(request.body(body).unwrap()).await.unwrap();
 		let status = response.status();
 		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();

@@ -4,7 +4,7 @@
 //! ```text
 //! GET    /call/videos              → { weeks: [{ from, to, videoBytes, restBytes, link, receipts }] }: newest first
 //! GET    /call/videos/:from/video  → the week's call.mp4, streamed, with ranges
-//! PUT    /call/videos/:from/link   → { url }: the body is { link }, a YouTube video's link as pasted
+//! PUT    /call/videos/:from/link   → { url }: the body is { link }, a `YouTube` video's link as pasted
 //! DELETE /call/videos/:from/video  → { receipt }: lets its call.mp4 go, once a link is recorded
 //! DELETE /call/videos/:from/rest   → { receipt }: lets the rest of its folder go, once the video has
 //! ```
