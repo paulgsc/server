@@ -24,7 +24,11 @@ set -uo pipefail
 WEEKS=/weeks
 RENDERS=/renders/call
 STATUS=/renders/call-worker
-WORK=/tmp/render
+# The work folder is on the same drive as the videos, not the RAM disk:
+# what a render writes on /tmp counts against the container's memory cap,
+# beside ffmpeg, and moving a finished week from here into $RENDERS is one
+# rename on the same filesystem.
+WORK=/renders/call-work
 EVERY=3600
 # tsx (a root devDependency of some-ui), not through pnpm: Corepack would fetch
 # pnpm at run time, and nothing here reaches the internet.
@@ -48,8 +52,7 @@ render_week() {
   fi
   # The renderer's intermediates can be made again from what is kept.
   rm -rf "$WORK/$from/cache"
-  if ! { mkdir -p "$RENDERS" && rm -rf "$RENDERS/.$from" &&
-    cp -r "$WORK/$from" "$RENDERS/.$from" && mv "$RENDERS/.$from" "$RENDERS/$from"; } 2>> "$log"; then
+  if ! { mkdir -p "$RENDERS" && mv "$WORK/$from" "$RENDERS/$from"; } 2>> "$log"; then
     echo "the finished week could not be moved into $RENDERS" | tee -a "$log"
     return 1
   fi
