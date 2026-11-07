@@ -88,7 +88,8 @@ pub async fn put_event(subject: SubjectId, State(db): State<SqlitePool>, Path(id
 /// Its events per family (`N` is [`SUMMARY_DAYS`] when unsaid), their
 /// outcomes per process family and screen, and each process family's last
 /// outcome that worked and that failed (paulgsc/some-ui CK8, #2388, reads
-/// it).
+/// it); and its engagement events per pipeline, affordance and surface, with
+/// when each was last taken (paulgsc/some-ui ENG11, #2544).
 ///
 /// # Errors
 /// 401 without a session, 422 for `days` outside 1 to [`SUMMARY_DAYS_MAX`],
@@ -274,6 +275,17 @@ mod tests {
 		assert_eq!(summary["last"][0]["worked"], json!({ "at": at, "screen": "jobs.pass", "ending": "kept" }));
 		assert_eq!(summary["last"][0]["failed"]["ending"], "blocked-denied");
 		assert_eq!(summary["partial"], false);
+		assert_eq!(summary["engagement"], json!([]));
+
+		let taken = json!({
+			"family": "engagement", "id": "g1", "at": at, "build": "42a72b958",
+			"kind": "taken", "pipeline": "topik", "affordance": "routine-lens", "surface": "apk"
+		});
+		assert_eq!(
+			call(&app, Method::PUT, &path("g1"), Some(&phone), &taken).await,
+			(StatusCode::OK, json!({ "change": "added", "event": taken })),
+			"an engagement event is held as sent"
+		);
 
 		let (_, theirs) = call(&app, Method::GET, "/app-events/summary?days=90", Some(&other), &Value::Null).await;
 		assert_eq!((theirs["families"].clone(), theirs["outcomes"].clone()), (json!([]), json!([])), "B reads none of A's");

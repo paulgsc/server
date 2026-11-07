@@ -1855,21 +1855,29 @@ nowhere is marked as such and belongs to review.
     which leaves no room for a sentence), whether it worked, failed or was
     stopped, how long it took to be ready and to run, a take's peak level
     (0 to 1), the build's commit, when it started and when it reached home.
-    It holds no audio, no words and nothing of what was recorded or read
-    (the owner's C3, paulgsc/some-ui#2369), and no field outside its family's
-    own: an unknown field or family is refused whole. A second family
-    (paulgsc/some-ui ENG2, #2535) is a new variant of
-    `app_event_repo::Event`, held to the same limits. The table is never
+    An event of the `engagement` family (paulgsc/some-ui ENG2, #2535) holds
+    whether the owner used something the app offered: which of five kinds
+    (`offered`, `taken`, `passed-over`, `left`, `said`), the pipeline and the
+    affordance by the registry's ids, the surface (`apk` or `web`), when, and
+    only its kind's own extras, each a name from the code or an earlier
+    instant (when a passed-over offer was made and how the visit ended, when
+    a left one was taken and where it stopped, a said one's answer id).
+    Neither family holds audio, words or anything of what was recorded or read
+    (the owner's C3, paulgsc/some-ui#2369), nor a field outside its family's
+    own: an unknown field or family is refused whole. A further family is a
+    new variant of `app_event_repo::Event`, held to the same limits. The table is never
     updated (a trigger aborts an `UPDATE`) or replaced (a different body
     under a held id is a `409`), and is deleted only with the account. It is
     written only by `PUT /app-events/:id`, readable only by its own subject,
-    as counts per family, process and screen (`GET /app-events/summary`),
+    as counts per family, process and screen, and per pipeline, affordance
+    and surface (`GET /app-events/summary`),
     and deleted with the account by both the sweep and the migration's
     trigger (invariant 12). Rolling back the migration that creates it fails
     once it holds a row, rather than dropping the record.
     *Enforced by* `app_event_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
     `an_unknown_field_or_family_is_off_shape`, `every_rule_names_its_field`,
+    `an_engagement_carries_its_kinds_fields_and_no_others`,
     `the_migration_round_trips_and_refuses_to_drop_a_record` and
     `the_record_leaves_with_the_account`, and `handlers::app_events`'s
     `a_paired_phone_sends_its_outcomes_and_the_summary_counts_them` and

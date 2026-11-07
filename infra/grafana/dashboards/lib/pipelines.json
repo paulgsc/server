@@ -74,6 +74,31 @@
             "alertname=\"CallRenderCacheFull\"",
             "alertname=\"HomeDriveLow\""
           ]
+        },
+        {
+          "id": "videos",
+          "title": "videos",
+          "subtitle": "serves and lets go · home",
+          "dashboard": "call",
+          "alerts": ["alertname=\"FileHostDown\""]
+        },
+        {
+          "id": "home-network",
+          "title": "home network",
+          "subtitle": "phone to home",
+          "alerts": []
+        },
+        {
+          "id": "calls",
+          "title": "calls",
+          "subtitle": "watch, share, let go · phone",
+          "alerts": []
+        },
+        {
+          "id": "publish",
+          "title": "publish",
+          "subtitle": "YouTube app · Google",
+          "alerts": []
         }
       ],
       "edges": [
@@ -84,7 +109,11 @@
         ["index", "routine"],
         ["keeper", "render"],
         ["speaker", "render"],
-        ["stage", "render"]
+        ["stage", "render"],
+        ["render", "videos"],
+        ["videos", "home-network"],
+        ["home-network", "calls"],
+        ["calls", "publish"]
       ]
     }
   ]
