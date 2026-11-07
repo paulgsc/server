@@ -14,9 +14,10 @@
 # dependencies), never the app: the stage is the published image.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui#2658 (merged): record:call keeps its steps between attempts
-# and takes the policy's caps (--max-video-minutes, --max-video-mb, --cache-mb).
-ARG SOME_UI_COMMIT=ec9aef0bcfd1e8e1efe9977f2fe8c2a9482c4ab8
+# paulgsc/some-ui#2679 (merged): the call's template v2. The recorder asks the
+# speaker for each word's place (`/timed`, #701) and takes `--brand`; each
+# scene holds still (#2672, CV1). It also reads a version 1 week as before.
+ARG SOME_UI_COMMIT=d4a1b64d8b1a3e622d59643b346a9894caa623c0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
