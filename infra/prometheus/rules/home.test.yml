@@ -639,3 +639,51 @@ tests:
       - eval_time: 40m
         alertname: CallServiceRestarted
         exp_alerts: []
+
+  - name: no cache warning ever written does not alert (CW6)
+    interval: 1h
+    input_series:
+      # 0: no `*.cache.log` was ever written.
+      - series: 'call_render_cache_warning_timestamp_seconds{job="file_host"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: CallRenderCacheFull
+        exp_alerts: []
+
+  - name: a recent cache warning alerts, and ages out after a day (CW6)
+    interval: 1h
+    input_series:
+      - series: 'call_render_cache_warning_timestamp_seconds{job="file_host"}'
+        values: '3600x30'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: CallRenderCacheFull
+        exp_alerts:
+          - exp_labels:
+              objective: CW6
+              says: "A render passed its cache policy in the last day, so some steps ran uncached: renders/call-worker/*.cache.log on home's database drive names them."
+      - eval_time: 26h
+        alertname: CallRenderCacheFull
+        exp_alerts: []
+
+  - name: a drive under a tenth free for ten minutes alerts, and one with room does not (CW6)
+    interval: 1m
+    input_series:
+      - series: 'call_render_drive_size_bytes{job="file_host"}'
+        values: '1000x40'
+      - series: 'call_render_drive_avail_bytes{job="file_host"}'
+        values: '200x10 50x30'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HomeDriveLow
+        exp_alerts: []
+      - eval_time: 19m
+        alertname: HomeDriveLow
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: HomeDriveLow
+        exp_alerts:
+          - exp_labels:
+              objective: CW6
+              says: "Home's database drive, which keeps the call's videos and caches, has under a tenth of its space free."

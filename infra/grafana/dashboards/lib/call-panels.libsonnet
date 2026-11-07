@@ -103,6 +103,57 @@ local count(title, description, expr, steps) =
     [{ color: 'green', value: null }, { color: 'red', value: 1 }],
   ),
 
+  videos: stat(
+    'VIDEOS KEPT',
+    'Bytes of every video of the call kept for good in renders/call, with what each was made from. Grows by a week a week (CW6).',
+    'call_render_videos_bytes',
+    'bytes',
+    [{ color: 'green', value: null }],
+  ),
+
+  work: stat(
+    'WORK AND CACHE',
+    "Bytes of the waiting weeks' work in renders/call-work: each week's step cache, kept between attempts so a retry runs only what changed, removed once the week renders. The render policy caps each week (--cache-mb) and all of them together.",
+    'call_render_work_bytes',
+    'bytes',
+    [{ color: 'green', value: null }, { color: 'orange', value: 2147483648 }, { color: 'red', value: 4294967296 }],
+  ),
+
+  sinceCacheWarning: stat(
+    'SINCE CACHE WARNING',
+    "Time since the render worker last wrote a cache warning: a step past the policy ran uncached, or a waiting week's work was removed past the total cap. No data: never. Within a day, CallRenderCacheFull says so.",
+    '(time() - call_render_cache_warning_timestamp_seconds) and (call_render_cache_warning_timestamp_seconds > 0)',
+    's',
+    [{ color: 'orange', value: null }, { color: 'green', value: 86400 }],
+  ),
+
+  driveFree: stat(
+    'DRIVE FREE',
+    "Share of home's database drive free: it keeps the database, every video and the caches. Under 10% for ten minutes, HomeDriveLow fires.",
+    '100 * call_render_drive_avail_bytes / (call_render_drive_size_bytes > 0)',
+    'percent',
+    [{ color: 'red', value: null }, { color: 'orange', value: 10 }, { color: 'green', value: 20 }],
+  ),
+
+  driveUse: {
+    title: 'What the call keeps on the drive, over time',
+    description: "The videos kept for good grow by a week a week; the waiting weeks' work and caches come and go as weeks wait and render.",
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      { expr: 'call_render_videos_bytes', legendFormat: 'videos', refId: 'A' },
+      { expr: 'call_render_work_bytes', legendFormat: 'work and caches', refId: 'B' },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 'bytes',
+        custom: { drawStyle: 'line', lineInterpolation: 'stepAfter', lineWidth: 1, fillOpacity: 10, spanNulls: false },
+      },
+      overrides: [],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
   memory: {
     title: 'Memory of the call\'s containers, share of their cap',
     description: 'Working set (what the kernel will not reclaim) of the speaker, the stage and the render worker, as a share of each container\'s mem_limit. At 100% the kernel kills it: the speaker did, four times on Nov 6, twelve lines into a week.',

@@ -28,7 +28,12 @@
           "title": "keeper",
           "subtitle": "keeps each week · home",
           "dashboard": "call",
-          "alerts": ["alertname=\"CallWeeksStale\"", "alertname=\"CallWeeksFailing\"", "alertname=\"FileHostDown\""]
+          "alerts": [
+            "alertname=\"CallWeeksStale\"",
+            "alertname=\"CallWeeksFailing\"",
+            "alertname=\"FileHostDown\"",
+            "alertname=\"HomeDriveLow\""
+          ]
         },
         {
           "id": "index",
@@ -65,7 +70,9 @@
             "alertname=\"CallRenderFailed\"",
             "alertname=\"CallRenderOverdue\"",
             "alertname=\"CallRenderWorkerStale\"",
-            "alertname=\"CallServiceRestarted\",name=\"render\""
+            "alertname=\"CallServiceRestarted\",name=\"render\"",
+            "alertname=\"CallRenderCacheFull\"",
+            "alertname=\"HomeDriveLow\""
           ]
         }
       ],
