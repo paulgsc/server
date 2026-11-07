@@ -608,3 +608,34 @@ tests:
       - eval_time: 11h
         alertname: CallRenderWorkerStale
         exp_alerts: []
+
+  - name: a call container that crashes and restarts alerts, naming it, and a deploy does not (CW5)
+    interval: 1m
+    input_series:
+      # The speaker, restarted in place at 20m: the same container, its CPU
+      # counter starting again from zero with its new cgroup. Its start time
+      # (creation) stays where it was, as cAdvisor reports it through Docker.
+      - series: 'container_cpu_usage_seconds_total{name="kokoro",id="/system.slice/docker-a.scope",cpu="total"}'
+        values: '0+5x19 1+5x40'
+      - series: 'container_start_time_seconds{name="kokoro",id="/system.slice/docker-a.scope"}'
+        values: '0x60'
+      # The render worker, redeployed at 20m: the old container's series ends
+      # and a new container's begins, with its own counter.
+      - series: 'container_cpu_usage_seconds_total{name="render",id="/system.slice/docker-b.scope",cpu="total"}'
+        values: '0+5x19'
+      - series: 'container_cpu_usage_seconds_total{name="render",id="/system.slice/docker-c.scope",cpu="total"}'
+        values: '_x20 1+5x40'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: CallServiceRestarted
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: CallServiceRestarted
+        exp_alerts:
+          - exp_labels:
+              objective: CW5
+              name: kokoro
+              says: "Home's kokoro crashed and restarted: the OOM tile on the system dashboard says if memory ran out, and docker logs kokoro says why."
+      - eval_time: 40m
+        alertname: CallServiceRestarted
+        exp_alerts: []

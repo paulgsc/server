@@ -226,6 +226,23 @@ groups:
           objective: CW5
           says: "Home's render worker has not started a pass for 4 hours (it starts one hourly): docker logs render says why."
 
+      - alert: CallServiceRestarted
+        # CW5: the speaker, the stage or the render worker died and Docker's
+        # restart policy started the same container again, as the speaker
+        # did four times on Nov 6 when it ran out of memory twelve lines into
+        # a week. Each start gets a new cgroup, so the container's CPU counter
+        # starts again from zero on the same series: a reset. cAdvisor's
+        # container_start_time_seconds is the container's creation time when
+        # it resolves the container through Docker, which a restart in place
+        # does not move, so it cannot say this. A deploy makes a new
+        # container, a new series, so it is not counted. The render worker's
+        # own alerts say which week it cost.
+        expr: |
+          max by (name) (resets(container_cpu_usage_seconds_total{name=~"kokoro|call-stage|render"}[15m])) > 0
+        labels:
+          objective: CW5
+          says: "Home's {{ $labels.name }} crashed and restarted: the OOM tile on the system dashboard says if memory ran out, and docker logs {{ $labels.name }} says why."
+
   - name: home-health
     rules:
       - alert: DatabaseBehindBuild

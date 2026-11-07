@@ -9,7 +9,13 @@ same text in the same voice gives the same audio, byte for byte, every time:
 - Kokoro's vocoder draws random noise on every call (`torch.rand`/`torch.randn`
   in `kokoro/istftnet.py`), and the stock server never seeds it, so two runs of
   one line differ. This server seeds torch's generator before every line and
-  runs one line at a time on one thread, so nothing else moves it.
+  says one line at a time, under one lock, so nothing else moves it.
+
+Each request has its own thread, so `/health` answers while a line is being
+said: a long line once timed Docker's health check out, and the check's late
+answer was written to a closed socket. A line that fails for any reason is
+answered 500 with the error's kind, never a dropped connection, so the
+recorder's log says what failed (paulgsc/some-ui#2635).
 
     GET  /health        200 {"model": <sha256>, "voices": [...]}
     POST /say           {"text": "...", "voice": "am_michael"} -> audio/wav,
@@ -19,12 +25,15 @@ Nothing leaves the container: it needs no network, and it logs a line's length
 and voice, never its words.
 """
 
+import ctypes
+import gc
 import hashlib
 import io
 import json
 import sys
+import threading
 import wave
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +73,13 @@ def load():
 
 MODEL, PIPELINES, PACKS = load()
 VOICE_NAMES = sorted(PACKS)
+# One line at a time: the seed holds only if nothing else draws from torch's
+# generator between `manual_seed` and the line's last sample.
+SAYING = threading.Lock()
+# glibc keeps what a line frees in its heap, so the process grew line by line
+# until the container's cap killed it, twelve lines into a week on home
+# (paulgsc/some-ui#2635). After each line it is handed back to the system.
+LIBC = ctypes.CDLL("libc.so.6")
 
 
 def say(text: str, voice: str) -> bytes:
@@ -78,6 +94,9 @@ def say(text: str, voice: str) -> bytes:
     if not parts:
         raise ValueError("nothing to say")
     pcm = (np.clip(np.concatenate(parts), -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    del parts
+    gc.collect()
+    LIBC.malloc_trim(0)
     out = io.BytesIO()
     with wave.open(out, "wb") as file:
         file.setnchannels(1)
@@ -89,11 +108,15 @@ def say(text: str, voice: str) -> bytes:
 
 class Handler(BaseHTTPRequestHandler):
     def send(self, status: int, body: bytes, kind: str) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", kind)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The asker stopped waiting; there is no one left to answer.
+            pass
 
     def refuse(self, status: int, why: str) -> None:
         self.send(status, json.dumps({"error": why}).encode(), "application/json")
@@ -121,9 +144,15 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(voice, str) or voice not in PACKS:
             return self.refuse(422, "voice is one /health lists")
         try:
-            audio = say(text, voice)
+            with SAYING:
+                audio = say(text, voice)
         except ValueError as err:
             return self.refuse(422, str(err))
+        except Exception as err:  # noqa: BLE001 - any failure is answered, never a dropped connection
+            # Its kind only: the message can quote the line's words.
+            kind = type(err).__name__
+            sys.stderr.write(f"a line of {len(text)} characters in {voice} failed: {kind}\n")
+            return self.refuse(500, f"the line could not be said: {kind}")
         self.send(200, audio, "audio/wav")
 
     def log_message(self, format: str, *args) -> None:
@@ -132,6 +161,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    # One line at a time: the seed holds only if nothing else draws from
-    # torch's generator in between.
-    HTTPServer(("0.0.0.0", 8880), Handler).serve_forever()
+    server = ThreadingHTTPServer(("0.0.0.0", 8880), Handler)
+    server.daemon_threads = True
+    server.serve_forever()

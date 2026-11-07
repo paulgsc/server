@@ -96,6 +96,38 @@ local count(title, description, expr, steps) =
     [{ color: 'green', value: null }, { color: 'orange', value: 7200 }, { color: 'red', value: 14400 }],
   ),
 
+  restarts: count(
+    'CRASHES, 24H',
+    'Times the speaker, the stage or the render worker died and Docker started the same container again in the last 24 hours. Each start resets the container\'s CPU counter; a deploy is a new container, not one of these, and the crashes of every container a service had in the day are added up. CallServiceRestarted fires on each.',
+    'sum(max by (name, id) (resets(container_cpu_usage_seconds_total{name=~"kokoro|call-stage|render"}[24h])))',
+    [{ color: 'green', value: null }, { color: 'red', value: 1 }],
+  ),
+
+  memory: {
+    title: 'Memory of the call\'s containers, share of their cap',
+    description: 'Working set (what the kernel will not reclaim) of the speaker, the stage and the render worker, as a share of each container\'s mem_limit. At 100% the kernel kills it: the speaker did, four times on Nov 6, twelve lines into a week.',
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      {
+        expr: '100 * max by (name) (container_memory_working_set_bytes{name=~"kokoro|call-stage|render"}) / max by (name) (container_spec_memory_limit_bytes{name=~"kokoro|call-stage|render"} > 0)',
+        legendFormat: '{{name}}',
+        refId: 'A',
+      },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 'percent',
+        min: 0,
+        max: 100,
+        custom: { drawStyle: 'line', lineWidth: 1, fillOpacity: 10, spanNulls: false, thresholdsStyle: { mode: 'line' } },
+        thresholds: { mode: 'absolute', steps: [{ color: 'green', value: null }, { color: 'orange', value: 80 }, { color: 'red', value: 95 }] },
+      },
+      overrides: [],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
   weeks: {
     title: 'Weeks held, waiting and failed',
     description: 'Over time: a week arrives, waits for the render worker, and leaves waiting once its video is kept.',
