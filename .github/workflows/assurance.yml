@@ -53,3 +53,10 @@ jobs:
           set -euo pipefail
           python3 server/scripts/check_assurance_ledger.py --self-test
           python3 server/scripts/check_assurance_ledger.py --some-ui some-ui
+
+      # The PIPELINES dashboard draws the ledger's processes (server#692).
+      - name: The pipeline graphs match the ledger and the alert rules
+        run: |
+          set -euo pipefail
+          python3 server/scripts/check_pipeline_graph.py --self-test
+          python3 server/scripts/check_pipeline_graph.py --some-ui some-ui

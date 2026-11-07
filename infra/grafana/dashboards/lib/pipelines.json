@@ -1,0 +1,84 @@
+{
+  "_doc": "Each chained process home runs, drawn as a graph on the PIPELINES dashboard (pipelines.jsonnet, server#692). A pipeline is a process of paulgsc/some-ui's assurance ledger (packages/assurance/src/ledger.json, `processes`) and its nodes are exactly that process's segments, by id; scripts/check_pipeline_graph.py fails a pipeline whose nodes differ from the ledger's segments, an edge between nodes that are not there, or an alert no rule in infra/prometheus/rules/home.yml fires. A node is red while one of its alerts fires, orange while one is pending, green while none is, and gray when it has no signal of its own (a step someone else runs): it is the alerts that reach Slack, placed on the pipeline. `alerts` are label matchers on ALERTS; `dashboard` is the uid a node links to.",
+  "pipelines": [
+    {
+      "process": "call-weeks",
+      "title": "The weekly call",
+      "nodes": [
+        {
+          "id": "routine",
+          "title": "routine",
+          "subtitle": "writes the week · Anthropic",
+          "alerts": []
+        },
+        {
+          "id": "github",
+          "title": "github",
+          "subtitle": "paulgsc/testing · GitHub",
+          "alerts": []
+        },
+        {
+          "id": "internet",
+          "title": "internet",
+          "subtitle": "home to GitHub",
+          "alerts": []
+        },
+        {
+          "id": "keeper",
+          "title": "keeper",
+          "subtitle": "keeps each week · home",
+          "dashboard": "call",
+          "alerts": ["alertname=\"CallWeeksStale\"", "alertname=\"CallWeeksFailing\"", "alertname=\"FileHostDown\""]
+        },
+        {
+          "id": "index",
+          "title": "index",
+          "subtitle": "weeks held, in the mailbox",
+          "dashboard": "mailbox",
+          "alerts": [
+            "alertname=\"MailboxPollerStale\"",
+            "alertname=\"MailboxPollerMetricsMissing\"",
+            "alertname=\"MailboxPollerFailing\"",
+            "alertname=\"FileHostDown\""
+          ]
+        },
+        {
+          "id": "speaker",
+          "title": "speaker",
+          "subtitle": "Kokoro · home",
+          "dashboard": "call",
+          "alerts": ["alertname=\"CallServiceRestarted\",name=\"kokoro\""]
+        },
+        {
+          "id": "stage",
+          "title": "stage",
+          "subtitle": "the pinned app · home",
+          "dashboard": "call",
+          "alerts": ["alertname=\"CallServiceRestarted\",name=\"call-stage\""]
+        },
+        {
+          "id": "render",
+          "title": "render",
+          "subtitle": "records and renders · home",
+          "dashboard": "call",
+          "alerts": [
+            "alertname=\"CallRenderFailed\"",
+            "alertname=\"CallRenderOverdue\"",
+            "alertname=\"CallRenderWorkerStale\"",
+            "alertname=\"CallServiceRestarted\",name=\"render\""
+          ]
+        }
+      ],
+      "edges": [
+        ["routine", "github"],
+        ["github", "internet"],
+        ["internet", "keeper"],
+        ["keeper", "index"],
+        ["index", "routine"],
+        ["keeper", "render"],
+        ["speaker", "render"],
+        ["stage", "render"]
+      ]
+    }
+  ]
+}
