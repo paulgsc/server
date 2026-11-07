@@ -29,8 +29,16 @@
 # total cap in work.cache.log, both read by file_host (CallRenderCacheFull).
 set -uo pipefail
 
-# Policy: all waiting weeks' work together, $WORK; past it, the oldest other
-# week's work is removed (its retry starts over).
+# Policy (paulgsc/some-ui#2635, the owner's caps). The recorder refuses a
+# video longer than MAX_VIDEO_MINUTES (from its words, before anything is
+# said) or larger than MAX_VIDEO_MB (removed once made), a failed attempt
+# that names the cap; it stops keeping a week's steps past CACHE_MB, with a
+# `cache warning:` line. All waiting weeks' work together, $WORK, is held to
+# WORK_MAX_MB: past it, the oldest other week's work is removed (its retry
+# starts over).
+MAX_VIDEO_MINUTES=15
+MAX_VIDEO_MB=500
+CACHE_MB=2048
 WORK_MAX_MB=4096
 
 WEEKS=/weeks
@@ -46,7 +54,8 @@ EVERY=3600
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
 RECORDER=(/opt/some-ui/node_modules/.bin/tsx tests/record/call.ts
-  --app http://call-stage --voices kokoro --speaker http://kokoro:8880)
+  --app http://call-stage --voices kokoro --speaker http://kokoro:8880
+  --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
 render_week() {
   local file=$1 from=$2
