@@ -29,6 +29,7 @@
 
 pub mod pass;
 pub mod render;
+pub mod videos;
 
 use crate::AppState;
 use std::time::Duration;
@@ -85,9 +86,19 @@ impl CallWeeksContext {
 /// The render folder is made first, before the server answers its health
 /// check, so the render worker never finds it missing.
 /// A folder that cannot be made is logged here and counted by every pass.
+///
+/// So are the render worker's own folders (`render::RENDERS_FOLDER`,
+/// `WORK_FOLDER`, `STATUS_FOLDER`): made by this server's uid, which the
+/// worker runs as too (`infra/compose/call-render.yml`), so a week the owner
+/// lets go from My data is one this server can delete (`videos::let_go`).
 pub fn start(state: &AppState) {
 	if std::fs::create_dir_all(RENDER_FOLDER).is_err() {
 		error!(error = "render folder", "call weeks worker cannot make its render folder");
+	}
+	for folder in [render::RENDERS_FOLDER, render::WORK_FOLDER, render::STATUS_FOLDER] {
+		if std::fs::create_dir_all(folder).is_err() {
+			error!(error = "render folder", "call weeks worker cannot make the render worker's folders");
+		}
 	}
 	spawn(state, state.call_weeks.clone());
 }

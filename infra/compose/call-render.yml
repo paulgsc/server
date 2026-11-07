@@ -106,9 +106,15 @@ services:
         read_only: true
         volume:
           nocopy: true
-      # Every video and what it was made from, kept for good. The worker runs
-      # as root, so a folder Docker makes here is one it can write.
+      # Every video and what it was made from, kept until the owner lets a
+      # week go from My data (paulgsc/some-ui#2661). file_host makes the
+      # folders under it (call_weeks::start) before it answers its health
+      # check, as its own uid, which the worker runs as too (`user` below).
       - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/renders:/renders:rw
+    # file_host's uid and gid (infra/docker/Dockerfile.server's `nonroot`):
+    # what the worker writes is file_host's to delete when the owner lets a
+    # week go, and nothing here runs as root.
+    user: '10000:10001'
     read_only: true
     # Chromium's profile and the tools' caches only: a render's own files are
     # written on the drive (render-calls.sh's WORK), since what is written

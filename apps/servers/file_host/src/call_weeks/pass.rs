@@ -139,12 +139,25 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folder: &Path, clock
 /// `<from>.json`, byte for byte, through a temporary name so the render
 /// worker never reads half a file. A week already written is left alone:
 /// home never rewrites a kept week, so neither does this.
+///
+/// A week whose video the owner let go from My data (`videos::let_go`) is
+/// never written, and its file is removed if one is left, so the worker
+/// never renders it again (CW8).
 async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), sqlx::Error> {
-	let held = {
+	let (held, let_go) = {
 		let mut conn = db.acquire().await?;
-		call_week_repo::held(&mut conn).await?
+		(call_week_repo::held(&mut conn).await?, call_week_repo::video::let_go(&mut conn).await?)
 	};
-	let missing: Vec<_> = held.into_iter().filter(|week| !folder.join(String::from(&week.from) + ".json").exists()).collect();
+	for from in &let_go {
+		match tokio::fs::remove_file(folder.join(String::from(from) + ".json")).await {
+			Err(error) if error.kind() != std::io::ErrorKind::NotFound => pass.failures.push("export"),
+			_ => {}
+		}
+	}
+	let missing: Vec<_> = held
+		.into_iter()
+		.filter(|week| !let_go.contains(&week.from) && !folder.join(String::from(&week.from) + ".json").exists())
+		.collect();
 	if missing.is_empty() {
 		return Ok(());
 	}
@@ -365,6 +378,25 @@ mod tests {
 		assert_eq!(std::fs::read(&file).unwrap(), older);
 		let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
 		assert_eq!(names, ["2026-10-30.json"], "no partial file is left");
+
+		// The owner records the week's link and lets its video go: its file
+		// leaves, and no pass writes it again (CW8).
+		let mut conn = pool.acquire().await.unwrap();
+		call_week_repo::video::record_link(&mut conn, "2026-10-30", "dQw4w9WgXcQ", "2026-11-07T12:00:00.000Z")
+			.await
+			.unwrap();
+		let receipt = call_week_repo::video::Receipt {
+			from: "2026-10-30".to_owned(),
+			step: call_week_repo::video::Step::Video,
+			youtube_id: "dQw4w9WgXcQ".to_owned(),
+			size: 1,
+			deleted_at: "2026-11-07T12:00:00.000Z".to_owned(),
+		};
+		call_week_repo::video::write_receipt(&mut conn, &receipt).await.unwrap();
+		drop(conn);
+		let after = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		assert_eq!(after.exported, 0, "a week let go is not written again");
+		assert!(!file.exists(), "and a file left of it is removed");
 	}
 
 	#[test]

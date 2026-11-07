@@ -45,6 +45,7 @@ pub fn record_pass(result: &Result<Pass, sqlx::Error>) {
 pub fn record_renders(seen: &Renders) {
 	metrics::gauge!("call_weeks_held").set(count(seen.held));
 	metrics::gauge!("call_render_weeks_waiting").set(count(seen.waiting));
+	metrics::gauge!("call_render_weeks_let_go").set(count(seen.let_go));
 	metrics::gauge!("call_render_weeks_failed").set(count(seen.failed));
 	metrics::gauge!("call_render_oldest_waiting_taken_timestamp_seconds").set(seen.oldest_waiting_taken.map_or(0.0, as_f64));
 	metrics::gauge!("call_render_worker_last_pass_timestamp_seconds").set(seen.worker_last_pass.map_or(0.0, as_f64));

@@ -2,6 +2,8 @@
 //! `call_week`, each week once by its first day, append-only. The rules are
 //! `20261106000100_create_call_week.up.sql`'s.
 
+pub mod video;
+
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
 
