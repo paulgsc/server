@@ -26,7 +26,7 @@ mod model;
 
 use std::collections::BTreeMap;
 
-pub use model::{instant, parse_event, Engagement, Event, Kind, Outcome, Problem, Surface, Went, BODY_CEILING, MAX_MS};
+pub use model::{instant, parse_event, Event, Outcome, Problem, Went, BODY_CEILING, MAX_MS};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
@@ -191,8 +191,7 @@ pub struct ProcessLast {
 /// One affordance on one surface over the window.
 ///
 /// How often each event was written, and when it was last taken over
-/// everything home holds (paulgsc/some-ui ENG11, #2544). How long since it
-/// was last taken is the reader's to work out from `lastTaken`, when it reads.
+/// everything home holds (paulgsc/some-ui ENG11, #2544).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AffordanceUse {
@@ -347,64 +346,31 @@ pub async fn summary(conn: &mut SqliteConnection, subject: &str, since: &str) ->
 }
 
 /// `subject`'s engagement events counted per affordance and kind over the
-/// window, by one grouped read, and each affordance's last `taken` over
-/// everything home holds, by another. Neither reads a body into memory.
+/// window, with each affordance's last `taken` over everything home holds:
+/// one grouped read, no body read into memory.
 async fn engagement(conn: &mut SqliteConnection, subject: &str, since: &str) -> Result<Vec<AffordanceUse>, EventError> {
-	type Key = (String, String, String);
-	let counts = sqlx::query!(
-		r#"SELECT json_extract(body, '$.pipeline') AS "pipeline!: String",
-			json_extract(body, '$.affordance') AS "affordance!: String",
-			json_extract(body, '$.surface') AS "surface!: String",
-			json_extract(body, '$.kind') AS "kind!: String",
-			COUNT(*) AS "events!: i64"
-		FROM app_event WHERE subject_id = ?1 AND family = 'engagement' AND at >= ?2
-		GROUP BY 1, 2, 3, 4"#,
-		subject,
-		since
+	Ok(
+		sqlx::query_as!(
+			AffordanceUse,
+			r#"SELECT pipeline AS "pipeline!: String", affordance AS "affordance!: String", surface AS "surface!: String",
+			COALESCE(SUM(at >= ?2 AND kind = 'offered'), 0) AS "offered!: i64",
+			COALESCE(SUM(at >= ?2 AND kind = 'taken'), 0) AS "taken!: i64",
+			COALESCE(SUM(at >= ?2 AND kind = 'passed-over'), 0) AS "passed_over!: i64",
+			COALESCE(SUM(at >= ?2 AND kind = 'left'), 0) AS "left!: i64",
+			COALESCE(SUM(at >= ?2 AND kind = 'said'), 0) AS "said!: i64",
+			MAX(CASE WHEN kind = 'taken' THEN at END) AS "last_taken: String"
+		FROM (SELECT at, json_extract(body, '$.pipeline') AS pipeline, json_extract(body, '$.affordance') AS affordance,
+				json_extract(body, '$.surface') AS surface, json_extract(body, '$.kind') AS kind
+			FROM app_event WHERE subject_id = ?1 AND family = 'engagement')
+		GROUP BY pipeline, affordance, surface
+		HAVING SUM(at >= ?2) > 0 OR MAX(CASE WHEN kind = 'taken' THEN at END) IS NOT NULL
+		ORDER BY pipeline, affordance, surface"#,
+			subject,
+			since
+		)
+		.fetch_all(&mut *conn)
+		.await?,
 	)
-	.fetch_all(&mut *conn)
-	.await?;
-	let lasts = sqlx::query!(
-		r#"SELECT json_extract(body, '$.pipeline') AS "pipeline!: String",
-			json_extract(body, '$.affordance') AS "affordance!: String",
-			json_extract(body, '$.surface') AS "surface!: String",
-			MAX(at) AS "at!: String"
-		FROM app_event WHERE subject_id = ?1 AND family = 'engagement' AND json_extract(body, '$.kind') = 'taken'
-		GROUP BY 1, 2, 3"#,
-		subject
-	)
-	.fetch_all(&mut *conn)
-	.await?;
-	let blank = |pipeline: String, affordance: String, surface: String| AffordanceUse {
-		pipeline,
-		affordance,
-		surface,
-		offered: 0,
-		taken: 0,
-		passed_over: 0,
-		left: 0,
-		said: 0,
-		last_taken: None,
-	};
-	let mut uses: BTreeMap<Key, AffordanceUse> = BTreeMap::new();
-	for row in counts {
-		let key = (row.pipeline.clone(), row.affordance.clone(), row.surface.clone());
-		let counted = uses.entry(key).or_insert_with(|| blank(row.pipeline, row.affordance, row.surface));
-		let slot = match row.kind.as_str() {
-			"offered" => &mut counted.offered,
-			"taken" => &mut counted.taken,
-			"passed-over" => &mut counted.passed_over,
-			"left" => &mut counted.left,
-			"said" => &mut counted.said,
-			_ => return Err(EventError::Unreadable),
-		};
-		*slot += row.events;
-	}
-	for row in lasts {
-		let key = (row.pipeline.clone(), row.affordance.clone(), row.surface.clone());
-		uses.entry(key).or_insert_with(|| blank(row.pipeline, row.affordance, row.surface)).last_taken = Some(row.at);
-	}
-	Ok(uses.into_values().collect())
 }
 
 #[cfg(test)]
@@ -548,9 +514,17 @@ mod tests {
 			"family": "engagement", "id": id, "at": at, "build": null,
 			"kind": kind, "pipeline": "topik", "affordance": affordance, "surface": "apk"
 		});
-		if kind == "passed-over" {
-			event["offeredAt"] = json!(at);
-			event["ending"] = json!("took-another");
+		match kind {
+			"passed-over" => {
+				event["offeredAt"] = json!(at);
+				event["ending"] = json!("took-another");
+			}
+			"left" => {
+				event["startedAt"] = json!(at);
+				event["place"] = json!("quiz");
+			}
+			"said" => event["answer"] = json!("too-easy"),
+			_ => {}
 		}
 		event
 	}
@@ -564,6 +538,13 @@ mod tests {
 			engaged("g3", "2026-11-02T09:00:00.000Z", "routine-read-aloud", "offered"),
 			engaged("g4", "2026-11-02T09:01:00.000Z", "routine-read-aloud", "taken"),
 			engaged("g5", "2026-11-02T09:01:00.000Z", "routine-lens", "passed-over"),
+			engaged("g6", "2026-11-02T09:02:00.000Z", "routine-read-aloud", "left"),
+			engaged("g7", "2026-11-02T09:03:00.000Z", "sentence-feedback", "said"),
+			{
+				let mut web = engaged("g8", "2026-11-02T09:04:00.000Z", "conversation", "taken");
+				web["surface"] = json!("web");
+				web
+			},
 			outcome("e1", "2026-11-02T09:02:00.000Z", "jobs.pass", "kept", "worked", None),
 		] {
 			put(&pool, A, &event).await.unwrap();
@@ -572,14 +553,16 @@ mod tests {
 		let held = summary(&mut pool.acquire().await.unwrap(), A, "2026-11-01T00:00:00.000Z").await.unwrap();
 		assert_eq!(
 			serde_json::to_value(&held.families).unwrap(),
-			json!([{ "family": "engagement", "events": 4 }, { "family": "outcome", "events": 1 }])
+			json!([{ "family": "engagement", "events": 7 }, { "family": "outcome", "events": 1 }])
 		);
 		assert_eq!(held.outcomes.len(), 1, "engagement is not read as an outcome");
 		assert_eq!(
 			serde_json::to_value(&held.engagement).unwrap(),
 			json!([
+				{ "pipeline": "topik", "affordance": "conversation", "surface": "web", "offered": 0, "taken": 1, "passedOver": 0, "left": 0, "said": 0, "lastTaken": "2026-11-02T09:04:00.000Z" },
 				{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "offered": 1, "taken": 0, "passedOver": 1, "left": 0, "said": 0, "lastTaken": "2026-10-01T09:00:00.000Z" },
-				{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "offered": 1, "taken": 1, "passedOver": 0, "left": 0, "said": 0, "lastTaken": "2026-11-02T09:01:00.000Z" }
+				{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "offered": 1, "taken": 1, "passedOver": 0, "left": 1, "said": 0, "lastTaken": "2026-11-02T09:01:00.000Z" },
+				{ "pipeline": "topik", "affordance": "sentence-feedback", "surface": "apk", "offered": 0, "taken": 0, "passedOver": 0, "left": 0, "said": 1, "lastTaken": null }
 			]),
 			"the lens was last taken before the window, and B's drama is B's"
 		);

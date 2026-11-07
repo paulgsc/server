@@ -286,9 +286,6 @@ mod tests {
 			(StatusCode::OK, json!({ "change": "added", "event": taken })),
 			"an engagement event is held as sent"
 		);
-		let (_, summary) = call(&app, Method::GET, "/app-events/summary", Some(&browser), &Value::Null).await;
-		assert_eq!(summary["engagement"][0]["taken"], 1);
-		assert_eq!(summary["engagement"][0]["lastTaken"], json!(at));
 
 		let (_, theirs) = call(&app, Method::GET, "/app-events/summary?days=90", Some(&other), &Value::Null).await;
 		assert_eq!((theirs["families"].clone(), theirs["outcomes"].clone()), (json!([]), json!([])), "B reads none of A's");

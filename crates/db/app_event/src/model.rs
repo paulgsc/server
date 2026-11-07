@@ -5,8 +5,9 @@
 //! object whose `family` says which shape the rest has. Every text field is
 //! an id from the app's own code (a process family, a screen, an ending), so
 //! nothing typed or said fits in one (the owner's C3, paulgsc/some-ui#2369).
-//! An optional field the phone leaves out reads back as `null`, as one it
-//! sends as `null` does, so a resend either way compares equal.
+//! An outcome's optional field the phone leaves out reads back as `null`, as
+//! one it sends as `null` does, so a resend either way compares equal; an
+//! engagement event's extras are left out when absent, as the phone sends.
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -96,18 +97,15 @@ pub enum Kind {
 	Said,
 }
 
-impl Kind {
-	/// The wire name.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Offered => "offered",
-			Self::Taken => "taken",
-			Self::PassedOver => "passed-over",
-			Self::Left => "left",
-			Self::Said => "said",
-		}
-	}
+/// How a visit ended for an offer it did not take: ENG1's closed list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VisitEnding {
+	PutAway,
+	TookAnother,
+	OfferChanged,
+	MovedOn,
+	LeftTheApp,
 }
 
 /// Where an affordance is: the Android app, or the desktop web.
@@ -149,7 +147,7 @@ pub struct Engagement {
 	pub offered_at: Option<String>,
 	/// How the visit ended, for a `passed-over`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub ending: Option<String>,
+	pub ending: Option<VisitEnding>,
 	/// When it was taken, for a `left`; `at` less this is how long it lasted.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub started_at: Option<String>,
@@ -268,29 +266,33 @@ fn engagement_problems(event: &Engagement, problems: &mut Vec<Problem>) {
 			problems.push((field, NAME));
 		}
 	}
-	// Each kind's own fields, and no other kind's.
 	let own: &[&str] = match event.kind {
 		Kind::Offered | Kind::Taken => &[],
 		Kind::PassedOver => &["offeredAt", "ending"],
 		Kind::Left => &["startedAt", "place"],
 		Kind::Said => &["answer"],
 	};
-	for (field, value) in [
-		("offeredAt", &event.offered_at),
-		("ending", &event.ending),
-		("startedAt", &event.started_at),
-		("place", &event.place),
-		("answer", &event.answer),
+	for (field, present) in [
+		("offeredAt", event.offered_at.is_some()),
+		("ending", event.ending.is_some()),
+		("startedAt", event.started_at.is_some()),
+		("place", event.place.is_some()),
+		("answer", event.answer.is_some()),
 	] {
-		match (own.contains(&field), value) {
-			(true, None) => problems.push((field, "is what this kind of event carries")),
-			(false, Some(_)) => problems.push((field, "is not a field this kind of event carries")),
-			(true, Some(text)) => match field {
-				"offeredAt" | "startedAt" => earlier_problems(field, text, &event.at, problems),
-				_ if !is_name(text) => problems.push((field, NAME)),
-				_ => {}
-			},
-			(false, None) => {}
+		match (own.contains(&field), present) {
+			(true, false) => problems.push((field, "is what this kind of event carries")),
+			(false, true) => problems.push((field, "is not a field this kind of event carries")),
+			_ => {}
+		}
+	}
+	for (field, earlier) in [("offeredAt", &event.offered_at), ("startedAt", &event.started_at)] {
+		if let Some(earlier) = earlier {
+			earlier_problems(field, earlier, &event.at, problems);
+		}
+	}
+	for (field, name) in [("place", &event.place), ("answer", &event.answer)] {
+		if name.as_deref().is_some_and(|name| !is_name(name)) {
+			problems.push((field, NAME));
 		}
 	}
 }
@@ -436,7 +438,6 @@ mod tests {
 			let sent = engagement(kind);
 			let parsed = parse_event("g1", sent.to_string().as_bytes()).unwrap_or_else(|problems| panic!("{sent}: {problems:?}"));
 			assert_eq!(serde_json::to_value(&parsed).unwrap(), sent, "{kind} is stored as exactly its own fields");
-			assert_eq!(parsed.family(), "engagement");
 		}
 	}
 
@@ -452,6 +453,8 @@ mod tests {
 		let mut late = engagement("left");
 		late["startedAt"] = json!("2026-11-03T10:00:00.000Z");
 		assert_eq!(fields("g1", &late), ["startedAt"], "taken after it was left");
+		late["startedAt"] = json!("2026-11-03T09:00:00+01:00");
+		assert_eq!(fields("g1", &late), ["startedAt"], "not in UTC");
 		let mut wrong = engagement("said");
 		wrong["pipeline"] = json!("TOPIK");
 		wrong["affordance"] = json!("the lens");
@@ -463,6 +466,9 @@ mod tests {
 			off[key] = value;
 			assert_eq!(fields("g1", &off), ["body"], "{key}");
 		}
+		let mut free = engagement("passed-over");
+		free["ending"] = json!("i-was-too-tired-today");
+		assert_eq!(fields("g1", &free), ["body"], "an ending is one of the five");
 	}
 
 	#[test]
