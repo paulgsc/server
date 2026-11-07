@@ -14,8 +14,9 @@
 # dependencies), never the app: the stage is the published image.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui#2642 (merged): record:call --app and --week-file.
-ARG SOME_UI_COMMIT=291db2c591384c2e3968dae8c54af889511bb756
+# paulgsc/some-ui#2658 (merged): record:call keeps its steps between attempts
+# and takes the policy's caps (--max-video-minutes, --max-video-mb, --cache-mb).
+ARG SOME_UI_COMMIT=ec9aef0bcfd1e8e1efe9977f2fe8c2a9482c4ab8
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
