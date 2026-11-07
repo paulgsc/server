@@ -20,11 +20,20 @@ recorder's log says what failed (paulgsc/some-ui#2635).
     GET  /health        200 {"model": <sha256>, "voices": [...]}
     POST /say           {"text": "...", "voice": "am_michael"} -> audio/wav,
                         24 kHz mono 16-bit PCM
+    POST /timed         the same body -> application/json
+                        {"audio": <the same WAV, base64>,
+                         "words": [{"text", "startMs", "endMs"}, ...]}
+
+`/timed` is `/say` with each word's place in the audio, as Kokoro's own
+aligner gives it, for the call's subtitles (paulgsc/some-ui#2664): the same
+audio, byte for byte, and the same words for the same line. A word carries
+the punctuation that follows it, so a subtitle reads as the line is written.
 
 Nothing leaves the container: it needs no network, and it logs a line's length
 and voice, never its words.
 """
 
+import base64
 import ctypes
 import gc
 import hashlib
@@ -82,19 +91,88 @@ SAYING = threading.Lock()
 LIBC = ctypes.CDLL("libc.so.6")
 
 
-def say(text: str, voice: str) -> bytes:
-    """The line as a WAV file, the same bytes for the same text and voice."""
+# Said with the word after it, never the one before: "$5", "(the".
+LEADS = set("$#([{\u201c\u2018")
+# A straight quote opens or closes: it closes when nothing came between it
+# and the word before it, and opens otherwise.
+QUOTES = set("\"'")
+
+
+def spoken(token) -> bool:
+    """Whether Kokoro says the token: it has phonemes of its own, as a word or
+    a symbol it reads out ("&" is "and"), not punctuation it only pauses at."""
+    phonemes = (token.phonemes or "").strip()
+    return any(c.isalpha() for c in phonemes) or any(c.isalnum() for c in token.text)
+
+
+def timed_words(chunks) -> list:
+    """Each word's text and place, in ms from the line's start.
+
+    `chunks` is each part of the line Kokoro said, as (its length in seconds,
+    its tokens). A token's times are its part's, so each part is offset by the
+    parts before it. A token Kokoro says is a word, a symbol it reads out
+    included; punctuation joins the word before it, and a silent lead-in
+    ("$", an opening bracket or quote) the word after it. A straight quote
+    closes when it follows a word with no space between, and opens
+    otherwise. A word Kokoro gave
+    no time starts and ends where the word before it ended.
+    """
+    words = []
+    offset = 0.0
+    lead = ""
+    # Whether the token before this one ended with a space, so a straight
+    # quote here opens rather than closes.
+    spaced = True
+    for length, tokens in chunks:
+        for token in tokens:
+            text = token.text.strip()
+            if not text:
+                continue
+            after = bool(token.whitespace)
+            if not spoken(token):
+                closes = text in QUOTES and not spaced and words
+                if (text in LEADS or text in QUOTES) and not closes:
+                    lead += text
+                elif words:
+                    words[-1]["text"] += text
+                spaced = after
+                continue
+            spaced = after
+            last = words[-1]["endMs"] if words else 0
+            start = last if token.start_ts is None else round((offset + token.start_ts) * 1000)
+            end = start if token.end_ts is None else round((offset + token.end_ts) * 1000)
+            words.append({"text": lead + text, "startMs": max(start, last), "endMs": max(end, start, last)})
+            lead = ""
+        offset += length
+    # A lead-in nothing followed (a quote opened at the line's end) stays
+    # with the last word rather than being lost.
+    if lead and words:
+        words[-1]["text"] += lead
+    return words
+
+
+def say(text: str, voice: str, timed: bool = False):
+    """The line as a WAV file, the same bytes for the same text and voice,
+    with each word's place in it when `timed`."""
     lang = voice[0]
     if lang not in PIPELINES:
         PIPELINES[lang] = KPipeline(lang_code=lang, repo_id="hexgrad/Kokoro-82M", model=MODEL)
     pack = PACKS[voice]
     torch.manual_seed(SEED)
+    parts = []
+    chunks = []
     with torch.no_grad():
-        parts = [result.audio.numpy() for result in PIPELINES[lang](text, voice=pack, speed=1.0) if result.audio is not None]
+        for result in PIPELINES[lang](text, voice=pack, speed=1.0):
+            if result.audio is None:
+                continue
+            audio = result.audio.numpy()
+            parts.append(audio)
+            chunks.append((len(audio) / RATE, list(result.tokens or [])))
     if not parts:
         raise ValueError("nothing to say")
+    words = timed_words(chunks) if timed else None
     pcm = (np.clip(np.concatenate(parts), -1.0, 1.0) * 32767).astype("<i2").tobytes()
-    del parts
+    del parts, chunks
     gc.collect()
     LIBC.malloc_trim(0)
     out = io.BytesIO()
@@ -103,7 +181,7 @@ def say(text: str, voice: str) -> bytes:
         file.setsampwidth(2)
         file.setframerate(RATE)
         file.writeframes(pcm)
-    return out.getvalue()
+    return (out.getvalue(), words) if timed else out.getvalue()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -127,8 +205,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, json.dumps({"model": MODEL_SHA256, "voices": VOICE_NAMES}).encode(), "application/json")
 
     def do_POST(self) -> None:
-        if self.path != "/say":
+        if self.path not in ("/say", "/timed"):
             return self.refuse(404, "no such path")
+        timed = self.path == "/timed"
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > MOST_BODY:
             return self.refuse(413, f"a body of 1 to {MOST_BODY} bytes")
@@ -145,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.refuse(422, "voice is one /health lists")
         try:
             with SAYING:
-                audio = say(text, voice)
+                said = say(text, voice, timed)
         except ValueError as err:
             return self.refuse(422, str(err))
         except Exception as err:  # noqa: BLE001 - any failure is answered, never a dropped connection
@@ -153,7 +232,11 @@ class Handler(BaseHTTPRequestHandler):
             kind = type(err).__name__
             sys.stderr.write(f"a line of {len(text)} characters in {voice} failed: {kind}\n")
             return self.refuse(500, f"the line could not be said: {kind}")
-        self.send(200, audio, "audio/wav")
+        if timed:
+            audio, words = said
+            body = json.dumps({"audio": base64.b64encode(audio).decode(), "words": words})
+            return self.send(200, body.encode(), "application/json")
+        self.send(200, said, "audio/wav")
 
     def log_message(self, format: str, *args) -> None:
         # The request line names only the path; never a line's words.
