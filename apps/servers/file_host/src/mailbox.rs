@@ -10,7 +10,9 @@
 //! routine's word sets and dramas arrive the same way, in `scene` and
 //! `drama`, with a record of each of its runs in `run`, and
 //! `GET /api/v1/routine/files` serves them. `LeetType`'s session files arrive
-//! in `leetype`, and `GET /api/v1/leetype/session-files` serves them.
+//! in `leetype`, and `GET /api/v1/leetype/session-files` serves them. A week
+//! of Rust Rounds rides `brief` as `rust-week-<id>.json`, its programs queued
+//! for the recorder as it is kept, and `GET /api/v1/rust-weeks` serves it.
 //!
 //! **Why this is a poll.** This repo leans against cron-shaped design
 //! (`nudge::waker`'s header): a timer should pick up work that something

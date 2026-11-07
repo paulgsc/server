@@ -922,19 +922,31 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// A list of the takes Drive holds, new in `brief` as `drive-takes-*`
 /// (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`), has its takes
 /// home holds recorded as on Drive in the same transaction
-/// (`voice_repo::on_drive`, paulgsc/some-ui#2401). Any other file, or one
-/// that does not read as a list, is kept as every `brief` file is, and
+/// (`voice_repo::on_drive`, paulgsc/some-ui#2401). A week of Rust Rounds,
+/// new in `brief` as `rust-week-<id>.json` (`some-ui.rust-week/1`,
+/// paulgsc/some-ui#2687), has each ticket's program queued for the recorder
+/// in the same transaction (`rust_round_repo::queue_week`), so home never
+/// holds a week whose programs go unrecorded. Any other file, or one that
+/// does not read as its name says, is kept as every `brief` file is, and
 /// records nothing.
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
-	let listed = (item.folder == Folder::Brief.as_str() && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX))
+	let in_brief = item.folder == Folder::Brief.as_str();
+	let listed = (in_brief && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX))
 		.then(|| voice_repo::on_drive::listed_in(item.body))
 		.flatten();
+	let week = (in_brief && item.name.starts_with(rust_round_repo::week::MAILBOX_PREFIX))
+		.then(|| rust_round_repo::week::read(item.body).ok())
+		.flatten()
+		.filter(|week| rust_round_repo::week::mailbox_name(&week.id) == item.name);
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
 	if let (Change::Added, Some((at, sha256))) = (change, &listed) {
 		let listed = voice_repo::on_drive::Listed { at, name: item.name, sha256 };
 		voice_repo::on_drive::record(&mut tx, subject, listed, now).await?;
+	}
+	if let (Change::Added, Some(week)) = (change, &week) {
+		rust_round_repo::queue_week(&mut tx, week, now).await?;
 	}
 	tx.commit().await?;
 	Ok(change)
@@ -1299,6 +1311,40 @@ mod tests {
 				(String::from("t2"), String::from("2026-11-02T09:00:00.000Z"))
 			]
 		);
+	}
+
+	/// The programs `rust_round_source` queues, in arrival order.
+	async fn queued(pool: &SqlitePool) -> Vec<String> {
+		sqlx::query_scalar("SELECT source FROM rust_round_source ORDER BY seq").fetch_all(pool).await.unwrap()
+	}
+
+	fn rust_week(id: &str, programs: &[&str]) -> String {
+		let tickets: Vec<_> = programs
+			.iter()
+			.enumerate()
+			.map(|(n, program)| serde_json::json!({ "id": String::from("QM-") + &n.to_string(), "program": program }))
+			.collect();
+		serde_json::json!({ "schema": "some-ui.rust-week/1", "id": id, "tickets": tickets }).to_string()
+	}
+
+	/// A week of Rust Rounds riding `brief` is kept as any `brief` file is,
+	/// with each ticket's program queued for the recorder in the same
+	/// transaction, a program home holds already once (paulgsc/some-ui#2687).
+	/// One that does not read as a week, or whose id is not its name's, is
+	/// kept and queues nothing.
+	#[tokio::test]
+	async fn a_week_is_kept_with_its_programs_queued() {
+		let (pool, fake) = (pool().await, Fake::default());
+		fake.add(
+			1,
+			"rust-week-2026-w46.json",
+			&rust_week("2026-w46", &["fn main() {}\n", "fn main() { 1; }\n", "fn main() {}\n"]),
+		);
+		fake.add(2, "rust-week-2026-w47.json", &rust_week("2026-w48", &["fn main() { 2; }\n"]));
+		fake.add(3, "rust-week-2026-w49.json", r#"{"schema":"some-ui.rust-week/1","id":"2026-w49","tickets":[]}"#);
+		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 3);
+		assert_eq!(queued(&pool).await, ["fn main() {}\n", "fn main() { 1; }\n"]);
+		assert_eq!(held(&pool).await, ["rust-week-2026-w46.json", "rust-week-2026-w47.json", "rust-week-2026-w49.json"]);
 	}
 
 	/// A file under the list's name that does not read as one is kept as

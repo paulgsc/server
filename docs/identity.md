@@ -210,7 +210,7 @@ only copy of its bytes (invariant 21). What deleting does not reach is under
 program it held stays (`rust_round_source`), with what rustc did with it
 (`rust_round_run`) and each time the runner was lost holding it
 (`rust_round_drop`): a tutor's code and its output, shared by every round
-that holds the same bytes, naming no one (invariant 28). Their times stay
+or week that holds the same bytes, naming no one (invariant 28). Their times stay
 too. `rust_round_source.queued_at` is when the first round holding the
 program reached home, so it still dates the deleted account's first such
 round, to the millisecond, for whoever holds the database; `recorded_at` and
@@ -1593,9 +1593,15 @@ nowhere is marked as such and belongs to review.
     programs by their bytes, and two subjects whose rounds share a program
     read the same run, which carries only that code's own output and
     **never a time**: when a run was kept would tell one subject when
-    another first put that program. What those three tables keep past an
-    account's deletion, their times included, is under "What deleting an
-    account erases", "What stays of Rust Rounds".
+    another first put that program. A week of Rust Rounds (RR12,
+    paulgsc/some-ui#2687) is the routine's, not a phone's: it arrives through
+    the mailbox and is kept as every routine file is, in `mailbox_item` under
+    the mailbox's subject (invariant 19), listed and read only by that
+    subject (`GET /rust-weeks` and `GET /rust-weeks/:id`; another subject's
+    week is a `404`). Its programs join `rust_round_source` in the
+    transaction that keeps it, and are as nobody's as a round's. What those
+    three tables keep past an account's deletion, their times included, is
+    under "What deleting an account erases", "What stays of Rust Rounds".
     *Enforced by* `rust_round_repo`'s `each_subject_reads_only_its_own_rounds`,
     `an_account_takes_its_rounds_and_leaves_the_runs` and
     `every_table_refuses_an_update_and_a_delete`, `handlers::rust_rounds`'s

@@ -855,6 +855,68 @@ pub async fn leetype_file(conn: &mut SqliteConnection, subject: &str, name: &str
 	Ok(file)
 }
 
+/// One week of Rust Rounds home holds (paulgsc/some-ui#2687, RR12), whole:
+/// a `brief` file named `rust-week-<id>.json`, as `rust_round_repo::week`
+/// names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldWeek {
+	/// The id its name gives, `2026-w46`. Whether the body says the same is
+	/// the reader's to check.
+	pub id: String,
+	/// Lowercase hex SHA-256 of the mailbox item, as the mailbox listed it.
+	pub sha256: String,
+	/// When home read it.
+	pub pulled_at: String,
+	/// The week as the mailbox held it.
+	pub body: Vec<u8>,
+}
+
+/// Every file `subject` holds under a week's name, newest week first.
+///
+/// A week is a few KiB and a year holds 52, so all are read: the caller
+/// keeps the ones that read as the week their name says before it counts any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn rust_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<HeldWeek>, MailboxError> {
+	let weeks = sqlx::query_as!(
+		HeldWeek,
+		r#"SELECT substr(name, 11, 8) AS "id!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String", body AS "body!: Vec<u8>"
+		   FROM mailbox_item
+		   WHERE subject_id = ?1 AND folder = 'brief' AND name GLOB 'rust-week-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json'
+		   ORDER BY name DESC"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(weeks)
+}
+
+/// One week home holds, whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeekFile {
+	pub sha256: String,
+	pub pulled_at: String,
+	/// The week as the mailbox held it.
+	pub body: Vec<u8>,
+}
+
+/// `subject`'s week named `name` in `brief`, if home holds it.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn rust_week(conn: &mut SqliteConnection, subject: &str, name: &str) -> Result<Option<WeekFile>, MailboxError> {
+	let week = sqlx::query_as!(
+		WeekFile,
+		"SELECT sha256, pulled_at, body FROM mailbox_item WHERE subject_id = ?1 AND folder = 'brief' AND name = ?2",
+		subject,
+		name
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(week)
+}
+
 /// The folder home's `LeetType` session logs go to.
 pub const LEETYPE_LOG: &str = "leetype-log";
 
