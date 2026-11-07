@@ -91,28 +91,46 @@ SAYING = threading.Lock()
 LIBC = ctypes.CDLL("libc.so.6")
 
 
+# Said with the word after it, never the one before: "$5", "(the".
+LEADS = set("$#([{\u201c\u2018\"'")
+
+
+def spoken(token) -> bool:
+    """Whether Kokoro says the token: it has phonemes of its own, as a word or
+    a symbol it reads out ("&" is "and"), not punctuation it only pauses at."""
+    phonemes = (token.phonemes or "").strip()
+    return any(c.isalpha() for c in phonemes) or any(c.isalnum() for c in token.text)
+
+
 def timed_words(chunks) -> list:
     """Each word's text and place, in ms from the line's start.
 
     `chunks` is each part of the line Kokoro said, as (its length in seconds,
     its tokens). A token's times are its part's, so each part is offset by the
-    parts before it. Punctuation joins the word before it; a token Kokoro gave
-    no time takes the end of the word before it.
+    parts before it. A token Kokoro says is a word, a symbol it reads out
+    included; punctuation joins the word before it, and a silent lead-in
+    ("$", an opening bracket or quote) the word after it. A word Kokoro gave
+    no time starts and ends where the word before it ended.
     """
     words = []
     offset = 0.0
+    lead = ""
     for length, tokens in chunks:
         for token in tokens:
             text = token.text.strip()
             if not text:
                 continue
+            if not spoken(token):
+                if text in LEADS:
+                    lead += text
+                elif words:
+                    words[-1]["text"] += text
+                continue
             last = words[-1]["endMs"] if words else 0
             start = last if token.start_ts is None else round((offset + token.start_ts) * 1000)
             end = start if token.end_ts is None else round((offset + token.end_ts) * 1000)
-            if words and not any(c.isalnum() for c in text):
-                words[-1]["text"] += text
-                continue
-            words.append({"text": text, "startMs": max(start, last), "endMs": max(end, start, last)})
+            words.append({"text": lead + text, "startMs": max(start, last), "endMs": max(end, start, last)})
+            lead = ""
         offset += length
     return words
 
