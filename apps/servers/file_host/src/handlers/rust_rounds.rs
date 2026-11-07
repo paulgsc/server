@@ -203,7 +203,8 @@ fn tagged(headers: &HeaderMap, body: Vec<u8>) -> Result<Response, FileHostError>
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WeekList {
 	/// The weeks home holds, newest week first, at most [`LIST_LIMIT`]: the
-	/// first is the current one.
+	/// first is the current one. A file under a week's name that is not that
+	/// week is left out.
 	pub weeks: Vec<WeekEntry>,
 }
 
@@ -254,10 +255,11 @@ pub struct TicketRuns {
 #[instrument(name = "rust_weeks", skip_all, fields(otel.kind = "server"))]
 pub async fn list_weeks(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<WeekList>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let weeks = mailbox_repo::rust_weeks(&mut conn, paired.subject.as_str(), LIST_LIMIT)
-		.await
-		.map_err(mailbox_failure)?
+	let held = mailbox_repo::rust_weeks(&mut conn, paired.subject.as_str()).await.map_err(mailbox_failure)?;
+	let weeks = held
 		.into_iter()
+		.filter(|held| reads_as_named(&held.id, &held.body).is_some())
+		.take(usize::try_from(LIST_LIMIT).unwrap_or(usize::MAX))
 		.map(|held| WeekEntry {
 			id: held.id,
 			sha256: held.sha256,
@@ -267,14 +269,29 @@ pub async fn list_weeks(paired: Paired, State(db): State<SqlitePool>) -> Result<
 	Ok(Json(WeekList { weeks }))
 }
 
+/// `body` as the week its name says, `id`, or `None`, logged: a file under a
+/// week's name that is not one is kept as any `brief` file is, and its
+/// programs were never queued (`mailbox::pass::keep`), so it is no week.
+/// Said by kind, never by body: what the routine put is the routine's.
+fn reads_as_named(id: &str, body: &[u8]) -> Option<rust_round_repo::week::Week> {
+	match rust_round_repo::week::read(body) {
+		Ok(week) if week.id == id => Some(week),
+		read => {
+			let kind = if read.is_ok() { "misnamed" } else { "unreadable" };
+			tracing::error!(kind, "a file held under a week's name is not that week; left out");
+			None
+		}
+	}
+}
+
 /// `GET /rust-weeks/:id`: the week as home keeps it, and every run kept
 /// for each ticket's program. The `ETag` is the hash of the body, so it
 /// changes when a run is kept; `If-None-Match` answers `304`.
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's, 404 for a week the caller's
-/// subject does not hold, 500 for a storage failure or a held week that does
-/// not read back.
+/// subject does not hold (a file under the week's name that is not that week
+/// included), 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_week", skip_all, fields(otel.kind = "server"))]
 pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
@@ -286,7 +303,7 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 		.await
 		.map_err(mailbox_failure)?
 		.ok_or(FileHostError::NotFound)?;
-	let read = rust_round_repo::week::read(&held.body).map_err(|_| unreadable())?;
+	let read = reads_as_named(&id, &held.body).ok_or(FileHostError::NotFound)?;
 	let mut tickets = Vec::with_capacity(read.programs.len());
 	for program in read.programs {
 		let (source_hash, runs) = runs_of(&mut conn, &program.source).await?;
@@ -638,21 +655,26 @@ mod tests {
 			.collect();
 		let week = json!({ "schema": "some-ui.rust-week/1", "id": id, "company": { "name": "Quillmoss" }, "tickets": tickets });
 		let body = week.to_string();
-		let name = rust_round_repo::week::mailbox_name(id);
+		hold_file(pool, subject, seq, &rust_round_repo::week::mailbox_name(id), &body).await;
+		let mut conn = pool.acquire().await.unwrap();
+		let read = rust_round_repo::week::read(body.as_bytes()).unwrap();
+		rust_round_repo::queue_week(&mut conn, &read, "2026-11-09T08:00:00.000Z").await.unwrap();
+		week
+	}
+
+	/// A file kept in `subject`'s `brief`, as the mailbox pass keeps one.
+	async fn hold_file(pool: &SqlitePool, subject: &str, seq: i64, name: &str, body: &str) {
 		let sha256 = rust_round_repo::content_hash(body.as_bytes());
-		let mut tx = pool.begin().await.unwrap();
 		let item = mailbox_repo::ItemIn {
 			folder: "brief",
-			name: &name,
+			name,
 			seq,
 			sha256: &sha256,
 			body: body.as_bytes(),
 		};
-		mailbox_repo::keep_item(&mut tx, subject, item, "2026-11-09T08:00:00.000Z").await.unwrap();
-		let read = rust_round_repo::week::read(body.as_bytes()).unwrap();
-		rust_round_repo::queue_week(&mut tx, &read, "2026-11-09T08:00:00.000Z").await.unwrap();
-		tx.commit().await.unwrap();
-		week
+		mailbox_repo::keep_item(&mut pool.acquire().await.unwrap(), subject, item, "2026-11-09T08:00:00.000Z")
+			.await
+			.unwrap();
 	}
 
 	/// The weeks home holds list newest first; one reads back with each
@@ -668,11 +690,16 @@ mod tests {
 		let app = module().into_table_router().with_state(state);
 		hold_week(&pool, A, 1, "2026-w45", &["fn main() {}\n"]).await;
 		let week = hold_week(&pool, A, 2, "2026-w46", &["fn main() {}\n", "fn main() { 1; }\n"]).await;
+		// Kept as the pass keeps any `brief` file, but no week: unreadable,
+		// and one whose body is another week's.
+		hold_file(&pool, A, 3, "rust-week-2026-w49.json", r#"{"schema":"some-ui.rust-week/1","id":"2026-w49","tickets":[]}"#).await;
+		let other = json!({ "schema": "some-ui.rust-week/1", "id": "2026-w48", "tickets": [{ "id": "QM-1", "program": "x" }] });
+		hold_file(&pool, A, 4, "rust-week-2026-w47.json", &other.to_string()).await;
 
 		let (status, _, list) = call(&app, Method::GET, "/rust-weeks", Some(&phone), None, b"").await;
 		assert_eq!(status, StatusCode::OK);
 		let ids: Vec<&str> = list["weeks"].as_array().unwrap().iter().map(|entry| entry["id"].as_str().unwrap()).collect();
-		assert_eq!(ids, ["2026-w46", "2026-w45"], "newest week first");
+		assert_eq!(ids, ["2026-w46", "2026-w45"], "newest week first, no file that is not its week");
 		assert_eq!(list["weeks"][0]["receivedAt"], "2026-11-09T08:00:00.000Z");
 
 		let (status, etag, got) = call(&app, Method::GET, WEEK, Some(&phone), None, b"").await;
@@ -704,6 +731,9 @@ mod tests {
 		assert_eq!(call(&app, Method::GET, "/rust-weeks", Some(&theirs), None, b"").await.2, json!({ "weeks": [] }));
 		assert_eq!(call(&app, Method::GET, "/rust-weeks/2026-w47", Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND);
 		assert_eq!(call(&app, Method::GET, "/rust-weeks/indexing-01", Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND);
+		for not_a_week in ["/rust-weeks/2026-w49", "/rust-weeks/2026-w47"] {
+			assert_eq!(call(&app, Method::GET, not_a_week, Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND, "{not_a_week}");
+		}
 	}
 
 	/// A round is its putter's: another subject lists none of it, reads its
