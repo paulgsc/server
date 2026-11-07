@@ -38,14 +38,18 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    mem_limit: 2G
+    # Measured on the week of Oct 30 (36 lines, paulgsc/some-ui#2635): the
+    # speaker holds about 1.25 GB between lines and peaks at 2.02 GB inside
+    # the longest. 2G killed it four times on Nov 6, when it also kept each
+    # line's memory (infra/kokoro/say.py now hands it back).
+    mem_limit: 3G
     cpus: 2.0
     pids_limit: 64
     deploy:
       resources:
         limits:
           cpus: '2.0'
-          memory: 2G
+          memory: 3G
           pids: 64
     healthcheck:
       test: ['CMD', '/app/.venv/bin/python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8880/health', timeout=5)"]
