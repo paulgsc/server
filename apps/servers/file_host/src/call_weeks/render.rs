@@ -13,6 +13,14 @@
 //! It reads file names and one number, never a week's words or a log's.
 //! Cost: one read of `call_week`'s days and up to two `stat`s per week held,
 //! each minute; the table grows by a week a week.
+//!
+//! [`disk`] reads what the call takes of that drive, for the CALL dashboard
+//! and the `CallRenderCacheFull` and `HomeDriveLow` alerts: the bytes of the
+//! videos kept for good and of the waiting weeks' work (their step caches),
+//! when the worker last wrote a cache warning (a step past the render
+//! policy's budget, `renders/call-worker/*.cache.log`), and the drive's free
+//! and total bytes. Cost: a `stat` per file under `renders/` (about eighty a
+//! week rendered) and one `statvfs`, each minute.
 
 use chrono::DateTime;
 use sqlx::SqlitePool;
@@ -23,6 +31,84 @@ pub const RENDERS_FOLDER: &str = "/app/dbs/renders/call";
 
 /// Where the worker says how its passes went, as this server sees it.
 pub const STATUS_FOLDER: &str = "/app/dbs/renders/call-worker";
+
+/// Where the worker keeps a waiting week's work and step cache between
+/// attempts, as this server sees it.
+pub const WORK_FOLDER: &str = "/app/dbs/renders/call-work";
+
+/// What the call takes of the drive that keeps it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Disk {
+	/// Bytes of every video kept for good, and what each was made from.
+	pub videos_bytes: u64,
+	/// Bytes of the waiting weeks' work and step caches.
+	pub work_bytes: u64,
+	/// Unix seconds of the newest cache warning, if one was ever written.
+	pub cache_warning_at: Option<i64>,
+	/// The drive's bytes free to the worker and its size, if it can be read.
+	pub drive: Option<(u64, u64)>,
+}
+
+/// Reads what the call takes of the drive (the module doc).
+pub async fn disk(renders: &Path, work: &Path, status: &Path) -> Disk {
+	Disk {
+		videos_bytes: bytes_under(renders).await,
+		work_bytes: bytes_under(work).await,
+		cache_warning_at: newest_cache_warning(status).await,
+		drive: drive(renders.parent().unwrap_or(renders)),
+	}
+}
+
+/// Every file's bytes under `dir`, not following links; nothing when it is
+/// missing.
+async fn bytes_under(dir: &Path) -> u64 {
+	let mut total = 0_u64;
+	let mut folders = vec![dir.to_path_buf()];
+	while let Some(folder) = folders.pop() {
+		let Ok(mut entries) = tokio::fs::read_dir(&folder).await else {
+			continue;
+		};
+		while let Ok(Some(entry)) = entries.next_entry().await {
+			// `DirEntry::metadata` does not follow a link.
+			let Ok(meta) = entry.metadata().await else {
+				continue;
+			};
+			if meta.is_dir() {
+				folders.push(entry.path());
+			} else {
+				total = total.saturating_add(meta.len());
+			}
+		}
+	}
+	total
+}
+
+/// When the newest `*.cache.log` in `status` was written.
+async fn newest_cache_warning(status: &Path) -> Option<i64> {
+	let mut entries = tokio::fs::read_dir(status).await.ok()?;
+	let mut newest: Option<i64> = None;
+	while let Ok(Some(entry)) = entries.next_entry().await {
+		if !entry.file_name().to_string_lossy().ends_with(".cache.log") {
+			continue;
+		}
+		let Some(at) = entry.metadata().await.ok().and_then(|meta| meta.modified().ok()) else {
+			continue;
+		};
+		let Ok(since) = at.duration_since(std::time::UNIX_EPOCH) else {
+			continue;
+		};
+		let at = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
+		newest = Some(newest.map_or(at, |seen| seen.max(at)));
+	}
+	newest
+}
+
+/// The drive's bytes free to an unprivileged writer, and its size.
+fn drive(path: &Path) -> Option<(u64, u64)> {
+	let stat = rustix::fs::statvfs(path).ok()?;
+	let block = stat.f_frsize;
+	Some((stat.f_bavail.saturating_mul(block), stat.f_blocks.saturating_mul(block)))
+}
 
 /// What the worker has made of the weeks home holds.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -101,6 +187,35 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		let week = Week { from, to, body: b"{}", taken_at };
 		call_week_repo::keep(&mut conn, &week).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn the_drive_reads_as_videos_work_cache_warnings_and_free_space() {
+		let dir = tempfile::tempdir().unwrap();
+		let (renders, work, status) = (dir.path().join("call"), dir.path().join("call-work"), dir.path().join("call-worker"));
+		assert_eq!(
+			disk(&renders, &work, &status).await,
+			Disk {
+				drive: disk(&renders, &work, &status).await.drive,
+				..Disk::default()
+			},
+			"nothing rendered, nothing waiting, no warning"
+		);
+
+		std::fs::create_dir_all(renders.join("2026-10-30")).unwrap();
+		std::fs::write(renders.join("2026-10-30").join("call.mp4"), [0_u8; 10]).unwrap();
+		std::fs::write(renders.join("2026-10-30").join("01-open.wav"), [0_u8; 5]).unwrap();
+		std::fs::create_dir_all(work.join("2026-11-06").join("cache").join("steps")).unwrap();
+		std::fs::write(work.join("2026-11-06").join("cache").join("steps").join("a.mkv"), [0_u8; 20]).unwrap();
+		std::fs::create_dir_all(&status).unwrap();
+		std::fs::write(status.join("last-pass"), b"1").unwrap();
+		std::fs::write(status.join("2026-11-06.cache.log"), b"cache warning: not cached").unwrap();
+
+		let seen = disk(&renders, &work, &status).await;
+		assert_eq!((seen.videos_bytes, seen.work_bytes), (15, 20));
+		assert!(seen.cache_warning_at.is_some_and(|at| at > 1_700_000_000));
+		let (free, size) = seen.drive.unwrap();
+		assert!(size > 0 && free <= size);
 	}
 
 	#[tokio::test]

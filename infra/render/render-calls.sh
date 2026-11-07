@@ -19,7 +19,19 @@
 # time each pass started, and /renders/call-worker/<from>.failed.log, the
 # whole output of a week's last failed attempt, removed once it renders.
 # The same output is on stdout too, for `docker logs render`.
+#
+# A waiting week's work, its step cache included, is kept between attempts
+# in $WORK/<from>, so a recorder that keeps its steps (paulgsc/some-ui#2658)
+# reruns only what changed, and leaves with the finished week. What a render
+# may take is policy; nothing past it is silent: a step not cached (a
+# `cache warning:` line from the recorder) is kept in
+# /renders/call-worker/<week>.cache.log, and a week's work removed past the
+# total cap in work.cache.log, both read by file_host (CallRenderCacheFull).
 set -uo pipefail
+
+# Policy: all waiting weeks' work together, $WORK; past it, the oldest other
+# week's work is removed (its retry starts over).
+WORK_MAX_MB=4096
 
 WEEKS=/weeks
 RENDERS=/renders/call
@@ -40,7 +52,7 @@ render_week() {
   local file=$1 from=$2
   local log="$STATUS/.$from.log"
   : > "$log" || return 1
-  if ! { rm -rf "$WORK" && mkdir -p "$WORK"; } 2>> "$log"; then
+  if ! mkdir -p "$WORK" 2>> "$log"; then
     echo "the work folder $WORK could not be made" | tee -a "$log"
     return 1
   fi
@@ -58,6 +70,43 @@ render_week() {
   fi
 }
 
+# The `cache warning:` lines of `from`'s last attempt, kept where file_host
+# reads them; nothing is written when there were none.
+keep_cache_warnings() {
+  local from=$1 log="$STATUS/.$1.log" warned="$STATUS/.$1.cache.log"
+  [ -e "$log" ] || return 0
+  if grep '^cache warning: ' "$log" > "$warned"; then
+    mv "$warned" "$STATUS/$from.cache.log"
+  else
+    rm -f "$warned"
+  fi
+}
+
+# Before `current` renders: the work of a week that is no longer waiting
+# (rendered, or no longer held) goes, and past WORK_MAX_MB the oldest other
+# waiting week's work goes too, each said as a cache warning in
+# work.cache.log (a week's own warnings are rewritten after each attempt).
+prune_work() {
+  local current=$1 dir from
+  for dir in "$WORK"/*/; do
+    [ -d "$dir" ] || continue
+    from=$(basename "$dir")
+    if [ -e "$RENDERS/$from/call.mp4" ] || [ ! -e "$WEEKS/$from.json" ]; then
+      rm -rf "$dir"
+    fi
+  done
+  while [ "$(du -sm "$WORK" 2>/dev/null | cut -f1)" -gt "$WORK_MAX_MB" ]; do
+    from=$(ls -1 "$WORK" | grep -vx "$current" | sort | head -n1)
+    [ -n "$from" ] || break
+    rm -rf "${WORK:?}/$from"
+    echo "cache warning: removed the waiting work of $from: all weeks' work passed the policy's $WORK_MAX_MB MB" |
+      tee -a "$STATUS/work.cache.log"
+    # Its last hundred lines only: a warning is news, not a record.
+    tail -n 100 "$STATUS/work.cache.log" > "$STATUS/.work.cache.log" &&
+      mv "$STATUS/.work.cache.log" "$STATUS/work.cache.log"
+  done
+}
+
 # Written whole, so file_host never reads half a file.
 put() {
   printf '%s\n' "$2" > "$STATUS/.$1" && mv "$STATUS/.$1" "$STATUS/$1"
@@ -71,10 +120,13 @@ while true; do
     [[ "$from" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
     [ -e "$RENDERS/$from/call.mp4" ] && continue
     echo "rendering the call of $from"
+    mkdir -p "$WORK" && prune_work "$from"
     if render_week "$file" "$from"; then
+      keep_cache_warnings "$from"
       rm -f "$STATUS/.$from.log" "$STATUS/$from.failed.log"
       echo "rendered the call of $from"
     else
+      keep_cache_warnings "$from"
       mv -f "$STATUS/.$from.log" "$STATUS/$from.failed.log"
       echo "the call of $from did not render; it is tried again in an hour" >&2
     fi

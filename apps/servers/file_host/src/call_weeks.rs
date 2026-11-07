@@ -140,6 +140,8 @@ async fn observe_renders(db: &sqlx::SqlitePool) {
 	} else {
 		warn!(error = "storage", "call render observation failed");
 	}
+	let work = std::path::Path::new(render::WORK_FOLDER);
+	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await);
 }
 
 /// The pass's one log line, when it added a week or something went wrong.

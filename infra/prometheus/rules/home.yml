@@ -243,6 +243,34 @@ groups:
           objective: CW5
           says: "Home's {{ $labels.name }} crashed and restarted: the OOM tile on the system dashboard says if memory ran out, and docker logs {{ $labels.name }} says why."
 
+      - alert: CallRenderCacheFull
+        # CW6: the render policy caps what one week's step cache keeps
+        # (record:call --cache-mb, infra/render/render-calls.sh), and a step
+        # past it runs uncached rather than failing; the worker writes each
+        # such warning, and each week's work it removed past the total cap,
+        # to renders/call-worker/*.cache.log, whose newest time file_host
+        # reads each minute (call_weeks::render::disk). Said for a day, so a
+        # render that warned and then finished is still heard.
+        expr: |
+          max(call_render_cache_warning_timestamp_seconds) > 0
+          and on() (time() - max(call_render_cache_warning_timestamp_seconds)) < 86400
+        labels:
+          objective: CW6
+          says: "A render passed its cache policy in the last day, so some steps ran uncached: renders/call-worker/*.cache.log on home's database drive names them."
+
+      - alert: HomeDriveLow
+        # CW6: the drive that holds home's database also keeps every video
+        # of the call for good and the waiting weeks' caches; file_host reads
+        # its free bytes each minute (call_weeks::render::disk). Ten minutes
+        # under a tenth free is a drive filling, not a render's moment.
+        expr: |
+          max(call_render_drive_size_bytes) > 0
+          and on() max(call_render_drive_avail_bytes) / max(call_render_drive_size_bytes) < 0.10
+        for: 10m
+        labels:
+          objective: CW6
+          says: "Home's database drive, which keeps the call's videos and caches, has under a tenth of its space free."
+
   - name: home-health
     rules:
       - alert: DatabaseBehindBuild

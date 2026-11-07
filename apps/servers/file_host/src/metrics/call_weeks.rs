@@ -5,7 +5,10 @@
 //! and `CallRender*` alerts (`infra/prometheus/rules/home.yml`). No label
 //! carries a week: counts and times only.
 
-use crate::call_weeks::{pass::Pass, render::Renders};
+use crate::call_weeks::{
+	pass::Pass,
+	render::{Disk, Renders},
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now() -> f64 {
@@ -45,4 +48,19 @@ pub fn record_renders(seen: &Renders) {
 	metrics::gauge!("call_render_weeks_failed").set(count(seen.failed));
 	metrics::gauge!("call_render_oldest_waiting_taken_timestamp_seconds").set(seen.oldest_waiting_taken.map_or(0.0, as_f64));
 	metrics::gauge!("call_render_worker_last_pass_timestamp_seconds").set(seen.worker_last_pass.map_or(0.0, as_f64));
+}
+
+fn bytes(value: u64) -> f64 {
+	as_f64(i64::try_from(value).unwrap_or(i64::MAX))
+}
+
+/// What the call takes of the drive that keeps it. A time or a drive that
+/// is not there reads 0.
+pub fn record_disk(seen: &Disk) {
+	metrics::gauge!("call_render_videos_bytes").set(bytes(seen.videos_bytes));
+	metrics::gauge!("call_render_work_bytes").set(bytes(seen.work_bytes));
+	metrics::gauge!("call_render_cache_warning_timestamp_seconds").set(seen.cache_warning_at.map_or(0.0, as_f64));
+	let (free, size) = seen.drive.unwrap_or((0, 0));
+	metrics::gauge!("call_render_drive_avail_bytes").set(bytes(free));
+	metrics::gauge!("call_render_drive_size_bytes").set(bytes(size));
 }
