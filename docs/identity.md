@@ -2081,7 +2081,7 @@ nowhere is marked as such and belongs to review.
     Feedback page left at a moment of a feed's episode and sent home
     (paulgsc/some-ui#2745, SFEED6): the phone's id for it, the feed (`call`
     or `playoff-delta`), the episode's key, the moment in milliseconds from
-    its start, the categories picked from the fixed set of fourteen (each
+    its start (at most a day), the categories picked from the fixed set of fourteen (each
     once, in the set's order, at least one: the phone's `NoteSchema`, held
     again by a trigger on the table), the voice note id of the library take
     said for it if there is one, when it was written, and when it reached

@@ -205,10 +205,18 @@ fn in_set_order(picked: &[String]) -> bool {
 	!picked.is_empty()
 }
 
-/// `at` as ISO-8601 UTC to the millisecond: what is stored and served.
+/// The latest moment a note can be at: a day into an episode, far past any
+/// the feeds render, and well inside the integers the mailbox's JSON reads
+/// exactly (`Number.MAX_SAFE_INTEGER`).
+pub const MAX_AT_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// `at` as ISO-8601 UTC to the millisecond: what is stored, served and
+/// filed. A finer time is cut to the millisecond, as the phone's
+/// `toISOString()` never writes one.
 ///
-/// `None` when it is not an RFC 3339 instant in UTC (`Z`, as the phone's
-/// `toISOString()` writes).
+/// `None` when it is not an RFC 3339 instant in UTC (`Z`, as the phone
+/// writes), or names a leap second, which chrono would write back as `:60`
+/// and the mailbox refuse, a refusal that is final for a filed note.
 #[must_use]
 pub fn instant(at: &str) -> Option<String> {
 	if !at.ends_with('Z') {
@@ -216,6 +224,7 @@ pub fn instant(at: &str) -> Option<String> {
 	}
 	DateTime::parse_from_rfc3339(at)
 		.ok()
+		.filter(|at| at.timestamp_subsec_nanos() < 1_000_000_000)
 		.map(|at| at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
@@ -243,9 +252,9 @@ pub fn parse(feed: &str, id: &str, body: &[u8]) -> Result<Note, Vec<Problem>> {
 	if !is_episode(&wire.episode) {
 		problems.push(("episode", "must be an episode's key: 1 to 64 letters, digits or `-`"));
 	}
-	let at_ms = wire.at_ms.as_i64().filter(|at_ms| *at_ms >= 0);
+	let at_ms = wire.at_ms.as_i64().filter(|at_ms| (0..=MAX_AT_MS).contains(at_ms));
 	if at_ms.is_none() {
-		problems.push(("atMs", "must be the moment in the episode: whole milliseconds from its start"));
+		problems.push(("atMs", "must be the moment in the episode: whole milliseconds from its start, within a day"));
 	}
 	if !in_set_order(&wire.categories) {
 		problems.push(("categories", "must be names from the fixed set, each once, in its order, at least one"));
@@ -532,6 +541,14 @@ mod tests {
 		assert_eq!(fields("call", "n2", &note("n1", &["shallow"])), ["id"], "the id the path names");
 		assert_eq!(fields("call", "n/1", &note("n/1", &["shallow"])), ["id"]);
 		assert_eq!(fields("playoff-delta", "n1", &note("n1", &["shallow"])), ["feed"], "the feed the path names");
+		let mut leap = note("n1", &["shallow"]);
+		leap["writtenAt"] = json!("2016-12-31T23:59:60.000Z");
+		assert_eq!(fields("call", "n1", &leap), ["writtenAt"], "a leap second, which the mailbox would refuse");
+		let mut far = note("n1", &["shallow"]);
+		far["atMs"] = json!(super::MAX_AT_MS + 1);
+		assert_eq!(fields("call", "n1", &far), ["atMs"], "past a day into the episode");
+		far["atMs"] = json!(super::MAX_AT_MS);
+		assert!(parse("call", "n1", far.to_string().as_bytes()).is_ok(), "a day in is the last moment");
 		let mut fraction = note("n1", &["shallow"]);
 		fraction["atMs"] = json!(1.5);
 		assert_eq!(fields("call", "n1", &fraction), ["atMs"], "whole milliseconds");
