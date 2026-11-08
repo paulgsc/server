@@ -1,8 +1,7 @@
 //! Handlers for `routes::feed_videos`: each feed's videos on the phone.
 //!
 //! The call's and Playoff Delta's alike (FEED4, paulgsc/some-ui#2647). What each
-//! does is `feeds::videos`'s; these validate and answer, as
-//! `handlers::call_videos` does for the call's older routes.
+//! does is `feeds::videos`'s; these validate and answer.
 //!
 //! **A paired phone's only.** Every handler takes [`Paired`], so a request
 //! without a session is `401` and a browser's session `403`.
@@ -12,9 +11,8 @@
 //! refused in fixed words, never echoed. A feed the routes don't know is
 //! `404`, as an episode home doesn't hold is.
 
-use super::call_videos::{let_go_answer, now, LinkBody, LinkKept, LinkView};
 use crate::feeds::{
-	videos::{self, EpisodeVideo, LinkRecorded},
+	videos::{self, EpisodeVideo, Folders, LetGo, LetGoError, LinkRecorded},
 	Feed,
 };
 use crate::subject::Paired;
@@ -27,11 +25,70 @@ use axum::{
 	Json,
 };
 use call_week_repo::video::{link_of, Receipt, Step};
-use serde::Serialize;
+use chrono::{SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use tracing::instrument;
+
+/// The 409 when an episode's video is let go before its link is recorded.
+pub const NO_LINK: &str = "record the week's YouTube link before its video goes";
+/// The 409 when the rest of an episode is let go before its video.
+pub const VIDEO_FIRST: &str = "the rest of a week goes only after its video";
+/// The 409 when an episode with no video is let go.
+pub const NOT_RENDERED: &str = "the week has no video yet";
+
+fn now() -> String {
+	// Fixed width, as `handlers::jobs`'s.
+	Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// An episode's link as the phone reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkView {
+	/// `https://youtu.be/<id>`.
+	pub url: String,
+	pub recorded_at: String,
+}
+
+/// `PUT /feeds/:feed/videos/:key/link`'s body.
+#[derive(Debug, Deserialize)]
+pub struct LinkBody {
+	/// The link as pasted: `youtube.com/watch?v=…`, `youtu.be/…` or
+	/// `youtube.com/shorts/…`.
+	pub link: String,
+}
+
+/// `PUT /feeds/:feed/videos/:key/link`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LinkKept {
+	/// `https://youtu.be/<id>`: the episode's link now.
+	pub url: String,
+}
+
+/// One step of letting an episode of `feed` go, as the routes answer it.
+///
+/// # Errors
+/// 404 for an episode home doesn't hold, 409 for one with no link, no video,
+/// or the rest before the video, and 500 for a storage failure or a file the
+/// drive would not remove.
+async fn let_go_answer(db: &SqlitePool, feed: Feed, key: &str, step: Step) -> Result<Receipt, FileHostError> {
+	let folders = Folders {
+		renders: feed.renders(),
+		input: feed.input(),
+	};
+	match videos::let_go(db, feed, folders, key, step, &now()).await {
+		Ok(LetGo::Gone(receipt)) => Ok(receipt),
+		Ok(LetGo::NoEpisode) => Err(FileHostError::NotFound),
+		Ok(LetGo::NoLink) => Err(FileHostError::Conflict(NO_LINK)),
+		Ok(LetGo::VideoFirst) => Err(FileHostError::Conflict(VIDEO_FIRST)),
+		Ok(LetGo::NotRendered) => Err(FileHostError::Conflict(NOT_RENDERED)),
+		Err(LetGoError::Storage(error)) => Err(FileHostError::Sqlite(error)),
+		Err(LetGoError::Drive(error)) => Err(FileHostError::IoError(error)),
+	}
+}
 
 fn feed_of(name: &str) -> Result<Feed, FileHostError> {
 	Feed::parse(name).ok_or(FileHostError::NotFound)
@@ -211,9 +268,8 @@ pub async fn delete_rest(_paired: Paired, State(db): State<SqlitePool>, Path((fe
 
 #[cfg(test)]
 mod tests {
-	//! Through the real router, with a paired phone's session and a browser's,
-	//! as `handlers::call_videos`' tests are; `feeds::videos`' tests hold
-	//! what goes on the drive.
+	//! Through the real router, with a paired phone's session and a browser's;
+	//! `feeds::videos`' tests hold what goes on the drive.
 
 	use crate::auth::{
 		cookie::{Carrier, SessionToken},
