@@ -153,6 +153,8 @@ if [ "$1" = tests/record/preview.ts ]; then
   echo intermediate > "$out/cache/frame"
   printf '{"template":{"id":"%s","version":2}}\n' "$template" > "$out/week.json"
   echo "preview of $template" > "$out/preview.mp4"
+  # As if an earlier attempt had written it: the worker's move dates it.
+  touch -d '2 days ago' "$out/preview.mp4"
   exit 0
 fi
 [ "$1" = tests/record/call.ts ] || { echo "not the call's recorder: $1"; exit 2; }
@@ -657,6 +659,7 @@ check "a request of a template there is none of is never read" test "$(wc -l < "
 check "its job is over" test ! -e "$ROOT/renders/call-worker/job"
 run_job preview > "$SCRATCH/pass.out" 2>&1
 check "a ready preview is not made again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+check "its video's time is when it was moved into place" test "$(( $(date +%s) - $(stat -c %Y "$ROOT/renders/preview/$ID/preview.mp4") ))" -lt 60
 
 # A preview that fails stays failed, RETRY_AFTER or not: the owner asks for
 # another, under a new id.

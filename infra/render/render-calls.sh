@@ -617,6 +617,9 @@ render_episode() {
     end_job
     return 1
   fi
+  # A preview's day is counted from its video's time (file_host's
+  # `previews`): now, not when an earlier attempt first wrote it.
+  [ "$job" != preview ] || touch "$RENDERS/$key/$VIDEO"
   # What is left of Playoff Delta's --out folder is empty.
   rm -rf "${WORK:?}/$key"
   end_job

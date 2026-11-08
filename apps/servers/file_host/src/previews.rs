@@ -24,13 +24,22 @@
 //!   ([`read`]), never kept here.
 //! - **One at a time per template.** A request while one of the template is
 //!   still to be made answers that one ([`request`]).
+//! - **The deadline.** A request not ready [`LIFETIME`] after it was asked
+//!   (by its id's stamp) ends as failed, `overdue`: [`prune`] replaces its
+//!   `<id>.json` with `<id>.overdue`, so the worker lets it go if it waits, a
+//!   render that died never sits at `rendering` for good, and the owner can
+//!   ask again at once.
 //! - **The prune** ([`prune`], every [`PRUNE_EVERY`]): a preview goes
 //!   [`LIFETIME`] after it is made, and an older preview of its template as
 //!   soon as a newer one is ready; a failed request goes [`LIFETIME`] after
-//!   it failed. Each goes with its request, its status and its work. The
-//!   owner asked for exactly this, with no switch and no receipt
-//!   (paulgsc/some-ui#2757): a preview is a throwaway made from sample data,
-//!   never the owner's. The job in progress is never pruned.
+//!   it failed, its work at once. Each goes with its request, its status and
+//!   its work, and anything of a preview whose request is gone (a render
+//!   that landed after it, a removal cut short) goes too. The owner asked for
+//!   exactly this, with no switch and no receipt (paulgsc/some-ui#2757): a
+//!   preview is a throwaway made from sample data, never the owner's. The
+//!   job in progress is never pruned. So home keeps, per template, at most
+//!   one request still to be made, one ready preview, and the last day's
+//!   failures.
 //!
 //! Nothing here names a person or reads a subject: a preview is of a
 //! template's sample, and the routes are a paired phone's (`routes::previews`).
@@ -68,6 +77,14 @@ pub const LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How often [`prune`] runs.
 pub const PRUNE_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// What a request not made within [`LIFETIME`] of being asked is renamed
+/// to: failed, `overdue`.
+const OVERDUE: &str = ".overdue";
+
+/// How long a half-written request (`.<id>.json`, a write cut short) is left
+/// before the prune removes it.
+const PARTIAL_AFTER: Duration = Duration::from_secs(60);
 
 /// The most bytes of a failed attempt's log read for its reason.
 const FAILED_LOG_CEILING: u64 = 64 * 1024;
@@ -175,6 +192,15 @@ pub fn id_at(template: &str, now: SystemTime) -> String {
 	String::from(template) + "-" + &at.format("%Y%m%dT%H%M%SZ").to_string()
 }
 
+/// When preview `id` was asked for, by its stamp, in Unix seconds.
+#[must_use]
+pub fn asked_at(id: &str) -> Option<u64> {
+	template_of(id)?;
+	let (_, stamp) = id.rsplit_once('-')?;
+	let at = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%dT%H%M%SZ").ok()?;
+	u64::try_from(at.and_utc().timestamp()).ok()
+}
+
 fn unix(at: SystemTime) -> u64 {
 	at.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
@@ -189,7 +215,7 @@ async fn ids_of(folders: &Folders, template: &str) -> std::io::Result<Vec<String
 	};
 	while let Some(entry) = entries.next_entry().await? {
 		let name = entry.file_name();
-		let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+		let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".json").or_else(|| name.strip_suffix(OVERDUE))) else {
 			continue;
 		};
 		if template_of(id) == Some(template) && id.len() == template.len() + 17 {
@@ -197,6 +223,7 @@ async fn ids_of(folders: &Folders, template: &str) -> std::io::Result<Vec<String
 		}
 	}
 	ids.sort_unstable();
+	ids.dedup();
 	Ok(ids)
 }
 
@@ -281,6 +308,11 @@ pub async fn read(folders: &Folders, id: &str) -> std::io::Result<Preview> {
 		bytes: None,
 		failed: None,
 	};
+	if tokio::fs::try_exists(folders.requests.join(String::from(id) + OVERDUE)).await? {
+		preview.state = State::Failed;
+		preview.failed = Some("overdue");
+		return Ok(preview);
+	}
 	let folder = folders.renders.join(id);
 	match tokio::fs::symlink_metadata(folder.join(VIDEO)).await {
 		Ok(meta) if meta.file_type().is_file() => {
@@ -304,7 +336,8 @@ pub async fn read(folders: &Folders, id: &str) -> std::io::Result<Preview> {
 	if let Some((key, state, yields)) = job_in_progress(folders).await {
 		if key == id {
 			preview.state = match state.as_str() {
-				"rendering" => State::Rendering,
+				// `done`: rendered, being moved into place.
+				"rendering" | "done" => State::Rendering,
 				"paused" => State::Paused,
 				_ if yields > 0 => State::GivenWay,
 				_ => State::Waiting,
@@ -368,6 +401,10 @@ pub async fn request(folders: &Folders, template: &str, now: SystemTime) -> std:
 pub struct Pruned {
 	/// The ids removed, oldest first per template.
 	pub removed: Vec<String>,
+	/// The ids found overdue this pass.
+	pub overdue: Vec<String>,
+	/// What was left of a preview whose request was gone, by name.
+	pub swept: Vec<String>,
 }
 
 /// Removes every preview past its life (module doc).
@@ -390,9 +427,26 @@ pub async fn prune(folders: &Folders, now: SystemTime) -> std::io::Result<Pruned
 			previews.push(read(folders, id).await?);
 		}
 		let newest_ready = previews.iter().rposition(|preview| preview.state == State::Ready);
-		for (at, preview) in previews.iter().enumerate() {
+		for (at, preview) in previews.iter_mut().enumerate() {
+			// The deadline holds even for the job in progress: a render that
+			// died must not stay `rendering` for good. Its request is only
+			// renamed, so nothing the worker writes is touched.
+			if preview.state.pending() && asked_at(&preview.id).is_some_and(|asked| asked + LIFETIME.as_secs() <= unix(now)) {
+				// Written fresh, not renamed: its time is when it was found
+				// overdue, which the day before it goes counts from.
+				let marker = serde_json::json!({ "overdue_at": unix(now) }).to_string();
+				tokio::fs::write(folders.requests.join(String::from(&preview.id) + OVERDUE), marker).await?;
+				remove_file(&folders.requests.join(String::from(&preview.id) + ".json")).await?;
+				preview.state = State::Failed;
+				preview.failed = Some("overdue");
+				pruned.overdue.push(preview.id.clone());
+			}
 			if running.as_deref() == Some(preview.id.as_str()) {
 				continue;
+			}
+			if preview.state == State::Failed {
+				// A failed preview's work is never used again.
+				remove_dir(&folders.work.join(&preview.id)).await?;
 			}
 			let superseded = newest_ready.is_some_and(|newest| at < newest);
 			let expired = preview.expires_at.is_some_and(|expires| expires <= unix(now));
@@ -403,11 +457,80 @@ pub async fn prune(folders: &Folders, now: SystemTime) -> std::io::Result<Pruned
 			}
 		}
 	}
+	sweep(folders, running.as_deref(), now, &mut pruned).await?;
 	Ok(pruned)
 }
 
+/// Removes what is left of a preview whose request is gone: a render that
+/// landed after it, or a removal cut short. And a half-written request
+/// [`PARTIAL_AFTER`] old. Never the job in progress, and never a name that is
+/// no preview's.
+async fn sweep(folders: &Folders, running: Option<&str>, now: SystemTime, pruned: &mut Pruned) -> std::io::Result<()> {
+	let requested = |id: &str| {
+		let (json, overdue) = (folders.requests.join(String::from(id) + ".json"), folders.requests.join(String::from(id) + OVERDUE));
+		async move { Ok::<_, std::io::Error>(tokio::fs::try_exists(json).await? || tokio::fs::try_exists(overdue).await?) }
+	};
+	for folder in [&folders.renders, &folders.work] {
+		for name in names(folder).await? {
+			if template_of(&name).is_none() || running == Some(name.as_str()) || requested(&name).await? {
+				continue;
+			}
+			remove_dir(&folder.join(&name)).await?;
+			pruned.swept.push(name);
+		}
+	}
+	for name in names(&folders.status).await? {
+		let Some(id) = name.strip_suffix(".failed.log").or_else(|| name.strip_suffix(".cache.log")) else {
+			continue;
+		};
+		if template_of(id).is_none() || running == Some(id) || requested(id).await? {
+			continue;
+		}
+		remove_file(&folders.status.join(&name)).await?;
+		pruned.swept.push(name);
+	}
+	for name in names(&folders.requests).await? {
+		let Some(id) = name.strip_prefix('.').and_then(|name| name.strip_suffix(".json")) else {
+			continue;
+		};
+		let path = folders.requests.join(&name);
+		let old = tokio::fs::metadata(&path)
+			.await
+			.ok()
+			.and_then(|meta| meta.modified().ok())
+			.is_some_and(|at| at + PARTIAL_AFTER <= now);
+		if template_of(id).is_some() && old {
+			remove_file(&path).await?;
+			pruned.swept.push(name);
+		}
+	}
+	Ok(())
+}
+
+/// The names in `folder`, none when it is missing.
+async fn names(folder: &Path) -> std::io::Result<Vec<String>> {
+	let mut names = Vec::new();
+	let mut entries = match tokio::fs::read_dir(folder).await {
+		Ok(entries) => entries,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(names),
+		Err(err) => return Err(err),
+	};
+	while let Some(entry) = entries.next_entry().await? {
+		if let Some(name) = entry.file_name().to_str() {
+			names.push(name.to_owned());
+		}
+	}
+	Ok(names)
+}
+
+/// When preview `id` failed: when it was found overdue, else its failed
+/// attempt's log's time.
 async fn failed_at(folders: &Folders, id: &str) -> Option<u64> {
-	let meta = tokio::fs::metadata(folders.status.join(String::from(id) + ".failed.log")).await.ok()?;
+	let overdue = tokio::fs::metadata(folders.requests.join(String::from(id) + OVERDUE)).await;
+	let meta = match overdue {
+		Ok(meta) => meta,
+		Err(_) => tokio::fs::metadata(folders.status.join(String::from(id) + ".failed.log")).await.ok()?,
+	};
 	meta.modified().ok().map(unix)
 }
 
@@ -415,6 +538,7 @@ async fn failed_at(folders: &Folders, id: &str) -> Option<u64> {
 /// takes it up again meanwhile.
 async fn remove(folders: &Folders, id: &str) -> std::io::Result<()> {
 	remove_file(&folders.requests.join(String::from(id) + ".json")).await?;
+	remove_file(&folders.requests.join(String::from(id) + OVERDUE)).await?;
 	remove_dir(&folders.renders.join(id)).await?;
 	remove_dir(&folders.work.join(id)).await?;
 	for suffix in [".failed.log", ".cache.log"] {
@@ -461,7 +585,9 @@ pub fn start(state: &AppState) {
 					return;
 				}
 				_ = ticker.tick() => match prune(&folders, SystemTime::now()).await {
-					Ok(pruned) if !pruned.removed.is_empty() => info!(removed = pruned.removed.len(), "preview prune"),
+					Ok(pruned) if !(pruned.removed.is_empty() && pruned.overdue.is_empty() && pruned.swept.is_empty()) => {
+						info!(removed = pruned.removed.len(), overdue = pruned.overdue.len(), swept = pruned.swept.len(), "preview prune");
+					}
 					Ok(_) => {}
 					Err(err) => warn!(kind = ?err.kind(), "preview prune could not finish; the next one tries again"),
 				},

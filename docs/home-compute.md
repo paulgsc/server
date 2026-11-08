@@ -233,7 +233,9 @@ way; CI runs it on every PR.
   it is not kept: file_host removes it a day after it is made, and an older
   one of its template as soon as a newer one is ready (`previews::prune`,
   every 10 minutes, never the job in progress), at the owner's word, with no
-  switch and no receipt.
+  switch and no receipt. One not ready a day after it was asked fails as
+  `overdue`, the job in progress included, so a render that died never
+  holds its template's one request for good.
 
 ## At rest: what home costs while nothing is worked on
 

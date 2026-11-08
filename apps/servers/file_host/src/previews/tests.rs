@@ -245,3 +245,91 @@ async fn a_request_file_of_another_shape_is_never_a_preview() {
 		"nor pruned: what it doesn't know it leaves alone"
 	);
 }
+
+/// PV1 (paulgsc/some-ui#2757): a request not ready a day after it was asked
+/// ends as failed, `overdue`, even as the job in progress; the owner may ask
+/// again at once, and it goes a day after it was found overdue.
+#[tokio::test]
+async fn a_request_not_ready_a_day_after_it_was_asked_fails_overdue() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let Asked::New(asked) = request(&folders, "conference-call", at(0)).await.unwrap() else {
+		panic!()
+	};
+	std::fs::create_dir_all(folders.work.join(&asked.id)).unwrap();
+	job(&folders, &asked.id, "rendering", 0);
+	assert!(
+		prune(&folders, at(0) + LIFETIME - Duration::from_secs(1)).await.unwrap().overdue.is_empty(),
+		"within its day it waits"
+	);
+
+	let found = at(0) + LIFETIME;
+	let pruned = prune(&folders, found).await.unwrap();
+	assert_eq!(pruned.overdue, std::slice::from_ref(&asked.id));
+	let overdue = folders.requests.join(String::from(&asked.id) + ".overdue");
+	set_mtime(&overdue, found);
+	assert!(!folders.requests.join(String::from(&asked.id) + ".json").exists(), "the worker lets go of it");
+	let preview = current(&folders, "conference-call", found).await.unwrap().unwrap();
+	assert_eq!(
+		(preview.state, preview.failed),
+		(State::Failed, Some("overdue")),
+		"the job in progress included: it died, or never ran"
+	);
+	assert!(folders.work.join(&asked.id).exists(), "the job in progress keeps its work");
+
+	// A late render lands; it is still overdue.
+	std::fs::remove_file(folders.lane.join("job.state")).unwrap();
+	render(&folders, &asked.id, found);
+	assert_eq!(read(&folders, &asked.id).await.unwrap().failed, Some("overdue"));
+	let Asked::New(again) = request(&folders, "conference-call", found + Duration::from_secs(60)).await.unwrap() else {
+		panic!("an overdue one is no pending one")
+	};
+	assert_ne!(again.id, asked.id);
+
+	let pruned = prune(&folders, found + Duration::from_secs(600)).await.unwrap();
+	assert!(!folders.work.join(&asked.id).exists(), "once it is no job in progress, a failed one's work goes at once");
+	assert!(!pruned.removed.contains(&asked.id), "the failure stays a day, for the phone to say why");
+	let pruned = prune(&folders, found + LIFETIME).await.unwrap();
+	assert!(pruned.removed.contains(&asked.id));
+	assert!(!overdue.exists() && !folders.renders.join(&asked.id).exists());
+}
+
+/// What is left of a preview whose request is gone goes, and a half-written
+/// request once it is a minute old; the job in progress and names that are
+/// no preview's stay.
+#[tokio::test]
+async fn the_prune_sweeps_what_a_request_left_behind() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let (orphan, running) = ("conference-call-20261108T074500Z", "playoff-delta-week-20261108T074500Z");
+	render(&folders, orphan, at(0));
+	std::fs::create_dir_all(folders.work.join(orphan)).unwrap();
+	std::fs::write(folders.status.join(String::from(orphan) + ".failed.log"), "x").unwrap();
+	std::fs::create_dir_all(folders.work.join(running)).unwrap();
+	job(&folders, running, "rendering", 0);
+	std::fs::create_dir_all(folders.renders.join("lost+found")).unwrap();
+	let partial = folders.requests.join(String::from(".") + orphan + ".json");
+	std::fs::write(&partial, "{").unwrap();
+	set_mtime(&partial, at(0));
+
+	let pruned = prune(&folders, at(30)).await.unwrap();
+	assert!(!folders.renders.join(orphan).exists() && !folders.work.join(orphan).exists());
+	assert!(!folders.status.join(String::from(orphan) + ".failed.log").exists());
+	assert!(folders.work.join(running).exists(), "the job in progress is never swept");
+	assert!(folders.renders.join("lost+found").exists(), "a name that is no preview's is left alone");
+	assert!(partial.exists(), "a request being written is left a minute");
+	assert_eq!(pruned.swept.len(), 3);
+	prune(&folders, at(120)).await.unwrap();
+	assert!(!partial.exists());
+}
+
+#[tokio::test]
+async fn a_job_rendered_and_being_moved_into_place_reads_as_rendering() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let Asked::New(asked) = request(&folders, "conference-call", at(0)).await.unwrap() else {
+		panic!()
+	};
+	job(&folders, &asked.id, "done", 2);
+	assert_eq!(read(&folders, &asked.id).await.unwrap().state, State::Rendering);
+}
