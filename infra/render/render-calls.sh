@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Home's render worker (GWB10, paulgsc/some-ui#2084), with two jobs, one
-# loop: the weekly call's (paulgsc/some-ui#2635, ST36) and Playoff Delta's
-# (FEED4, paulgsc/some-ui#2647). infra/compose/call-render.yml runs it.
+# Home's render worker (GWB10, paulgsc/some-ui#2084), with three jobs, one
+# loop: the weekly call's (paulgsc/some-ui#2635, ST36), Playoff Delta's
+# (FEED4, paulgsc/some-ui#2647) and a template's preview (SFEED12,
+# paulgsc/some-ui#2757). infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
 # no video in the job's renders folder, it records the stage (`call-stage`,
@@ -14,10 +15,18 @@
 # |---------------|----------------------------------------|-----------------------------|-------------|
 # | call          | /weeks/<from>.json (call_weeks)        | /renders/call/<from>/       | call.mp4    |
 # | playoff-delta | /episodes/<key>/{fill,season}.json     | /renders/playoff-delta/<key>/ | episode.mp4 |
+# | preview       | /previews/<id>.json (previews)         | /renders/preview/<id>/      | preview.mp4 |
 #
 # A Playoff Delta key is <season>-<team>-<NN> (2026-SF-08, NN 00 the legend);
 # file_host writes only fills of a voiced version (pd_fills::render), so a
 # fill written for the owner's own voice is never tried here, never failed.
+# A preview's id is <template>-<UTC yyyymmddThhmmssZ> (conference-call-
+# 20261108T074500Z): the owner asked home for one of the template's sample
+# (`POST /previews/:template`). It records the template's sample week and
+# renders its preview's cut. One that fails is never tried again: the owner
+# asks for another. file_host removes each preview a day after it is made,
+# and an older one of its template once a newer one is ready (`previews`);
+# nothing here deletes one.
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -128,7 +137,12 @@ TSX=/opt/some-ui/node_modules/.bin/tsx
 COMMON=(--app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
-JOBS=(call playoff-delta)
+JOBS=(call playoff-delta preview)
+
+# The templates a preview may be of (paulgsc/some-ui
+# packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
+# `previews::TEMPLATES`).
+PREVIEW_ID='^(conference-call|playoff-delta-legend|playoff-delta-week)-[0-9]{8}T[0-9]{6}Z$'
 
 # The job's folders and video's name, as globals: INPUT, RENDERS, STATUS,
 # WORK, VIDEO. The work folder is on the same drive as the videos, not the
@@ -143,6 +157,9 @@ use_job() {
     playoff-delta)
       INPUT=$ROOT/episodes RENDERS=$ROOT/renders/playoff-delta STATUS=$ROOT/renders/playoff-delta-worker
       WORK=$ROOT/renders/playoff-delta-work VIDEO=episode.mp4 ;;
+    preview)
+      INPUT=$ROOT/previews RENDERS=$ROOT/renders/preview STATUS=$ROOT/renders/preview-worker
+      WORK=$ROOT/renders/preview-work VIDEO=preview.mp4 ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -167,6 +184,12 @@ episodes() {
         [[ "$key" =~ ^[0-9]{4}-[A-Z]{2,3}-[0-9]{2}$ ]] || continue
         [ -e "$entry/fill.json" ] && [ -e "$entry/season.json" ] && echo "$key"
       done ;;
+    preview)
+      for entry in "$INPUT"/*.json; do
+        [ -e "$entry" ] || continue
+        key=$(basename "$entry" .json)
+        [[ "$key" =~ $PREVIEW_ID ]] && echo "$key"
+      done ;;
   esac
 }
 
@@ -176,6 +199,7 @@ holds() {
   case $1 in
     call) [ -e "$INPUT/$2.json" ] ;;
     playoff-delta) [ -d "$INPUT/$2" ] ;;
+    preview) [ -e "$INPUT/$2.json" ] ;;
   esac
 }
 
@@ -190,6 +214,10 @@ record() {
       (cd "$APP_DIR" && "$TSX" tests/record/playoff-delta.ts "${COMMON[@]}" \
         --season-file "$INPUT/$key/season.json" --narration "$INPUT/$key/fill.json" \
         --week "$((10#${key##*-}))" --out "$WORK/$key") ;;
+    preview)
+      # The template is the id less its stamp.
+      (cd "$APP_DIR" && "$TSX" tests/record/preview.ts "${COMMON[@]}" \
+        --template "${key%-*}" --out "$WORK/$key") ;;
   esac
 }
 
@@ -199,6 +227,7 @@ finished() {
   case $1 in
     call) echo "$WORK/$2" ;;
     playoff-delta) echo "$WORK/$2/${2%%-*}-week-${2##*-}" ;;
+    preview) echo "$WORK/$2" ;;
   esac
 }
 
@@ -287,7 +316,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta) return 0 ;;
+    call | playoff-delta | preview) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -633,10 +662,12 @@ prune_work() {
   done
 }
 
-# Whether `key` failed less than RETRY_AFTER ago.
+# Whether `job`'s `key` failed less than RETRY_AFTER ago. A preview that failed
+# stays failed: the owner asks for another, under a new id.
 failed_recently() {
-  local failed="$STATUS/$1.failed.log" when
+  local job=$1 failed="$STATUS/$2.failed.log" when
   [ -e "$failed" ] || return 1
+  [ "$job" != preview ] || return 0
   when=$(stat -c %Y "$failed") || return 1
   [ $(( $(date +%s) - when )) -lt "$RETRY_AFTER" ]
 }
@@ -645,7 +676,7 @@ failed_recently() {
 render_one() {
   local job=$1 key=$2 outcome
   [ -e "$RENDERS/$key/$VIDEO" ] && return 0
-  failed_recently "$key" && return 0
+  failed_recently "$job" "$key" && return 0
   echo "rendering the $job of $key"
   mkdir -p "$WORK" && prune_work "$job" "$key"
   render_episode "$job" "$key"
@@ -662,7 +693,11 @@ render_one() {
       mv -f "$STATUS/.$key.log" "$STATUS/$key.failed.log"
       # Its time is the failure's, which RETRY_AFTER counts from.
       touch "$STATUS/$key.failed.log"
-      echo "the $job of $key did not render; it is tried again in an hour" >&2 ;;
+      if [ "$job" = preview ]; then
+        echo "the preview $key did not render; the owner asks for another" >&2
+      else
+        echo "the $job of $key did not render; it is tried again in an hour" >&2
+      fi ;;
   esac
 }
 
