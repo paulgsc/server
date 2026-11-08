@@ -253,7 +253,7 @@ pub fn parse_trusted_proxy(entry: &str) -> Result<IpNet, String> {
 	entry
 		.parse::<IpNet>()
 		.or_else(|_| entry.parse::<IpAddr>().map(IpNet::from))
-		.map_err(|_| format!("{entry:?} is neither an address nor a CIDR range"))
+		.map_err(|_| entry.to_owned() + " is neither an address nor a CIDR range")
 }
 
 /// The address a request came from.

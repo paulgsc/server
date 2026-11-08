@@ -161,7 +161,7 @@ mod tests {
 				until_sweep = sweep;
 			}
 			clock.advance(wait);
-			until_sweep = until_sweep.map(|left| left - wait);
+			until_sweep = until_sweep.map(|left| left.saturating_sub(wait));
 			decisions.extend((0..step.requests).map(|_| limiter.check(&"phone")));
 		}
 		decisions
@@ -191,7 +191,10 @@ mod tests {
 		events
 			.into_iter()
 			.map(|(at, requests)| {
-				let step = Step { wait: at - last, requests };
+				let step = Step {
+					wait: at.saturating_sub(last),
+					requests,
+				};
 				last = at;
 				step
 			})
@@ -318,7 +321,7 @@ mod tests {
 			Decision::Limited { retry_after: 600 * MS },
 			"a refusal does not push the return further out"
 		);
-		clock.advance(600 * MS - Duration::from_nanos(1));
+		clock.advance((600 * MS).saturating_sub(Duration::from_nanos(1)));
 		assert!(!limiter.check(&"phone").is_allowed());
 		clock.advance(Duration::from_nanos(1));
 		assert_eq!(limiter.check(&"phone"), Decision::Allowed { remaining: 0 });
@@ -366,7 +369,7 @@ mod tests {
 			assert!(limiter.check(&client).is_allowed());
 		}
 		assert_eq!(limiter.snapshot().tracked, 1000);
-		clock.advance(Duration::from_secs(1) - Duration::from_nanos(1));
+		clock.advance(Duration::from_secs(1).saturating_sub(Duration::from_nanos(1)));
 		assert_eq!(limiter.evict_full(), 0, "each is still one request short of full");
 		clock.advance(Duration::from_nanos(1));
 		assert_eq!(limiter.evict_full(), 1000);
