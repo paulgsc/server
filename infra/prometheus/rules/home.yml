@@ -233,6 +233,30 @@ groups:
           objective: CW5
           says: "A week of the call has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
 
+      - alert: PlayoffDeltaRenderFailed
+        # PK5 (some-ui#2647): a voiced fill home holds has no video and the
+        # render worker's last attempt at it failed (render-calls.sh's
+        # playoff-delta job keeps that attempt's whole output, and removes it
+        # once the episode renders). file_host reads that each minute
+        # (pd_fills::render). The worker tries again hourly.
+        expr: |
+          max(pd_render_episodes_failed) > 0
+        labels:
+          objective: PK5
+          says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+
+      - alert: PlayoffDeltaRenderOverdue
+        # PK5: a voiced fill has waited 3 hours since home took it, with no
+        # failed attempt, so the worker is not trying it, as
+        # CallRenderOverdue reads the call's weeks.
+        expr: |
+          max(pd_render_episodes_waiting) > 0
+          and on() (time() - max(pd_render_oldest_waiting_taken_timestamp_seconds)) > 10800
+          and on() max(pd_render_episodes_failed) == 0
+        labels:
+          objective: PK5
+          says: "A week of Playoff Delta has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+
       - alert: CallRenderWorkerStale
         # CW5: the worker stamps each pass it starts and sleeps an hour after
         # one ends, so a pass with a render in it spaces two stamps by the

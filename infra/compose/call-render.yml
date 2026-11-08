@@ -5,14 +5,18 @@
 # - `kokoro`, the speaker: Kokoro v1.0, seeded per line
 #   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
 # - `call-stage`, the stage: the published home-network app image, pinned by
-#   digest (the owner's choice on paulgsc/some-ui#2639), serving `/call`.
-#   Bump the pin when the call's stage changes.
-# - `render`, the worker (GWB10, paulgsc/some-ui#2084): for each week
-#   `file_host` writes to ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`)
-#   that has no video yet, it records the stage with each scene said by the
-#   speaker and renders it (infra/render/render-calls.sh). Every video is kept
-#   for good in ${STORAGE}/renders/call/<from>/ (the owner's choice on
-#   paulgsc/some-ui#2640), on the same drive as home's database.
+#   digest (the owner's choice on paulgsc/some-ui#2639), serving `/call` and
+#   `/playoff-delta`. Bump the pin when either stage changes.
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with two jobs
+#   (infra/render/render-calls.sh): for each week `file_host` writes to
+#   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
+#   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
+#   (`pd_fills::render::EPISODES_FOLDER`, FEED4 paulgsc/some-ui#2647), that
+#   has no video yet, it records the stage with each scene said by the
+#   speaker and renders it. Each video is kept in ${STORAGE}/renders/call/<from>/
+#   or ${STORAGE}/renders/playoff-delta/<season>-<team>-<NN>/, on the same
+#   drive as home's database, until the owner lets it go (paulgsc/some-ui#2640,
+#   #2661).
 #
 #   make compose ARGS="up -d --build kokoro call-stage render"
 #   curl -s http://127.0.0.1:8880/health
@@ -104,8 +108,10 @@ services:
         condition: service_started
       call-stage:
         condition: service_started
-      # file_host makes ${STORAGE}/call-weeks before it answers its health
-      # check (call_weeks::start), so the folder is its own, never Docker's.
+      # file_host makes ${STORAGE}/call-weeks and
+      # ${STORAGE}/playoff-delta-episodes before it answers its health check
+      # (call_weeks::start, pd_fills::start), so each is its own, never
+      # Docker's.
       file-host:
         condition: service_healthy
     networks:
@@ -116,6 +122,15 @@ services:
       - type: volume
         source: call_week_files
         target: /weeks
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`pd_fills::render::EPISODES_FOLDER`), read here
+      # only, through `pd_episode_files` (below): each Playoff Delta fill
+      # and its season, one folder per episode.
+      - type: volume
+        source: pd_episode_files
+        target: /episodes
         read_only: true
         volume:
           nocopy: true
@@ -169,11 +184,20 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/call-weeks
+  # ${STORAGE}/playoff-delta-episodes, where file_host writes each voiced
+  # Playoff Delta fill, beside its database; bound as call_week_files is, for
+  # the same reason (pd_fills::start makes it).
+  pd_episode_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/playoff-delta-episodes
 
 networks:
   # Internal: none of the three reaches the internet or the rest of the stack.
   # The stage's reads of paulgsc/testing are answered by the recorder from
-  # the week file, and the speaker needs nothing.
+  # the week file or the season file, and the speaker needs nothing.
   call-render-network:
     internal: true
   kokoro-network:

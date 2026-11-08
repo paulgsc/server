@@ -29,6 +29,9 @@ use chrono::DateTime;
 use sqlx::SqlitePool;
 use std::path::Path;
 
+/// The video's file in a week's folder.
+pub const VIDEO: &str = "call.mp4";
+
 /// Where the worker keeps each week's video, as this server sees it.
 pub const RENDERS_FOLDER: &str = "/app/dbs/renders/call";
 
@@ -142,33 +145,55 @@ pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<R
 		let mut conn = db.acquire().await?;
 		(call_week_repo::taken(&mut conn).await?, call_week_repo::video::let_go(&mut conn).await?)
 	};
+	let held: Vec<Held> = weeks
+		.into_iter()
+		.map(|week| Held {
+			key: week.from,
+			taken_at: week.taken_at,
+		})
+		.collect();
+	Ok(tally(&held, &let_go, renders, status, VIDEO).await)
+}
+
+/// An episode a feed holds, as [`tally`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Held {
+	/// Its folder's name under the feed's renders and status folders: one
+	/// plain path segment, by its table's own checks.
+	pub key: String,
+	/// ISO-8601 UTC, when home took it.
+	pub taken_at: String,
+}
+
+/// What the worker has made of a feed's episodes (the call's weeks,
+/// Playoff Delta's fills): each is let go, rendered (`<renders>/<key>/<video>`),
+/// or waiting, and failed when `<status>/<key>.failed.log` is there.
+pub(crate) async fn tally(held: &[Held], let_go: &[String], renders: &Path, status: &Path, video: &str) -> Renders {
 	let mut seen = Renders {
-		held: weeks.len(),
+		held: held.len(),
 		worker_last_pass: last_pass(status).await,
 		..Renders::default()
 	};
-	for week in &weeks {
-		if let_go.contains(&week.from) {
+	for episode in held {
+		if let_go.contains(&episode.key) {
 			seen.let_go += 1;
 			continue;
 		}
-		// `week_from` is a day by the table's own check, so it is one plain
-		// path segment.
-		if exists(&renders.join(&week.from).join("call.mp4")).await {
+		if exists(&renders.join(&episode.key).join(video)).await {
 			continue;
 		}
 		seen.waiting += 1;
-		let mut failed_log = week.from.clone();
+		let mut failed_log = episode.key.clone();
 		failed_log.push_str(".failed.log");
 		if exists(&status.join(failed_log)).await {
 			seen.failed += 1;
 		}
-		if let Ok(taken) = DateTime::parse_from_rfc3339(&week.taken_at) {
+		if let Ok(taken) = DateTime::parse_from_rfc3339(&episode.taken_at) {
 			let taken = taken.timestamp();
 			seen.oldest_waiting_taken = Some(seen.oldest_waiting_taken.map_or(taken, |oldest| oldest.min(taken)));
 		}
 	}
-	Ok(seen)
+	seen
 }
 
 async fn exists(path: &Path) -> bool {
