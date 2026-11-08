@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The render worker's own guarantees (CW5, CW6; paulgsc/some-ui#2659), for the
-# call's job, one pass at a time: render-calls.sh is sourced over a temporary ROOT, and tsx is
-# a fake recorder that takes the call's real arguments. CI runs it
-# (test.yml, metric_contract_ci). Each case says the guarantee it holds:
+# call's job, one pass at a time: render-calls.sh is sourced over a temporary
+# ROOT, and tsx is a fake recorder that takes the call's real arguments. CI
+# runs it (test.yml, metric_contract_ci). Each case says the guarantee it holds:
 #
 # - a failed attempt leaves no folder in renders/call, keeps its work, and
 #   the next pass reuses it;
