@@ -226,14 +226,24 @@ pub async fn get_video(_paired: Paired, State(db): State<SqlitePool>, Path((feed
 #[instrument(name = "feed_videos_description", skip_all, fields(otel.kind = "server"))]
 pub async fn get_description(_paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Response, FileHostError> {
 	let feed = feed_of(&feed)?;
-	let bytes = match videos::description(&db, feed, feed.renders(), &key).await {
-		Ok(Description::Text(bytes)) => bytes,
+	described(videos::description(&db, feed, feed.renders(), &key).await)
+}
+
+/// The answer to what [`videos::description`] found: the text as
+/// `text/plain; charset=utf-8`, which it must be, or the refusal.
+fn described(found: Result<Description, DescriptionError>) -> Result<Response, FileHostError> {
+	let text = match found {
+		Ok(Description::Text(bytes)) => String::from_utf8(bytes).map_err(|_| FileHostError::OperationError("an episode's description is not UTF-8 text".to_owned()))?,
 		Ok(Description::Absent) => return Err(FileHostError::NotFound),
 		Ok(Description::OverCeiling) => return Err(FileHostError::OperationError("an episode's description is over YouTube's 5,000 bytes".to_owned())),
 		Err(DescriptionError::Storage(err)) => return Err(FileHostError::Sqlite(err)),
-		Err(DescriptionError::Drive(_)) => return Err(FileHostError::OperationError("the drive refused to read an episode's description".to_owned())),
+		Err(DescriptionError::Drive(err)) => {
+			// Its kind only: never the path or the text.
+			tracing::warn!(kind = ?err.kind(), "the drive refused to read an episode's description");
+			return Err(FileHostError::OperationError("the drive refused to read an episode's description".to_owned()));
+		}
 	};
-	let mut response = bytes.into_response();
+	let mut response = text.into_response();
 	response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
 	Ok(response)
 }
@@ -392,6 +402,21 @@ mod tests {
 		let status = response.status();
 		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
 		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	#[tokio::test]
+	async fn a_description_is_answered_as_utf8_text_and_anything_else_refused() {
+		use axum::response::IntoResponse as _;
+		let chapters = "0:00 Opening\n0:20 The board\n";
+		let answered = super::described(Ok(super::Description::Text(chapters.as_bytes().to_vec()))).unwrap();
+		assert_eq!(answered.status(), StatusCode::OK);
+		assert_eq!(answered.headers()[axum::http::header::CONTENT_TYPE], "text/plain; charset=utf-8");
+		let bytes = axum::body::to_bytes(answered.into_body(), usize::MAX).await.unwrap();
+		assert_eq!(&bytes[..], chapters.as_bytes());
+		let status = |found| super::described(found).map_or_else(|err| err.into_response().status(), |answer| answer.status());
+		assert_eq!(status(Ok(super::Description::Absent)), StatusCode::NOT_FOUND);
+		assert_eq!(status(Ok(super::Description::OverCeiling)), StatusCode::INTERNAL_SERVER_ERROR);
+		assert_eq!(status(Ok(super::Description::Text(vec![0xff, 0xfe]))), StatusCode::INTERNAL_SERVER_ERROR, "not UTF-8");
 	}
 
 	#[tokio::test]

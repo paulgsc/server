@@ -2,12 +2,12 @@
 //! call's and Playoff Delta's alike (FEED4: paulgsc/some-ui#2647).
 //!
 //! ```text
-//! GET    /feeds/:feed/videos             → { episodes: [{ key, videoBytes, restBytes, link, receipts }] }: newest first
-//! GET    /feeds/:feed/videos/:key/video  → the episode's video, streamed, with ranges
+//! GET    /feeds/:feed/videos                  → { episodes: [{ key, videoBytes, restBytes, link, receipts }] }: newest first
+//! GET    /feeds/:feed/videos/:key/video       → the episode's video, streamed, with ranges
 //! GET    /feeds/:feed/videos/:key/description → its `YouTube` chapter lines, `text/plain`, or 404
-//! PUT    /feeds/:feed/videos/:key/link   → { url }: the body is { link }, a `YouTube` video's link as pasted
-//! DELETE /feeds/:feed/videos/:key/video  → { receipt }: lets its video go, once a link is recorded
-//! DELETE /feeds/:feed/videos/:key/rest   → { receipt }: lets the rest of its folder go, once the video has
+//! PUT    /feeds/:feed/videos/:key/link        → { url }: the body is { link }, a `YouTube` video's link as pasted
+//! DELETE /feeds/:feed/videos/:key/video       → { receipt }: lets its video go, once a link is recorded
+//! DELETE /feeds/:feed/videos/:key/rest        → { receipt }: lets the rest of its folder go, once the video has
 //! ```
 //!
 //! `:feed` is `call` or `playoff-delta` (`feeds::Feed`); any other is `404`.

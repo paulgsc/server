@@ -45,6 +45,7 @@ use crate::call_weeks::render::bytes_under;
 use call_week_repo::video::{self, Receipt, Recorded, Step};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncReadExt as _;
 
 /// An episode as the phone sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,29 +156,35 @@ pub async fn description(db: &SqlitePool, feed: Feed, renders: &Path, key: &str)
 	if !holds {
 		return Ok(Description::Absent);
 	}
-	let file = renders.join(key).join(DESCRIPTION);
-	let size = match tokio::fs::metadata(&file).await {
-		Ok(meta) if meta.is_file() => meta.len(),
+	let path = renders.join(key).join(DESCRIPTION);
+	// The recorder writes a plain file: a link, a folder or anything else
+	// under its name is not one, and is never followed.
+	match tokio::fs::symlink_metadata(&path).await {
+		Ok(meta) if meta.file_type().is_file() => {}
 		Ok(_) => return Ok(Description::Absent),
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Description::Absent),
 		Err(err) => return Err(DescriptionError::Drive(err)),
-	};
-	if size > DESCRIPTION_CEILING {
-		return Ok(Description::OverCeiling);
 	}
-	match tokio::fs::read(&file).await {
-		Ok(bytes) if u64::try_from(bytes.len()).is_ok_and(|read| read <= DESCRIPTION_CEILING) => Ok(Description::Text(bytes)),
-		// It grew between the two looks.
-		Ok(_) => Ok(Description::OverCeiling),
+	let file = match tokio::fs::File::open(&path).await {
+		Ok(file) => file,
 		// It went between the two looks: let go with the rest.
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Description::Absent),
-		Err(err) => Err(DescriptionError::Drive(err)),
-	}
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Description::Absent),
+		Err(err) => return Err(DescriptionError::Drive(err)),
+	};
+	// One byte past the ceiling at most, whatever the file holds by now.
+	let mut bytes = Vec::new();
+	file.take(DESCRIPTION_CEILING + 1).read_to_end(&mut bytes).await.map_err(DescriptionError::Drive)?;
+	Ok(if u64::try_from(bytes.len()).is_ok_and(|read| read <= DESCRIPTION_CEILING) {
+		Description::Text(bytes)
+	} else {
+		Description::OverCeiling
+	})
 }
 
 /// Why [`description`] could not answer.
 #[derive(Debug)]
 pub enum DescriptionError {
+	/// Reading which episodes home holds failed.
 	Storage(sqlx::Error),
 	/// The drive refused a read of a file that is there.
 	Drive(std::io::Error),
@@ -434,6 +441,10 @@ mod tests {
 		);
 		std::fs::write(renders.join("2026-11-06").join(DESCRIPTION), vec![b'a'; ceiling + 1]).unwrap();
 		assert_eq!(read("2026-11-06").await, Description::OverCeiling);
+
+		std::fs::remove_file(renders.join("2026-11-06").join(DESCRIPTION)).unwrap();
+		std::os::unix::fs::symlink(renders.join("2026-10-30").join(DESCRIPTION), renders.join("2026-11-06").join(DESCRIPTION)).unwrap();
+		assert_eq!(read("2026-11-06").await, Description::Absent, "a link is never followed");
 	}
 
 	#[tokio::test]
