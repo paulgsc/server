@@ -2,6 +2,9 @@ services:
   redis:
     image: redis:latest
     container_name: some-redis
+    # Who the kernel kills first when home runs out of memory: protected
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: -500
     ports:
       # Box only. No password; containers use redis:6379 on the network,
       # host tools (cargo tests, some-cache's default) use 127.0.0.1:6379.

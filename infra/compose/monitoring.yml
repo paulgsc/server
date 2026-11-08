@@ -2,6 +2,9 @@ services:
   redis-exporter:
     image: oliver006/redis_exporter:latest
     container_name: redis-exporter
+    # Who the kernel kills first when home runs out of memory: tooling
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 500
     # No host port: Prometheus scrapes it by container name on
     # monitoring-network (infra/prometheus/prometheus.yml).
     networks:
@@ -28,6 +31,9 @@ services:
   redisinsight:
     image: redislabs/redisinsight:latest
     container_name: redisinsight
+    # Who the kernel kills first when home runs out of memory: tooling
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 500
     ports:
       # Box only: Caddy on the host (paulgsc/dotfiles, nixos/subdomains)
       # serves it to the LAN as https://redisinsight.home.maishatu.com.
@@ -55,6 +61,9 @@ services:
   nats-exporter:
     image: natsio/prometheus-nats-exporter:latest
     container_name: nats-exporter
+    # Who the kernel kills first when home runs out of memory: tooling
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 500
     restart: unless-stopped
     # No host port: Prometheus scrapes it by container name on
     # monitoring-network (infra/prometheus/prometheus.yml).
@@ -87,6 +96,9 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    # Who the kernel kills first when home runs out of memory: protected
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: -500
     ports:
       # Box only: no login, and --web.enable-lifecycle accepts POST /-/quit.
       # From Windows: ssh -L 9090:localhost:9090 paulg@nixos.local
@@ -138,6 +150,9 @@ services:
   grafana:
     image: grafana/grafana-oss:latest
     container_name: grafana
+    # Who the kernel kills first when home runs out of memory: protected
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: -500
     ports:
       # Box only: Caddy on the host (paulgsc/dotfiles, nixos/subdomains)
       # serves it to the LAN as https://grafana.home.maishatu.com.
@@ -199,6 +214,9 @@ services:
       context: ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}
       dockerfile: ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/docker/Dockerfile.grafana.builder
     container_name: dashboard-builder
+    # Who the kernel kills first when home runs out of memory: tooling
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 500
     volumes:
       - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/dashboards:/workspace
       - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/generated:rw
@@ -216,6 +234,9 @@ services:
   node_exporter:
     image: prom/node-exporter:latest
     container_name: node_exporter
+    # Who the kernel kills first when home runs out of memory: protected
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: -500
     networks:
       - monitoring-network
     # No host port: Prometheus scrapes it by container name on
@@ -241,6 +262,9 @@ services:
   process-exporter:
     image: ncabatoff/process-exporter:latest
     container_name: process_exporter
+    # Who the kernel kills first when home runs out of memory: tooling
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 500
     restart: unless-stopped
     pid: host
     privileged: true
@@ -267,6 +291,9 @@ services:
   blackbox-exporter:
     image: prom/blackbox-exporter:latest
     container_name: blackbox_exporter
+    # Who the kernel kills first when home runs out of memory: tooling
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 500
     restart: unless-stopped
     networks:
       - monitoring-network
@@ -296,6 +323,9 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
+    # Who the kernel kills first when home runs out of memory: protected
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: -500
     restart: unless-stopped
     privileged: true
     networks:

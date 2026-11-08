@@ -14,6 +14,9 @@ services:
   nats:
     image: nats:latest
     container_name: nats-server
+    # Who the kernel kills first when home runs out of memory: protected
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: -500
     restart: unless-stopped
     # Pass the config file.  The -js flag alone also works, but a config
     # file makes max_payload and store limits explicit and reviewable.

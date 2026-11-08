@@ -164,8 +164,10 @@ against the written invariants of the subsystem it touches. For the study nudge 
 bounded by `BATCH` and the pass deadline alone — no mechanism-specific cap, cursor or deadline
 checks. For identity, peer addresses and anything logged or stored about a person it is
 `docs/identity.md`, "Privacy invariants" — including that `SubjectId` is the only identity and a
-`PeerKey`/`ClientId` never is. Those sections are the source of truth; this list is only a
-pointer to them. If the change
+`PeerKey`/`ClientId` never is. For anything that runs on home or changes what a service
+takes of it (a new service, a cap, a worker loop), it is `docs/home-compute.md`: every service
+has a class, and its class sets who is killed first. Those sections are the source of truth;
+this list is only a pointer to them. If the change
 would break one, **stop and raise it** on the issue or PR. Name the invariant and the shape that
 breaks it, and wait for a decision instead of building it or patching around it. Two things
 also count as drift and should be raised the same way:

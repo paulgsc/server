@@ -2,6 +2,9 @@ services:
   orchestrator:
     image: pgathondu/orchestrator:latest
     container_name: orchestrator-service
+    # Who the kernel kills first when home runs out of memory: interactive
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 0
     # The binary whose variables `make preflight` checks this service's
     # environment against (infra/env/orchestrator.json, #504).
     labels:

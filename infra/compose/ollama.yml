@@ -13,6 +13,9 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: tabsched-ollama
+    # Who the kernel kills first when home runs out of memory: batch
+    # (docs/home-compute.md, "Who is killed first").
+    oom_score_adj: 900
     restart: unless-stopped
     # CPU-only: no GPU device block.
     environment:
