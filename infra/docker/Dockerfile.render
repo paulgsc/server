@@ -21,11 +21,14 @@
 # which exists only once that package is built.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui 031ca48 (#2714's merge, the commit www 0.1.60 was published
-# from, so the recorders and call-stage's pin are one version): SFEED11's
-# captions (#2707), recorded a scene at a time from the stage's own
-# `/burn-ins?record` page, in the look each series names.
-ARG SOME_UI_COMMIT=031ca4866caf8d7c69ca4275f025f64b214aaeef
+# paulgsc/some-ui 1505684 (#2781's merge, SFEED12): `record:preview`, a
+# template's preview recorded as the call is. call-stage stays on www 0.1.60
+# (031ca48): the pages the recorders drive, the stage's `/call` and
+# `/burn-ins?record`, are the same at both commits (only Studio's pages moved),
+# so the recorders still match the stage they record. Captions (SFEED11,
+# #2707) are recorded a scene at a time from `/burn-ins?record`, in the look
+# each series names.
+ARG SOME_UI_COMMIT=15056844a9e224d84c53d263291da13ee11ac38c
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
