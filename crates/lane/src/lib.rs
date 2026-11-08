@@ -3,17 +3,19 @@
 //! Renders are home's lowest class (`docs/home-compute.md`, "Classes"). No
 //! clock starts them: they run when the box has room, and give way the
 //! moment anything else needs it. [`step`] is that decision, made each tick
-//! from the kernel's own signals. It does no I/O, so `file_host` runs it
-//! against `/proc`, and the capacity simulation (#710) can run the same code
-//! against a model of another machine.
+//! from the kernel's own signals. It does no I/O, so `file_host` is to run it
+//! against `/proc` (L4b, #708), and the capacity simulation (#710) the same
+//! code against a model of another machine.
 //!
 //! What it promises (declared in `docs/home-compute.md`, "The lane"):
 //!
 //! - **LA1.** Batch work never runs while interactive work waits: it is told
 //!   to pause ([`Verb::Pause`], [`Why::Busy`]), or not to start.
 //! - **LA2.** Batch work never starts or resumes after a stop without room
-//!   for its peak above the floor, held for the hold-down. A signal that
-//!   could not be read, or no peak at all, is never room ([`Why::Unknown`]).
+//!   for its peak above the floor, held for the hold-down; and while the lane
+//!   says run, a job not seen before (or none yet) keeps that permission only
+//!   while that room holds. A signal that could not be read, or no peak at
+//!   all, is never room ([`Why::Unknown`]).
 //! - **LA3.** Batch work running or paused is told to stop and let go of its
 //!   memory ([`Verb::Stop`]) once free memory falls under the floor or
 //!   memory pressure passes its limit, or a signal can no longer be read.
@@ -24,6 +26,7 @@
 //!   id, or none, starts the count again, so one job's stops are never
 //!   another's, and an idle lane is never called stuck.
 
+use std::cmp::Ordering;
 use std::num::NonZeroU32;
 
 /// What the kernel and home say this tick.
@@ -160,56 +163,67 @@ pub struct Decision {
 	pub stuck: bool,
 }
 
-/// What forces batch work to stop now, if anything (LA3).
+/// What forces batch work to stop now, if anything (LA3). Free memory read
+/// under the floor is a shortage of memory whatever else could not be read,
+/// so it is counted (LA4); a pressure that is not a finite number is
+/// unknown, and a limit that is not one stops batch work.
 fn shortage(signals: &Signals, policy: &Policy) -> Option<Why> {
-	let (Some(available), Some(pressure)) = (signals.mem_available_bytes, signals.memory_pressure_pct) else {
+	if signals.mem_available_bytes.is_some_and(|available| available < policy.floor_bytes) {
+		return Some(Why::Memory);
+	}
+	let (Some(_), Some(pressure)) = (signals.mem_available_bytes, signals.memory_pressure_pct) else {
 		return Some(Why::Unknown);
 	};
-	if available < policy.floor_bytes {
-		Some(Why::Memory)
-	} else if pressure > policy.pressure_limit_pct {
-		Some(Why::Pressure)
-	} else {
+	if !pressure.is_finite() {
+		Some(Why::Unknown)
+	} else if matches!(pressure.partial_cmp(&policy.pressure_limit_pct), Some(Ordering::Less | Ordering::Equal)) {
 		None
+	} else {
+		Some(Why::Pressure)
 	}
+}
+
+/// Whether free memory leaves room for the batch peak above the floor;
+/// `None` when either is not known (LA2).
+fn room_for_peak(signals: &Signals, policy: &Policy) -> Option<bool> {
+	signals
+		.mem_available_bytes
+		.zip(signals.batch_peak_bytes)
+		.map(|(available, peak)| available >= peak.saturating_add(policy.floor_bytes))
 }
 
 /// The lane's decision this tick, and what it remembers for the next.
 #[must_use]
 pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decision) {
-	let mut stops = if signals.batch_job.is_some() && signals.batch_job == state.job {
-		state.stops
-	} else {
-		0
-	};
+	// The job seen last tick is still the job in progress: it was admitted,
+	// and its memory is already in what is free. Anything else (no job, or
+	// a job not seen before) is a start, which needs room for its peak.
+	let continuing = signals.batch_job.is_some() && signals.batch_job == state.job;
+	let mut stops = if continuing { state.stops } else { 0 };
 	let (verb, why, room_since_ms) = match state.verb {
-		Verb::Run | Verb::Pause => match shortage(signals, policy) {
-			Some(why) => {
-				if signals.batch_job.is_some() && matches!(why, Why::Memory | Why::Pressure) {
+		Verb::Run | Verb::Pause => match (shortage(signals, policy), room_for_peak(signals, policy)) {
+			(Some(why), _) => {
+				if continuing && matches!(why, Why::Memory | Why::Pressure) {
 					stops = stops.saturating_add(1);
 				}
 				(Verb::Stop, why, None)
 			}
-			None if signals.interactive_waiting => (Verb::Pause, Why::Busy, None),
-			None => (Verb::Run, Why::Clear, None),
+			(None, None) if !continuing => (Verb::Stop, Why::Unknown, None),
+			(None, Some(false)) if !continuing => (Verb::Stop, Why::Memory, None),
+			_ if signals.interactive_waiting => (Verb::Pause, Why::Busy, None),
+			_ => (Verb::Run, Why::Clear, None),
 		},
-		Verb::Stop => {
-			let room = signals
-				.mem_available_bytes
-				.zip(signals.batch_peak_bytes)
-				.map(|(available, peak)| available >= peak.saturating_add(policy.floor_bytes));
-			match (shortage(signals, policy), room) {
-				_ if signals.interactive_waiting => (Verb::Stop, Why::Busy, None),
-				(Some(why), _) => (Verb::Stop, why, None),
-				(None, None) => (Verb::Stop, Why::Unknown, None),
-				(None, Some(false)) => (Verb::Stop, Why::Memory, None),
-				(None, Some(true)) => match state.room_since_ms {
-					Some(since) if signals.now_ms.saturating_sub(since) >= policy.hold_down_ms => (Verb::Run, Why::Clear, None),
-					Some(since) => (Verb::Stop, Why::Settling, Some(since)),
-					None => (Verb::Stop, Why::Settling, Some(signals.now_ms)),
-				},
-			}
-		}
+		Verb::Stop => match (shortage(signals, policy), room_for_peak(signals, policy)) {
+			_ if signals.interactive_waiting => (Verb::Stop, Why::Busy, None),
+			(Some(why), _) => (Verb::Stop, why, None),
+			(None, None) => (Verb::Stop, Why::Unknown, None),
+			(None, Some(false)) => (Verb::Stop, Why::Memory, None),
+			(None, Some(true)) => match state.room_since_ms {
+				Some(since) if signals.now_ms.saturating_sub(since) >= policy.hold_down_ms => (Verb::Run, Why::Clear, None),
+				Some(since) => (Verb::Stop, Why::Settling, Some(since)),
+				None => (Verb::Stop, Why::Settling, Some(signals.now_ms)),
+			},
+		},
 	};
 	let next = State {
 		verb,

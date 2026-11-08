@@ -47,11 +47,15 @@ code. What it promises, each held by a test in `crates/lane/src/tests.rs`:
   room for its peak above the floor, held for the hold-down. The peak is
   the one measured on earlier runs, or, before any run is measured, the
   ceiling the caller declares (the batch containers' memory caps), so the
-  first run can start and be measured. A signal that could not be read, or
-  no peak at all, is never room.
+  first run can start and be measured. While the lane says run, a job not
+  seen before (or none yet) keeps that permission only while that room
+  holds: a run is a permission to start one job, not every job after it. A
+  signal that could not be read, or no peak at all, is never room.
 - **LA3.** Batch work running or paused stops and lets go of its memory
   once free memory falls under the floor, memory pressure passes its limit,
-  or a signal can no longer be read.
+  or a signal can no longer be read. Free memory read under the floor is a
+  memory stop even when the pressure reading is lost, and a pressure that is
+  not a finite number counts as unreadable.
 - **LA4.** Stops for memory or pressure are counted against the job in
   progress, named by an id the worker gives each job when it starts it and
   keeps through pauses and evacuations until the job finishes or is given
