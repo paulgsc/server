@@ -62,9 +62,11 @@
 #   SIGCONT on run): it keeps its memory and takes no CPU.
 # - **Stop** kills them, letting go of their memory; the job waits for room
 #   and runs again over the same work, whose step cache keeps every step
-#   that had finished, so nothing is paid for twice. An attempt that was
-#   paused and then failed (a page's timeout runs on while frozen) is
-#   treated the same way. A yield is never a failure: no failed.log.
+#   that had finished, so nothing is paid for twice. An attempt that fails
+#   soon after a pause (a page's timeout runs on while frozen) is treated
+#   the same way, PAUSE_FAILS times at most. A yield is never a failure: no
+#   failed.log. A job that let go of its memory without the lane's stop is
+#   taken away and named again, so the lane checks room before it runs.
 # - **Its peak**, after it renders: the render container's memory.peak plus
 #   what the speaker and the stage take beside it, written to <lane>/peak,
 #   so the lane admits the next job against a measurement, not the declared
@@ -101,6 +103,11 @@ LANE_POLL=2
 STALE_AFTER=30
 # How long a killed recorder is given to go before the worker goes on.
 KILL_WAIT=10
+# A recorder that fails this soon after a pause or a resume is taken to have
+# failed of the pause (a page's timeout runs on while it is frozen), and runs
+# again, at most PAUSE_FAILS times a job; later, or more often, it failed.
+PAUSE_GRACE=300
+PAUSE_FAILS=3
 # The render container's own cgroup, whose memory.peak is the render's.
 CGROUP=/sys/fs/cgroup
 # What the render takes beyond its own container, which its cgroup doesn't
@@ -206,8 +213,10 @@ put() {
 }
 
 # Stamps last-pass, the job's and the lane folder's, at most every EVERY
-# seconds while a job waits or runs, so a worker held by the lane for hours
-# is not a worker that stopped (CallRenderWorkerStale): that is LaneStuck's.
+# seconds while a job waits for room or is paused, so a worker the lane holds
+# back for hours is not a worker that stopped (CallRenderWorkerStale): that
+# is LaneStuck's. Never while it renders: a render that hangs still goes
+# stale.
 heartbeat() {
   local now
   now=$(date +%s)
@@ -266,7 +275,7 @@ left_job() {
     esac
   done < "$LANE/job.state"
   read -r id < "$LANE/job"
-  [[ "$LEFT_ID" =~ ^[0-9]{1,19}$ ]] && [ "$id" = "$LEFT_ID" ] || return 1
+  fits "$LEFT_ID" && [ "$id" = "$LEFT_ID" ] || return 1
   [[ "$LEFT_SINCE" =~ ^[0-9]{1,12}$ ]] && [[ "$LEFT_YIELDS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
@@ -276,12 +285,19 @@ left_job() {
   esac
 }
 
+# Whether `n` is a whole number bash's arithmetic holds (under 2^63).
+fits() {
+  # Nineteen digits compare as text, which is their order as numbers.
+  # shellcheck disable=SC2071
+  [[ "$1" =~ ^[0-9]{1,19}$ ]] && { [ "${#1}" -lt 19 ] || [[ "$1" < 9223372036854775807 ]]; }
+}
+
 # A job id never given before, in JOB_ID: the time in nanoseconds, or one
 # past the last id given when the clock is behind it. job-seq keeps the last.
 new_job_id() {
   local last=0 id
   [ -r "$LANE/job-seq" ] && read -r last < "$LANE/job-seq"
-  [[ "$last" =~ ^[0-9]{1,19}$ ]] || last=0
+  fits "$last" || last=0
   id=$(date +%s%N)
   [ "$id" -gt "$last" ] || id=$(( last + 1 ))
   put_in "$LANE" job-seq "$id" || return 1
@@ -310,7 +326,10 @@ begin_job() {
   JOB_KIND=$1 JOB_KEY=$2 JOB_YIELDS=0 JOB_RAN=0 JOB_STATE=''
   if left_job && [ "$LEFT_KIND" = "$1" ] && [ "$LEFT_KEY" = "$2" ]; then
     JOB_ID=$LEFT_ID JOB_SINCE=$LEFT_SINCE JOB_YIELDS=$LEFT_YIELDS JOB_RAN=$LEFT_RAN
+    # Left by a restart: whatever it held went with the container.
+    LEFT_AFRESH=1
   else
+    LEFT_AFRESH=0
     new_job_id || return 1
     JOB_SINCE=$(date +%s)
   fi
@@ -406,12 +425,29 @@ say() {
 # Waits until the lane admits the job: a run decision written after `asked`,
 # so the lane has seen the job and found room for its peak (LA2). False when
 # the episode is let go meanwhile.
+#
+# With `afresh`, the job holds no memory though the lane may still count it
+# as running (it was killed by a restart, or failed of a pause, or its
+# decision went stale): the lane checks room only for a job it has not seen
+# run, so the job is first taken away until a decision without it is
+# written, then named again under the same id. Its count of stops starts
+# again (LA4); a stop the lane decided never takes this way.
 wait_for_room() {
-  local job=$1 key=$2 asked=$3 log=$4 said=
+  local job=$1 key=$2 asked=$3 log=$4 afresh=${5:-0} said=''
+  if [ "$afresh" -eq 1 ]; then
+    rm -f "${LANE:?}/job"
+    asked=$(date +%s)
+  fi
   while true; do
     holds "$job" "$key" || return 1
     read_lane
-    [ "$LANE_VERB" = run ] && [ "$LANE_AT" -gt "$asked" ] && return 0
+    if [ "$afresh" -eq 1 ] && [ "$LANE_AT" -gt "$asked" ]; then
+      put_in "$LANE" job "$JOB_ID" || return 1
+      afresh=0
+      asked=$(date +%s)
+      continue
+    fi
+    [ "$afresh" -eq 0 ] && [ "$LANE_VERB" = run ] && [ "$LANE_AT" -gt "$asked" ] && return 0
     if [ "$said" != "$LANE_VERB/$LANE_WHY" ]; then
       said="$LANE_VERB/$LANE_WHY"
       say "the $job of $key waits for room on home (the lane: $LANE_VERB, $LANE_WHY)" "$log"
@@ -426,9 +462,9 @@ wait_for_room() {
 # ATTEMPT_EXIT), or `yielded`: the lane said stop and it was killed, or it
 # failed after a pause.
 attempt() {
-  local job=$1 key=$2 log=$3 paused=0 was_paused=0 status
+  local job=$1 key=$2 log=$3 paused=0 moved=0 status
   local tmp="$TMP_BASE/render.$JOB_ID"
-  ATTEMPT='' ATTEMPT_EXIT=0
+  ATTEMPT='' ATTEMPT_EXIT=0 AFRESH=0
   # Its own temporary folder, gone after it, killed or not: a killed
   # Chromium leaves its profile behind, and /tmp is held in memory.
   rm -rf "${tmp:?}" && mkdir -p "$tmp"
@@ -443,26 +479,28 @@ attempt() {
   while kill -0 "$RECORDER" 2> /dev/null; do
     sleep "$LANE_POLL"
     kill -0 "$RECORDER" 2> /dev/null || break
-    heartbeat
+    [ "$paused" -eq 0 ] || heartbeat
     read_lane
     case $LANE_VERB in
       run)
         if [ "$paused" -eq 1 ]; then
           thaw_tree "$RECORDER"
-          paused=0
+          paused=0 moved=$(date +%s)
           job_state rendering
           say "resumed the $job of $key" "$log"
         fi ;;
       pause)
         if [ "$paused" -eq 0 ]; then
           freeze_tree "$RECORDER"
-          paused=1 was_paused=1
+          paused=1 moved=$(date +%s)
           job_state paused
           say "paused the $job of $key: home's interactive work goes first (the lane: $LANE_WHY)" "$log"
         fi ;;
       *)
         kill_tree "$RECORDER"
         ATTEMPT=yielded
+        # A decision gone stale is no stop the lane decided.
+        [ "$LANE_AT" -gt 0 ] || AFRESH=1
         say "the $job of $key gave way (the lane: stop, $LANE_WHY); it resumes from its kept steps once there is room" "$log"
         break ;;
     esac
@@ -471,12 +509,16 @@ attempt() {
   status=$?
   RECORDER=
   rm -rf "${tmp:?}"
-  [ -n "$ATTEMPT" ] && return 0
+  # It finished between the last look and the kill: done, not a yield.
   if [ "$status" -eq 0 ]; then
     ATTEMPT='done'
-  elif [ "$was_paused" -eq 1 ]; then
-    ATTEMPT=yielded
-    say "the recorder exited $status after a pause; it runs again from its kept steps, not counted as a failure" "$log"
+    return 0
+  fi
+  [ -n "$ATTEMPT" ] && return 0
+  if [ "$moved" -gt 0 ] && [ $(( $(date +%s) - moved )) -le "$PAUSE_GRACE" ] && [ "$JOB_PAUSE_FAILS" -lt "$PAUSE_FAILS" ]; then
+    ATTEMPT=yielded AFRESH=1
+    JOB_PAUSE_FAILS=$(( JOB_PAUSE_FAILS + 1 ))
+    say "the recorder exited $status soon after a pause; it runs again from its kept steps, not counted as a failure" "$log"
   else
     ATTEMPT=failed ATTEMPT_EXIT=$status
   fi
@@ -497,8 +539,10 @@ render_episode() {
     return 1
   fi
   asked=$(date +%s)
+  JOB_PAUSE_FAILS=0
+  AFRESH=$LEFT_AFRESH
   while true; do
-    if ! wait_for_room "$job" "$key" "$asked" "$log"; then
+    if ! wait_for_room "$job" "$key" "$asked" "$log" "$AFRESH"; then
       end_job
       return 2
     fi
@@ -599,6 +643,8 @@ render_one() {
       echo "the $job of $key was let go before it rendered" ;;
     *)
       mv -f "$STATUS/.$key.log" "$STATUS/$key.failed.log"
+      # Its time is the failure's, which RETRY_AFTER counts from.
+      touch "$STATUS/$key.failed.log"
       echo "the $job of $key did not render; it is tried again in an hour" >&2 ;;
   esac
 }
@@ -613,9 +659,27 @@ run_job() {
   done
 }
 
+# Removes the job's attempt logs, `.<key>.log`: called only between jobs,
+# when none runs, so each is left by an attempt that was killed, and would
+# read to the lane as batch work in progress for good.
+clear_attempt_logs() {
+  local log name
+  for log in "$STATUS"/.*.log; do
+    [ -e "$log" ] || continue
+    name=${log##*/}
+    case $name in *.cache.log) continue ;; esac
+    rm -f "$log"
+  done
+}
+
 # The job a restart left, first: it is the one the lane was holding. One
 # whose episode is gone or rendered is over.
 resume_left() {
+  local job
+  for job in "${JOBS[@]}"; do
+    use_job "$job"
+    clear_attempt_logs
+  done
   use_job call
   if ! left_job; then
     end_job

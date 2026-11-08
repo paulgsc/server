@@ -184,8 +184,18 @@ way; CI runs it on every PR.
     is renamed into place whole, so a kill leaves no half entry), and waits
     for the next `run`; the recorder then reruns over it, and every step it
     had finished is a cache hit.
-  - An attempt that fails after a pause is run again the same way, not
-    failed: a page's timeout runs on while the recorder is frozen.
+  - An attempt that fails within 5 minutes of a pause or a resume is run
+    again the same way, not failed: a page's timeout runs on while the
+    recorder is frozen. At most 3 times a job; past that, or later, it
+    failed, so a real failure never loops.
+  - **A job that let go of its memory without the lane's stop** (a restart
+    killed it, it failed of a pause, or its decision went stale) is taken
+    away (`job` removed) until the lane writes a decision without it, then
+    named again under the same id. The lane checks room only for a job it
+    has not seen running (LA2), so this is what makes it check before the
+    job takes its memory again. Its count of stops starts again (LA4); a
+    stop the lane decided never goes this way, so a job that never fits is
+    still counted to stuck.
   - **A yield is never a failure:** no `failed.log`, no `CallRenderFailed`.
 - **Its peak**, once it renders: the render container's `memory.peak` (its
   most since the container started, so never less than this render's) plus
@@ -201,10 +211,14 @@ way; CI runs it on every PR.
   own services start first.
 - **It looks for work every minute**, a listing of two folders. Looking
   never starts a render; the lane does. A failed episode is tried again an
-  hour after its failure, not at every look. While a job waits or runs, the
-  worker stamps `last-pass` at least every minute, so a worker the lane
-  holds back is not `CallRenderWorkerStale`'s; a job that never fits is
-  `LaneStuck`'s.
+  hour after its failure, not at every look. While a job waits for room or
+  is paused, the worker stamps `last-pass` at least every minute, so a
+  worker the lane holds back is not `CallRenderWorkerStale`'s (a job that
+  never fits is `LaneStuck`'s). It never stamps while a render runs, so a
+  render that hangs still goes stale.
+- **Between jobs**, it clears every attempt log (`.<key>.log`) a killed
+  attempt left: none runs then, and the lane would read one as batch work
+  in progress for good.
 - Each recorder run has its own `TMPDIR`, removed after it, killed or not:
   a killed Chromium leaves its profile behind, and `/tmp` is held in memory.
 

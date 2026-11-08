@@ -59,6 +59,7 @@ echo run > "$SCRATCH/verb"
       verb=$(cat "$SCRATCH/verb") at=$(date +%s)
       [ "$verb" = stale ] && verb=run at=$(( at - 60 ))
       if [ "$verb" != hold ]; then
+        cat "$root/renders/call-worker/job" 2> /dev/null >> "$SCRATCH/saw" || echo none >> "$SCRATCH/saw"
         printf 'verb=%s\nwhy=test\nstops=0\nstuck=false\nat=%s\n' "$verb" "$at" > "$root/renders/call-worker/.lane" &&
           mv "$root/renders/call-worker/.lane" "$root/renders/call-worker/lane"
       fi
@@ -83,7 +84,9 @@ lane_says() {
 # $FAKE/runs. With $FAKE/steps (a count), it then makes that many steps, each
 # kept whole, each taking $FAKE/slow seconds in a child it waits on, and
 # saying `cache hit: step <n>` for one already kept; the video is made of
-# them. $FAKE/fail-after-pause makes it fail once after its steps. It keeps
+# them; while $FAKE/hold-at holds a number n, it waits before step n + 1,
+# in a child too, so a case acts on it half way without racing it.
+# $FAKE/fail-after-pause makes it fail once after its steps. It keeps
 # its pid in $FAKE/pid, its child's in $FAKE/child, and the job it saw in
 # the lane's folder in $FAKE/seen-job.
 cat > "$TSX" <<'FAKE_RECORDER'
@@ -117,6 +120,7 @@ fi
 [ -e "$fake/warn" ] && echo "cache warning: step said was not kept: past the policy's cache"
 if [ -e "$fake/fail-$week" ]; then
   echo "the stage did not answer"
+  [ -e "$fake/silent" ] && sleep "$(cat "$fake/silent")"
   exit 1
 fi
 if [ -e "$fake/steps" ]; then
@@ -125,6 +129,11 @@ if [ -e "$fake/steps" ]; then
       echo "cache hit: step $i"
       continue
     fi
+    while [ -e "$fake/hold-at" ] && [ "$i" -gt "$(cat "$fake/hold-at" 2> /dev/null || echo 99)" ]; do
+      sleep 0.05 &
+      echo $! > "$fake/child"
+      wait $!
+    done
     sleep "$(cat "$fake/slow" 2> /dev/null || echo 0)" &
     echo $! > "$fake/child"
     wait $!
@@ -167,14 +176,20 @@ fresh() {
   for week in "$@"; do
     echo '{}' > "$ROOT/weeks/$week.json"
   done
-  rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" \
+  rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job"
   echo "$ROOT" > "$SCRATCH/root"
+  : > "$SCRATCH/saw"
   lane_says run
 }
 
 pass() {
   run_job call > "$SCRATCH/pass.out" 2>&1
+}
+
+# The lane saw the job taken away, then `id` named again after it.
+taken_away_then() {
+  grep -n . "$SCRATCH/saw" | awk -F: -v id="$1" '$2 == "none" { gone = 1 } gone && $2 == id { found = 1 } END { exit !found }'
 }
 
 runs_of() {
@@ -344,29 +359,33 @@ check "the next decision does" test "$(runs_of 2026-10-30)" -eq 1
 # A decision that goes stale while a render runs is stop.
 fresh went-stale 2026-10-30
 echo 6 > "$FAKE/steps"
-# Slow enough to outlast STALE_AFTER.
-echo 1 > "$FAKE/slow"
+echo 1 > "$FAKE/hold-at"
 pass_behind
-within has_steps 1
+check "the recorder reaches its first step" within has_steps 1
 recorder=$(cat "$FAKE/pid")
+id=$(cat "$ROOT/renders/call-worker/job")
 lane_says hold
-within gone "$recorder"
-check "a decision gone stale stops a running render" grep -q "gave way (the lane: stop, stale)" "$SCRATCH/pass.out"
+check "a decision gone stale stops a running render" within gone "$recorder"
+check "and says why" grep -q "gave way (the lane: stop, stale)" "$SCRATCH/pass.out"
+rm "$FAKE/hold-at"
+: > "$SCRATCH/saw"
 lane_says run
 wait "$PASS"
 check "and it resumes with the same bytes" test "$(video_of)" = "$REFERENCE"
+check "after the lane saw it taken away and named again, so it checked room" taken_away_then "$id"
 
 # A pause: frozen, then finished with the same bytes.
 fresh paused 2026-10-30
 echo 6 > "$FAKE/steps"
-echo 0.3 > "$FAKE/slow"
+echo 2 > "$FAKE/hold-at"
 pass_behind
-within has_steps 2
+check "the recorder reaches its second step" within has_steps 2
 lane_says pause
-within job_state_is paused
+check "the job says it is paused" within job_state_is paused
 held=$(steps_made)
+rm "$FAKE/hold-at"
 sleep 1
-check "a pause makes no more steps" test "$(steps_made)" -eq "$held"
+check "a pause makes no more steps, even with nothing holding it" test "$(steps_made)" -eq "$held"
 check "a pause stops the recorder" test "$(state_of "$(cat "$FAKE/pid")")" = T
 check "and what the recorder started" test "$(state_of "$(cat "$FAKE/child")")" = T
 lane_says run
@@ -379,24 +398,26 @@ check "the pause is said in the log" grep -q "^paused the call of 2026-10-30" "$
 # A stop: killed, the work and the id kept, resumed from the kept steps.
 fresh stopped 2026-10-30
 echo 6 > "$FAKE/steps"
-echo 0.3 > "$FAKE/slow"
+echo 2 > "$FAKE/hold-at"
 pass_behind
-within has_steps 2
+check "the recorder reaches its second step" within has_steps 2
 id=$(cat "$ROOT/renders/call-worker/job")
 recorder=$(cat "$FAKE/pid") child=$(cat "$FAKE/child")
+: > "$SCRATCH/saw"
 lane_says stop
-within gone "$recorder"
-check "a stop kills the recorder" gone "$recorder"
+check "a stop kills the recorder" within gone "$recorder"
 check "and what the recorder started" gone "$child"
-within job_state_is waiting
+check "the job says it waits" within job_state_is waiting
 kept=$(steps_made)
-check "a stop keeps the finished steps" test "$kept" -ge 2
+check "a stop keeps the finished steps" test "$kept" -eq 2
+rm "$FAKE/hold-at"
 check "a stop keeps the job's id" test "$(cat "$ROOT/renders/call-worker/job")" = "$id"
 check "a job that gave way counts it" grep -qx "yields=1" "$ROOT/renders/call-worker/job.state"
 check "and the time it rendered before it did" grep -qx "ran=[0-9]\+" "$ROOT/renders/call-worker/job.state"
 check "a stop is no failure" test ! -e "$ROOT/renders/call-worker/2026-10-30.failed.log"
 sleep 0.5
 check "a stopped render waits for room" test "$(runs_of 2026-10-30)" -eq 1
+check "while the job stays named: a stop the lane decided keeps its count" bash -c '! grep -qx none "$1"' _ "$SCRATCH/saw"
 lane_says run
 wait "$PASS"
 check "a stopped render resumes" test "$(runs_of 2026-10-30)" -eq 2
@@ -408,18 +429,40 @@ check "a resumed render is no failure" test ! -e "$ROOT/renders/call-worker/2026
 
 # An attempt that fails after a pause is run again, not failed.
 fresh timed-out 2026-10-30
-echo 6 > "$FAKE/steps"
-echo 0.3 > "$FAKE/slow"
+echo 3 > "$FAKE/steps"
+echo 1 > "$FAKE/hold-at"
 touch "$FAKE/fail-after-pause"
 pass_behind
-within has_steps 1
+check "the recorder reaches its first step" within has_steps 1
+id=$(cat "$ROOT/renders/call-worker/job")
 lane_says pause
-within job_state_is paused
+check "the job says it is paused" within job_state_is paused
+rm "$FAKE/hold-at"
+: > "$SCRATCH/saw"
 lane_says run
 wait "$PASS"
-check "a failure after a pause is run again" test "$(runs_of 2026-10-30)" -eq 2
+check "a failure soon after a pause is run again" test "$(runs_of 2026-10-30)" -eq 2
 check "and is no failure" test ! -e "$ROOT/renders/call-worker/2026-10-30.failed.log"
 check "and renders" test -e "$ROOT/renders/call/2026-10-30/call.mp4"
+check "after the lane saw it taken away and named again" taken_away_then "$id"
+
+# Past PAUSE_FAILS, a failure after a pause is a failure: a real one never
+# loops.
+fresh pause-fails 2026-10-30
+echo 3 > "$FAKE/steps"
+echo 1 > "$FAKE/hold-at"
+touch "$FAKE/fail-after-pause"
+PAUSE_FAILS=0
+pass_behind
+check "the recorder reaches its first step" within has_steps 1
+lane_says pause
+check "the job says it is paused" within job_state_is paused
+rm "$FAKE/hold-at"
+lane_says run
+wait "$PASS"
+PAUSE_FAILS=3
+check "past the cap a failure after a pause is a failure" test -e "$ROOT/renders/call-worker/2026-10-30.failed.log"
+check "and is not run again" test "$(runs_of 2026-10-30)" -eq 1
 
 # A failed job is over; a peak that can't be read is not written.
 fresh failed-job 2026-10-30
@@ -461,10 +504,22 @@ echo 42 > "$ROOT/renders/call-worker/job"
 printf 'id=42\nkind=call\nkey=2026-10-23\nsince=1794000000\nstate=rendering\nstate_since=1794000000\nyields=0\n' \
   > "$ROOT/renders/call-worker/job.state"
 : > "$FAKE/runs"
+sleep 0.3
+: > "$SCRATCH/saw"
 resume_left > "$SCRATCH/pass.out" 2>&1
 check "a job a restart left runs first" test "$(head -n1 "$FAKE/runs")" = 2026-10-23
+check "after the lane saw it taken away and named again, so it checked room" taken_away_then 42
 check "under the id it had" test "$(cat "$FAKE/seen-job")" = 42
 check "and renders" test -e "$ROOT/renders/call/2026-10-23/call.mp4"
+
+# Attempt logs a killed attempt left are cleared between jobs; cache logs stay.
+fresh stale-logs 2026-10-30
+mkdir -p "$ROOT/renders/call-worker" "$ROOT/renders/playoff-delta-worker"
+touch "$ROOT/renders/call-worker/.2026-10-23.log" "$ROOT/renders/playoff-delta-worker/.2026-SF-09.log" \
+  "$ROOT/renders/call-worker/.2026-10-23.cache.log" "$ROOT/renders/call-worker/2026-10-23.cache.log"
+resume_left > /dev/null 2>&1
+check "an attempt log left by a killed attempt is cleared" test ! -e "$ROOT/renders/call-worker/.2026-10-23.log" -a ! -e "$ROOT/renders/playoff-delta-worker/.2026-SF-09.log"
+check "cache logs are not" test -e "$ROOT/renders/call-worker/.2026-10-23.cache.log" -a -e "$ROOT/renders/call-worker/2026-10-23.cache.log"
 
 # A new job's id is never one given before.
 fresh ids 2026-10-30
@@ -478,6 +533,9 @@ new_job_id
 first=$JOB_ID
 new_job_id
 check "two jobs never share an id" test "$JOB_ID" -gt "$first"
+echo 9999999999999999999 > "$ROOT/renders/call-worker/job-seq"
+new_job_id
+check "a job-seq past what bash holds is not read" test "$JOB_ID" -gt 0
 
 # A failed week waits RETRY_AFTER before it is tried again.
 fresh retry 2026-10-30
@@ -486,6 +544,19 @@ touch "$FAKE/fail-2026-10-30"
 pass
 pass
 check "a failed week is not tried again within RETRY_AFTER" test "$(runs_of 2026-10-30)" -eq 1
+touch -d '2 hours ago' "$ROOT/renders/call-worker/2026-10-30.failed.log"
+pass
+check "and is, RETRY_AFTER after its failure" test "$(runs_of 2026-10-30)" -eq 2
+
+# RETRY_AFTER counts from the failure, not from the log's last line: a
+# recorder silent for a while before it fails is not tried again at once.
+fresh silent 2026-10-30
+RETRY_AFTER=2
+touch "$FAKE/fail-2026-10-30"
+echo 3 > "$FAKE/silent"
+pass
+pass
+check "a failure's time is when it failed, not its log's last line" test "$(runs_of 2026-10-30)" -eq 1
 RETRY_AFTER=0
 
 if [ "$failures" -ne 0 ]; then
