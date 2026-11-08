@@ -353,7 +353,7 @@ fn la2_an_idle_lane_keeps_its_run_only_while_room_for_the_peak_holds() {
 		..roomy(61_000)
 	};
 	let handover = run(&[roomy(0), roomy(60_000), new_job]);
-	assert_eq!((handover[2].verb, handover[2].why, handover[2].stops), (Verb::Stop, Why::Memory, 0));
+	assert_eq!((handover[2].verb, handover[2].why, handover[2].stops), (Verb::Stop, Why::Memory, 1));
 	// The job already running needs only the floor: its memory is in use.
 	let same_job = Signals {
 		mem_available_bytes: Some(3 * GB),
@@ -476,4 +476,28 @@ fn la4_stuck_after_one_is_stuck_at_the_first_stop() {
 		last = Some(decision);
 	}
 	assert_eq!(last.map(|d| (d.stops, d.stuck)), Some((1, true)));
+}
+
+#[test]
+fn la4_a_new_jobs_first_stop_is_counted() {
+	// The idle lane says run, the worker starts job 2, and memory falls
+	// under the floor before the next tick: that stop is job 2's first.
+	let one = Policy {
+		stuck_after: NonZeroU32::MIN,
+		..POLICY
+	};
+	let idle = |now_ms| Signals { batch_job: None, ..roomy(now_ms) };
+	let started_short = Signals {
+		batch_job: Some(2),
+		mem_available_bytes: Some(GB),
+		..roomy(61_000)
+	};
+	let mut state = State::new();
+	let mut last = None;
+	for signals in [idle(0), idle(60_000), started_short] {
+		let (next, decision) = step(state, &signals, &one);
+		state = next;
+		last = Some(decision);
+	}
+	assert_eq!(last.map(|d| (d.verb, d.why, d.stops, d.stuck)), Some((Verb::Stop, Why::Memory, 1, true)));
 }

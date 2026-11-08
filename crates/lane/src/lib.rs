@@ -202,12 +202,7 @@ pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decisio
 	let mut stops = if continuing { state.stops } else { 0 };
 	let (verb, why, room_since_ms) = match state.verb {
 		Verb::Run | Verb::Pause => match (shortage(signals, policy), room_for_peak(signals, policy)) {
-			(Some(why), _) => {
-				if continuing && matches!(why, Why::Memory | Why::Pressure) {
-					stops = stops.saturating_add(1);
-				}
-				(Verb::Stop, why, None)
-			}
+			(Some(why), _) => (Verb::Stop, why, None),
 			(None, None) if !continuing => (Verb::Stop, Why::Unknown, None),
 			(None, Some(false)) if !continuing => (Verb::Stop, Why::Memory, None),
 			_ if signals.interactive_waiting => (Verb::Pause, Why::Busy, None),
@@ -225,6 +220,11 @@ pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decisio
 			},
 		},
 	};
+	// A stop of a running or paused job for memory or pressure is that job's,
+	// its first included (LA4); a stop with no job is nobody's.
+	if matches!(state.verb, Verb::Run | Verb::Pause) && verb == Verb::Stop && signals.batch_job.is_some() && matches!(why, Why::Memory | Why::Pressure) {
+		stops = stops.saturating_add(1);
+	}
 	let next = State {
 		verb,
 		room_since_ms,
