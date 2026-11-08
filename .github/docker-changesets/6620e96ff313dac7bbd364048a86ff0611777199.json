@@ -1,0 +1,12 @@
+{
+  "source_sha": "6620e96ff313dac7bbd364048a86ff0611777199",
+  "include": [
+    {
+      "name": "file_host",
+      "dockerfile": "./infra/docker/Dockerfile.server",
+      "repo_suffix": "server",
+      "needs_sqlx": true,
+      "needs_migrations": true
+    }
+  ]
+}
