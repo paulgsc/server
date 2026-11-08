@@ -21,15 +21,19 @@
 # which exists only once that package is built.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui b219a5b (#2741's merge, the commit www 0.1.61 was published
+# paulgsc/some-ui e6fd9c2 (#2797's merge, the commit www 0.1.62 was published
 # from, so the recorders and call-stage's pin are one version again). It
-# carries SFEED10 (#2774): the call's template v3 and Playoff Delta's v3, drawn
-# by both stages (www's `/call` and `/playoff-delta`) in the template's theme,
-# Mochi Night, with the music bed their series pin from /brand. A recorder
-# newer than its stage would draw a v3 week in the old look, so the two pins
-# move together. Also `record:preview` (SFEED12, #2781), and captions
-# (SFEED11, #2707) recorded a scene at a time from `/burn-ins?record`.
-ARG SOME_UI_COMMIT=b219a5b400eb6b69c70a6a4d651c9ea47a0c4c94
+# carries HYPER5 (#2799): the call's template v4 and Playoff Delta's v4, whose
+# brand open and close are the composition `brand-v1`, drawn by the recorders
+# themselves through @some-ui/video-motion's `installedCompositionPort` in
+# Playwright's headless shell (found under PLAYWRIGHT_BROWSERS_PATH, which this
+# image sets to /ms-playwright), with its work in a `draw-` folder beside the
+# video under /renders. And VS1 (#2798): each stage refuses a template version
+# newer than it knows, so a recorder newer than its stage fails loudly instead
+# of drawing a week in the old look; the two pins still move together. Also
+# v3's Mochi Night (SFEED10, #2774), `record:preview` (SFEED12, #2781), and
+# captions (SFEED11, #2707) recorded a scene at a time from `/burn-ins?record`.
+ARG SOME_UI_COMMIT=e6fd9c271204451534a533d7cf728563b1d0e807
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
@@ -44,9 +48,9 @@ RUN corepack enable \
     && pnpm exec turbo run build --filter="@some-ui/video-render^..." \
        --filter="@some-ui/playoff-delta..."
 
-# paulgsc/some-ui acc0912 (#2790's merge, HYPER4): @some-ui/video-motion, the
-# compositions and their pinned HyperFrames, with fonts from the lockfile, so
-# a render reaches no network, plus `motion walk` and `motion promo`, whose
+# paulgsc/some-ui e6fd9c2, SOME_UI_COMMIT's (HYPER4 #2790, HYPER5 #2799):
+# @some-ui/video-motion, the compositions and their pinned HyperFrames, with
+# fonts from the lockfile, so a render reaches no network, plus `motion walk` and `motion promo`, whose
 # sound cues come from `--brand` (home's ${STORAGE}/brand, mounted at /brand). A
 # worktree of the clone above, at its own commit, fetched first, since a cached
 # clone may predate it. Compositions draw in Playwright's headless shell, which
@@ -57,12 +61,16 @@ RUN corepack enable \
 # no network, uid 10000, root read-only), 2026-11-08, on #2743: the sample
 # composition (2 s, 60 frames at 1080x1920) takes about 10 s a render, and
 # Suspender Ledger 0.3.1's promo (15.8 s) about 158 s, peaking at 821 MB, each
-# the same bytes twice. On home, through tsx as render-calls.sh runs the
-# recorders:
+# the same bytes twice. The recorders' own checkout (/opt/some-ui, where
+# `installedCompositionPort` is imported from) draws v4's `brand-v1` the same
+# way: about 9 s a render, the same bytes twice, and conference-call's v4
+# preview (`record:preview --voices none`, against www 0.1.62) records and
+# renders in about 85 s (2026-11-08, at e6fd9c2). On home, through tsx as
+# render-calls.sh runs the recorders:
 #
 #   make compose ARGS="run --rm --no-deps -w /opt/some-ui-motion/packages/video-motion \
 #     --entrypoint node_modules/.bin/tsx render src/cli.ts prove sample --work /renders"
-ARG MOTION_COMMIT=acc0912bae91a7368d089894e705dd138af419bc
+ARG MOTION_COMMIT=e6fd9c271204451534a533d7cf728563b1d0e807
 
 RUN git -C /opt/some-ui fetch --filter=blob:none origin "$MOTION_COMMIT" \
     && git -C /opt/some-ui worktree add --detach /opt/some-ui-motion "$MOTION_COMMIT" \
