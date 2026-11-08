@@ -28,6 +28,15 @@ services:
       - '127.0.0.1:3000:3000'
     environment:
       - RUST_BACKTRACE=1
+      # Whose X-Forwarded-For names the client (net::TrustedProxies): only
+      # this container's default gateway, where the host's processes, Caddy
+      # among them, reach the port above from. file_host reads it at start,
+      # since the daemon picks the bridge's subnet. Never a range: anyone
+      # trusted can choose its own rate-limit bucket, and a range would trust
+      # every container on shared-dev-network and LAN addresses with them.
+      # Without this, every client on the LAN is one peer: one bucket for
+      # the phone, the laptop and everything else.
+      - TRUSTED_PROXIES=gateway
       - REDIS_URL=redis://redis:6379
       - NATS_URL=nats://nats:4222
       - DATABASE_URL=sqlite:///app/dbs/hopium.db

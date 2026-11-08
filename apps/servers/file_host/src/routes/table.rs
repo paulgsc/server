@@ -220,11 +220,17 @@ where
 		})
 	}
 
-	/// The router `main.rs` serves: the recorded table, with its CORS applied.
-	pub fn into_router(self, config: &Config) -> Router<S> {
+	/// The router `main.rs` serves: the recorded table wrapped in `inner`
+	/// (the rate limiter, for a versioned module), then in its CORS.
+	///
+	/// CORS goes outside `inner` so that a response `inner` gives on its own,
+	/// a `429`, still carries the module's CORS headers; without them a
+	/// browser reports the refusal as a network error and never sees it.
+	pub fn into_router(self, config: &Config, inner: impl FnOnce(Router<S>) -> Router<S>) -> Router<S> {
+		let router = inner(self.table.router);
 		match self.cors {
-			Some(cors) => self.table.router.layer(cors(config)),
-			None => self.table.router,
+			Some(cors) => router.layer(cors(config)),
+			None => router,
 		}
 	}
 

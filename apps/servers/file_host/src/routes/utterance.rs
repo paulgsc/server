@@ -17,4 +17,6 @@ fn cors(_: &Config) -> CorsLayer {
 		.allow_origin(Any) // Allow any origin (including extensions)
 		.allow_methods([Method::GET, Method::POST])
 		.allow_headers(Any)
+		// The rate limiter's wait, readable cross-origin (see `cors::allowlisted_cors`).
+		.expose_headers([axum::http::header::RETRY_AFTER])
 }

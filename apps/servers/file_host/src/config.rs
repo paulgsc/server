@@ -105,8 +105,20 @@ pub struct Config {
 	/// field previously declared the right unit but was unread — the
 	/// limiter's capacity was `max_request_size` (megabytes of upload
 	/// payload) instead.
-	#[arg(long, env = "RATE_LIMIT", default_value = "60", help_heading = "Server")]
+	#[arg(long, env = "RATE_LIMIT", default_value = "60", value_parser = clap::value_parser!(u32).range(1..), help_heading = "Server")]
 	pub rate_limit: u32,
+
+	/// Reverse proxies whose `X-Forwarded-For` names the client: comma-separated
+	/// addresses, CIDR ranges, or `gateway` (this host's default IPv4 gateway,
+	/// read from /proc/net/route at start). A request from one of them is keyed
+	/// (rate limit, WebSocket admission) by the nearest forwarded hop that is
+	/// not a trusted proxy; from anything else, by its own address, header
+	/// ignored. Empty by default. Name single proxies, not ranges: anyone
+	/// trusted can choose its own bucket. Home's Caddy runs on the host, so its
+	/// requests arrive from the Docker bridge's gateway
+	/// (`infra/compose/file_host.yml` sets `gateway`).
+	#[arg(long, env = "TRUSTED_PROXIES", value_delimiter = ',', value_parser = crate::net::validate_trusted_proxy, help_heading = "Server")]
+	pub trusted_proxies: Vec<String>,
 
 	/// Comma-separated list of allowed CORS origins for browser-facing read routes
 	/// (push and sessions). Other routes deliberately allow any origin
@@ -451,9 +463,11 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 16] = [
+	const REFUSED: [(&str, &str); 18] = [
 		("RUST_LOG", "info,=[bad"),
 		("RATE_LIMIT", "-1"),
+		("RATE_LIMIT", "0"),
+		("TRUSTED_PROXIES", "caddy"),
 		("NUDGE_ENABLED", "on"),
 		("NUDGE_QUIET_HOURS_START", "10pm"),
 		("NUDGE_QUIET_HOURS_END", "8am"),

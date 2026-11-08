@@ -9,9 +9,9 @@
 //! from its own mutation site, rather than growing a second spawned loop
 //! for a handful of `gauge!` calls that cost nothing extra to batch in.
 
+use crate::rate_limiter::HttpLimiter;
 use crate::websocket::connection::instrument;
 use crate::AppState;
-use some_services::rate_limiter::PartitionedTokenBucketLimiter;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info};
@@ -31,7 +31,7 @@ use tracing::{debug, info};
 /// must not depend on something outside this process asking. Each check is
 /// bounded by `/ready`'s own 2 s timeout, so a hung dependency delays one
 /// tick by at most that, not the sweep.
-pub fn spawn(state: AppState, rate_limiter: Arc<PartitionedTokenBucketLimiter>, freshness: Duration, interval: Duration) {
+pub fn spawn(state: AppState, rate_limiter: Arc<HttpLimiter>, freshness: Duration, interval: Duration) {
 	let cancel = state.core.cancel_token.clone();
 
 	tokio::spawn(async move {
@@ -52,11 +52,15 @@ pub fn spawn(state: AppState, rate_limiter: Arc<PartitionedTokenBucketLimiter>, 
 					crate::storage::refresh_footprint(&state.core.shared_db).await;
 					crate::handlers::readiness::refresh_gauges(&state).await;
 
-					let evicted = rate_limiter.evict_idle();
+					// Both only read the limiter's state (eviction drops only
+					// clients whose bucket is full, which decide the same either
+					// way), so this sweep cannot change a decision.
+					let evicted = rate_limiter.evict_full();
 					if evicted > 0 {
-						debug!(evicted, "reclaimed idle rate limiter buckets");
+						debug!(evicted, "forgot rate limiter clients back at full allowance");
 					}
-					crate::metrics::rate_limit::record_state(rate_limiter.average_tokens_available(), rate_limiter.active_clients());
+					let limiter = rate_limiter.snapshot();
+					crate::metrics::rate_limit::record_state(limiter.average_available, limiter.tracked);
 				}
 			}
 		}

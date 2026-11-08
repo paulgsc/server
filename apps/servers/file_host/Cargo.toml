@@ -66,6 +66,8 @@ some-transport = { workspace = true, features = ["nats", "mpsc_utils"] }
 ws-events = { workspace = true, features = ["tabsched", "ws-events"] }
 
 axum = { workspace = true, features = ["ws"] }
+# `TRUSTED_PROXIES` ranges (net::TrustedProxies). Already in the lock through hyper-util.
+ipnet = "2.12"
 # Only to recognise the error axum's WebSocket wraps (see
 # websocket/message/handlers.rs `is_peer_gone`), so it must be the version
 # axum itself uses — axum 0.7 wraps tungstenite 0.24. The real-socket test

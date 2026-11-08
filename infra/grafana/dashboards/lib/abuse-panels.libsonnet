@@ -106,10 +106,19 @@ local timeSeriesOptions = {
   // each, `stage` included in the legend since `timeout`/`load_shed` are
   // HTTP-only and the three WS reasons don't collide with them but read
   // clearer labelled anyway.
+  //
+  // `http/rate_limited` is the limiter's own 429s, which `refusals_total`
+  // does not count (they are `rate_limit_decisions_total`'s), folded in so
+  // every way home declines work is on one chart. RATE LIMITED above is the
+  // same series as a stat; `ClientRateLimited` (infra/prometheus/rules) is
+  // what tells the owner.
   refusalsByReason: {
     title: 'Refusals/sec by Reason',
     type: 'timeseries',
-    targets: [{ expr: 'sum by (stage, reason) (rate(refusals_total[5m]))', legendFormat: '{{stage}}/{{reason}}', refId: 'A' }],
+    targets: [
+      { expr: 'sum by (stage, reason) (rate(refusals_total[5m]))', legendFormat: '{{stage}}/{{reason}}', refId: 'A' },
+      { expr: 'sum(rate(rate_limit_decisions_total{outcome="rejected"}[5m]))', legendFormat: 'http/rate_limited', refId: 'B' },
+    ],
     fieldConfig: timeSeriesFieldConfig { defaults+: { unit: 'reqps', custom+: { stacking: { mode: 'normal' } } } },
     options: timeSeriesOptions,
   },

@@ -967,3 +967,50 @@ tests:
       - eval_time: 20m
         alertname: LaneSignalsUnreadable
         exp_alerts: []
+
+  - name: one refusal is told, once, and resolves after a quiet 15 minutes (AD2)
+    interval: 1m
+    input_series:
+      - series: 'rate_limit_decisions_total{job="file_host",limiter="http",outcome="rejected"}'
+        values: '0x10 1 4x30'
+      - series: 'rate_limit_decisions_total{job="file_host",limiter="http",outcome="allowed"}'
+        values: '0+20x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClientRateLimited
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ClientRateLimited
+        exp_alerts:
+          - exp_labels:
+              objective: AD2
+              says: "Home turned a client away for sending too fast in the last 15 minutes (a 429; the phone shows Home busy). The Rate limiting row on the file_host dashboard shows when."
+      - eval_time: 28m
+        alertname: ClientRateLimited
+        exp_alerts: []
+
+  - name: busy traffic that is never refused says nothing (AD2)
+    interval: 1m
+    input_series:
+      - series: 'rate_limit_decisions_total{job="file_host",limiter="http",outcome="rejected"}'
+        values: '0x40'
+      - series: 'rate_limit_decisions_total{job="file_host",limiter="http",outcome="allowed"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ClientRateLimited
+        exp_alerts: []
+
+  - name: a refusal across a restart is still told (AD2)
+    interval: 1m
+    input_series:
+      - series: 'rate_limit_decisions_total{job="file_host",limiter="http",outcome="rejected"}'
+        values: '0x5 7 0 0 2 2x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ClientRateLimited
+        exp_alerts:
+          - exp_labels:
+              objective: AD2
+              says: "Home turned a client away for sending too fast in the last 15 minutes (a 429; the phone shows Home busy). The Rate limiting row on the file_host dashboard shows when."
+
