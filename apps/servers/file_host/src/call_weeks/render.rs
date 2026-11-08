@@ -160,18 +160,27 @@ pub struct Renders {
 /// A storage failure reading `call_week`. A file that cannot be read counts
 /// as missing: a video that cannot be seen is a week still waiting.
 pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<Renders, sqlx::Error> {
+	let (held, let_go) = held(db).await?;
+	Ok(tally(&held, &let_go, renders, status, VIDEO).await)
+}
+
+/// Each week home holds, and the weeks of those the owner let go.
+///
+/// # Errors
+/// A storage failure reading `call_week`.
+pub(crate) async fn held(db: &SqlitePool) -> Result<(Vec<Held>, Vec<String>), sqlx::Error> {
 	let (weeks, let_go) = {
 		let mut conn = db.acquire().await?;
 		(call_week_repo::taken(&mut conn).await?, call_week_repo::video::let_go(&mut conn).await?)
 	};
-	let held: Vec<Held> = weeks
+	let held = weeks
 		.into_iter()
 		.map(|week| Held {
 			key: week.from,
 			taken_at: week.taken_at,
 		})
 		.collect();
-	Ok(tally(&held, &let_go, renders, status, VIDEO).await)
+	Ok((held, let_go))
 }
 
 /// An episode a feed holds, as [`tally`] reads it.

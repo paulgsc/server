@@ -152,12 +152,26 @@ pub struct Seen {
 /// A storage failure reading `pd_fill`. A file that cannot be read counts as
 /// missing: a video that cannot be seen is an episode still waiting.
 pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<Seen, sqlx::Error> {
+	let (fills, voiced, let_go) = voiced(db).await?;
+	Ok(Seen {
+		fills,
+		unvoiced: fills - voiced.len(),
+		renders: tally(&voiced, &let_go, renders, status, VIDEO).await,
+	})
+}
+
+/// How many fills home holds; of those, each of a voiced version, which the
+/// worker renders; and the episodes the owner let go.
+///
+/// # Errors
+/// A storage failure reading `pd_fill`.
+pub(crate) async fn voiced(db: &SqlitePool) -> Result<(usize, Vec<Held>, Vec<String>), sqlx::Error> {
 	let (held, let_go) = {
 		let mut conn = db.acquire().await?;
 		(pd_fill_repo::held(&mut conn).await?, pd_fill_repo::video::let_go(&mut conn).await?)
 	};
 	let fills = held.len();
-	let voiced: Vec<Held> = held
+	let voiced = held
 		.into_iter()
 		.filter(|fill| fill.version >= VOICED_VERSION)
 		.map(|fill| Held {
@@ -165,11 +179,7 @@ pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<S
 			taken_at: fill.taken_at,
 		})
 		.collect();
-	Ok(Seen {
-		fills,
-		unvoiced: fills - voiced.len(),
-		renders: tally(&voiced, &let_go, renders, status, VIDEO).await,
-	})
+	Ok((fills, voiced, let_go))
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@
 //! checks: the call's week by its first day (`2026-10-30`), Playoff Delta's
 //! by `<season>-<team>-<NN>` (`2026-SF-08`).
 
+pub mod renders;
 pub mod videos;
 
 use call_week_repo::video::{Link, Receipt, Recorded, Step};
