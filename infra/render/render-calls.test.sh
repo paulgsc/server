@@ -328,6 +328,7 @@ wait "$PASS"
 check "the render starts once the lane says run" test "$(runs_of 2026-10-30)" -eq 1
 check "the job it ran under is the one the lane was shown" test "$(cat "$FAKE/seen-job")" = "$waiting_id"
 check "a rendered job is no longer named" test ! -e "$ROOT/renders/call-worker/job" -a ! -e "$ROOT/renders/call-worker/job.state"
+check "how long it rendered is kept for the next one's bar" grep -qx '[0-9]\+' "$ROOT/renders/call-worker/took"
 check "its measured peak is the container's and what runs beside it" test "$(cat "$ROOT/renders/call-worker/peak")" -eq $(( 3000000000 + BESIDE_BYTES ))
 
 # A run decision written before the job was is not the lane's word on it.
@@ -392,6 +393,7 @@ kept=$(steps_made)
 check "a stop keeps the finished steps" test "$kept" -ge 2
 check "a stop keeps the job's id" test "$(cat "$ROOT/renders/call-worker/job")" = "$id"
 check "a job that gave way counts it" grep -qx "yields=1" "$ROOT/renders/call-worker/job.state"
+check "and the time it rendered before it did" grep -qx "ran=[0-9]\+" "$ROOT/renders/call-worker/job.state"
 check "a stop is no failure" test ! -e "$ROOT/renders/call-worker/2026-10-30.failed.log"
 sleep 0.5
 check "a stopped render waits for room" test "$(runs_of 2026-10-30)" -eq 1

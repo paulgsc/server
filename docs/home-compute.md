@@ -165,8 +165,11 @@ way; CI runs it on every PR.
   admitted as new. Whichever job runs writes the one `job`: the lane admits
   one batch job at a time. `job.state` says which job it is (`kind`, `key`,
   `since`) and where (`state`: `waiting`, `rendering` or `paused`;
-  `state_since`; `yields`, the times it gave way), for the phone's Renders
-  page (some-ui#2761).
+  `state_since`; `yields`, the times it gave way; `ran`, the seconds it
+  rendered before `state_since`), for the phone's Renders page
+  (some-ui#2761). A job that renders leaves `took`, the seconds it rendered
+  with pauses and waits left out, in its kind's status folder: the next
+  one's rough bar measures against it.
 - **It starts** only on a `run` written after its id was, so the lane has
   seen it and found room for its peak (LA2). A decision missing, unreadable,
   or more than 30 s from now either way is stop.

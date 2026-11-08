@@ -249,11 +249,11 @@ read_lane() {
 }
 
 # The job job.state names, left by a restart, in LEFT_ID, LEFT_KIND,
-# LEFT_KEY, LEFT_SINCE and LEFT_YIELDS; false when there is none, or it
+# LEFT_KEY, LEFT_SINCE, LEFT_YIELDS and LEFT_RAN; false when there is none, or it
 # can't be read, or <lane>/job names another.
 left_job() {
   local line id=
-  LEFT_ID='' LEFT_KIND='' LEFT_KEY='' LEFT_SINCE='' LEFT_YIELDS=''
+  LEFT_ID='' LEFT_KIND='' LEFT_KEY='' LEFT_SINCE='' LEFT_YIELDS='' LEFT_RAN=0
   [ -r "$LANE/job.state" ] && [ -r "$LANE/job" ] || return 1
   while IFS= read -r line; do
     case $line in
@@ -262,11 +262,13 @@ left_job() {
       key=*) LEFT_KEY=${line#key=} ;;
       since=*) LEFT_SINCE=${line#since=} ;;
       yields=*) LEFT_YIELDS=${line#yields=} ;;
+      ran=*) LEFT_RAN=${line#ran=} ;;
     esac
   done < "$LANE/job.state"
   read -r id < "$LANE/job"
   [[ "$LEFT_ID" =~ ^[0-9]{1,19}$ ]] && [ "$id" = "$LEFT_ID" ] || return 1
   [[ "$LEFT_SINCE" =~ ^[0-9]{1,12}$ ]] && [[ "$LEFT_YIELDS" =~ ^[0-9]{1,9}$ ]] || return 1
+  [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
     call | playoff-delta) return 0 ;;
@@ -288,18 +290,26 @@ new_job_id() {
 
 # Where the job is, for the phone's Renders page (SFEED13), written whole:
 # `waiting` for room (before its first run, or after it gave way),
-# `rendering`, or `paused` (frozen while home's interactive work runs).
+# `rendering`, or `paused` (frozen while home's interactive work runs);
+# since when; and `ran`, the seconds it has rendered before that, which with
+# `took` (below) makes the page's rough bar.
 job_state() {
-  put_in "$LANE" job.state "$(printf 'id=%s\nkind=%s\nkey=%s\nsince=%s\nstate=%s\nstate_since=%s\nyields=%s' \
-    "$JOB_ID" "$JOB_KIND" "$JOB_KEY" "$JOB_SINCE" "$1" "$(date +%s)" "$JOB_YIELDS")"
+  local now
+  now=$(date +%s)
+  if [ "${JOB_STATE:-}" = rendering ]; then
+    JOB_RAN=$(( JOB_RAN + now - JOB_STATE_SINCE ))
+  fi
+  JOB_STATE=$1 JOB_STATE_SINCE=$now
+  put_in "$LANE" job.state "$(printf 'id=%s\nkind=%s\nkey=%s\nsince=%s\nstate=%s\nstate_since=%s\nyields=%s\nran=%s' \
+    "$JOB_ID" "$JOB_KIND" "$JOB_KEY" "$JOB_SINCE" "$1" "$now" "$JOB_YIELDS" "$JOB_RAN")"
 }
 
 # The job for `job`'s `key`: the one a restart left for it, with its id, or
 # a new one.
 begin_job() {
-  JOB_KIND=$1 JOB_KEY=$2 JOB_YIELDS=0
+  JOB_KIND=$1 JOB_KEY=$2 JOB_YIELDS=0 JOB_RAN=0 JOB_STATE=''
   if left_job && [ "$LEFT_KIND" = "$1" ] && [ "$LEFT_KEY" = "$2" ]; then
-    JOB_ID=$LEFT_ID JOB_SINCE=$LEFT_SINCE JOB_YIELDS=$LEFT_YIELDS
+    JOB_ID=$LEFT_ID JOB_SINCE=$LEFT_SINCE JOB_YIELDS=$LEFT_YIELDS JOB_RAN=$LEFT_RAN
   else
     new_job_id || return 1
     JOB_SINCE=$(date +%s)
@@ -505,6 +515,10 @@ render_episode() {
     asked=$(date +%s)
   done
   keep_peak
+  # How long it rendered, pauses and waits left out: the next job of this
+  # kind's rough bar measures against it.
+  job_state done
+  put took "$JOB_RAN"
   made=$(finished "$job" "$key")
   # The renderer's intermediates can be made again from what is kept.
   rm -rf "${made:?}/cache"
