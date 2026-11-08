@@ -1816,12 +1816,428 @@
       "type": "timeseries"
     },
     {
-      "collapsed": true,
+      "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 44
+      },
+      "id": 44,
+      "panels": [],
+      "title": "At rest — what home costs while nothing is worked on",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Share of the range in which nothing was being worked on: no voice note heard, no Rust Rounds program recorded, no render in progress (file_host's batch lane, lane_idle). The rest of the row is measured in this time only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 45
+      },
+      "id": 45,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "100 * avg_over_time(max(lane_idle)[$__range:1m])",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "TIME AT REST",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Home's memory in use (all but MemAvailable) while at rest, averaged over the range: what keeping every service up costs with nothing to do. A render's peak and the lane's floor have to fit beside it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 9,
+        "x": 6,
+        "y": 45
+      },
+      "id": 46,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time(((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) and on() (max(lane_idle) == 1))[$__range:1m])",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "MEMORY AT REST",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Cores' worth of CPU home's host spends while at rest, averaged over the range: the polls, scrapes and requests that run whatever else does.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [
+            {
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "color": "#8E8E8E",
+                  "text": "no data"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "noValue": "no data",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 9,
+        "x": 15,
+        "y": 45
+      },
+      "id": 47,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time(((sum(rate(node_cpu_seconds_total{mode!~\"idle|iowait|steal\"}[2m]))) and on() (max(lane_idle) == 1))[$__range:1m])",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "CORES BUSY AT REST",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Each container's working set (what the kernel will not reclaim) while home is at rest, averaged over the range. A batch service that holds memory between jobs (the speaker keeps its model, about 1.25 GB) is counted here, since it stays up.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 8,
+        "x": 0,
+        "y": 49
+      },
+      "id": 48,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "top",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "sort_desc(avg_over_time(((max by (name) (container_memory_working_set_bytes{name!=\"\"})) and on() (max(lane_idle) == 1))[$__range:1m]))",
+          "instant": true,
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory at rest, by container",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Each container's CPU while home is at rest, in cores, averaged over the range: who spends the CPU when there is nothing to do.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 3,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 8,
+        "x": 8,
+        "y": 49
+      },
+      "id": 49,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "top",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 13
+        },
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "expr": "sort_desc(avg_over_time(((sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\"}[2m]))) and on() (max(lane_idle) == 1))[$__range:1m]))",
+          "instant": true,
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU at rest, by container",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "In use is all of home's memory but MemAvailable, at every moment; at rest is the same line drawn only while nothing is being worked on. Where the two meet is the baseline every job starts from.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "min": 0,
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 8,
+        "x": 16,
+        "y": 49
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
+          "legendFormat": "in use",
+          "refId": "A"
+        },
+        {
+          "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) and on() (max(lane_idle) == 1)",
+          "legendFormat": "at rest",
+          "refId": "B"
+        }
+      ],
+      "title": "Home's memory in use, and at rest",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 60
       },
       "id": 43,
       "panels": [
@@ -1880,7 +2296,7 @@
             "h": 5,
             "w": 12,
             "x": 0,
-            "y": 45
+            "y": 61
           },
           "id": 1,
           "options": {
@@ -1954,7 +2370,7 @@
             "h": 5,
             "w": 12,
             "x": 12,
-            "y": 45
+            "y": 61
           },
           "id": 3,
           "options": {
@@ -2043,7 +2459,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 50
+            "y": 66
           },
           "id": 4,
           "options": {
@@ -2136,7 +2552,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 50
+            "y": 66
           },
           "id": 5,
           "options": {
@@ -2215,7 +2631,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 50
+            "y": 66
           },
           "id": 6,
           "options": {
@@ -2328,7 +2744,7 @@
             "h": 6,
             "w": 12,
             "x": 0,
-            "y": 58
+            "y": 74
           },
           "id": 8,
           "options": {
@@ -2392,7 +2808,7 @@
             "h": 6,
             "w": 12,
             "x": 12,
-            "y": 58
+            "y": 74
           },
           "id": 11,
           "options": {
@@ -2506,7 +2922,7 @@
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 64
+            "y": 80
           },
           "id": 9,
           "options": {
@@ -2572,7 +2988,7 @@
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 64
+            "y": 80
           },
           "id": 10,
           "options": {
@@ -2616,7 +3032,7 @@
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 64
+            "y": 80
           },
           "id": 16,
           "options": {
@@ -2680,7 +3096,7 @@
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 70
+            "y": 86
           },
           "id": 12,
           "options": {
@@ -2750,7 +3166,7 @@
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 70
+            "y": 86
           },
           "id": 13,
           "options": {
@@ -2831,7 +3247,7 @@
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 70
+            "y": 86
           },
           "id": 14,
           "options": {
@@ -2893,7 +3309,7 @@
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 76
+            "y": 92
           },
           "id": 15,
           "options": {
@@ -2970,7 +3386,7 @@
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 76
+            "y": 92
           },
           "id": 17,
           "options": {
@@ -3052,7 +3468,7 @@
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 76
+            "y": 92
           },
           "id": 18,
           "options": {

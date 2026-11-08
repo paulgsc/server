@@ -1748,6 +1748,7 @@ dependencies = [
  "jobs_repo",
  "jwt-simple",
  "korean_repo",
+ "lane",
  "lazy_static",
  "learner_shelf_repo",
  "leetype_log_repo",

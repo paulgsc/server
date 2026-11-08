@@ -38,9 +38,11 @@
 
 pub mod pass;
 
+use crate::call_weeks::lane::Held;
 use crate::settings::{self, RustRounds};
 use crate::AppState;
-use pass::Socket;
+use pass::{Runner, Socket};
+use rust_rounds_wire::protocol::{AskError, Request, Response};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -105,7 +107,7 @@ impl Default for RustRoundsContext {
 
 /// Start the worker. It always runs; the operator's lever pauses its passes.
 pub fn start(state: &AppState) {
-	spawn(state, state.rust_rounds.clone());
+	spawn(state, &state.rust_rounds);
 }
 
 /// What the recorder last said about the lever and the runner, so each is
@@ -163,14 +165,31 @@ fn say(change: Change) {
 	}
 }
 
+/// The runner, holding interactive work while it records a program, so the
+/// batch lane pauses a render for it (`call_weeks::lane`, LA1). The
+/// toolchain ask each pass makes first holds nothing: it is asked every
+/// minute, whether or not a program waits, and held it would keep a render
+/// from ever passing its hold-down.
+impl<R: Runner> Runner for Held<R> {
+	fn exchange(&self, request: &Request, timeout: Duration) -> Result<Response, AskError> {
+		let _hold = matches!(request, Request::Record { .. }).then(|| self.interactive.hold());
+		self.inner.exchange(request, timeout)
+	}
+}
+
 /// Spawn the worker, cancelled through the shared token. Its first pass runs
 /// at once, so a restart catches up without waiting an interval.
-fn spawn(state: &AppState, context: RustRoundsContext) {
+fn spawn(state: &AppState, context: &RustRoundsContext) {
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
+	let runner = Arc::new(Held {
+		inner: Arc::clone(&context.runner),
+		interactive: state.interactive.clone(),
+	});
+	let (every, deadline) = (context.interval, context.deadline);
 	tokio::spawn(async move {
-		info!(interval_secs = context.interval.as_secs(), "Rust Rounds recorder started");
-		let mut ticker = tokio::time::interval(context.interval);
+		info!(interval_secs = every.as_secs(), "Rust Rounds recorder started");
+		let mut ticker = tokio::time::interval(every);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut seen = Seen::default();
 		loop {
@@ -195,7 +214,7 @@ fn spawn(state: &AppState, context: RustRoundsContext) {
 					if !lever.recording {
 						continue;
 					}
-					let result = pass::run_once(&db, &context.runner, context.deadline, pass::Waits::SERVER, &cancel, &crate::mailbox::pass::now).await;
+					let result = pass::run_once(&db, &runner, deadline, pass::Waits::SERVER, &cancel, &crate::mailbox::pass::now).await;
 					if let Some(change) = result.as_ref().ok().and_then(|done| seen.runner(done.stopped)) {
 						say(change);
 					}
@@ -249,7 +268,46 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 
 #[cfg(test)]
 mod tests {
-	use super::{pass::Stop, Change, Seen};
+	use super::{pass::Runner, pass::Stop, Change, Held, Seen};
+	use crate::call_weeks::lane::Interactive;
+	use rust_rounds_wire::protocol::{AskError, Request, Response};
+	use std::sync::{Arc, Mutex};
+	use std::time::Duration;
+
+	/// A runner that notes whether interactive work was held at each ask.
+	struct Watch {
+		interactive: Interactive,
+		held: Mutex<Vec<bool>>,
+	}
+
+	impl Runner for Watch {
+		fn exchange(&self, _: &Request, _: Duration) -> Result<Response, AskError> {
+			self.held.lock().unwrap().push(self.interactive.is_held());
+			Err(AskError::TimedOut)
+		}
+	}
+
+	#[test]
+	fn a_program_recorded_is_interactive_work_and_the_toolchain_ask_is_not() {
+		let interactive = Interactive::default();
+		let watch = Arc::new(Watch {
+			interactive: interactive.clone(),
+			held: Mutex::new(Vec::new()),
+		});
+		let runner = Held {
+			inner: Arc::clone(&watch),
+			interactive: interactive.clone(),
+		};
+		let record = Request::Record {
+			toolchain: String::from("1.0.0"),
+			source: String::from("fn main() {}"),
+		};
+		for request in [Request::Toolchain {}, record] {
+			assert!(runner.exchange(&request, Duration::from_secs(1)).is_err());
+		}
+		assert_eq!(*watch.held.lock().unwrap(), [false, true]);
+		assert!(!interactive.is_held(), "let go once the program is recorded");
+	}
 
 	#[test]
 	fn the_lever_is_said_when_it_moves_and_not_every_pass() {

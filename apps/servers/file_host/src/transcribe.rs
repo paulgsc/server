@@ -39,12 +39,14 @@ pub mod engine;
 pub mod pass;
 
 use crate::auth::DeletionLock;
+use crate::call_weeks::lane::Held;
 use crate::meaning::{MeaningContext, StaticModel};
 use crate::{AppState, Config};
-use engine::Whisper;
+use engine::{Cancelled, Hear, Heard, Whisper};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use voice_repo::meaning::Embed;
 
@@ -135,11 +137,33 @@ pub fn start(state: &AppState) {
 	}
 }
 
+/// The engine, holding interactive work while it hears a note, so the batch
+/// lane pauses a render for it (`call_weeks::lane`, LA1). A pass with
+/// nothing to hear holds nothing.
+impl<H: Hear> Hear for Held<H> {
+	fn model(&self) -> &str {
+		self.inner.model()
+	}
+
+	fn engine(&self) -> &str {
+		self.inner.engine()
+	}
+
+	fn hear(&self, audio: &[u8], deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+		let _hold = self.interactive.hold();
+		self.inner.hear(audio, deadline, cancel)
+	}
+}
+
 /// Spawn the worker, cancelled through the shared token. Its first pass runs
 /// at once, so a restart catches up without waiting an interval.
 fn spawn(state: &AppState, context: TranscribeContext) {
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
+	let engine = Arc::new(Held {
+		inner: Arc::clone(&context.engine),
+		interactive: state.interactive.clone(),
+	});
 	crate::metrics::transcribe::record_started();
 
 	tokio::spawn(async move {
@@ -155,7 +179,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 				_ = ticker.tick() => {
 					crate::metrics::transcribe::record_pass_started();
 					let meaning = context.meaning.as_deref().map(|model| model as &dyn Embed);
-					let result = pass::run_once(&db, &context.engine, meaning, &context.deletion, context.deadline, &cancel, &crate::mailbox::pass::now).await;
+					let result = pass::run_once(&db, &engine, meaning, &context.deletion, context.deadline, &cancel, &crate::mailbox::pass::now).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
 				}
@@ -192,5 +216,57 @@ const fn kind(err: &voice_repo::VoiceError) -> &'static str {
 	match err {
 		voice_repo::VoiceError::Storage(_) => "storage",
 		voice_repo::VoiceError::Rewritten | voice_repo::VoiceError::Unreadable => "unexpected",
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Cancelled, Hear, Heard, Held};
+	use crate::call_weeks::lane::Interactive;
+	use std::sync::{Arc, Mutex};
+	use std::time::Instant;
+	use tokio_util::sync::CancellationToken;
+	use voice_repo::transcript::Outcome;
+
+	/// An engine that notes whether interactive work was held as it heard.
+	struct Watch {
+		interactive: Interactive,
+		held: Mutex<Vec<bool>>,
+	}
+
+	impl Hear for Watch {
+		fn model(&self) -> &'static str {
+			"model"
+		}
+
+		fn engine(&self) -> &'static str {
+			"engine"
+		}
+
+		fn hear(&self, _: &[u8], _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
+			self.held.lock().unwrap().push(self.interactive.is_held());
+			Ok(Heard {
+				outcome: Outcome::Silent,
+				duration_ms: None,
+			})
+		}
+	}
+
+	#[test]
+	fn a_note_heard_is_interactive_work_until_it_is_heard() {
+		let interactive = Interactive::default();
+		let watch = Arc::new(Watch {
+			interactive: interactive.clone(),
+			held: Mutex::new(Vec::new()),
+		});
+		let engine = Held {
+			inner: Arc::clone(&watch),
+			interactive: interactive.clone(),
+		};
+		assert_eq!((engine.model(), engine.engine()), ("model", "engine"));
+		assert!(!interactive.is_held());
+		assert!(engine.hear(b"note", Instant::now(), &CancellationToken::new()).is_ok());
+		assert_eq!(*watch.held.lock().unwrap(), [true]);
+		assert!(!interactive.is_held(), "let go once heard");
 	}
 }

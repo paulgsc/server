@@ -5,6 +5,7 @@
 local forensicPanels = import 'lib/forensic-panels.libsonnet';
 local panelDefaults = import 'lib/panel-defaults.libsonnet';
 local sympathy = import 'lib/sympathy-panels.libsonnet';
+local idle = import 'lib/idle-panels.libsonnet';
 
 // Utility function for grid positioning
 local gridPos(x, y, w, h) = {
@@ -132,23 +133,32 @@ local dashboard = {
     sympathy.ioByProcess { id: 38, gridPos: gridPos(8, 35, 8, 9) },
     sympathy.diskTrend { id: 39, gridPos: gridPos(16, 35, 8, 9) },
 
-    collapsedRow('Forensics — the host hung, what was it doing?', 44, 43, [
-      forensicPanels.systemHangDetector { id: 1, gridPos: gridPos(0, 45, 12, 5) },
-      forensicPanels.blockedProcesses { id: 3, gridPos: gridPos(12, 45, 12, 5) },
-      forensicPanels.topCpuOffenders { id: 4, gridPos: gridPos(0, 50, 8, 8) },
-      forensicPanels.topMemoryConsumers { id: 5, gridPos: gridPos(8, 50, 8, 8) },
-      forensicPanels.topIoOffenders { id: 6, gridPos: gridPos(16, 50, 8, 8) },
-      forensicPanels.processStates { id: 8, gridPos: gridPos(0, 58, 12, 6) },
-      forensicPanels.containerProcessLimits { id: 11, gridPos: gridPos(12, 58, 12, 6) },
-      forensicPanels.containerCpuUsage { id: 9, gridPos: gridPos(0, 64, 8, 6) },
-      forensicPanels.containerMemoryPressure { id: 10, gridPos: gridPos(8, 64, 8, 6) },
-      forensicPanels.containerIoBandwidth { id: 16, gridPos: gridPos(16, 64, 8, 6) },
-      forensicPanels.contextSwitches { id: 12, gridPos: gridPos(0, 70, 8, 6) },
-      forensicPanels.majorPageFaults { id: 13, gridPos: gridPos(8, 70, 8, 6) },
-      forensicPanels.threadExplosion { id: 14, gridPos: gridPos(16, 70, 8, 6) },
-      forensicPanels.fileDescriptorUsage { id: 15, gridPos: gridPos(0, 76, 8, 6) },
-      forensicPanels.diskIoQueue { id: 17, gridPos: gridPos(8, 76, 8, 6) },
-      forensicPanels.swapThrashing { id: 18, gridPos: gridPos(16, 76, 8, 6) },
+    // What home costs while nothing is worked on: idle-panels.libsonnet.
+    row('At rest — what home costs while nothing is worked on', 44, 44),
+    idle.share { id: 45, gridPos: gridPos(0, 45, 6, 4) },
+    idle.memory { id: 46, gridPos: gridPos(6, 45, 9, 4) },
+    idle.cores { id: 47, gridPos: gridPos(15, 45, 9, 4) },
+    idle.memoryByContainer { id: 48, gridPos: gridPos(0, 49, 8, 11) },
+    idle.cpuByContainer { id: 49, gridPos: gridPos(8, 49, 8, 11) },
+    idle.trend { id: 50, gridPos: gridPos(16, 49, 8, 11) },
+
+    collapsedRow('Forensics — the host hung, what was it doing?', 60, 43, [
+      forensicPanels.systemHangDetector { id: 1, gridPos: gridPos(0, 61, 12, 5) },
+      forensicPanels.blockedProcesses { id: 3, gridPos: gridPos(12, 61, 12, 5) },
+      forensicPanels.topCpuOffenders { id: 4, gridPos: gridPos(0, 66, 8, 8) },
+      forensicPanels.topMemoryConsumers { id: 5, gridPos: gridPos(8, 66, 8, 8) },
+      forensicPanels.topIoOffenders { id: 6, gridPos: gridPos(16, 66, 8, 8) },
+      forensicPanels.processStates { id: 8, gridPos: gridPos(0, 74, 12, 6) },
+      forensicPanels.containerProcessLimits { id: 11, gridPos: gridPos(12, 74, 12, 6) },
+      forensicPanels.containerCpuUsage { id: 9, gridPos: gridPos(0, 80, 8, 6) },
+      forensicPanels.containerMemoryPressure { id: 10, gridPos: gridPos(8, 80, 8, 6) },
+      forensicPanels.containerIoBandwidth { id: 16, gridPos: gridPos(16, 80, 8, 6) },
+      forensicPanels.contextSwitches { id: 12, gridPos: gridPos(0, 86, 8, 6) },
+      forensicPanels.majorPageFaults { id: 13, gridPos: gridPos(8, 86, 8, 6) },
+      forensicPanels.threadExplosion { id: 14, gridPos: gridPos(16, 86, 8, 6) },
+      forensicPanels.fileDescriptorUsage { id: 15, gridPos: gridPos(0, 92, 8, 6) },
+      forensicPanels.diskIoQueue { id: 17, gridPos: gridPos(8, 92, 8, 6) },
+      forensicPanels.swapThrashing { id: 18, gridPos: gridPos(16, 92, 8, 6) },
     ]),
   ]),
   refresh: '5s',

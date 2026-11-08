@@ -200,4 +200,156 @@ local count(title, description, expr, steps) =
     },
     options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
   },
+
+  // ---- LANE: when the render may run (L4b, server#708) ----
+  // Every series here is file_host's batch lane (metrics/lane.rs,
+  // call_weeks::lane), which decides every 5 s from /proc and home's own
+  // interactive work. docs/home-compute.md, "The lane", says what each
+  // reason means and home's policy.
+
+  laneNow: {
+    title: 'What the lane says, and why',
+    description: "Over time, what the lane told the render worker (run, pause, stop) and why: clear, busy (a voice note or a Rust Rounds program is being worked on), memory (free memory under the floor, or under the render's peak above it), pressure (memory pressure past its limit), unknown (a signal could not be read) or settling (room came back and is being held for 30 s).",
+    type: 'state-timeline',
+    datasource: ds,
+    targets: [
+      { expr: 'max(lane_verb{verb="pause"}) + 2 * max(lane_verb{verb="stop"})', legendFormat: 'verb', refId: 'A' },
+      {
+        expr: '10 + max(lane_why{why="busy"}) + 2 * max(lane_why{why="memory"}) + 3 * max(lane_why{why="pressure"}) + 4 * max(lane_why{why="unknown"}) + 5 * max(lane_why{why="settling"})',
+        legendFormat: 'why',
+        refId: 'B',
+      },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'thresholds' },
+        thresholds: { mode: 'absolute', steps: [{ color: 'text', value: null }] },
+        mappings: [{
+          type: 'value',
+          options: {
+            '0': { text: 'run', color: 'green' },
+            '1': { text: 'pause', color: 'yellow' },
+            '2': { text: 'stop', color: 'orange' },
+            '10': { text: 'clear', color: 'green' },
+            '11': { text: 'busy', color: 'yellow' },
+            '12': { text: 'memory', color: 'orange' },
+            '13': { text: 'pressure', color: 'orange' },
+            '14': { text: 'unknown', color: 'red' },
+            '15': { text: 'settling', color: 'blue' },
+          },
+        }],
+        custom: { fillOpacity: 80, lineWidth: 0 },
+      },
+      overrides: [],
+    },
+    options: { showValue: 'auto', mergeValues: true, rowHeight: 0.8, alignValue: 'left', legend: { showLegend: false } },
+  },
+
+  laneShare: {
+    title: 'Time in each decision',
+    description: "How long, over the range, the lane said each verb for each reason: how long the render was held back, and by what. Each decision lasts one 5 s tick.",
+    type: 'bargauge',
+    datasource: ds,
+    targets: [{
+      expr: 'sort_desc(5 * sum by (verb, why) (increase(lane_ticks_total[$__range])) > 0)',
+      legendFormat: '{{verb}}: {{why}}',
+      instant: true,
+      refId: 'A',
+    }],
+    fieldConfig: {
+      defaults: { unit: 's', min: 0, color: { mode: 'continuous-BlPu' }, decimals: 0 },
+      overrides: [],
+    },
+    options: { displayMode: 'gradient', orientation: 'horizontal', showUnfilled: true, reduceOptions: { calcs: ['lastNotNull'], values: false } },
+  },
+
+  laneSince: stat(
+    'SINCE LAST DECISION',
+    'Time since the lane last wrote its decision for the render worker. It writes every 5 s; the worker treats one older than 30 s as stop, and past a minute LaneStale fires.',
+    'time() - lane_last_decision_timestamp_seconds',
+    's',
+    [{ color: 'green', value: null }, { color: 'orange', value: 30 }, { color: 'red', value: 60 }],
+  ),
+
+  laneStops: stat(
+    'STOPS OF THIS JOB',
+    "Times the render job in progress was stopped for memory or pressure, in a row. At 3 the lane calls it stuck and LaneStuck fires; a new job starts at 0. 0 with no job in progress.",
+    'max(lane_stops)',
+    'none',
+    [{ color: 'green', value: null }, { color: 'orange', value: 1 }, { color: 'red', value: 3 }],
+  ) {
+    // Spelled out where scripts/check_metric_contract.py reads it.
+    targets: [{ expr: 'max(lane_stops)', instant: true, refId: 'A' }],
+    fieldConfig+: { defaults+: { decimals: 0 } },
+  },
+
+  laneReadable: stat(
+    'SIGNALS READ',
+    "Whether the lane read every signal it decides from this tick: /proc/meminfo, /proc/pressure/memory (PSI), and the render worker's job and peak files. 0 means one could not be read, which is never room, so no render may start; held 5 minutes, LaneSignalsUnreadable names it.",
+    'min(lane_signal_readable)',
+    'none',
+    [{ color: 'red', value: null }, { color: 'green', value: 1 }],
+    [{ type: 'value', options: { '0': { text: 'one is not' }, '1': { text: 'all' } } }],
+  ),
+
+  laneMemory: {
+    title: 'Free memory against what a render needs',
+    description: "MemAvailable, home-wide, against the floor (what must stay free beyond batch work: 2 GiB) and the floor plus the render's peak (what must be free for a render to start). The peak is the one the render worker measured last, or the declared ceiling (the batch containers' caps less what the speaker keeps between renders) until it measures one.",
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      { expr: 'max(lane_mem_available_bytes)', legendFormat: 'free (MemAvailable)', refId: 'A' },
+      { expr: 'max(lane_floor_bytes)', legendFormat: 'floor', refId: 'B' },
+      { expr: 'max(lane_batch_peak_bytes) + max(lane_floor_bytes)', legendFormat: 'to start: peak + floor', refId: 'C' },
+      { expr: 'max(lane_declared_peak_bytes) + max(lane_floor_bytes)', legendFormat: 'declared ceiling + floor', refId: 'D' },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 'bytes',
+        min: 0,
+        custom: { drawStyle: 'line', lineWidth: 1, fillOpacity: 0, spanNulls: false },
+      },
+      overrides: [{ matcher: { id: 'byName', options: 'declared ceiling + floor' }, properties: [{ id: 'custom.lineStyle', value: { fill: 'dash', dash: [6, 6] } }] }],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
+  lanePressure: {
+    title: 'Memory pressure against its limit',
+    description: "PSI's some avg10 for memory, home-wide: the share of the last 10 s some task stalled waiting for memory. Past the limit (10%) the lane stops the render.",
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      { expr: 'max(lane_memory_pressure_pct)', legendFormat: 'pressure (some avg10)', refId: 'A' },
+      { expr: 'max(lane_pressure_limit_pct)', legendFormat: 'limit', refId: 'B' },
+    ],
+    fieldConfig: {
+      defaults: { unit: 'percent', min: 0, custom: { drawStyle: 'line', lineWidth: 1, fillOpacity: 10, spanNulls: false } },
+      overrides: [],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
+  laneWork: {
+    title: 'Who was working',
+    description: 'Interactive work (a voice note being heard, a Rust Rounds program being recorded), batch work in progress (a render job named, or a week\'s attempt running), and the render job the worker named, if any. When none is, home is at rest: WHO DUNNIT\'s AT REST row measures what that costs.',
+    type: 'state-timeline',
+    datasource: ds,
+    targets: [
+      { expr: 'max(lane_interactive_waiting)', legendFormat: 'interactive', refId: 'A' },
+      { expr: 'max(lane_batch_active)', legendFormat: 'batch', refId: 'B' },
+      { expr: 'max(lane_batch_job_present)', legendFormat: 'job named', refId: 'C' },
+      { expr: 'max(lane_idle)', legendFormat: 'at rest', refId: 'D' },
+    ],
+    fieldConfig: {
+      defaults: {
+        color: { mode: 'thresholds' },
+        thresholds: { mode: 'absolute', steps: [{ color: 'transparent', value: null }, { color: 'blue', value: 1 }] },
+        mappings: [{ type: 'value', options: { '0': { text: 'no' }, '1': { text: 'yes' } } }],
+        custom: { fillOpacity: 70, lineWidth: 0 },
+      },
+      overrides: [],
+    },
+    options: { showValue: 'never', mergeValues: true, rowHeight: 0.8, legend: { showLegend: false } },
+  },
 }
