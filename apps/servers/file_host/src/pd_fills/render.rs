@@ -111,6 +111,16 @@ async fn write_whole(partial: &Path, into: &Path, fill: &[u8], season: &[u8]) ->
 	tokio::fs::rename(partial, into).await
 }
 
+/// What Playoff Delta's job takes of the drive.
+///
+/// Its videos, its waiting work and its newest cache warning
+/// (`call_weeks::render::disk`), which the call's
+/// observation adds to its own, so the drive's numbers and
+/// `CallRenderCacheFull` count both jobs.
+pub async fn disk() -> crate::call_weeks::render::Disk {
+	crate::call_weeks::render::disk(Path::new(RENDERS_FOLDER), Path::new(WORK_FOLDER), Path::new(STATUS_FOLDER)).await
+}
+
 /// What the worker has made of Playoff Delta's fills.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Seen {

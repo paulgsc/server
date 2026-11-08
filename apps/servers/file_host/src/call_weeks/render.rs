@@ -55,6 +55,21 @@ pub struct Disk {
 	pub drive: Option<(u64, u64)>,
 }
 
+impl Disk {
+	/// What two of the render worker's jobs take of the drive together: their
+	/// bytes added, their newest cache warning, and the drive (one drive keeps
+	/// both).
+	#[must_use]
+	pub fn and(self, other: &Self) -> Self {
+		Self {
+			videos_bytes: self.videos_bytes.saturating_add(other.videos_bytes),
+			work_bytes: self.work_bytes.saturating_add(other.work_bytes),
+			cache_warning_at: self.cache_warning_at.max(other.cache_warning_at),
+			drive: self.drive.or(other.drive),
+		}
+	}
+}
+
 /// Reads what the call takes of the drive (the module doc).
 pub async fn disk(renders: &Path, work: &Path, status: &Path) -> Disk {
 	Disk {
@@ -248,6 +263,19 @@ mod tests {
 
 		let seen = disk(&renders, &work, &status).await;
 		assert_eq!((seen.videos_bytes, seen.work_bytes), (15, 20));
+		let other = Disk {
+			videos_bytes: 1,
+			work_bytes: 2,
+			cache_warning_at: Some(i64::MAX),
+			drive: None,
+		};
+		let both = seen.clone().and(&other);
+		assert_eq!(
+			(both.videos_bytes, both.work_bytes, both.cache_warning_at),
+			(16, 22, Some(i64::MAX)),
+			"both jobs' bytes and the newest warning"
+		);
+		assert_eq!(both.drive, seen.drive);
 		assert!(seen.cache_warning_at.is_some_and(|at| at > 1_700_000_000));
 		let (free, size) = seen.drive.unwrap();
 		assert!(size > 0 && free <= size);
