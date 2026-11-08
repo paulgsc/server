@@ -12,8 +12,6 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-axum.workspace = true
-thiserror.workspace = true
 dashmap = "6.1.0"
 
 # No dev-dependencies: the limiter's tests drive a manual clock, so none sleeps.
