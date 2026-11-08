@@ -366,7 +366,7 @@ recorder=$(cat "$FAKE/pid")
 id=$(cat "$ROOT/renders/call-worker/job")
 lane_says hold
 check "a decision gone stale stops a running render" within gone "$recorder"
-check "and says why" grep -q "gave way (the lane: stop, stale)" "$SCRATCH/pass.out"
+check "and says why" within grep -q "gave way (the lane: stop, stale)" "$SCRATCH/pass.out"
 rm "$FAKE/hold-at"
 : > "$SCRATCH/saw"
 lane_says run
