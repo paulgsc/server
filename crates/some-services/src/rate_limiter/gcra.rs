@@ -38,8 +38,12 @@ impl Quota {
 	}
 
 	/// How far past now a client's TAT may sit and still be admitted.
-	const fn tolerance(&self) -> u64 {
-		self.interval.saturating_mul(self.burst as u64)
+	///
+	/// In `u128`: `burst × interval` overflows `u64` only for a period over
+	/// 584 years, but if it ever did, a saturated tolerance would admit
+	/// everything. Wide, it cannot.
+	const fn tolerance(&self) -> u128 {
+		self.interval as u128 * self.burst as u128
 	}
 }
 
@@ -63,26 +67,32 @@ impl Decision {
 /// client with a full bucket). Returns the decision and, if admitted, the
 /// client's new TAT. A refusal leaves the TAT as it was, so a client hammering
 /// while refused does not push its own return further out.
+///
+/// Fails closed: a TAT that would pass `u64::MAX` is a refusal, not a wrap.
 pub(super) fn decide(tat: Option<u64>, now: u64, quota: &Quota) -> (Decision, Option<u64>) {
-	let next = tat.map_or(now, |tat| tat.max(now)).saturating_add(quota.interval);
-	let ahead = next - now;
+	let next = u128::from(tat.map_or(now, |tat| tat.max(now))) + u128::from(quota.interval);
+	let ahead = next - u128::from(now);
 	let tolerance = quota.tolerance();
+	let Ok(next) = u64::try_from(next) else {
+		return (Decision::Limited { retry_after: Duration::MAX }, None);
+	};
 	if ahead > tolerance {
+		let wait = u64::try_from(ahead - tolerance).unwrap_or(u64::MAX);
 		return (
 			Decision::Limited {
-				retry_after: Duration::from_nanos(ahead - tolerance),
+				retry_after: Duration::from_nanos(wait),
 			},
 			None,
 		);
 	}
-	let remaining = u32::try_from((tolerance - ahead) / quota.interval).unwrap_or(u32::MAX);
+	let remaining = u32::try_from((tolerance - ahead) / u128::from(quota.interval)).unwrap_or(u32::MAX);
 	(Decision::Allowed { remaining }, Some(next))
 }
 
 /// Requests admissible right now for a client whose TAT is `tat`. Reads only.
 pub(super) fn available(tat: u64, now: u64, quota: &Quota) -> u32 {
-	let owed = tat.saturating_sub(now);
-	u32::try_from(quota.tolerance().saturating_sub(owed) / quota.interval).unwrap_or(u32::MAX)
+	let owed = u128::from(tat.saturating_sub(now));
+	u32::try_from(quota.tolerance().saturating_sub(owed) / u128::from(quota.interval)).unwrap_or(u32::MAX)
 }
 
 /// Whether a client's bucket is full, so forgetting it changes nothing.

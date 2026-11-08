@@ -324,6 +324,17 @@ mod tests {
 		assert_eq!(limiter.check(&"phone"), Decision::Allowed { remaining: 0 });
 	}
 
+	/// A quota whose arithmetic would overflow refuses rather than wraps into
+	/// admitting everything.
+	#[test]
+	fn a_quota_too_large_to_count_fails_closed() {
+		let quota = Quota::per_period(NonZeroU32::new(1).unwrap(), Duration::MAX);
+		let (limiter, _clock) = limiter(quota);
+		assert!(limiter.check(&"client").is_allowed(), "its one request");
+		assert!(!limiter.check(&"client").is_allowed(), "saturating would have admitted this");
+		assert!(!limiter.check(&"client").is_allowed());
+	}
+
 	/// A full bucket earns nothing: an hour idle buys the burst, not more.
 	#[test]
 	fn time_spent_full_is_not_credited() {

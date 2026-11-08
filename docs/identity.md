@@ -47,7 +47,7 @@ There are four handles on a request. Exactly one of them is an identity.
 |---|---|---|
 | `subject::SubjectId` | The subject a request acts for. Decided in one place, the extractor in `subject.rs`, from the request's session: a passkey sign-in's cookie, or a paired phone's bearer token. | **Yes, the only one.** |
 | `net::PeerKey` | A keyed, daily-rotating hash of the peer's address. Used by the rate limiter for fairness, and named in log lines. | No |
-| `net::AdmissionKey` | The same keyed hash over a secret that lives as long as the process. Used for WebSocket admission accounting. **Never logged.** | No |
+| `net::AdmissionKey` | The same keyed hash over a secret that lives as long as the process. Used for WebSocket admission accounting and as the HTTP rate limiter's key, so neither resets at midnight. **Never logged.** | No |
 | `ws_connection::ClientId` | `probe:` / `proxy:<PeerKey>` / `direct:<PeerKey>`. Groups WebSocket connections for metric labels. | No |
 
 Until #372 there were three identities and none had an owner. The rate limiter
@@ -89,9 +89,12 @@ labelled `auth`. Nothing authenticated that header, and no client sent it.
   added are believed); from any other peer, by the peer, header ignored. A hop
   that does not parse falls back to the proxy, never to a fresh key. The
   forwarded address goes through the same keyed hash and never leaves `net.rs`.
-  Home trusts the private ranges only because its port is published on
-  `127.0.0.1` alone (`infra/compose/file_host.yml`): nothing off the box can
-  connect to claim to be a proxy. The `/ws` route's own `ClientId` label still
+  Whoever is trusted can name any bucket, so home trusts one address, not a
+  range: `TRUSTED_PROXIES=gateway`, this container's default gateway, which is
+  where the host's processes (Caddy among them) reach its published port from.
+  Another container on the shared network, or a LAN host, is its own address,
+  header ignored. An IPv6 address is keyed by its /64, so one device cannot
+  rotate into fresh buckets. The `/ws` route's own `ClientId` label still
   reads the first hop from anyone, as before; it groups metrics, not buckets.
 
 ### The seam

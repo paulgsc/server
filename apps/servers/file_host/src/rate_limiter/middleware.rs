@@ -1,6 +1,6 @@
 use crate::{
 	metrics::rate_limit,
-	net::{Peer, PeerKey},
+	net::{AdmissionKey, Peer},
 };
 use axum::{
 	body::Body,
@@ -13,10 +13,15 @@ use some_services::rate_limiter::{Clock, Decision, KeyedLimiter};
 use std::{sync::Arc, time::Duration};
 use tracing::warn;
 
-/// The limiter in front of `/api/v1`: one GCRA state per client, keyed by the
-/// peer's [`PeerKey`] (the client behind home's reverse proxy when it is a
-/// trusted one, see `net::Peer`), never the raw address (#372).
-pub type HttpLimiter = KeyedLimiter<PeerKey>;
+/// The limiter in front of `/api/v1`: one GCRA state per client (the client
+/// behind home's reverse proxy when it is a trusted one, see `net::Peer`),
+/// never the raw address (#372).
+///
+/// Keyed by the process-stable [`AdmissionKey`], not the daily `PeerKey`: a
+/// key that rotates at midnight UTC would hand every client a fresh burst
+/// then. The admission key is only ever a map key here; the log line names
+/// the `PeerKey`, as before.
+pub type HttpLimiter = KeyedLimiter<AdmissionKey>;
 
 /// One decision point, two outcomes, both counted
 /// (`rate_limit_decisions_total{limiter="http",outcome}`).
@@ -28,12 +33,12 @@ pub type HttpLimiter = KeyedLimiter<PeerKey>;
 ///
 /// Generic over the clock only so tests can drive it with a manual one.
 pub async fn rate_limit_middleware<C: Clock + 'static>(
-	State(limiter): State<Arc<KeyedLimiter<PeerKey, C>>>,
-	Peer { key: peer, .. }: Peer,
+	State(limiter): State<Arc<KeyedLimiter<AdmissionKey, C>>>,
+	Peer { key: peer, admission }: Peer,
 	request: axum::http::Request<Body>,
 	next: Next,
 ) -> Response {
-	match limiter.check(&peer) {
+	match limiter.check(&admission) {
 		Decision::Allowed { .. } => {
 			rate_limit::record_decision("allowed");
 			next.run(request).await

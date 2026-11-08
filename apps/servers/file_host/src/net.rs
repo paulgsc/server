@@ -43,7 +43,7 @@ use sha2::{Digest, Sha256};
 use std::{
 	convert::Infallible,
 	fmt,
-	net::{IpAddr, SocketAddr},
+	net::{IpAddr, Ipv4Addr, SocketAddr},
 	sync::{Arc, LazyLock, Mutex},
 	time::{SystemTime, UNIX_EPOCH},
 };
@@ -109,10 +109,13 @@ fn random_secret() -> [u8; 32] {
 fn keyed(secret: &[u8; 32], ip: IpAddr) -> String {
 	let mut digest = Sha256::new();
 	digest.update(secret);
-	// Canonical form, so `::ffff:10.0.0.1` and `10.0.0.1` are one client.
+	// Canonical form, so `::ffff:10.0.0.1` and `10.0.0.1` are one client. An
+	// IPv6 client is its /64: one device holds a whole /64 and can rotate
+	// through it (privacy addresses, or at will), so a full address would let
+	// it mint a fresh bucket and admission allowance per address.
 	match ip.to_canonical() {
 		IpAddr::V4(v4) => digest.update(v4.octets()),
-		IpAddr::V6(v6) => digest.update(v6.octets()),
+		IpAddr::V6(v6) => digest.update(&v6.octets()[..8]),
 	}
 	hex::encode(&digest.finalize()[..KEY_BYTES])
 }
@@ -124,7 +127,9 @@ static ADMISSION_SECRET: LazyLock<[u8; 32]> = LazyLock::new(random_secret);
 
 /// A client's address, reduced to a key stable for this process's whole life.
 ///
-/// For accounting that must not reset at midnight (see the module docs).
+/// For accounting that must not reset at midnight (see the module docs): the
+/// WebSocket admission guard's, and the HTTP rate limiter's, whose buckets
+/// would otherwise all refill at the UTC day boundary when `PeerKey` rotates.
 /// Never logged: no `Display`, and `Debug` is redacted.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct AdmissionKey(String);
@@ -158,6 +163,13 @@ pub fn admission_key(addr: SocketAddr) -> AdmissionKey {
 /// without this every client is one peer: one rate-limit bucket and one
 /// WebSocket admission allowance shared by the phone, the laptop and
 /// everything else on the LAN.
+///
+/// Trust one address, not a range. Whoever is trusted can name any bucket it
+/// likes, and a range trusts every container on the shared Docker network and
+/// every LAN address in it too (a LAN client's own address then reads as a
+/// proxy's, and the walk passes it to whatever the client wrote further left).
+/// Home names `gateway`: this container's default gateway, which is where the
+/// host's processes, Caddy among them, reach a published port from.
 #[derive(Clone, Debug, Default)]
 pub struct TrustedProxies(Arc<[IpNet]>);
 
@@ -168,11 +180,30 @@ impl TrustedProxies {
 	}
 
 	/// From `Config::trusted_proxies`, whose entries its parser has already
-	/// checked. An entry that somehow does not parse is left out: trusting
-	/// fewer proxies only ever shares buckets, never splits them.
+	/// checked, resolving `gateway` from `/proc/net/route`. An entry that does
+	/// not resolve is left out, and said so: trusting fewer proxies only ever
+	/// shares buckets, never splits them.
 	#[must_use]
 	pub fn from_config(entries: &[String]) -> Self {
-		Self(entries.iter().filter_map(|entry| parse_trusted_proxy(entry).ok()).collect())
+		let routes = std::fs::read_to_string("/proc/net/route").ok();
+		Self::resolve(entries, routes.as_deref())
+	}
+
+	fn resolve(entries: &[String], routes: Option<&str>) -> Self {
+		let proxies = entries
+			.iter()
+			.filter_map(|entry| {
+				if entry.trim() == GATEWAY {
+					let gateway = routes.and_then(default_gateway);
+					if gateway.is_none() {
+						tracing::warn!("TRUSTED_PROXIES names the gateway, but this host has no default IPv4 route to read it from; trusting no gateway");
+					}
+					return gateway.map(|gateway| IpNet::from(IpAddr::V4(gateway)));
+				}
+				parse_trusted_proxy(entry).ok()
+			})
+			.collect();
+		Self(proxies)
 	}
 
 	fn trusts(&self, ip: IpAddr) -> bool {
@@ -181,13 +212,35 @@ impl TrustedProxies {
 	}
 }
 
+/// The `TRUSTED_PROXIES` entry naming this host's default gateway.
+pub const GATEWAY: &str = "gateway";
+
 /// Checks one `TRUSTED_PROXIES` entry, as `Config`'s parser.
 ///
 /// # Errors
 ///
-/// When the entry is neither an address nor a CIDR range.
+/// When the entry is neither `gateway`, an address nor a CIDR range.
 pub fn validate_trusted_proxy(entry: &str) -> Result<String, String> {
+	if entry.trim() == GATEWAY {
+		return Ok(GATEWAY.to_owned());
+	}
 	parse_trusted_proxy(entry).map(|_| entry.trim().to_owned())
+}
+
+/// The default IPv4 gateway in a `/proc/net/route` table: the row whose
+/// destination and mask are both `00000000`. Its addresses are the kernel's
+/// network-order bytes printed as a little-endian word, as on every host this
+/// runs on (`x86_64`, `aarch64`).
+fn default_gateway(routes: &str) -> Option<Ipv4Addr> {
+	routes.lines().skip(1).find_map(|line| {
+		let fields: Vec<&str> = line.split_whitespace().collect();
+		let (destination, gateway, mask) = (fields.get(1)?, fields.get(2)?, fields.get(7)?);
+		if *destination != "00000000" || *mask != "00000000" {
+			return None;
+		}
+		let gateway = u32::from_str_radix(gateway, 16).ok().filter(|word| *word != 0)?;
+		Some(Ipv4Addr::from(gateway.to_le_bytes()))
+	})
 }
 
 /// Parses one `TRUSTED_PROXIES` entry: a CIDR range, or a bare address.
@@ -480,12 +533,67 @@ mod tests {
 		assert_eq!(client_ip(socket, &forwarded("192.168.1.20:5555"), &trusted), socket, "a port is not an address");
 	}
 
+	/// `/proc/net/route` as a container on a Docker bridge sees it: the
+	/// default route through the bridge's gateway, 172.18.0.1.
+	const ROUTES: &str = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+		eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n\
+		eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
+
+	#[test]
+	fn the_gateway_is_read_from_the_default_route() {
+		assert_eq!(default_gateway(ROUTES), Some(Ipv4Addr::new(172, 18, 0, 1)));
+		assert_eq!(default_gateway("Iface\tDestination\tGateway\n"), None, "no default route");
+		let trusted = TrustedProxies::resolve(&[GATEWAY.to_owned()], Some(ROUTES));
+		assert!(trusted.trusts(ip("172.18.0.1")));
+		assert!(!trusted.trusts(ip("172.18.0.5")), "another container on the bridge is not the gateway");
+		assert!(TrustedProxies::resolve(&[GATEWAY.to_owned()], None).0.is_empty(), "unreadable: trust nothing");
+	}
+
+	/// Home's configuration exactly (`TRUSTED_PROXIES=gateway`): Caddy is
+	/// believed, and nobody else can name a bucket, whether a container on the
+	/// shared network or a LAN client writing its own header for Caddy to append to.
+	#[test]
+	fn under_homes_configuration_nobody_but_caddy_names_a_client() {
+		let trusted = TrustedProxies::resolve(&[GATEWAY.to_owned()], Some(ROUTES));
+		let caddy = ip("172.18.0.1");
+		assert_eq!(client_ip(caddy, &forwarded("192.168.1.20"), &trusted), ip("192.168.1.20"));
+		assert_eq!(
+			client_ip(caddy, &forwarded("6.6.6.6, 192.168.1.20"), &trusted),
+			ip("192.168.1.20"),
+			"what the client wrote is ignored"
+		);
+		assert_eq!(
+			client_ip(ip("172.18.0.5"), &forwarded("6.6.6.6"), &trusted),
+			ip("172.18.0.5"),
+			"a container is its own address"
+		);
+		assert_eq!(
+			client_ip(ip("192.168.1.20"), &forwarded("6.6.6.6"), &trusted),
+			ip("192.168.1.20"),
+			"a LAN host reaching the port directly is its own address"
+		);
+	}
+
+	/// One device holds a whole /64; keying the full address would let it
+	/// rotate into a fresh bucket per address.
+	#[test]
+	fn an_ipv6_client_is_its_slash_64() {
+		let a = SocketAddr::new(ip("2001:db8:1:2::1"), 1);
+		let b = SocketAddr::new(ip("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), 1);
+		let other = SocketAddr::new(ip("2001:db8:1:3::1"), 1);
+		assert_eq!(peer_key(a), peer_key(b));
+		assert_eq!(admission_key(a), admission_key(b));
+		assert_ne!(peer_key(a), peer_key(other));
+	}
+
 	#[test]
 	fn a_trusted_proxy_entry_is_a_range_or_an_address() {
 		assert_eq!(parse_trusted_proxy("10.0.0.0/8").unwrap().to_string(), "10.0.0.0/8");
 		assert_eq!(parse_trusted_proxy(" 127.0.0.1 ").unwrap().to_string(), "127.0.0.1/32");
 		assert_eq!(parse_trusted_proxy("::1").unwrap().to_string(), "::1/128");
 		assert!(parse_trusted_proxy("caddy").is_err());
+		assert_eq!(validate_trusted_proxy(" gateway ").unwrap(), GATEWAY);
+		assert!(validate_trusted_proxy("caddy").is_err());
 		assert!(proxies(&["172.16.0.0/12"]).trusts(ip("::ffff:172.18.0.1")), "a v4-mapped peer is its v4 form");
 	}
 
