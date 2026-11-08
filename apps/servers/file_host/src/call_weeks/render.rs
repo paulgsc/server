@@ -10,7 +10,7 @@
 //! reads those against `call_week` for the CALL dashboard and the
 //! `CallRender*` alerts (`metrics::call_weeks::record_renders`).
 //!
-//! A week whose video the owner let go from My data (`videos::let_go`) is
+//! A week whose video the owner let go from My data (`feeds::videos::let_go`) is
 //! counted apart, never as waiting (CW8).
 //!
 //! It reads file names and one number, never a week's words or a log's.

@@ -1,6 +1,9 @@
-//! Handlers for `routes::call_videos`: the weekly call's videos on the phone
-//! (STUDIO ST38: paulgsc/some-ui#2661). What each does is
-//! `call_weeks::videos`'s; these validate and answer.
+//! Handlers for `routes::call_videos`: the weekly call's videos on the phone.
+//!
+//! STUDIO ST38, paulgsc/some-ui#2661, in the shape the phone read before
+//! every feed had its videos (`handlers::feed_videos`, FEED4). What each does
+//! is `feeds::videos`'s, for `Feed::Call`; these validate and answer. They
+//! stay until the phone reads the feed routes (paulgsc/some-ui#2647).
 //!
 //! **A paired phone's only.** Every handler takes [`Paired`], so a request
 //! without a session is `401` and a browser's session `403`: the owner
@@ -10,10 +13,9 @@
 //! `#[instrument(skip_all)]`, and a link that names no `YouTube` video is
 //! refused in fixed words, never echoed.
 
-use crate::call_weeks::{
-	render::RENDERS_FOLDER,
-	videos::{self, LetGo, LetGoError, LinkRecorded, WeekVideo},
-	RENDER_FOLDER,
+use crate::feeds::{
+	videos::{self, EpisodeVideo, Folders, LetGo, LetGoError, LinkRecorded},
+	Feed,
 };
 use crate::subject::Paired;
 use crate::FileHostError;
@@ -39,7 +41,7 @@ pub const VIDEO_FIRST: &str = "the rest of a week goes only after its video";
 /// The 409 when a week with no video is let go.
 pub const NOT_RENDERED: &str = "the week has no video yet";
 
-fn now() -> String {
+pub(crate) fn now() -> String {
 	// Fixed width, as `handlers::jobs`'s.
 	Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -94,16 +96,16 @@ pub struct WeekView {
 	pub receipts: Vec<ReceiptView>,
 }
 
-impl From<WeekVideo> for WeekView {
-	fn from(week: WeekVideo) -> Self {
+impl WeekView {
+	fn of(week: EpisodeVideo, to: String) -> Self {
 		Self {
 			link: week.link.map(|link| LinkView {
 				url: link_of(&link.youtube_id),
 				recorded_at: link.recorded_at,
 			}),
 			receipts: week.receipts.into_iter().map(ReceiptView::from).collect(),
-			from: week.from,
-			to: week.to,
+			from: week.key,
+			to,
 			video_bytes: week.video_bytes,
 			rest_bytes: week.rest_bytes,
 		}
@@ -128,9 +130,19 @@ pub struct Weeks {
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "call_videos_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_weeks(_paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Weeks>, FileHostError> {
-	let weeks = videos::list(&db, std::path::Path::new(RENDERS_FOLDER)).await?;
+	let weeks = videos::list(&db, Feed::Call, Feed::Call.renders()).await?;
+	let days: std::collections::BTreeMap<String, String> = {
+		let mut conn = db.acquire().await?;
+		call_week_repo::held(&mut conn).await?.into_iter().map(|week| (week.from, week.to)).collect()
+	};
 	Ok(Json(Weeks {
-		weeks: weeks.into_iter().map(WeekView::from).collect(),
+		weeks: weeks
+			.into_iter()
+			.map(|week| {
+				let to = days.get(&week.key).cloned().unwrap_or_default();
+				WeekView::of(week, to)
+			})
+			.collect(),
 	}))
 }
 
@@ -144,7 +156,7 @@ pub async fn get_weeks(_paired: Paired, State(db): State<SqlitePool>) -> Result<
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "call_videos_video", skip_all, fields(otel.kind = "server"))]
 pub async fn get_video(_paired: Paired, State(db): State<SqlitePool>, Path(from): Path<String>, request: Request) -> Result<Response, FileHostError> {
-	let Some(file) = videos::video_file(&db, std::path::Path::new(RENDERS_FOLDER), &from).await? else {
+	let Some(file) = videos::video_file(&db, Feed::Call, Feed::Call.renders(), &from).await? else {
 		return Err(FileHostError::NotFound);
 	};
 	let served = match ServeFile::new(file).oneshot(request).await {
@@ -184,10 +196,10 @@ pub struct LinkKept {
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "call_videos_link_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_link(_paired: Paired, State(db): State<SqlitePool>, Path(from): Path<String>, Json(body): Json<LinkBody>) -> Result<Json<LinkKept>, FileHostError> {
-	match videos::record_link(&db, &from, &body.link, &now()).await? {
+	match videos::record_link(&db, Feed::Call, &from, &body.link, &now()).await? {
 		LinkRecorded::Kept(id) => Ok(Json(LinkKept { url: link_of(&id) })),
 		LinkRecorded::NotAVideo => Err(FileHostError::unprocessable_entity([("link", "names no YouTube video")])),
-		LinkRecorded::NoWeek => Err(FileHostError::NotFound),
+		LinkRecorded::NoEpisode => Err(FileHostError::NotFound),
 	}
 }
 
@@ -228,11 +240,24 @@ pub async fn delete_rest(_paired: Paired, State(db): State<SqlitePool>, Path(fro
 }
 
 async fn let_go(db: &SqlitePool, from: &str, step: Step) -> Result<Json<LetGoAnswer>, FileHostError> {
-	let renders = std::path::Path::new(RENDERS_FOLDER);
-	let weeks = std::path::Path::new(RENDER_FOLDER);
-	match videos::let_go(db, renders, weeks, from, step, &now()).await {
-		Ok(LetGo::Gone(receipt)) => Ok(Json(LetGoAnswer { receipt: receipt.into() })),
-		Ok(LetGo::NoWeek) => Err(FileHostError::NotFound),
+	let receipt = let_go_answer(db, Feed::Call, from, step).await?;
+	Ok(Json(LetGoAnswer { receipt: receipt.into() }))
+}
+
+/// One step of letting an episode of `feed` go, as the routes answer it.
+///
+/// # Errors
+/// 404 for an episode home doesn't hold, 409 for one with no link, no video,
+/// or the rest before the video, and 500 for a storage failure or a file the
+/// drive would not remove.
+pub(crate) async fn let_go_answer(db: &SqlitePool, feed: Feed, key: &str, step: Step) -> Result<Receipt, FileHostError> {
+	let folders = Folders {
+		renders: feed.renders(),
+		input: feed.input(),
+	};
+	match videos::let_go(db, feed, folders, key, step, &now()).await {
+		Ok(LetGo::Gone(receipt)) => Ok(receipt),
+		Ok(LetGo::NoEpisode) => Err(FileHostError::NotFound),
 		Ok(LetGo::NoLink) => Err(FileHostError::Conflict(NO_LINK)),
 		Ok(LetGo::VideoFirst) => Err(FileHostError::Conflict(VIDEO_FIRST)),
 		Ok(LetGo::NotRendered) => Err(FileHostError::Conflict(NOT_RENDERED)),
@@ -246,7 +271,7 @@ mod tests {
 	//! Through the real router, with a paired phone's session (a bearer
 	//! token) and a browser's. The drive is home's real path, which a test
 	//! has no week rendered in, so these hold the trust model and the
-	//! refusals; `call_weeks::videos`'s tests hold what goes on the drive.
+	//! refusals; `feeds::videos`'s tests hold what goes on the drive.
 
 	use crate::auth::{
 		cookie::{Carrier, SessionToken},

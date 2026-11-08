@@ -13,6 +13,7 @@ pub mod call_weeks;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod feeds;
 pub mod game_feed;
 pub mod handlers;
 pub mod health;

@@ -126,13 +126,13 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folder: &Path, clock
 /// worker never reads half a file. A week already written is left alone:
 /// home never rewrites a kept week, so neither does this.
 ///
-/// A week whose video the owner let go from My data (`videos::let_go`) is
+/// A week whose video the owner let go from My data (`feeds::videos::let_go`) is
 /// never written, and its file is removed if one is left, so the worker
 /// never renders it again (CW8).
 async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), sqlx::Error> {
 	// Held for the whole pass, so a week let go while it runs is never
-	// written back (`super::FOLDERS`).
-	let _folders = super::FOLDERS.lock().await;
+	// written back (`feeds::FOLDERS`).
+	let _folders = crate::feeds::FOLDERS.lock().await;
 	let (held, let_go) = {
 		let mut conn = db.acquire().await?;
 		(call_week_repo::held(&mut conn).await?, call_week_repo::video::let_go(&mut conn).await?)

@@ -14,7 +14,8 @@
 //! browser's session `403`.
 //!
 //! The record's rules are `call_week_repo::video`'s; what goes on the drive
-//! is `call_weeks::videos`'s; the answers are `handlers::call_videos`'s.
+//! is `feeds::videos`'s; the answers are `handlers::call_videos`'s. The
+//! feed routes (`routes::feed_videos`) serve the same for every feed.
 
 use crate::auth::AuthContext;
 use crate::handlers::call_videos as handlers;

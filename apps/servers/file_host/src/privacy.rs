@@ -78,6 +78,14 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 		"each week of the call's public YouTube video id, as the owner recorded it; nobody's record",
 	),
 	(
+		"pd_video_deletion",
+		"a receipt for each step of an episode of Playoff Delta the owner let go from My data: the episode, the step, its public YouTube video's id, the bytes and when; nobody's record",
+	),
+	(
+		"pd_video_link",
+		"each Playoff Delta episode's public YouTube video id, as the owner recorded it; nobody's record",
+	),
+	(
 		"pd_fill",
 		"each fill of Playoff Delta and its season, as paulgsc/testing served them — what was said about public NFL games, nobody's record",
 	),
