@@ -18,14 +18,28 @@
 //! [`pass`]. **Nothing a program says reaches a log line**: a pass logs
 //! counts and the kind of stop, never a source, a recording or a round.
 //!
-//! Off unless `RUST_ROUNDS_ENABLED`. On, the runner's socket must be mounted
-//! at [`SOCKET`]; a runner that is not there is not a
-//! startup failure but an outage each pass reports, since the runner
-//! restarts on its own.
+//! **Always started; the operator pauses it.** Whether home records is a
+//! lever, `settings::RustRounds` (on by default), set from the web app
+//! (`PUT /api/v1/admin/settings/rust-rounds`, paulgsc/some-ui#2357), not an
+//! environment variable: `RUST_ROUNDS_ENABLED` is gone (owner, 2026-11-08).
+//! Each pass reads it once, first. Paused, the pass asks nothing: rounds and
+//! weeks are still kept and their programs wait, and the first pass after it
+//! is turned back on records them from the oldest. Pausing and resuming are
+//! logged once, when the recorder first sees them; a lever it cannot read
+//! is an error, and that pass is skipped rather than run on a guess.
+//!
+//! **No runner on this machine.** Whether the runner is here is detected,
+//! not declared: a pass that finds nothing at [`SOCKET`] stops as
+//! [`pass::Stop::NoRunner`], a deployment fact logged once at `WARN` when it
+//! is first seen and once at `INFO` when a socket is there again, never an
+//! error each pass. A runner that is deployed but down leaves its socket
+//! behind, so it is an outage ([`pass::Stop::Unreachable`]), reported at
+//! `ERROR` every pass it lasts, since the runner restarts on its own.
 
 pub mod pass;
 
-use crate::{AppState, Config};
+use crate::settings::{self, RustRounds};
+use crate::AppState;
 use pass::Socket;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,8 +75,7 @@ pub const PASS_DEADLINE: Duration = Duration::from_secs(600);
 
 const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && PASS_DEADLINE.as_secs() >= MIN_DEADLINE.as_secs());
 
-/// Everything the worker needs, or `None` when the deployment has not turned
-/// it on.
+/// Everything the worker needs.
 #[derive(Clone)]
 pub struct RustRoundsContext {
 	pub runner: Arc<Socket>,
@@ -72,26 +85,81 @@ pub struct RustRoundsContext {
 }
 
 impl RustRoundsContext {
-	/// The recorder's context once, at startup. Off is fine and logged. Its
-	/// values are constants, held to their floors at compile time.
+	/// The recorder's context. Its values are constants, held to their floors
+	/// at compile time.
 	#[must_use]
-	pub fn from_config(config: &Config) -> Option<Self> {
-		if !config.rust_rounds_enabled {
-			info!("Rust Rounds recording is not enabled; home keeps rounds without recording their programs");
-			return None;
-		}
-		Some(Self {
+	pub fn new() -> Self {
+		Self {
 			runner: Arc::new(Socket(PathBuf::from(SOCKET))),
 			interval: INTERVAL,
 			deadline: PASS_DEADLINE,
-		})
+		}
 	}
 }
 
-/// Start the worker if the deployment turned it on.
+impl Default for RustRoundsContext {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+/// Start the worker. It always runs; the operator's lever pauses its passes.
 pub fn start(state: &AppState) {
-	if let Some(context) = state.rust_rounds.clone() {
-		spawn(state, context);
+	spawn(state, state.rust_rounds.clone());
+}
+
+/// What the recorder last said about the lever and the runner, so each is
+/// logged when it changes, not every pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Seen {
+	/// Whether it was last paused; `None` before the first pass.
+	paused: Option<bool>,
+	/// Whether the last pass found no runner on this machine.
+	no_runner: bool,
+}
+
+/// What a pass should say about a change it saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Change {
+	Paused,
+	Resumed,
+	NoRunner,
+	RunnerFound,
+}
+
+impl Seen {
+	/// The lever as this pass read it: `Paused` or `Resumed` when it moved
+	/// (the first pass says `Paused` only if it starts paused).
+	pub(crate) const fn lever(&mut self, paused: bool) -> Option<Change> {
+		let was = self.paused.replace(paused);
+		match (was, paused) {
+			(Some(false) | None, true) => Some(Change::Paused),
+			(Some(true), false) => Some(Change::Resumed),
+			(Some(false) | None, false) | (Some(true), true) => None,
+		}
+	}
+
+	/// The runner as this pass found it.
+	pub(crate) fn runner(&mut self, stopped: Option<pass::Stop>) -> Option<Change> {
+		let absent = stopped == Some(pass::Stop::NoRunner);
+		let was = std::mem::replace(&mut self.no_runner, absent);
+		match (was, absent) {
+			(false, true) => Some(Change::NoRunner),
+			(true, false) => Some(Change::RunnerFound),
+			(false, false) | (true, true) => None,
+		}
+	}
+}
+
+fn say(change: Change) {
+	match change {
+		Change::Paused => info!("Rust Rounds recording is paused by the operator: rounds and weeks are kept, and their programs wait"),
+		Change::Resumed => info!("Rust Rounds recording is on again: the programs that waited are recorded from the oldest"),
+		Change::NoRunner => warn!(
+			socket = SOCKET,
+			"no Rust Rounds runner on this machine: nothing is at its socket, so programs wait until one answers; said once, not every pass"
+		),
+		Change::RunnerFound => info!(socket = SOCKET, "the Rust Rounds runner's socket is there again"),
 	}
 }
 
@@ -104,6 +172,7 @@ fn spawn(state: &AppState, context: RustRoundsContext) {
 		info!(interval_secs = context.interval.as_secs(), "Rust Rounds recorder started");
 		let mut ticker = tokio::time::interval(context.interval);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+		let mut seen = Seen::default();
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
@@ -111,7 +180,25 @@ fn spawn(state: &AppState, context: RustRoundsContext) {
 					return;
 				}
 				_ = ticker.tick() => {
+					// The lever, once a pass (`settings::RustRounds`).
+					let lever = match settings::read::<RustRounds>(&db).await {
+						Ok(standing) => standing.value,
+						Err(err) => {
+							crate::metrics::instruments::record_error("rust_rounds", "setting");
+							error!(error = %err, "Rust Rounds pass skipped: its recording setting could not be read");
+							continue;
+						}
+					};
+					if let Some(change) = seen.lever(!lever.recording) {
+						say(change);
+					}
+					if !lever.recording {
+						continue;
+					}
 					let result = pass::run_once(&db, &context.runner, context.deadline, pass::Waits::SERVER, &cancel, &crate::mailbox::pass::now).await;
+					if let Some(change) = result.as_ref().ok().and_then(|done| seen.runner(done.stopped)) {
+						say(change);
+					}
 					log_pass(&result);
 				}
 			}
@@ -123,9 +210,11 @@ fn spawn(state: &AppState, context: RustRoundsContext) {
 /// the kind of stop. Never a source, a recording or a round.
 ///
 /// Every stop is an error, logged and counted on `operation_errors_total`
-/// (`rust_rounds`, the stop's kind), every pass it lasts, but one: a
+/// (`rust_rounds`, the stop's kind), every pass it lasts, but two: a
 /// deadline reached after at least one program was asked about, which is a
-/// warning ([`pass::Pass::failed`]).
+/// warning, and no runner on this machine, which the recorder says once
+/// when it changes ([`Seen::runner`]) and this does not repeat
+/// ([`pass::Pass::failed`]).
 pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	let Ok(done) = result else {
 		crate::metrics::instruments::record_error("rust_rounds", "storage");
@@ -133,6 +222,7 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 		return;
 	};
 	match done.stopped {
+		Some(pass::Stop::NoRunner) => {}
 		Some(stop) if done.failed() => {
 			crate::metrics::instruments::record_error("rust_rounds", stop.kind());
 			error!(
@@ -154,5 +244,40 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 		),
 		None if done.asked > 0 => info!(recorded = done.recorded, refused = done.refused, cancelled = done.cancelled, "Rust Rounds pass"),
 		None => {}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{pass::Stop, Change, Seen};
+
+	#[test]
+	fn the_lever_is_said_when_it_moves_and_not_every_pass() {
+		let mut seen = Seen::default();
+		assert_eq!(seen.lever(false), None, "on from the start says nothing");
+		assert_eq!(seen.lever(false), None);
+		assert_eq!(seen.lever(true), Some(Change::Paused));
+		assert_eq!(seen.lever(true), None);
+		assert_eq!(seen.lever(false), Some(Change::Resumed));
+		assert_eq!(Seen::default().lever(true), Some(Change::Paused), "paused from the start is said once");
+	}
+
+	#[test]
+	fn no_runner_is_said_once_and_its_end_once() {
+		let mut seen = Seen::default();
+		assert_eq!(seen.runner(None), None);
+		assert_eq!(seen.runner(Some(Stop::NoRunner)), Some(Change::NoRunner));
+		assert_eq!(seen.runner(Some(Stop::NoRunner)), None, "not every pass");
+		assert_eq!(
+			seen.runner(Some(Stop::Unreachable)),
+			Some(Change::RunnerFound),
+			"a socket is back, though the runner is down"
+		);
+		assert_eq!(seen.runner(Some(Stop::Unreachable)), None);
+		assert_eq!(
+			Seen::default().runner(Some(Stop::NoRunner)),
+			Some(Change::NoRunner),
+			"a box with no runner says so at its first pass"
+		);
 	}
 }

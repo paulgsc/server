@@ -411,19 +411,6 @@
       "bounds": null
     },
     {
-      "name": "RUST_ROUNDS_ENABLED",
-      "group": "Rust Rounds recording",
-      "required": false,
-      "default": "false",
-      "kind": "bool",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Whether home records Rust Rounds' programs. On, the rust-runner's socket must be mounted at `rust_rounds::SOCKET`; a runner that is not there is reported each pass, and nothing is recorded until it is",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "GAME_FEED_ENABLED",
       "group": "NFL game feed",
       "required": false,

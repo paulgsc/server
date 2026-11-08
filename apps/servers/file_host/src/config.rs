@@ -355,18 +355,6 @@ pub struct Config {
 	#[arg(long, env = "MEANING_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Take library meaning index")]
 	pub meaning_enabled: bool,
 
-	// ── Rust Rounds recording ─────────────────────────────────────────────────
-	//
-	// See `rust_rounds`. Home hands each program of each round the phone puts
-	// to the rust-runner, a sandboxed container that compiles and runs it, over
-	// a Unix socket on a volume both mount, and keeps how each ended. Off
-	// unless `RUST_ROUNDS_ENABLED`.
-	/// Whether home records Rust Rounds' programs. On, the rust-runner's
-	/// socket must be mounted at `rust_rounds::SOCKET`; a runner that is not
-	/// there is reported each pass, and nothing is recorded until it is.
-	#[arg(long, env = "RUST_ROUNDS_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Rust Rounds recording")]
-	pub rust_rounds_enabled: bool,
-
 	// ── The NFL game feed ─────────────────────────────────────────────────────
 	//
 	// See `game_feed`. Home follows the games of the week through ESPN's public
@@ -431,7 +419,9 @@ fn parse_timezone(name: &str) -> Result<String, Box<dyn std::error::Error + Send
 /// Variables a retired setup left set that nothing reads any more.
 ///
 /// The retired transcriber's `WHISPER_*` three (#407), and
-/// `OTEL_SERVICE_NAME`, which the binary's own name replaced (#617). Startup
+/// `OTEL_SERVICE_NAME`, which the binary's own name replaced (#617), and
+/// `RUST_ROUNDS_ENABLED`, which the operator's recording switch replaced
+/// (`settings::RustRounds`, paulgsc/some-ui#2357). Startup
 /// warns with their names, so a stale deployment file is never silent
 /// (#476).
 ///
@@ -445,7 +435,7 @@ pub fn retired_variables_set() -> Vec<&'static str> {
 
 /// [`retired_variables_set`] over `var`, which reads one variable.
 fn retired_variables_in(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
-	["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME"]
+	["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME", "RUST_ROUNDS_ENABLED"]
 		.into_iter()
 		.filter(|name| var(name).is_some())
 		.collect()
@@ -461,7 +451,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 17] = [
+	const REFUSED: [(&str, &str); 16] = [
 		("RUST_LOG", "info,=[bad"),
 		("RATE_LIMIT", "-1"),
 		("NUDGE_ENABLED", "on"),
@@ -476,7 +466,6 @@ mod tests {
 		("MAILBOX_ARCHIVE_DAYS", "90d"),
 		("TRANSCRIBE_ENABLED", "on"),
 		("MEANING_ENABLED", "on"),
-		("RUST_ROUNDS_ENABLED", "on"),
 		("GAME_FEED_ENABLED", "on"),
 		("NUDGE_TIMEZONE", "America/Denvr"),
 	];
@@ -520,10 +509,16 @@ mod tests {
 	/// The `.env` #476 met: every retired variable left set is named.
 	#[test]
 	fn a_retired_transcriber_variable_left_set_is_named() {
-		let stale = |name: &str| matches!(name, "WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" | "OTEL_SERVICE_NAME").then(String::new);
+		let stale = |name: &str| {
+			matches!(
+				name,
+				"WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" | "OTEL_SERVICE_NAME" | "RUST_ROUNDS_ENABLED"
+			)
+			.then(String::new)
+		};
 		assert_eq!(
 			retired_variables_in(stale),
-			["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME"]
+			["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME", "RUST_ROUNDS_ENABLED"]
 		);
 	}
 
