@@ -21,19 +21,24 @@
 # which exists only once that package is built.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui e6fd9c2 (#2797's merge, the commit www 0.1.62 was published
+# paulgsc/some-ui 6acfde6 (#2809's merge, the commit www 0.1.63 was published
 # from, so the recorders and call-stage's pin are one version again). It
-# carries HYPER5 (#2799): the call's template v4 and Playoff Delta's v4, whose
-# brand open and close are the composition `brand-v1`, drawn by the recorders
-# themselves through @some-ui/video-motion's `installedCompositionPort` in
-# Playwright's headless shell (found under PLAYWRIGHT_BROWSERS_PATH, which this
-# image sets to /ms-playwright), with its work in a `draw-` folder beside the
-# video under /renders. And VS1 (#2798): each stage refuses a template version
-# newer than it knows, so a recorder newer than its stage fails loudly instead
-# of drawing a week in the old look; the two pins still move together. Also
-# v3's Mochi Night (SFEED10, #2774), `record:preview` (SFEED12, #2781), and
-# captions (SFEED11, #2707) recorded a scene at a time from `/burn-ins?record`.
-ARG SOME_UI_COMMIT=e6fd9c271204451534a533d7cf728563b1d0e807
+# carries SFEED12's second half (#2813): a new burn-in kind, `preview-mark`
+# ("Preview, sample data" on every frame of a preview), which the recorders
+# put in a preview's cut and the stage's `/burn-ins` draws, so a recorder
+# newer than its stage fails every preview with "no such kind" and the two
+# pins move together; and Playoff Delta's previews, `record:preview
+# --template playoff-delta-legend|playoff-delta-week`, said from the sample
+# season's fixed fill. Episodes draw as at e6fd9c2. Also HYPER5 (#2799):
+# template v4, whose brand open and close are the composition `brand-v1`,
+# drawn by the recorders themselves through @some-ui/video-motion's
+# `installedCompositionPort` in Playwright's headless shell (found under
+# PLAYWRIGHT_BROWSERS_PATH, which this image sets to /ms-playwright), with its
+# work in a `draw-` folder beside the video under /renders. And VS1 (#2798):
+# each stage refuses a template version newer than it knows. Also v3's Mochi
+# Night (SFEED10, #2774), `record:preview` (SFEED12, #2781), and captions
+# (SFEED11, #2707) recorded a scene at a time from `/burn-ins?record`.
+ARG SOME_UI_COMMIT=6acfde69ec26d433e8d453cc1d497d48055468de
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
@@ -48,7 +53,7 @@ RUN corepack enable \
     && pnpm exec turbo run build --filter="@some-ui/video-render^..." \
        --filter="@some-ui/playoff-delta..."
 
-# paulgsc/some-ui e6fd9c2, SOME_UI_COMMIT's (HYPER4 #2790, HYPER5 #2799):
+# paulgsc/some-ui 6acfde6, SOME_UI_COMMIT's (HYPER4 #2790, HYPER5 #2799):
 # @some-ui/video-motion, the compositions and their pinned HyperFrames, with
 # fonts from the lockfile, so a render reaches no network, plus `motion walk` and `motion promo`, whose
 # sound cues come from `--brand` (home's ${STORAGE}/brand, mounted at /brand). A
@@ -65,12 +70,15 @@ RUN corepack enable \
 # `installedCompositionPort` is imported from) draws v4's `brand-v1` the same
 # way: about 9 s a render, the same bytes twice, and conference-call's v4
 # preview (`record:preview --voices none`, against www 0.1.62) records and
-# renders in about 85 s (2026-11-08, at e6fd9c2). On home, through tsx as
-# render-calls.sh runs the recorders:
+# renders in about 85 s (2026-11-08, at e6fd9c2). At 6acfde6, against www
+# 0.1.63, each template's preview (`--voices none`) records and renders a
+# 29.6 s video with the `preview-mark` over it: conference-call in about
+# 129 s, playoff-delta-week 107 s, playoff-delta-legend 104 s (2026-11-08).
+# On home, through tsx as render-calls.sh runs the recorders:
 #
 #   make compose ARGS="run --rm --no-deps -w /opt/some-ui-motion/packages/video-motion \
 #     --entrypoint node_modules/.bin/tsx render src/cli.ts prove sample --work /renders"
-ARG MOTION_COMMIT=e6fd9c271204451534a533d7cf728563b1d0e807
+ARG MOTION_COMMIT=6acfde69ec26d433e8d453cc1d497d48055468de
 
 RUN git -C /opt/some-ui fetch --filter=blob:none origin "$MOTION_COMMIT" \
     && git -C /opt/some-ui worktree add --detach /opt/some-ui-motion "$MOTION_COMMIT" \
