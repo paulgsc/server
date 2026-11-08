@@ -33,11 +33,12 @@ use tower_http::services::ServeFile;
 use tracing::instrument;
 
 /// The 409 when an episode's video is let go before its link is recorded.
-pub const NO_LINK: &str = "record the week's YouTube link before its video goes";
+/// The three say "week" for every feed, as the phone shows them.
+const NO_LINK: &str = "record the week's YouTube link before its video goes";
 /// The 409 when the rest of an episode is let go before its video.
-pub const VIDEO_FIRST: &str = "the rest of a week goes only after its video";
+const VIDEO_FIRST: &str = "the rest of a week goes only after its video";
 /// The 409 when an episode with no video is let go.
-pub const NOT_RENDERED: &str = "the week has no video yet";
+const NOT_RENDERED: &str = "the week has no video yet";
 
 fn now() -> String {
 	// Fixed width, as `handlers::jobs`'s.
@@ -386,10 +387,29 @@ mod tests {
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 		assert!(!refused.to_string().contains("@me"), "a pasted link is never echoed");
 		let video = "/feeds/playoff-delta/videos/2026-SF-09/video";
-		assert_eq!(send(&app, Method::DELETE, video, Some(&phone), None).await.0, StatusCode::CONFLICT, "no link, nothing goes");
+		let rest = "/feeds/playoff-delta/videos/2026-SF-09/rest";
+		let refused = |answer: (StatusCode, Value), words: &str| answer.0 == StatusCode::CONFLICT && answer.1.to_string().contains(words);
+		assert!(
+			refused(send(&app, Method::DELETE, video, Some(&phone), None).await, super::NO_LINK),
+			"no link, nothing goes"
+		);
+		assert!(
+			refused(send(&app, Method::DELETE, rest, Some(&phone), None).await, super::NO_LINK),
+			"no link, not the rest either"
+		);
 		let (status, kept) = send(&app, Method::PUT, link, Some(&phone), Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" }))).await;
 		assert_eq!((status, kept), (StatusCode::OK, json!({ "url": "https://youtu.be/dQw4w9WgXcQ" })));
+		assert_eq!(
+			send(&app, Method::GET, list, Some(&phone), None).await.1["episodes"][0]["link"]["url"],
+			"https://youtu.be/dQw4w9WgXcQ"
+		);
 		assert_eq!(send(&app, Method::GET, video, Some(&phone), None).await.0, StatusCode::NOT_FOUND, "not rendered here");
+		assert!(
+			refused(send(&app, Method::DELETE, video, Some(&phone), None).await, super::NOT_RENDERED),
+			"no video, nothing goes"
+		);
+		let unheld_video = "/feeds/playoff-delta/videos/2026-SF-10/video";
+		assert_eq!(send(&app, Method::DELETE, unheld_video, Some(&phone), None).await.0, StatusCode::NOT_FOUND);
 		assert_eq!(send(&app, Method::DELETE, video, Some(&browser), None).await.0, StatusCode::FORBIDDEN);
 		let unheld = send(
 			&app,
