@@ -205,8 +205,10 @@ compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose A
 # paulgsc/testing (the render service's network reaches nothing), then
 # `motion promo --prove` in the render service. The promo and what it was made
 # from are kept in ${STORAGE}/renders/promo/<app>-<version>/ (video.mp4,
-# cut-list.json, walk.json, the walk's snips). APP and VERSION name a folder
-# under /renders, so each is held to plain characters first.
+# cut-list.json, walk.json, the walk's snips). Its sounds (HYPER4,
+# paulgsc/some-ui#2790) are home's: the render service's /brand, which is
+# ${STORAGE}/brand, the same folder the recorders take. APP and VERSION name a
+# folder under /renders, so each is held to plain characters first.
 PROMO_DATA = https://raw.githubusercontent.com/paulgsc/testing/main/promo
 
 promo: envctl ## A release's promo on home, the same bytes twice: make promo APP=suspender-ledger VERSION=0.3.1
@@ -218,7 +220,7 @@ promo: envctl ## A release's promo on home, the same bytes twice: make promo APP
 	  done && chmod -R a+rX "$$data" && \
 	  $(ENVCTL_RUN) compose --role $(ROLE) -- run --rm --no-deps -v "$$data:/promo:ro" \
 	    -w /opt/some-ui-motion/packages/video-motion --entrypoint node_modules/.bin/tsx render \
-	    src/cli.ts promo /promo --out /renders/promo/$(APP)-$(VERSION) --prove --work /renders
+	    src/cli.ts promo /promo --out /renders/promo/$(APP)-$(VERSION) --brand /brand --prove --work /renders
 
 # Once, on the box (ENV2, #615): deploy/$(ROLE)/ written from what the
 # running containers use, straight into sops. DRY=1 only names what would
