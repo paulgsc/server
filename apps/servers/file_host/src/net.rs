@@ -33,14 +33,18 @@
 //! and the output is only ever compared for equality, so length extension (the
 //! usual reason to prefer HMAC) gives an attacker nothing here.
 
-use axum::{extract::FromRequestParts, http::request::Parts};
+use axum::{
+	extract::FromRequestParts,
+	http::{request::Parts, HeaderMap},
+};
+use ipnet::IpNet;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::{
 	convert::Infallible,
 	fmt,
 	net::{IpAddr, SocketAddr},
-	sync::{LazyLock, Mutex},
+	sync::{Arc, LazyLock, Mutex},
 	time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -146,6 +150,88 @@ pub fn admission_key(addr: SocketAddr) -> AdmissionKey {
 	AdmissionKey(keyed(&ADMISSION_SECRET, addr.ip()))
 }
 
+/// The reverse proxies whose `X-Forwarded-For` names the client
+/// (`TRUSTED_PROXIES`), installed on every request as an extension by
+/// `main.rs`. None by default: a request's client is its socket's peer.
+///
+/// On home every client reaches `file_host` through Caddy on the host, so
+/// without this every client is one peer: one rate-limit bucket and one
+/// WebSocket admission allowance shared by the phone, the laptop and
+/// everything else on the LAN.
+#[derive(Clone, Debug, Default)]
+pub struct TrustedProxies(Arc<[IpNet]>);
+
+impl TrustedProxies {
+	#[must_use]
+	pub fn new(proxies: &[IpNet]) -> Self {
+		Self(proxies.into())
+	}
+
+	/// From `Config::trusted_proxies`, whose entries its parser has already
+	/// checked. An entry that somehow does not parse is left out: trusting
+	/// fewer proxies only ever shares buckets, never splits them.
+	#[must_use]
+	pub fn from_config(entries: &[String]) -> Self {
+		Self(entries.iter().filter_map(|entry| parse_trusted_proxy(entry).ok()).collect())
+	}
+
+	fn trusts(&self, ip: IpAddr) -> bool {
+		let ip = ip.to_canonical();
+		self.0.iter().any(|net| net.contains(&ip))
+	}
+}
+
+/// Checks one `TRUSTED_PROXIES` entry, as `Config`'s parser.
+///
+/// # Errors
+///
+/// When the entry is neither an address nor a CIDR range.
+pub fn validate_trusted_proxy(entry: &str) -> Result<String, String> {
+	parse_trusted_proxy(entry).map(|_| entry.trim().to_owned())
+}
+
+/// Parses one `TRUSTED_PROXIES` entry: a CIDR range, or a bare address.
+///
+/// # Errors
+///
+/// When the entry is neither.
+pub fn parse_trusted_proxy(entry: &str) -> Result<IpNet, String> {
+	let entry = entry.trim();
+	entry
+		.parse::<IpNet>()
+		.or_else(|_| entry.parse::<IpAddr>().map(IpNet::from))
+		.map_err(|_| format!("{entry:?} is neither an address nor a CIDR range"))
+}
+
+/// The address a request came from.
+///
+/// The socket's peer, unless that peer is a trusted proxy: then the nearest
+/// `X-Forwarded-For` hop that is not one, walking from the right, since each
+/// proxy appends the address it heard from and only the hops our own proxies
+/// added can be believed. Anything left of the first untrusted hop was written
+/// by the client and is ignored. A hop that does not parse ends the walk at
+/// the last address that was believable, which is a proxy's: when in doubt the
+/// request shares its proxy's bucket rather than getting a fresh one.
+fn client_ip(socket: IpAddr, headers: &HeaderMap, trusted: &TrustedProxies) -> IpAddr {
+	if !trusted.trusts(socket) {
+		return socket;
+	}
+	let mut hops = Vec::new();
+	for value in headers.get_all("x-forwarded-for") {
+		let Ok(value) = value.to_str() else { return socket };
+		hops.extend(value.split(','));
+	}
+	let mut client = socket;
+	for hop in hops.into_iter().rev() {
+		let Ok(hop) = hop.trim().parse::<IpAddr>() else { return client };
+		client = hop;
+		if !trusted.trusts(hop) {
+			break;
+		}
+	}
+	client
+}
+
 fn today() -> u64 {
 	SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() / SECONDS_PER_DAY)
 }
@@ -205,14 +291,18 @@ impl<S: Send + Sync> FromRequestParts<S> for Peer {
 		// Neither present means a router built without
 		// `into_make_service_with_connect_info` — a test harness, in practice.
 		// One shared bucket is the honest answer: there is no peer to key.
+		let trusted = parts.extensions.get::<TrustedProxies>().cloned().unwrap_or_default();
 		Ok(addr.map_or_else(
 			|| Self {
 				key: PeerKey(UNKNOWN_PEER.to_owned()),
 				admission: AdmissionKey(UNKNOWN_PEER.to_owned()),
 			},
-			|addr| Self {
-				key: peer_key(addr),
-				admission: admission_key(addr),
+			|addr| {
+				let client = client_ip(addr.ip(), &parts.headers, &trusted);
+				Self {
+					key: key_for(client),
+					admission: AdmissionKey(keyed(&ADMISSION_SECRET, client)),
+				}
 			},
 		))
 	}
@@ -308,6 +398,95 @@ mod tests {
 		let mut headers = HeaderMap::new();
 		headers.insert("x-forwarded-for", "10.0.0.9, 172.16.0.1".parse().unwrap());
 		assert_eq!(forwarded_peer_key(&headers), Some(peer_key(addr("10.0.0.9"))));
+	}
+
+	fn proxies(entries: &[&str]) -> TrustedProxies {
+		TrustedProxies::new(&entries.iter().map(|entry| parse_trusted_proxy(entry).unwrap()).collect::<Vec<_>>())
+	}
+
+	fn forwarded(value: &str) -> HeaderMap {
+		let mut headers = HeaderMap::new();
+		headers.insert("x-forwarded-for", value.parse().unwrap());
+		headers
+	}
+
+	fn ip(text: &str) -> IpAddr {
+		text.parse().unwrap()
+	}
+
+	async fn peer(socket: &str, headers: HeaderMap, trusted: Option<TrustedProxies>) -> Peer {
+		#[allow(clippy::disallowed_types)] // the sanctioned reader's own test
+		let mut request = axum::http::Request::builder().extension(axum::extract::ConnectInfo(addr(socket)));
+		if let Some(trusted) = trusted {
+			request = request.extension(trusted);
+		}
+		let (mut parts, ()) = request.body(()).unwrap().into_parts();
+		parts.headers = headers;
+		Peer::from_request_parts(&mut parts, &()).await.unwrap()
+	}
+
+	/// Home's case: every request arrives from Caddy, which names the client in
+	/// `X-Forwarded-For`. Two phones behind it are two clients, each with its
+	/// own rate-limit bucket and WebSocket allowance, not one shared by the LAN.
+	#[tokio::test]
+	async fn clients_behind_a_trusted_proxy_are_told_apart() {
+		let caddy = Some(proxies(&["172.16.0.0/12"]));
+		let one = peer("172.18.0.1", forwarded("192.168.1.20"), caddy.clone()).await;
+		let other = peer("172.18.0.1", forwarded("192.168.1.21"), caddy.clone()).await;
+		assert_ne!(one.key, other.key);
+		assert_ne!(one.admission, other.admission);
+		assert_eq!(one.key, peer_key(addr("192.168.1.20")), "keyed as if the client had connected directly");
+		assert_eq!(
+			peer("172.18.0.1", HeaderMap::new(), caddy).await.key,
+			peer_key(addr("172.18.0.1")),
+			"no header: the proxy itself"
+		);
+	}
+
+	/// The inverse, which must not regress: a peer that is not a trusted proxy
+	/// cannot name its own bucket by sending the header.
+	#[tokio::test]
+	async fn an_untrusted_peer_cannot_choose_its_bucket() {
+		let caddy = Some(proxies(&["172.16.0.0/12"]));
+		assert_eq!(peer("203.0.113.5", forwarded("192.168.1.20"), caddy).await.key, peer_key(addr("203.0.113.5")));
+		assert_eq!(
+			peer("172.18.0.1", forwarded("192.168.1.20"), None).await.key,
+			peer_key(addr("172.18.0.1")),
+			"no proxies trusted by default"
+		);
+	}
+
+	/// Only hops our own proxies appended are believed: whatever the client
+	/// put further left is ignored.
+	#[test]
+	fn only_the_hops_trusted_proxies_added_are_believed() {
+		let trusted = proxies(&["172.16.0.0/12", "10.0.0.7"]);
+		let socket = ip("172.18.0.1");
+		assert_eq!(client_ip(socket, &forwarded("6.6.6.6, 192.168.1.20"), &trusted), ip("192.168.1.20"));
+		assert_eq!(client_ip(socket, &forwarded("192.168.1.20, 10.0.0.7"), &trusted), ip("192.168.1.20"), "through two of ours");
+		let mut two_headers = forwarded("6.6.6.6");
+		two_headers.append("x-forwarded-for", "192.168.1.20".parse().unwrap());
+		assert_eq!(client_ip(socket, &two_headers, &trusted), ip("192.168.1.20"), "repeated headers are one list, in order");
+	}
+
+	/// A hop that does not read as an address stops the walk at the last
+	/// proxy: the request shares that proxy's bucket, never a fresh one.
+	#[test]
+	fn an_unreadable_hop_falls_back_to_the_proxy() {
+		let trusted = proxies(&["172.16.0.0/12"]);
+		let socket = ip("172.18.0.1");
+		assert_eq!(client_ip(socket, &forwarded("not-an-address"), &trusted), socket);
+		assert_eq!(client_ip(socket, &forwarded("192.168.1.20, junk"), &trusted), socket);
+		assert_eq!(client_ip(socket, &forwarded("192.168.1.20:5555"), &trusted), socket, "a port is not an address");
+	}
+
+	#[test]
+	fn a_trusted_proxy_entry_is_a_range_or_an_address() {
+		assert_eq!(parse_trusted_proxy("10.0.0.0/8").unwrap().to_string(), "10.0.0.0/8");
+		assert_eq!(parse_trusted_proxy(" 127.0.0.1 ").unwrap().to_string(), "127.0.0.1/32");
+		assert_eq!(parse_trusted_proxy("::1").unwrap().to_string(), "::1/128");
+		assert!(parse_trusted_proxy("caddy").is_err());
+		assert!(proxies(&["172.16.0.0/12"]).trusts(ip("::ffff:172.18.0.1")), "a v4-mapped peer is its v4 form");
 	}
 
 	#[test]

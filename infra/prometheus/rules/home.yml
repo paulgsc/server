@@ -317,6 +317,22 @@ groups:
           objective: CW6
           says: "Home's database drive, which keeps the call's videos and caches, has under a tenth of its space free."
 
+  - name: home-admission
+    rules:
+      - alert: ClientRateLimited
+        # AD2: home's limiter turned a client away (a 429, which the phone
+        # shows as "Home busy"). A client under its limit is never refused
+        # (AD1), so a refusal is either a client sending too fast or the
+        # limiter wrong again; both are worth hearing, and before the GCRA
+        # rewrite neither reached anyone. Over 15 minutes, so a burst of
+        # refusals is one message, resolved after a quiet quarter hour. The
+        # series exists at 0 from boot (metrics::rate_limit::register_all),
+        # so the first refusal after a restart is an increase too.
+        expr: sum(increase(rate_limit_decisions_total{outcome="rejected"}[15m])) > 0
+        labels:
+          objective: AD2
+          says: "Home turned a client away for sending too fast in the last 15 minutes (a 429; the phone shows Home busy). The Rate limiting row on the file_host dashboard shows when."
+
   - name: home-health
     rules:
       - alert: DatabaseBehindBuild

@@ -8,6 +8,11 @@
       default = null;
       description = "Rate limit, in requests per minute, per client (`main.rs`'s `rate_limit_middleware` partitions by peer IP). See #215/#231: this field previously declared the right unit but was unread — the limiter's capacity was `max_request_size` (megabytes of upload payload) instead\n\nUnset (null), the binary's default: `60`.";
     };
+    TRUSTED_PROXIES = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      description = "Reverse proxies whose `X-Forwarded-For` names the client: comma-separated addresses or CIDR ranges. A request from one of them is keyed (rate limit, WebSocket admission) by the nearest forwarded hop that is not a trusted proxy; from anything else, by its own address, header ignored. Empty by default. Home's Caddy runs on the host, so its requests arrive from the Docker bridge's gateway (`infra/compose/file_host.yml` sets this); without it, every client on the LAN shares one bucket\n\nUnset (null), the binary's own behaviour for an unset variable.";
+    };
     ALLOWED_ORIGINS = lib.mkOption {
       type = lib.types.nullOr (lib.types.listOf lib.types.str);
       default = null;

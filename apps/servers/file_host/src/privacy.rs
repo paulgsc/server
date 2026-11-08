@@ -27,7 +27,7 @@
 //! (`disallowed-types`: `ConnectInfo`) and `scripts/check_privacy.py`
 //! (fingerprinting headers).
 
-use crate::{net::peer_key, rate_limiter::token_bucket::rate_limit_middleware, schema::MIGRATOR, subject::SUBJECT_SCOPED_TABLES, WebSocketFsm};
+use crate::{net::peer_key, rate_limiter::rate_limit_middleware, schema::MIGRATOR, subject::SUBJECT_SCOPED_TABLES, WebSocketFsm};
 use axum::{
 	body::Body,
 	extract::connect_info::MockConnectInfo,
@@ -36,7 +36,7 @@ use axum::{
 	routing::get,
 	Router,
 };
-use some_services::rate_limiter::{PartitionedTokenBucketLimiter, DEFAULT_REFILL_PERIOD_MS};
+use some_services::rate_limiter::{KeyedLimiter, MonotonicClock, Quota};
 use sqlx::{sqlite::SqlitePoolOptions, Row};
 use std::{
 	collections::BTreeSet,
@@ -474,7 +474,10 @@ pub(crate) fn capture_where(keep: fn(&tracing::Metadata<'_>) -> bool) -> (Captur
 #[allow(clippy::disallowed_methods)] // a throwaway test router, not a served route
 async fn a_rate_limited_request_logs_no_address() {
 	let (captured, _guard) = capture();
-	let limiter = Arc::new(PartitionedTokenBucketLimiter::new(1, DEFAULT_REFILL_PERIOD_MS));
+	let limiter = Arc::new(KeyedLimiter::new(
+		Quota::per_period(std::num::NonZeroU32::MIN, std::time::Duration::from_secs(60)),
+		MonotonicClock::new(),
+	));
 	let app = Router::new()
 		.route("/", get(|| async { "ok" }))
 		.layer(from_fn_with_state(limiter, rate_limit_middleware))

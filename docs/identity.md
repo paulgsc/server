@@ -81,6 +81,18 @@ labelled `auth`. Nothing authenticated that header, and no client sent it.
 - **Not an identity.** The first `X-Forwarded-For` hop is client-controlled.
   Forging it buys a caller a different fairness bucket and nothing else, which is
   only acceptable because nothing treats a `PeerKey` as "who".
+- **Behind a trusted proxy, the address it forwarded.** On home every client
+  reaches `file_host` through Caddy, so the socket's peer is Caddy for all of
+  them. `net::Peer` keys a request from a peer listed in `TRUSTED_PROXIES` by
+  the nearest `X-Forwarded-For` hop that is not itself a trusted proxy, walking
+  from the right (each proxy appends what it heard from, so only the hops ours
+  added are believed); from any other peer, by the peer, header ignored. A hop
+  that does not parse falls back to the proxy, never to a fresh key. The
+  forwarded address goes through the same keyed hash and never leaves `net.rs`.
+  Home trusts the private ranges only because its port is published on
+  `127.0.0.1` alone (`infra/compose/file_host.yml`): nothing off the box can
+  connect to claim to be a proxy. The `/ws` route's own `ClientId` label still
+  reads the first hop from anyone, as before; it groups metrics, not buckets.
 
 ### The seam
 

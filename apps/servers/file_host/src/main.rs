@@ -10,13 +10,13 @@ use axum::{
 };
 use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCKETS, HTTP_DURATION_METRIC};
 use file_host::metrics::refusals;
-use file_host::rate_limiter::token_bucket::rate_limit_middleware;
+use file_host::rate_limiter::{rate_limit_middleware, HttpLimiter};
 use file_host::routes::{inventory, metrics::get_metrics};
 use file_host::trace::RouteSpan;
 use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
-use some_services::rate_limiter::{PartitionedTokenBucketLimiter, DEFAULT_REFILL_PERIOD_MS};
+use some_services::rate_limiter::{MonotonicClock, Quota};
 use sqlx::sqlite::SqlitePoolOptions;
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, num::NonZeroU32, sync::Arc};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
@@ -143,8 +143,14 @@ async fn main() -> Result<()> {
 	// living on the same `Config` struct. Partitioned per client (keyed like
 	// `ConnectionGuard`'s WS admission) so one client's burst can't deny
 	// every other client; see `some_services::rate_limiter` for both fixes.
-	let rate_limiter = Arc::new(PartitionedTokenBucketLimiter::new(config.rate_limit, DEFAULT_REFILL_PERIOD_MS));
+	// GCRA per client since the rewrite: see `some_services::rate_limiter` for
+	// why the token bucket it replaces refused clients under their limit. A
+	// limit of 0 would refuse everything, which is no configuration anyone
+	// means, so it stops the start instead of serving 429s.
+	let limit = NonZeroU32::new(config.rate_limit).ok_or_else(|| anyhow::anyhow!("RATE_LIMIT must be at least 1 request a minute"))?;
+	let rate_limiter = Arc::new(HttpLimiter::new(Quota::per_period(limit, Duration::from_secs(60)), MonotonicClock::new()));
 	file_host::metrics::rate_limit::record_capacity(config.rate_limit);
+	file_host::metrics::rate_limit::register_all();
 	versioned_routes = versioned_routes.layer(from_fn_with_state(rate_limiter.clone(), rate_limit_middleware));
 
 	let app = Router::new()
@@ -174,7 +180,9 @@ async fn main() -> Result<()> {
 			.layer(ConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
 			.layer(TimeoutLayer::new(REQUEST_TIMEOUT))
 			.layer(LoadShedLayer::new())
-			.layer(AddExtensionLayer::new(config.clone())),
+			.layer(AddExtensionLayer::new(config.clone()))
+			// Read by `net::Peer`: which peers' `X-Forwarded-For` names the client.
+			.layer(AddExtensionLayer::new(file_host::net::TrustedProxies::from_config(&config.trusted_proxies))),
 	);
 
 	// #223 (F3): outermost, so it wraps `RequestBodyLimitLayer` above (and

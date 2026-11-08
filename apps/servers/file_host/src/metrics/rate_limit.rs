@@ -15,15 +15,31 @@
 //! same shape rather than inventing a second metric name.
 //!
 //! `client_id` never appears as a label on any of these: it is the
-//! partition key `some_services::rate_limiter::PartitionedTokenBucketLimiter`
+//! partition key `some_services::rate_limiter::KeyedLimiter`
 //! uses internally, and promoting it to a metric label would be exactly the
 //! unbounded-cardinality mistake #222 (F2) already declined for
 //! `http_requests_total`.
 
 use metrics::{counter, gauge};
 
+/// The outcomes `record_decision` is called with.
+pub const OUTCOMES: [&str; 2] = ["allowed", "rejected"];
+
 pub fn record_decision(outcome: &'static str) {
 	counter!("rate_limit_decisions_total", "limiter" => "http", "outcome" => outcome).increment(1);
+}
+
+/// Start every outcome at 0, once at boot.
+///
+/// A counter the facade has never incremented does not exist, so the first
+/// refusal after a restart would appear as a new series already at 1, which
+/// `increase()` cannot see. `ClientRateLimited` (`infra/prometheus/rules/home.yml`)
+/// reads exactly that increase, so without this the first refusal after every
+/// restart would go untold.
+pub fn register_all() {
+	for outcome in OUTCOMES {
+		counter!("rate_limit_decisions_total", "limiter" => "http", "outcome" => outcome).increment(0);
+	}
 }
 
 /// Sampled off the request path.
@@ -46,4 +62,28 @@ pub fn record_state(tokens_available: f64, active_clients: usize) {
 /// a hardcoded number that goes stale the first time someone retunes it.
 pub fn record_capacity(max_tokens_per_minute: u32) {
 	gauge!("rate_limit_capacity_per_minute").set(f64::from(max_tokens_per_minute));
+}
+
+#[cfg(test)]
+mod tests {
+	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+	/// A freshly booted server that has refused nothing still exports the
+	/// refusal series at 0, so the first refusal is an increase.
+	#[test]
+	fn every_decision_series_exists_at_zero_after_register_all() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		metrics::with_local_recorder(&recorder, super::register_all);
+
+		let snapshot = snapshotter.snapshot().into_vec();
+		for outcome in super::OUTCOMES {
+			let value = snapshot.iter().find_map(|(key, _, _, value)| {
+				let key = key.key();
+				let is_it = key.name() == "rate_limit_decisions_total" && key.labels().any(|l| l.key() == "outcome" && l.value() == outcome);
+				is_it.then_some(value)
+			});
+			assert!(matches!(value, Some(DebugValue::Counter(0))), "{outcome}: {value:?}");
+		}
+	}
 }

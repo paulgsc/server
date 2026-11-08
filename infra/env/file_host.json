@@ -16,6 +16,19 @@
       "bounds": null
     },
     {
+      "name": "TRUSTED_PROXIES",
+      "group": "Server",
+      "required": false,
+      "default": null,
+      "kind": "string",
+      "values": [],
+      "delimiter": ",",
+      "secret": false,
+      "help": "Reverse proxies whose `X-Forwarded-For` names the client: comma-separated addresses or CIDR ranges. A request from one of them is keyed (rate limit, WebSocket admission) by the nearest forwarded hop that is not a trusted proxy; from anything else, by its own address, header ignored. Empty by default. Home's Caddy runs on the host, so its requests arrive from the Docker bridge's gateway (`infra/compose/file_host.yml` sets this); without it, every client on the LAN shares one bucket",
+      "required_when": null,
+      "bounds": null
+    },
+    {
       "name": "ALLOWED_ORIGINS",
       "group": "Server",
       "required": true,
