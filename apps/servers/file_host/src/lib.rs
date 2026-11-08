@@ -33,6 +33,7 @@ pub mod routes;
 pub mod routine_watch;
 pub mod rust_rounds;
 pub mod schema;
+pub mod settings;
 pub mod storage;
 pub mod subject;
 pub mod trace;
@@ -121,9 +122,9 @@ pub struct AppState {
 	/// `None` unless `MEANING_ENABLED`: the take library is searched by
 	/// words, and no take is embedded.
 	pub meaning: Option<meaning::MeaningContext>,
-	/// `None` unless `RUST_ROUNDS_ENABLED`: home keeps rounds, and records
-	/// none of their programs.
-	pub rust_rounds: Option<rust_rounds::RustRoundsContext>,
+	/// Rust Rounds' recorder: always started, paused or on by the operator's
+	/// lever (`settings::RustRounds`), each pass.
+	pub rust_rounds: rust_rounds::RustRoundsContext,
 	/// `None` unless `GAME_FEED_ENABLED`: home follows no NFL game.
 	pub game_feed: Option<game_feed::GameFeedContext>,
 	pub call_weeks: call_weeks::CallWeeksContext,
@@ -184,7 +185,7 @@ impl AppState {
 		let mailbox = mailbox::MailboxContext::from_config(&config, auth.deletion_lock())?;
 		let meaning = meaning::MeaningContext::from_config(&config)?;
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock(), meaning.as_ref())?;
-		let rust_rounds = rust_rounds::RustRoundsContext::from_config(&config);
+		let rust_rounds = rust_rounds::RustRoundsContext::new();
 		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
 		let call_weeks = call_weeks::CallWeeksContext::new()?;
 
@@ -274,7 +275,8 @@ impl AppState {
 ///   tell it a digest arrived;
 /// - the voice-note transcriber (`transcribe`), over home's own database;
 /// - Rust Rounds' recorder (`rust_rounds`), which asks the rust-runner over
-///   its socket to record each stored program;
+///   its socket to record each stored program; always started, and paused
+///   or on by the operator's lever;
 /// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
 ///   which games are live;
 /// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`;

@@ -15,6 +15,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "admin_setting_repo"
+version = "0.0.0"
+dependencies = [
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "aead"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1714,6 +1722,7 @@ name = "file_host"
 version = "0.0.0"
 dependencies = [
  "activity_repo",
+ "admin_setting_repo",
  "anyhow",
  "aph_repo",
  "app-config",

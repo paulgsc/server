@@ -310,7 +310,8 @@ nothing in it costs a few hundred bytes.
 
 The owner's account ("The owner's account"), or, with `OPERATOR_SUBJECTS` set,
 a subject listed there and nobody else. The operator routes
-(`/curriculum/operator/*`) rewrite what everyone is served.
+(`/curriculum/operator/*`) rewrite what everyone is served, and
+`/admin/settings/*` set the levers home follows while it runs (invariant 37).
 `auth::operator::Operator` extracts a `SubjectId` first, so the `401`, the
 origin check and the hold against deletion are the same as on any
 subject-scoped route, then answers `403` unless the subject is the only account
@@ -2013,6 +2014,37 @@ nowhere is marked as such and belongs to review.
     nothing of this table); the video then can't be made with it,
     re-queuing a DNA that names it is the `409` above, and slice 2/3 must
     say so to the owner (paulgsc/some-ui#2591).
+
+37. **An admin setting is the deployment's, names who set it by role, and is
+    kept for good.** `admin_setting` keeps the levers the operator turns
+    while home runs (paulgsc/server#501, ADMIN1; paulgsc/some-ui#2357; the
+    first is `rust-rounds`, whether home records Rust Rounds' programs): per
+    namespace, one row per revision, its value as JSON (at most
+    `BODY_CEILING`, 4 KiB), when it was set, and who set it as a role,
+    `owner` (the only account, "The owner's account") or `operator` (a
+    subject `OPERATOR_SUBJECTS` lists), never a subject id. So the table is
+    not subject-scoped (invariant 1), nothing in it names a person or
+    outlives an account by naming it, and deleting the owner's account does
+    not revert a lever: the history the operator set stays. This settles
+    the conflict #2357 named between an append-only audit and invariant 12
+    by keeping no subject, at the cost that a deployment listing several
+    operators cannot tell which one set a revision. It is never updated or
+    deleted (two triggers abort both), written only by
+    `PUT /admin/settings/:namespace` and read only by those routes and by
+    the work that follows a lever (the Rust Rounds recorder, once a pass),
+    all behind the operator gate ("Who is an operator"). A namespace's
+    schema and default are code (`file_host::settings`); an unset one reads
+    as its default and says so (`isDefault`).
+    *Enforced by* `admin_setting_repo`'s
+    `each_change_adds_a_revision_and_every_earlier_one_still_reads` and
+    `no_row_is_ever_updated_or_deleted` (which also shows a subject id is
+    refused as `set_by`), `privacy`'s schema test (no `subject_id`, so it is
+    classified `NOT_SUBJECT_SCOPED`), and `auth::operator`'s tests, which
+    walk every admin route.
+    *Not enforced:* that nothing else writes the table, which
+    `git grep -n admin_setting -- '*.rs'` shows today, and that no
+    namespace is given a field that names a person, which belongs to
+    review when a lever is added.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

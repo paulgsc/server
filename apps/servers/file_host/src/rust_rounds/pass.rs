@@ -85,6 +85,13 @@ impl Runner for Socket {
 /// Why a pass ended before it had nothing left to record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
+	/// No runner on this machine: nothing is at the socket's path when the
+	/// pass asks its toolchain. A deployment fact, not an outage: reported
+	/// when it starts and when it ends (`rust_rounds`), never as an error
+	/// each pass. The runner removes an old socket only as it binds its new
+	/// one and leaves it behind when it exits (`rust_runner`'s `serve`), so
+	/// a runner that is deployed but down is [`Stop::Unreachable`].
+	NoRunner,
 	/// An outage: the runner could not be reached, never took the whole
 	/// request, or did not answer the toolchain ask in time.
 	Unreachable,
@@ -110,6 +117,7 @@ impl Stop {
 	#[must_use]
 	pub const fn kind(self) -> &'static str {
 		match self {
+			Self::NoRunner => "no_runner",
 			Self::Unreachable => "runner_unreachable",
 			Self::Unavailable => "runner_unavailable",
 			Self::Refused(_) => "runner_refused",
@@ -143,11 +151,12 @@ pub struct Pass {
 
 impl Pass {
 	/// Whether the pass's stop is an error, logged and counted: every stop
-	/// but a deadline reached after at least one program was asked about.
+	/// but no runner on this machine, and a deadline reached after at least
+	/// one program was asked about.
 	#[must_use]
 	pub const fn failed(&self) -> bool {
 		match self.stopped {
-			None => false,
+			None | Some(Stop::NoRunner) => false,
 			Some(Stop::Deadline) => self.asked == 0,
 			Some(_) => true,
 		}
@@ -179,6 +188,7 @@ async fn ask<R: Runner>(runner: &Arc<R>, request: Request, timeout: Duration) ->
 /// | refused it, `unavailable` | nothing | stops: [`Stop::Unavailable`] |
 /// | refused it, `peer` | nothing | stops: [`Stop::Refused`] |
 /// | could not be reached, or did not take the request | nothing | stops: [`Stop::Unreachable`] |
+/// | is not on this machine (no socket, at the toolchain ask) | nothing | stops: [`Stop::NoRunner`], not an error |
 /// | answered something else, or a recording under another toolchain | nothing | stops: [`Stop::Invalid`] |
 ///
 /// The toolchain ask keeps nothing whatever happens: any failure is an
@@ -208,6 +218,7 @@ pub async fn run_once<R: Runner>(
 		Ok(Response::Refused { reason: Refusal::Unavailable, .. }) => return Ok(stopped(pass, Stop::Unavailable)),
 		Ok(Response::Refused { reason, .. }) => return Ok(stopped(pass, Stop::Refused(reason))),
 		Ok(Response::Recorded { .. }) | Err(AskError::Invalid(_)) => return Ok(stopped(pass, Stop::Invalid)),
+		Err(AskError::Unreachable(err)) if err.kind() == std::io::ErrorKind::NotFound => return Ok(stopped(pass, Stop::NoRunner)),
 		Err(AskError::Unreachable(_) | AskError::NotSent(_) | AskError::Dropped(_) | AskError::TimedOut) => return Ok(stopped(pass, Stop::Unreachable)),
 	};
 	let waiting = {
@@ -353,6 +364,8 @@ mod tests {
 		Hang,
 		/// Cannot be reached at all.
 		Down,
+		/// Is not on this machine: no socket.
+		Absent,
 		/// Says `unavailable`: its own machine failed.
 		Unavailable,
 		/// Answers something that is not an answer.
@@ -424,6 +437,7 @@ mod tests {
 				Err(AskError::TimedOut)
 			}
 			Act::Down => Err(AskError::Unreachable(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))),
+			Act::Absent => Err(AskError::Unreachable(std::io::Error::from(std::io::ErrorKind::NotFound))),
 			Act::Unavailable => refused(Refusal::Unavailable),
 			Act::Garble => Err(AskError::Invalid(std::io::Error::from(std::io::ErrorKind::InvalidData))),
 		}
@@ -603,6 +617,29 @@ mod tests {
 
 		assert_eq!(pass(&pool, &Fake::new(|_| Act::Record)).await.recorded, 1);
 		assert!(runs(&pool).await.iter().all(|run| run.1 == "recorded"));
+	}
+
+	/// No runner on this machine (no socket at the toolchain ask) keeps
+	/// nothing, holds nothing against a program and is not an error: every
+	/// program waits, and a runner that appears records them all.
+	#[tokio::test]
+	async fn no_runner_on_this_machine_is_not_an_error_and_every_program_waits() {
+		let pool = pool().await;
+		round(&pool, "r-01", &["one", "two"]).await;
+		for _ in 0..3 {
+			let done = pass(&pool, &Fake::new(|_| Act::Absent)).await;
+			assert_eq!((done.asked, done.stopped), (0, Some(Stop::NoRunner)));
+			assert!(!done.failed(), "a deployment fact, not an outage");
+		}
+		assert!(runs(&pool).await.is_empty());
+		assert!(losses(&pool).await.is_empty());
+		assert_eq!(pass(&pool, &Fake::new(|_| Act::Record)).await.recorded, 2);
+
+		// Gone between the toolchain ask and a program's, it was there a
+		// moment ago: an outage, as any runner that cannot be reached.
+		round(&pool, "r-02", &["three"]).await;
+		let done = pass(&pool, &Fake::new(|source| if source == "three" { Act::Absent } else { Act::Record })).await;
+		assert_eq!(done.stopped, Some(Stop::Unreachable));
 	}
 
 	/// A program the runner is lost holding (it went away, or did not answer
