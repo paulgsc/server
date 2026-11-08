@@ -232,8 +232,12 @@ state_of() {
   echo "${stat%% *}"
 }
 
+# Gone, or a zombie: killed, holding no memory, waiting only to be reaped by
+# whichever process inherited it, which on a busy runner may not be at once.
 gone() {
-  [ -z "$(state_of "$1")" ]
+  local state
+  state=$(state_of "$1")
+  [ -z "$state" ] || [ "$state" = Z ]
 }
 
 job_state_is() {
@@ -406,7 +410,7 @@ recorder=$(cat "$FAKE/pid") child=$(cat "$FAKE/child")
 : > "$SCRATCH/saw"
 lane_says stop
 check "a stop kills the recorder" within gone "$recorder"
-check "and what the recorder started" gone "$child"
+check "and what the recorder started" within gone "$child"
 check "the job says it waits" within job_state_is waiting
 kept=$(steps_made)
 check "a stop keeps the finished steps" test "$kept" -eq 2
