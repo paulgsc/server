@@ -34,13 +34,10 @@
 //! holds the week, and the table holds only `YYYY-MM-DD` days, so a path
 //! never leaves `renders/call`.
 
-use super::render::bytes_under;
+use super::render::{bytes_under, VIDEO};
 use call_week_repo::video::{self, Receipt, Recorded, Step};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
-
-/// The video's file in a week's folder.
-pub const VIDEO: &str = "call.mp4";
 
 /// A week as the phone sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]

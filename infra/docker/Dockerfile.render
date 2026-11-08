@@ -1,23 +1,25 @@
 # Home's render worker (GWB10, paulgsc/some-ui#2084), with the weekly call's
-# job (ST36, paulgsc/some-ui#2635): infra/render/render-calls.sh.
+# job (ST36, paulgsc/some-ui#2635) and Playoff Delta's (FEED4,
+# paulgsc/some-ui#2647): infra/render/render-calls.sh.
 #
-# Everything that decides a video's bytes is pinned, so the same week gives
+# Everything that decides a video's bytes is pinned, so the same episode gives
 # the same video:
 # - Node and Chromium: Playwright's image for the version paulgsc/some-ui pins
 #   (@playwright/test 1.62.1), by digest;
 # - ffmpeg: Ubuntu noble's, from that image's apt sources;
-# - the recorder and renderer: paulgsc/some-ui at SOME_UI_COMMIT. Bump it when
-#   the call's recorder or renderer changes, as call-stage's pin is bumped
-#   when its stage does.
+# - the recorders and renderer: paulgsc/some-ui at SOME_UI_COMMIT. Bump it when
+#   a recorder or the renderer changes, as call-stage's pin is bumped when its
+#   stage does.
 #
-# The image builds only what the recorder needs (@some-ui/video-render and its
-# dependencies), never the app: the stage is the published image.
+# The image builds only what the recorders need (@some-ui/video-render and
+# its dependencies), never the app: the stage is the published image.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui#2679 (merged): the call's template v2. The recorder asks the
-# speaker for each word's place (`/timed`, #701) and takes `--brand`; each
-# scene holds still (#2672, CV1). It also reads a version 1 week as before.
-ARG SOME_UI_COMMIT=d4a1b64d8b1a3e622d59643b346a9894caa623c0
+# paulgsc/some-ui 4994e17 (#2653's merge, the commit www 0.1.59 was published
+# from, so the recorders and call-stage's pin are one version): FEED3 #2703's
+# `record:playoff-delta --narration --season-file --voices kokoro` beside the
+# call's template v2 (#2679), the two recorders sharing tests/record/voiced.ts.
+ARG SOME_UI_COMMIT=4994e17f7fa602196b3da6c8c490ef206de372a7
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \

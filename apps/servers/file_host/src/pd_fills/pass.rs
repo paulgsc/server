@@ -50,9 +50,13 @@ pub struct Pass {
 	pub added: usize,
 	/// Listed fills home already held a fill of that episode for.
 	pub held: usize,
+	/// Episodes written to the render worker's folder this pass
+	/// (`render::export`).
+	pub exported: usize,
 	/// Each failure, by kind: `timeout`, `connect`, `transport`, `refused`
-	/// (a status other than 200), `too_big`, and `unreadable` for an index,
-	/// fill or season that does not check out.
+	/// (a status other than 200), `too_big`, `unreadable` for an index,
+	/// fill or season that does not check out, and `export` for an episode
+	/// that could not be written to the render worker's folder.
 	pub failures: Vec<&'static str>,
 }
 
