@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The render worker's own guarantees (CW5, CW6; paulgsc/some-ui#2659), one
-# pass at a time: render-calls.sh is sourced over a temporary ROOT, and tsx is
+# The render worker's own guarantees (CW5, CW6; paulgsc/some-ui#2659), for the
+# call's job, one pass at a time: render-calls.sh is sourced over a temporary ROOT, and tsx is
 # a fake recorder that takes the call's real arguments. CI runs it
 # (test.yml, metric_contract_ci). Each case says the guarantee it holds:
 #
@@ -10,7 +10,7 @@
 # - a pass over a finished week leaves its folder untouched;
 # - the all-weeks cap removes only another waiting week's work, never a video;
 # - a week no longer held loses its waiting work and is not tried again;
-# - `cache warning:` lines reach <week>.cache.log.
+# - `cache warning:` lines reach <week>.cache.log, a failed attempt's too.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -45,6 +45,7 @@ while [ $# -gt 0 ]; do
 done
 week=$(basename "$week_file" .json)
 echo "$week" >> "$fake/runs"
+echo "recording $week: no cache warning here"
 dir=$out/$week
 mkdir -p "$dir/steps"
 if [ -e "$dir/steps/said" ]; then
@@ -53,7 +54,7 @@ else
   echo said > "$dir/steps/said"
 fi
 if [ -e "$fake/bulk-$week" ]; then
-  head -c "$(( $(cat "$fake/bulk-$week") * 1048576 ))" /dev/zero > "$dir/steps/bulk"
+  head -c "$(( $(cat "$fake/bulk-$week") * 1048576 ))" /dev/urandom > "$dir/steps/bulk"
 fi
 [ -e "$fake/warn" ] && echo "cache warning: step said was not kept: past the policy's cache"
 if [ -e "$fake/fail-$week" ]; then
@@ -117,9 +118,13 @@ check "a finished week's work is removed" test ! -e "$ROOT/renders/call-work/202
 check "a finished week's failed.log is removed" test ! -e "$ROOT/renders/call-worker/2026-10-30.failed.log"
 
 # A pass over a finished week.
-before=$(cd "$ROOT/renders/call" && find . -exec stat -c '%n %s %Y %i' {} + | sort)
+# Name, size, change time to the nanosecond, inode, and the bytes of each file.
+snapshot() {
+  (cd "$ROOT/renders/call" && find . -exec stat -c '%n %s %z %i' {} + && find . -type f -exec md5sum {} +) | sort
+}
+before=$(snapshot)
 pass
-after=$(cd "$ROOT/renders/call" && find . -exec stat -c '%n %s %Y %i' {} + | sort)
+after=$(snapshot)
 check "a pass over a finished week does not record it" test "$(runs_of 2026-10-30)" -eq 3
 check "a pass over a finished week leaves its folder untouched" test "$before" = "$after"
 
@@ -129,7 +134,7 @@ check "a pass over a finished week leaves its folder untouched" test "$before" =
 fresh cap 2026-10-16 2026-10-23 2026-10-30
 WORK_MAX_MB=1
 mkdir -p "$ROOT/renders/call/2026-10-30"
-head -c 2097152 /dev/zero > "$ROOT/renders/call/2026-10-30/call.mp4"
+head -c 2097152 /dev/urandom > "$ROOT/renders/call/2026-10-30/call.mp4"
 echo 2 > "$FAKE/bulk-2026-10-23"
 touch "$FAKE/fail-2026-10-16" "$FAKE/fail-2026-10-23"
 pass
@@ -160,6 +165,10 @@ touch "$FAKE/warn"
 pass
 check "a cache warning reaches <week>.cache.log" grep -qx "cache warning: step said was not kept: past the policy's cache" "$ROOT/renders/call-worker/2026-10-30.cache.log"
 check "only the warning lines do" test "$(wc -l < "$ROOT/renders/call-worker/2026-10-30.cache.log")" -eq 1
+fresh warned-failed 2026-10-30
+touch "$FAKE/warn" "$FAKE/fail-2026-10-30"
+pass
+check "a failed attempt's cache warning reaches <week>.cache.log" grep -qx "cache warning: step said was not kept: past the policy's cache" "$ROOT/renders/call-worker/2026-10-30.cache.log"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures of the render worker's guarantees failed"
