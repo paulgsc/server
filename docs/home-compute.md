@@ -52,19 +52,19 @@ code. What it promises, each held by a test in `crates/lane/src/tests.rs`:
 - **LA3.** Batch work running or paused stops and lets go of its memory
   once free memory falls under the floor, memory pressure passes its limit,
   or a signal can no longer be read.
-- **LA4.** Stops for memory or pressure of a job in progress are counted
-  until that job finishes or is given up; from the policy's `stuck_after`
-  (at least one) in a row the decision says the job is stuck, so one that
-  never fits is reported, not retried silently. A job is in progress from
-  its start until it finishes or the worker gives it up: being paused or
-  evacuated does not end it. With no job in progress the count is zero, so
-  an idle lane, or the job after one given up, is never stuck for another
-  job's stops.
+- **LA4.** Stops for memory or pressure are counted against the job in
+  progress, named by an id the worker gives each job when it starts it and
+  keeps through pauses and evacuations until the job finishes or is given
+  up. From the policy's `stuck_after` (at least one) in a row the decision
+  says the job is stuck, so one that never fits is reported, not retried
+  silently. A tick with another id, or none, starts the count again, so one
+  job's stops are never another's and an idle lane is never stuck.
 
 A kernel without PSI (`/proc/pressure` missing) leaves the pressure signal
 unreadable, and under LA2 batch work then never runs: home's kernel must have
-PSI on. If it does not, the lane's reason stays `unknown`, the reason it
-also gives for an unreadable `/proc/meminfo` or a missing peak.
+PSI on. If it does not, batch work never runs, and when nothing else holds
+it back (interactive work, memory under the floor) the lane's reason is
+`unknown`, as it is for an unreadable `/proc/meminfo` or a missing peak.
 
 **Planned** (L4 #708): nothing runs the lane yet. file_host is to read the
 signals and write the decision where the render worker reads it, and the

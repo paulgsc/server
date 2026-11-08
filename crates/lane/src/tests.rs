@@ -23,15 +23,14 @@ const fn roomy(now_ms: u64) -> Signals {
 		mem_available_bytes: Some(8 * GB),
 		memory_pressure_pct: Some(0.0),
 		interactive_waiting: false,
-		batch_in_progress: true,
+		batch_job: Some(1),
 		batch_peak_bytes: Some(4 * GB),
-		batch_finished: 0,
 	}
 }
 
 /// Runs `ticks` from a fresh lane and gives every decision.
 fn run(ticks: &[Signals]) -> Vec<Decision> {
-	let mut state = State::new(0);
+	let mut state = State::new();
 	ticks
 		.iter()
 		.map(|signals| {
@@ -188,12 +187,12 @@ fn la4_stops_in_a_row_are_stuck_and_a_finished_job_clears_them() {
 	let decisions = run(&ticks);
 	let stops: Vec<(u32, bool)> = decisions.iter().filter(|d| d.why == Why::Memory).map(|d| (d.stops, d.stuck)).collect();
 	assert_eq!(stops, [(1, false), (2, false), (3, true)]);
-	// The worker finishes a job: the count starts again.
+	// That job finishes and the next starts: its own count starts again.
 	let finished = Signals {
-		batch_finished: 1,
+		batch_job: Some(2),
 		..roomy(700_000)
 	};
-	let mut state = State::new(0);
+	let mut state = State::new();
 	for signals in &ticks {
 		state = step(state, signals, &POLICY).0;
 	}
@@ -230,10 +229,7 @@ fn reads_some_avg10_from_a_pressure_file() {
 
 #[test]
 fn la4_an_idle_lane_is_never_called_stuck() {
-	let idle = |now_ms| Signals {
-		batch_in_progress: false,
-		..roomy(now_ms)
-	};
+	let idle = |now_ms| Signals { batch_job: None, ..roomy(now_ms) };
 	let idle_short = |now_ms| Signals {
 		mem_available_bytes: Some(GB),
 		..idle(now_ms)
@@ -249,7 +245,7 @@ fn la4_an_idle_lane_is_never_called_stuck() {
 }
 
 #[test]
-fn la2_an_unmeasured_peak_is_never_room() {
+fn la2_no_peak_at_all_is_never_room() {
 	let unmeasured = |now_ms| Signals {
 		batch_peak_bytes: None,
 		..roomy(now_ms)
@@ -306,24 +302,27 @@ fn la4_a_job_given_up_takes_its_stops_with_it() {
 		let t = round * 200_000;
 		ticks.extend([roomy(t), roomy(t + 60_000), short(t + 61_000)]);
 	}
-	let decisions = run(&ticks);
-	assert!(decisions.last().is_some_and(|d| d.stuck));
-	// The worker gives the job up without finishing it: nothing is in progress.
-	let idle = |now_ms| Signals {
-		batch_in_progress: false,
+	assert!(run(&ticks).last().is_some_and(|d| d.stuck));
+	// Given up with no tick in between: the next job (id 2) is already in
+	// progress at the next tick, and its first stop is its first.
+	let next = |now_ms| Signals {
+		batch_job: Some(2),
 		..roomy(now_ms)
 	};
-	ticks.extend([idle(700_000), idle(760_000), idle(820_000)]);
-	let after = run(&ticks);
-	assert!(after[9..].iter().all(|d| d.stops == 0 && !d.stuck));
-	// The next job starts its own count.
-	let next_short = Signals {
+	let next_short = |now_ms| Signals {
 		mem_available_bytes: Some(GB),
-		..roomy(821_000)
+		..next(now_ms)
 	};
-	ticks.push(next_short);
-	let next = run(&ticks);
-	assert_eq!(next.last().map(|d| (d.stops, d.stuck)), Some((1, false)));
+	ticks.extend([next(700_000), next(760_000), next_short(761_000)]);
+	assert_eq!(run(&ticks).last().map(|d| (d.stops, d.stuck)), Some((1, false)));
+	// Given up with nothing after it: an idle lane carries no count.
+	let idle = Signals {
+		batch_job: None,
+		..roomy(900_000)
+	};
+	let mut idle_ticks = ticks[..9].to_vec();
+	idle_ticks.push(idle);
+	assert_eq!(run(&idle_ticks).last().map(|d| (d.stops, d.stuck)), Some((0, false)));
 }
 
 #[test]

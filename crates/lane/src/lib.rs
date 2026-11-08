@@ -12,17 +12,17 @@
 //! - **LA1.** Batch work never runs while interactive work waits: it is told
 //!   to pause ([`Verb::Pause`], [`Why::Busy`]), or not to start.
 //! - **LA2.** Batch work never starts or resumes after a stop without room
-//!   for its measured peak above the floor, held for the hold-down. A signal
-//!   that could not be read is never room ([`Why::Unknown`]).
+//!   for its peak above the floor, held for the hold-down. A signal that
+//!   could not be read, or no peak at all, is never room ([`Why::Unknown`]).
 //! - **LA3.** Batch work running or paused is told to stop and let go of its
 //!   memory ([`Verb::Stop`]) once free memory falls under the floor or
 //!   memory pressure passes its limit, or a signal can no longer be read.
-//! - **LA4.** Each stop for memory or pressure of a batch job in progress is
-//!   counted until that job finishes or is given up, and from
+//! - **LA4.** Stops for memory or pressure are counted against the job in
+//!   progress, named by its id ([`Signals::batch_job`]), and from
 //!   [`Policy::stuck_after`] in a row the decision says it is stuck, so a job
-//!   that never fits is reported, never retried silently. With no job in
-//!   progress the count is zero, so an idle lane, or the job after one given
-//!   up, is never called stuck for another job's stops.
+//!   that never fits is reported, never retried silently. A tick with another
+//!   id, or none, starts the count again, so one job's stops are never
+//!   another's, and an idle lane is never called stuck.
 
 use std::num::NonZeroU32;
 
@@ -38,19 +38,16 @@ pub struct Signals {
 	pub memory_pressure_pct: Option<f64>,
 	/// Interactive work is waiting or running (a voice note, a Rust round).
 	pub interactive_waiting: bool,
-	/// A batch job has been started and has neither finished nor been given
-	/// up. Its being stopped (evacuated) or paused does not end it: it stays
-	/// in progress until it finishes or the worker gives it up, so the stops
-	/// LA4 counts are its own.
-	pub batch_in_progress: bool,
+	/// The batch job in progress: an id the worker gives each job when it
+	/// starts it, never reused, and keeps through pauses and stops
+	/// (evacuations) until the job finishes or is given up. `None` when no
+	/// job is in progress. LA4 counts stops against this id alone.
+	pub batch_job: Option<u64>,
 	/// The most a batch job may take: its peak as measured on earlier runs,
 	/// or, before any run has been measured, the ceiling the caller declares
 	/// for it (its containers' memory caps). `None` only when the caller has
 	/// neither, which is never room (LA2).
 	pub batch_peak_bytes: Option<u64>,
-	/// How many batch jobs have finished so far; a change resets the stops
-	/// counted for LA4.
-	pub batch_finished: u64,
 }
 
 /// The lane's thresholds.
@@ -129,18 +126,24 @@ pub struct State {
 	verb: Verb,
 	room_since_ms: Option<u64>,
 	stops: u32,
-	finished_seen: u64,
+	job: Option<u64>,
+}
+
+impl Default for State {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl State {
 	/// The lane at start: stopped, so nothing runs before the first reading.
 	#[must_use]
-	pub const fn new(batch_finished: u64) -> Self {
+	pub const fn new() -> Self {
 		Self {
 			verb: Verb::Stop,
 			room_since_ms: None,
 			stops: 0,
-			finished_seen: batch_finished,
+			job: None,
 		}
 	}
 }
@@ -150,7 +153,8 @@ impl State {
 pub struct Decision {
 	pub verb: Verb,
 	pub why: Why,
-	/// Stops for memory or pressure since a batch job last finished.
+	/// Stops for memory or pressure of the job in progress (LA4); zero when
+	/// none is.
 	pub stops: u32,
 	/// LA4: `stops` has reached [`Policy::stuck_after`].
 	pub stuck: bool,
@@ -173,7 +177,7 @@ fn shortage(signals: &Signals, policy: &Policy) -> Option<Why> {
 /// The lane's decision this tick, and what it remembers for the next.
 #[must_use]
 pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decision) {
-	let mut stops = if signals.batch_in_progress && signals.batch_finished == state.finished_seen {
+	let mut stops = if signals.batch_job.is_some() && signals.batch_job == state.job {
 		state.stops
 	} else {
 		0
@@ -181,7 +185,7 @@ pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decisio
 	let (verb, why, room_since_ms) = match state.verb {
 		Verb::Run | Verb::Pause => match shortage(signals, policy) {
 			Some(why) => {
-				if signals.batch_in_progress && matches!(why, Why::Memory | Why::Pressure) {
+				if signals.batch_job.is_some() && matches!(why, Why::Memory | Why::Pressure) {
 					stops = stops.saturating_add(1);
 				}
 				(Verb::Stop, why, None)
@@ -211,7 +215,7 @@ pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decisio
 		verb,
 		room_since_ms,
 		stops,
-		finished_seen: signals.batch_finished,
+		job: signals.batch_job,
 	};
 	(
 		next,
