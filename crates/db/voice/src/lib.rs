@@ -440,6 +440,11 @@ pub fn is_note_id(id: &str) -> bool {
 ///   `2026-w46:QM-311`, the week's id and the ticket's key as a week has them
 ///   (`rust_round_repo::week::is_week_id`, `is_ticket_key`). A ticket's key
 ///   holds a capital and a slug never does, so no ref reads as both.
+/// - **An error pasted from the owner's own code** (RR13, paulgsc/some-ui#2504):
+///   `<week>:PASTE:<at>`, like `2026-w46:PASTE:2026-11-09T17:04:00.000Z`, the
+///   week it was pasted in and when, as an instant to the millisecond in UTC
+///   (the form [`instant`] gives). `PASTE` is neither a slug nor a ticket's
+///   key, so it reads as neither.
 ///
 /// Both sit within the rule every `ref` meets, which [`describe`] checks too.
 #[must_use]
@@ -451,8 +456,12 @@ pub fn is_rust_round_ref(of_ref: &str) -> bool {
 	let rest = parts.next();
 	let card = is_slug(first) && is_slug(second) && rest.is_none_or(is_note_id);
 	let ticket = is_week_id(first) && is_ticket_key(second) && rest.is_none();
-	card || ticket
+	let paste = is_week_id(first) && second == PASTE && rest.is_some_and(|at| instant(at).as_deref() == Some(at));
+	card || ticket || paste
 }
+
+/// The second part of a pasted error's `ref` ([`is_rust_round_ref`]).
+const PASTE: &str = "PASTE";
 
 /// Whether `text` is a non-empty name of at most `max` characters, each a
 /// letter, digit, `-`, `_`, `.` or `:`, as the phone's ids and stamps are.
@@ -585,7 +594,10 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 	}
 	let of_ref = match (of, of_ref) {
 		(Some(Of::RustRound), Some(of_ref)) if !is_rust_round_ref(of_ref) => {
-			problems.push(("ref", "not a Rust Rounds card: <round>:<card>, or <round>:<card>:<note> on a refine card"));
+			problems.push((
+				"ref",
+				"not what a Rust Rounds note answers: <round>:<card>, <round>:<card>:<note> on a refine card, <week>:<ticket>, or <week>:PASTE:<at>",
+			));
 			None
 		}
 		(_, of_ref) => of_ref,
@@ -1888,7 +1900,8 @@ mod tests {
 	}
 
 	/// RR6 (paulgsc/some-ui#2237): a Rust Rounds note names its card, and on
-	/// a refine card the earlier note too; RR13 (#2688): or a week's ticket.
+	/// a refine card the earlier note too; RR13 (#2688): or a week's ticket,
+	/// or an error pasted in a week, by when (#2504).
 	/// Any other `ref` is refused for it, and its rule binds no other kind.
 	#[test]
 	fn a_rust_round_note_names_its_card_and_what_it_refines() {
@@ -1898,6 +1911,7 @@ mod tests {
 			"r:c:note:with:colons",
 			"2026-w46:QM-311",
 			"2026-w01:A-1",
+			"2026-w46:PASTE:2026-11-09T17:04:00.000Z",
 		] {
 			assert!(is_rust_round_ref(good), "{good}");
 			let note = describe("r1", said_take("rust-round", good), b"said").unwrap();
@@ -1916,6 +1930,12 @@ mod tests {
 			"2026-w46:QM-311:note",
 			"2026-w46:QM311",
 			"w46:QM-311",
+			"2026-w46:PASTE",
+			"2026-w46:PASTE:",
+			"2026-w46:PASTE:yesterday",
+			"2026-w46:PASTE:2026-11-09T17:04:00Z",
+			"2026-w46:PASTE:2026-11-09T09:04:00.000-08:00",
+			"2026-w54:PASTE:2026-11-09T17:04:00.000Z",
 		] {
 			assert!(!is_rust_round_ref(bad), "{bad}");
 			let refused = describe("r1", said_take("rust-round", bad), b"said").unwrap_err();
