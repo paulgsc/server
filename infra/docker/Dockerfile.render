@@ -70,8 +70,11 @@ RUN corepack enable \
 # `installedCompositionPort` is imported from) draws v4's `brand-v1` the same
 # way: about 9 s a render, the same bytes twice, and conference-call's v4
 # preview (`record:preview --voices none`, against www 0.1.62) records and
-# renders in about 85 s (2026-11-08, at e6fd9c2). On home, through tsx as
-# render-calls.sh runs the recorders:
+# renders in about 85 s (2026-11-08, at e6fd9c2). At 6acfde6, against www
+# 0.1.63, each template's preview (`--voices none`) records and renders a
+# 29.6 s video with the `preview-mark` over it: conference-call in about
+# 129 s, playoff-delta-week 107 s, playoff-delta-legend 104 s (2026-11-08).
+# On home, through tsx as render-calls.sh runs the recorders:
 #
 #   make compose ARGS="run --rm --no-deps -w /opt/some-ui-motion/packages/video-motion \
 #     --entrypoint node_modules/.bin/tsx render src/cli.ts prove sample --work /renders"
