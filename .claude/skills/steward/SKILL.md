@@ -159,6 +159,16 @@ committing, fresh `fetch` before trusting a local ref, restart a branch whose pr
 already merged) apply here too — see the "Cold-start footguns" section of `CLAUDE.md`, which
 isn't PR-lifecycle-specific so it lives there instead of being duplicated in this file.
 
+## A user-facing change leaves its clip
+
+The session that lands a change a user can see (a Grafana dashboard, a page the server serves)
+makes its clip before it ends (SFEED7, paulgsc/some-ui#2768), into paulgsc/testing's `clips/` as
+paulgsc/some-ui's `packages/video-render/src/clip.ts` says, and `render clip-check <clips folder>`
+must say ready before it is pushed. A clip is its screens as stills, taken from sample data, never
+the owner's. Command-line clips (a `make` target, the environment-file workflow) wait on
+paulgsc/some-ui's CARDS epic, #2465: say so on the PR. A clip that can't be made is said, with
+why, on the PR and its issue, never merged past as if it were made.
+
 ## Cross-repo PRs: name every one, every time
 
 When a story spans this repo and `paulgsc/some-ui`, never write "landed the PR" — name both,

@@ -272,8 +272,15 @@ handoff document (owner, 2026-10-25). It lives in two places, for two readers:
 - **Winding down,** whether the work is done or too large for one session: open and merge the
   PR for what you did (`.claude/skills/steward/SKILL.md`), then amend every issue you touched
   and its epic's "Where we are", then the ledger item (`summary`, `status`, `flag`,
-  `first_step`, `issues`, `keywords`), then archive the session. Nothing about the story may
-  live only in the session that is ending.
+  `first_step`, `issues`, `keywords`), then distill the session, then archive it. Nothing about
+  the story may live only in the session that is ending.
+- **A session is archived only by its own agent, once distilled** (SFEED9, paulgsc/some-ui#2753):
+  a note for the weekly call in `paulgsc/testing`'s `sessions/` (paulgsc/some-ui's
+  `packages/video-render/src/session-note.ts`; `render session-check` checks the folder), pushed
+  to testing's `main` before the session is archived. A resumed session's later note covers what
+  it did since its last. A coordinating session asks another to wind down, never archives it. A
+  session that can't write its note stays unarchived and says why, unless it never started work
+  and so has nothing to distill.
 
 Cloud sessions keep no files between them, so the issues and the ledger are the only memory.
 A footgun that recurs across sessions belongs promoted into this file (the section above) rather
