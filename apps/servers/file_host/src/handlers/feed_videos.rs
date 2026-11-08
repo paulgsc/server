@@ -12,7 +12,7 @@
 //! `404`, as an episode home doesn't hold is.
 
 use crate::feeds::{
-	videos::{self, EpisodeVideo, Folders, LetGo, LetGoError, LinkRecorded},
+	videos::{self, Description, DescriptionError, EpisodeVideo, Folders, LetGo, LetGoError, LinkRecorded},
 	Feed,
 };
 use crate::subject::Paired;
@@ -20,7 +20,10 @@ use crate::FileHostError;
 use axum::{
 	body::Body,
 	extract::{Path, Request, State},
-	http::{header::CONTENT_DISPOSITION, HeaderValue},
+	http::{
+		header::{CONTENT_DISPOSITION, CONTENT_TYPE},
+		HeaderValue,
+	},
 	response::{IntoResponse, Response},
 	Json,
 };
@@ -206,6 +209,35 @@ pub async fn get_video(_paired: Paired, State(db): State<SqlitePool>, Path((feed
 	Ok(response)
 }
 
+/// `GET /feeds/:feed/videos/:key/description`: the episode's chapter lines.
+///
+/// As the recorder wrote them beside its video (`text/plain; charset=utf-8`),
+/// for the phone to show and copy into `YouTube`'s upload screen (SFEED4,
+/// paulgsc/some-ui#2763).
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's, 404 for a feed or an episode
+/// home doesn't hold, or one with no description (fewer than three
+/// chapters, rendered before the recorder wrote one, or let go with the rest
+/// of its folder), and 500 for a storage failure, a drive that refuses the
+/// read, or a file over `YouTube`'s 5,000 bytes, which the recorder never
+/// writes.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "feed_videos_description", skip_all, fields(otel.kind = "server"))]
+pub async fn get_description(_paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Response, FileHostError> {
+	let feed = feed_of(&feed)?;
+	let bytes = match videos::description(&db, feed, feed.renders(), &key).await {
+		Ok(Description::Text(bytes)) => bytes,
+		Ok(Description::Absent) => return Err(FileHostError::NotFound),
+		Ok(Description::OverCeiling) => return Err(FileHostError::OperationError("an episode's description is over YouTube's 5,000 bytes".to_owned())),
+		Err(DescriptionError::Storage(err)) => return Err(FileHostError::Sqlite(err)),
+		Err(DescriptionError::Drive(_)) => return Err(FileHostError::OperationError("the drive refused to read an episode's description".to_owned())),
+	};
+	let mut response = bytes.into_response();
+	response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
+	Ok(response)
+}
+
 /// `PUT /feeds/:feed/videos/:key/link`: records the episode's `YouTube`
 /// link. Kept once per video, append-only; the newest recorded is the
 /// episode's.
@@ -367,7 +399,7 @@ mod tests {
 		let state = state().await;
 		let (phone, browser) = (session(&state, Carrier::Bearer).await, session(&state, Carrier::Cookie).await);
 		let app = module().into_table_router().with_state(state);
-		assert_eq!(module().descriptors().count(), 5);
+		assert_eq!(module().descriptors().count(), 6);
 
 		let list = "/feeds/playoff-delta/videos";
 		assert_eq!(send(&app, Method::GET, list, None, None).await.0, StatusCode::UNAUTHORIZED);
@@ -410,6 +442,18 @@ mod tests {
 		);
 		let unheld_video = "/feeds/playoff-delta/videos/2026-SF-10/video";
 		assert_eq!(send(&app, Method::DELETE, unheld_video, Some(&phone), None).await.0, StatusCode::NOT_FOUND);
+		let description = "/feeds/playoff-delta/videos/2026-SF-09/description";
+		assert_eq!(send(&app, Method::GET, description, None, None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(send(&app, Method::GET, description, Some(&browser), None).await.0, StatusCode::FORBIDDEN);
+		assert_eq!(
+			send(&app, Method::GET, description, Some(&phone), None).await.0,
+			StatusCode::NOT_FOUND,
+			"none rendered here"
+		);
+		assert_eq!(
+			send(&app, Method::GET, "/feeds/drama/videos/2026-SF-09/description", Some(&phone), None).await.0,
+			StatusCode::NOT_FOUND
+		);
 		assert_eq!(send(&app, Method::DELETE, video, Some(&browser), None).await.0, StatusCode::FORBIDDEN);
 		let unheld = send(
 			&app,
