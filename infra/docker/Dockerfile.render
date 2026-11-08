@@ -40,20 +40,24 @@ RUN corepack enable \
     && pnpm exec turbo run build --filter="@some-ui/video-render^..." \
        --filter="@some-ui/playoff-delta..."
 
-# paulgsc/some-ui 4fcc141 (#2734's merge): @some-ui/video-motion, the
+# paulgsc/some-ui 9e73952 (#2743's merge, HYPER3): @some-ui/video-motion, the
 # compositions and their pinned HyperFrames, with fonts from the lockfile, so
-# a render reaches no network. A worktree of the clone above, at its own commit,
-# fetched first, since a cached clone may predate it.
+# a render reaches no network, plus `motion walk` and `motion promo`. A
+# worktree of the clone above, at its own commit, fetched first, since a cached
+# clone may predate it. Compositions draw in Playwright's headless shell, which
+# this image carries, through a wrapper written into the render's work folder,
+# so /renders must not be mounted noexec (motion refuses otherwise).
 #
 # Measured on this image with call-render.yml's limits (--memory 4g --cpus 2,
-# no network, uid 10000, root read-only), 2026-11-08: the sample composition
-# (2 s, 60 frames at 1080x1920) takes about 10 s a render and peaks at 528 MB,
+# no network, uid 10000, root read-only), 2026-11-08, on #2743: the sample
+# composition (2 s, 60 frames at 1080x1920) takes about 10 s a render, and
+# Suspender Ledger 0.3.1's promo (15.8 s) about 158 s, peaking at 821 MB, each
 # the same bytes twice. On home, through tsx as render-calls.sh runs the
 # recorders:
 #
 #   make compose ARGS="run --rm --no-deps -w /opt/some-ui-motion/packages/video-motion \
 #     --entrypoint node_modules/.bin/tsx render src/cli.ts prove sample --work /renders"
-ARG MOTION_COMMIT=4fcc141f23d945448b6cfba70bb272d4d03a7530
+ARG MOTION_COMMIT=9e73952814c042a7f09e4d0a8288dac1635e1d8a
 
 RUN git -C /opt/some-ui fetch --filter=blob:none origin "$MOTION_COMMIT" \
     && git -C /opt/some-ui worktree add --detach /opt/some-ui-motion "$MOTION_COMMIT" \
