@@ -261,8 +261,9 @@ groups:
 
       - alert: CallRenderWorkerStale
         # CW5: the worker stamps each pass it starts, a minute apart, and
-        # every minute while a job waits for room or renders (L4c). Four
-        # hours is a worker that stopped, which this
+        # every minute while a job waits for room or is paused (L4c), never
+        # while a render runs: four hours is a worker that stopped, or a
+        # render that hung (one longer than four hours trips it too), which this
         # catches even with no week waiting. A worker that never stamped
         # (not deployed) is not this; a week it leaves waiting is
         # CallRenderOverdue's.

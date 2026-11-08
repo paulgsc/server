@@ -184,8 +184,8 @@ way; CI runs it on every PR.
     is renamed into place whole, so a kill leaves no half entry), and waits
     for the next `run`; the recorder then reruns over it, and every step it
     had finished is a cache hit.
-  - An attempt that fails within 5 minutes of a pause or a resume is run
-    again the same way, not failed: a page's timeout runs on while the
+  - An attempt that fails within 5 minutes of a pause or a resume, or dies
+    while frozen, is run again the same way, not failed: a page's timeout runs on while the
     recorder is frozen. At most 3 times a job; past that, or later, it
     failed, so a real failure never loops.
   - **A job that let go of its memory without the lane's stop** (a restart
@@ -195,7 +195,9 @@ way; CI runs it on every PR.
     has not seen running (LA2), so this is what makes it check before the
     job takes its memory again. Its count of stops starts again (LA4); a
     stop the lane decided never goes this way, so a job that never fits is
-    still counted to stuck.
+    still counted to stuck. A restart in the moment the job is taken away
+    loses its id: it comes back as a new job, its count, `yields` and `ran`
+    started again (the phone's bar too), its work kept.
   - **A yield is never a failure:** no `failed.log`, no `CallRenderFailed`.
 - **Its peak**, once it renders: the render container's `memory.peak` (its
   most since the container started, so never less than this render's) plus

@@ -424,7 +424,7 @@ say() {
 
 # Waits until the lane admits the job: a run decision written after `asked`,
 # so the lane has seen the job and found room for its peak (LA2). False when
-# the episode is let go meanwhile.
+# the episode is let go meanwhile (1), or its job can't be named again (3).
 #
 # With `afresh`, the job holds no memory though the lane may still count it
 # as running (it was killed by a restart, or failed of a pause, or its
@@ -442,7 +442,7 @@ wait_for_room() {
     holds "$job" "$key" || return 1
     read_lane
     if [ "$afresh" -eq 1 ] && [ "$LANE_AT" -gt "$asked" ]; then
-      put_in "$LANE" job "$JOB_ID" || return 1
+      put_in "$LANE" job "$JOB_ID" || return 3
       afresh=0
       asked=$(date +%s)
       continue
@@ -515,7 +515,10 @@ attempt() {
     return 0
   fi
   [ -n "$ATTEMPT" ] && return 0
-  if [ "$moved" -gt 0 ] && [ $(( $(date +%s) - moved )) -le "$PAUSE_GRACE" ] && [ "$JOB_PAUSE_FAILS" -lt "$PAUSE_FAILS" ]; then
+  # One that died frozen (killed from outside, its memory gone) is taken the
+  # same way, however long it was frozen.
+  if [ "$moved" -gt 0 ] && { [ "$paused" -eq 1 ] || [ $(( $(date +%s) - moved )) -le "$PAUSE_GRACE" ]; } &&
+    [ "$JOB_PAUSE_FAILS" -lt "$PAUSE_FAILS" ]; then
     ATTEMPT=yielded AFRESH=1
     JOB_PAUSE_FAILS=$(( JOB_PAUSE_FAILS + 1 ))
     say "the recorder exited $status soon after a pause; it runs again from its kept steps, not counted as a failure" "$log"
@@ -542,10 +545,17 @@ render_episode() {
   JOB_PAUSE_FAILS=0
   AFRESH=$LEFT_AFRESH
   while true; do
-    if ! wait_for_room "$job" "$key" "$asked" "$log" "$AFRESH"; then
-      end_job
-      return 2
-    fi
+    wait_for_room "$job" "$key" "$asked" "$log" "$AFRESH"
+    case $? in
+      0) ;;
+      3)
+        echo "the job could not be written to $LANE" | tee -a "$log"
+        end_job
+        return 1 ;;
+      *)
+        end_job
+        return 2 ;;
+    esac
     attempt "$job" "$key" "$log"
     case $ATTEMPT in
       done) break ;;

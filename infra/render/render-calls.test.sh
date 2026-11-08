@@ -551,9 +551,9 @@ check "and is, RETRY_AFTER after its failure" test "$(runs_of 2026-10-30)" -eq 2
 # RETRY_AFTER counts from the failure, not from the log's last line: a
 # recorder silent for a while before it fails is not tried again at once.
 fresh silent 2026-10-30
-RETRY_AFTER=2
+RETRY_AFTER=5
 touch "$FAKE/fail-2026-10-30"
-echo 3 > "$FAKE/silent"
+echo 6 > "$FAKE/silent"
 pass
 pass
 check "a failure's time is when it failed, not its log's last line" test "$(runs_of 2026-10-30)" -eq 1
