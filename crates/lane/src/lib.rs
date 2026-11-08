@@ -17,9 +17,13 @@
 //! - **LA3.** Batch work running or paused is told to stop and let go of its
 //!   memory ([`Verb::Stop`]) once free memory falls under the floor or
 //!   memory pressure passes its limit, or a signal can no longer be read.
-//! - **LA4.** Each stop for memory or pressure is counted until a batch job
-//!   finishes, and from [`Policy::stuck_after`] in a row the decision says it
-//!   is stuck, so a job that never fits is reported, never retried silently.
+//! - **LA4.** Each stop for memory or pressure of a batch job in progress is
+//!   counted until a batch job finishes, and from [`Policy::stuck_after`] in
+//!   a row the decision says it is stuck, so a job that never fits is
+//!   reported, never retried silently. A stop with no job in progress is
+//!   never counted, so an idle lane is never called stuck.
+
+use std::num::NonZeroU32;
 
 /// What the kernel and home say this tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,8 +37,11 @@ pub struct Signals {
 	pub memory_pressure_pct: Option<f64>,
 	/// Interactive work is waiting or running (a voice note, a Rust round).
 	pub interactive_waiting: bool,
-	/// The most a batch job is expected to take, as measured on earlier runs.
-	pub batch_peak_bytes: u64,
+	/// A batch job is in progress, running or paused.
+	pub batch_in_progress: bool,
+	/// The most a batch job is expected to take, as measured on earlier runs;
+	/// `None` when it is not known, which is never room (LA2).
+	pub batch_peak_bytes: Option<u64>,
 	/// How many batch jobs have finished so far; a change resets the stops
 	/// counted for LA4.
 	pub batch_finished: u64,
@@ -50,7 +57,7 @@ pub struct Policy {
 	/// How long room must hold before batch work starts after a stop.
 	pub hold_down_ms: u64,
 	/// Stops for memory or pressure in a row before a job is called stuck.
-	pub stuck_after: u32,
+	pub stuck_after: NonZeroU32,
 }
 
 /// What batch work is told to do.
@@ -164,7 +171,7 @@ pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decisio
 	let (verb, why, room_since_ms) = match state.verb {
 		Verb::Run | Verb::Pause => match shortage(signals, policy) {
 			Some(why) => {
-				if matches!(why, Why::Memory | Why::Pressure) {
+				if signals.batch_in_progress && matches!(why, Why::Memory | Why::Pressure) {
 					stops = stops.saturating_add(1);
 				}
 				(Verb::Stop, why, None)
@@ -175,12 +182,14 @@ pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decisio
 		Verb::Stop => {
 			let room = signals
 				.mem_available_bytes
-				.is_some_and(|available| available >= signals.batch_peak_bytes.saturating_add(policy.floor_bytes));
-			match shortage(signals, policy) {
+				.zip(signals.batch_peak_bytes)
+				.map(|(available, peak)| available >= peak.saturating_add(policy.floor_bytes));
+			match (shortage(signals, policy), room) {
 				_ if signals.interactive_waiting => (Verb::Stop, Why::Busy, None),
-				Some(why) => (Verb::Stop, why, None),
-				None if !room => (Verb::Stop, Why::Memory, None),
-				None => match state.room_since_ms {
+				(Some(why), _) => (Verb::Stop, why, None),
+				(None, None) => (Verb::Stop, Why::Unknown, None),
+				(None, Some(false)) => (Verb::Stop, Why::Memory, None),
+				(None, Some(true)) => match state.room_since_ms {
 					Some(since) if signals.now_ms.saturating_sub(since) >= policy.hold_down_ms => (Verb::Run, Why::Clear, None),
 					Some(since) => (Verb::Stop, Why::Settling, Some(since)),
 					None => (Verb::Stop, Why::Settling, Some(signals.now_ms)),
@@ -200,7 +209,7 @@ pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decisio
 			verb,
 			why,
 			stops,
-			stuck: stops >= policy.stuck_after,
+			stuck: stops >= policy.stuck_after.get(),
 		},
 	)
 }

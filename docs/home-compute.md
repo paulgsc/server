@@ -32,9 +32,10 @@ loop (`infra/render/render-calls.sh`), whatever else is running.
 The lane decides, each tick, whether the batch class may run now, must
 pause, or must stop and let go of its memory. It decides from the kernel's
 own signals (`/proc/meminfo`'s `MemAvailable`, `/proc/pressure/memory`'s
-`some avg10`) and from whether interactive work is waiting. No clock is
-involved: a render runs when there is room and gives way when anything else
-needs it.
+`some avg10`) and from whether interactive work is waiting. A render
+runs when there is room and gives way when anything else needs it. No
+schedule starts batch work; the only time the lane measures is how long
+room has held.
 
 `crates/lane` is that decision, a pure function (`step`) with no I/O. The
 capacity simulation (#710) is meant to replay real traces through the same
@@ -44,13 +45,19 @@ code. What it promises, each held by a test in `crates/lane/src/tests.rs`:
   does not start.
 - **LA2.** Batch work never starts, or starts again after a stop, without
   room for its measured peak above the floor, held for the hold-down. A
-  signal that could not be read is never room.
+  signal that could not be read, or a peak not yet measured, is never room.
 - **LA3.** Batch work running or paused stops and lets go of its memory
   once free memory falls under the floor, memory pressure passes its limit,
   or a signal can no longer be read.
-- **LA4.** Stops for memory or pressure are counted until a batch job
-  finishes; from the policy's `stuck_after` in a row the decision says the
-  job is stuck, so one that never fits is reported, not retried silently.
+- **LA4.** Stops for memory or pressure of a job in progress are counted
+  until a batch job finishes; from the policy's `stuck_after` (at least one)
+  in a row the decision says the job is stuck, so one that never fits is
+  reported, not retried silently. A stop with no job in progress is never
+  counted, so an idle lane is never called stuck.
+
+A kernel without PSI (`/proc/pressure` missing) leaves the pressure signal
+unreadable, and under LA2 batch work then never runs: home's kernel must have
+PSI on, and the lane's `unknown` reason says so if it does not.
 
 **Planned** (L4 #708): nothing runs the lane yet. file_host is to read the
 signals and write the decision where the render worker reads it, and the

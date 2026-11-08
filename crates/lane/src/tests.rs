@@ -1,12 +1,19 @@
+use std::num::NonZeroU32;
+
 use super::{mem_available_bytes, pressure_some_avg10, step, Decision, Policy, Signals, State, Verb, Why};
 
 const GB: u64 = 1024 * 1024 * 1024;
+
+const STUCK_AFTER: NonZeroU32 = match NonZeroU32::new(3) {
+	Some(n) => n,
+	None => panic!(),
+};
 
 const POLICY: Policy = Policy {
 	floor_bytes: 2 * GB,
 	pressure_limit_pct: 10.0,
 	hold_down_ms: 60_000,
-	stuck_after: 3,
+	stuck_after: STUCK_AFTER,
 };
 
 /// Room for a 4 GB batch peak above the 2 GB floor, no pressure, nobody waiting.
@@ -16,7 +23,8 @@ const fn roomy(now_ms: u64) -> Signals {
 		mem_available_bytes: Some(8 * GB),
 		memory_pressure_pct: Some(0.0),
 		interactive_waiting: false,
-		batch_peak_bytes: 4 * GB,
+		batch_in_progress: true,
+		batch_peak_bytes: Some(4 * GB),
 		batch_finished: 0,
 	}
 }
@@ -218,4 +226,71 @@ fn reads_some_avg10_from_a_pressure_file() {
 	assert_eq!(pressure_some_avg10("full avg10=0.80 avg60=0.20 avg300=0.05 total=1\n"), None);
 	assert_eq!(pressure_some_avg10("some avg10=NaN avg60=0 avg300=0 total=0\n"), None);
 	assert_eq!(pressure_some_avg10(""), None);
+}
+
+#[test]
+fn la4_an_idle_lane_is_never_called_stuck() {
+	let idle = |now_ms| Signals {
+		batch_in_progress: false,
+		..roomy(now_ms)
+	};
+	let idle_short = |now_ms| Signals {
+		mem_available_bytes: Some(GB),
+		..idle(now_ms)
+	};
+	let mut ticks = Vec::new();
+	for round in 0..4 {
+		let t = round * 200_000;
+		ticks.extend([idle(t), idle(t + 60_000), idle_short(t + 61_000)]);
+	}
+	let decisions = run(&ticks);
+	assert!(decisions.iter().all(|d| d.stops == 0 && !d.stuck));
+	assert_eq!(decisions.last().map(|d| (d.verb, d.why)), Some((Verb::Stop, Why::Memory)));
+}
+
+#[test]
+fn la2_an_unmeasured_peak_is_never_room() {
+	let unmeasured = |now_ms| Signals {
+		batch_peak_bytes: None,
+		..roomy(now_ms)
+	};
+	assert_eq!(verbs(&run(&[unmeasured(0), unmeasured(600_000)])), [(Verb::Stop, Why::Unknown), (Verb::Stop, Why::Unknown)]);
+}
+
+#[test]
+fn la3_running_work_keeps_running_at_the_floor_and_stops_one_byte_under() {
+	let at = running_then(Signals {
+		mem_available_bytes: Some(2 * GB),
+		..roomy(61_000)
+	});
+	assert_eq!((at.verb, at.why), (Verb::Run, Why::Clear));
+	let under = running_then(Signals {
+		mem_available_bytes: Some(2 * GB - 1),
+		..roomy(61_000)
+	});
+	assert_eq!((under.verb, under.why), (Verb::Stop, Why::Memory));
+}
+
+#[test]
+fn la3_a_reading_lost_while_paused_stops_without_counting() {
+	let busy = |now_ms| Signals {
+		interactive_waiting: true,
+		..roomy(now_ms)
+	};
+	let lost = Signals {
+		memory_pressure_pct: None,
+		..busy(62_000)
+	};
+	let decisions = run(&[roomy(0), roomy(60_000), busy(61_000), lost]);
+	assert_eq!((decisions[3].verb, decisions[3].why, decisions[3].stops), (Verb::Stop, Why::Unknown, 0));
+}
+
+#[test]
+fn la4_a_pause_is_never_counted_as_a_stop() {
+	let busy = |now_ms| Signals {
+		interactive_waiting: true,
+		..roomy(now_ms)
+	};
+	let decisions = run(&[roomy(0), roomy(60_000), busy(61_000), busy(62_000), roomy(63_000)]);
+	assert!(decisions.iter().all(|d| d.stops == 0));
 }
