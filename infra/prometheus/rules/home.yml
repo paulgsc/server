@@ -186,6 +186,27 @@ groups:
           objective: CW2
           says: "Every pass reading the weekly call's weeks has failed for 3 hours; file-host-server's log names what failed."
 
+      - alert: PlayoffDeltaFillsStale
+        # PK2 (some-ui#2647): the Playoff Delta fills worker reads
+        # paulgsc/testing's index every hour (pd_fills::INTERVAL), sooner
+        # after a failure, and stamps each pass it starts, as the call weeks
+        # worker does (CallWeeksStale).
+        expr: |
+          (time() - max(pd_fills_last_attempt_timestamp_seconds)) > 7200
+        labels:
+          objective: PK2
+          says: "Home has not read Playoff Delta's fills for 2 hours (it reads them hourly)."
+
+      - alert: PlayoffDeltaFillsFailing
+        # PK2: every pass for 3 hours failed, on storage or on a fill or
+        # season it could not read; retried as CallWeeksFailing's are.
+        expr: |
+          max(pd_fills_pass_failing) == 1
+        for: 3h
+        labels:
+          objective: PK2
+          says: "Every pass reading Playoff Delta's fills has failed for 3 hours; file-host-server's log names what failed."
+
       - alert: CallRenderFailed
         # CW5: a week home holds has no video and the render worker's last
         # attempt at it failed (infra/render/render-calls.sh keeps that

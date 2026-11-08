@@ -77,6 +77,10 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 		"call_video_link",
 		"each week of the call's public YouTube video id, as the owner recorded it; nobody's record",
 	),
+	(
+		"pd_fill",
+		"each fill of Playoff Delta and its season, as paulgsc/testing served them — what was said about public NFL games, nobody's record",
+	),
 	("curriculum", "lesson content — corpus-wide"),
 	("curriculum_publication", "curriculum release ledger"),
 	(
