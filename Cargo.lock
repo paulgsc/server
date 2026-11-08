@@ -1755,6 +1755,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "outcome_repo",
+ "pd_fill_repo",
  "presence_repo",
  "publication_repo",
  "push_kit",
@@ -3637,6 +3638,16 @@ name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+
+[[package]]
+name = "pd_fill_repo"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "pem"

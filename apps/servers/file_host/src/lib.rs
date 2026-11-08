@@ -24,6 +24,7 @@ pub mod metrics;
 pub mod models;
 pub mod net;
 pub mod nudge;
+pub mod pd_fills;
 #[cfg(test)]
 mod privacy;
 pub mod rate_limiter;
@@ -278,13 +279,16 @@ impl AppState {
 ///   which games are live;
 /// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`;
 ///   always on, its metrics (`metrics::call_weeks`) also saying what the
-///   render worker has made of each week.
+///   render worker has made of each week;
+/// - Playoff Delta's fills (`pd_fills`), read hourly from `paulgsc/testing`;
+///   always on.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
 	rust_rounds::start(state);
 	game_feed::start(state);
 	call_weeks::start(state);
+	pd_fills::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

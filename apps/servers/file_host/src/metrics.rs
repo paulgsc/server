@@ -10,6 +10,7 @@ pub mod http;
 pub mod instruments;
 pub mod mailbox;
 pub mod observability;
+pub mod pd_fills;
 pub mod periodic;
 pub mod pool;
 pub mod rate_limit;

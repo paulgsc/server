@@ -534,6 +534,40 @@ tests:
               objective: CW2
               says: "Every pass reading the weekly call's weeks has failed for 3 hours; file-host-server's log names what failed."
 
+  - name: a Playoff Delta fills worker that stops stamping alerts after 2 hours (PK2)
+    interval: 1m
+    input_series:
+      - series: 'pd_fills_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x130'
+    alert_rule_test:
+      - eval_time: 115m
+        alertname: PlayoffDeltaFillsStale
+        exp_alerts: []
+      - eval_time: 125m
+        alertname: PlayoffDeltaFillsStale
+        exp_alerts:
+          - exp_labels:
+              objective: PK2
+              says: "Home has not read Playoff Delta's fills for 2 hours (it reads them hourly)."
+
+  - name: Playoff Delta fills passes failing for 3 hours alert, and one that recovers does not (PK2)
+    interval: 1m
+    input_series:
+      - series: 'pd_fills_pass_failing{job="file_host",instance="a"}'
+        values: '1x200'
+      - series: 'pd_fills_pass_failing{job="file_host",instance="b"}'
+        values: '1x60 0x140'
+    alert_rule_test:
+      - eval_time: 2h55m
+        alertname: PlayoffDeltaFillsFailing
+        exp_alerts: []
+      - eval_time: 3h05m
+        alertname: PlayoffDeltaFillsFailing
+        exp_alerts:
+          - exp_labels:
+              objective: PK2
+              says: "Every pass reading Playoff Delta's fills has failed for 3 hours; file-host-server's log names what failed."
+
   - name: a week whose render failed alerts at once, and not as overdue (CW5)
     interval: 1m
     input_series:
