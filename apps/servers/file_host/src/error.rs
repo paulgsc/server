@@ -51,6 +51,13 @@ pub enum FileHostError {
 	#[error("this server already has its owner's account")]
 	SignupClosed,
 
+	// A voice note sent again after the owner deleted it for good from My
+	// data (`handlers::voice::put_note`). A 409, as before, with a code of its
+	// own: a phone that still held the note lets its copy go on this answer,
+	// and must not mistake it for another recording under the same name.
+	#[error("this voice note was deleted for good, so it is not kept again")]
+	DeletedForGood,
+
 	#[error("request path not found")]
 	NotFound,
 
@@ -205,7 +212,7 @@ impl FileHostError {
 			Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			Self::Forbidden | Self::SignupClosed | Self::InvalidData | Self::InvalidEncodedDate(_) => StatusCode::FORBIDDEN,
 			Self::NotFound => StatusCode::NOT_FOUND,
-			Self::Conflict(_) | Self::ConflictNaming { .. } => StatusCode::CONFLICT,
+			Self::Conflict(_) | Self::ConflictNaming { .. } | Self::DeletedForGood => StatusCode::CONFLICT,
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
 			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
 			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -231,6 +238,7 @@ impl FileHostError {
 			Self::Unauthorized => "unauthorized",
 			Self::Forbidden => "forbidden",
 			Self::SignupClosed => "signup_closed",
+			Self::DeletedForGood => "deleted_for_good",
 			Self::NotFound => "not_found",
 			Self::InvalidData => "invalid_data",
 			Self::InvalidMimeType(_) => "invalid_mime_type",
@@ -264,6 +272,7 @@ impl FileHostError {
 			Self::Unauthorized => "authentication required",
 			Self::Forbidden => "user may not perform that action",
 			Self::SignupClosed => "this server already has its owner's account; sign in with its passkey",
+			Self::DeletedForGood => "this voice note was deleted for good, so it is not kept again",
 			Self::NotFound => "request path not found",
 			Self::InvalidData => "invalid data schema",
 			Self::InvalidMimeType(_) => "invalid mime type",

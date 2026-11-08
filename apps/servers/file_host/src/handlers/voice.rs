@@ -166,7 +166,7 @@ pub async fn put_note(
 	// A note deleted for good from My data stays deleted: a phone that still
 	// holds its copy and sends it again is refused, not taken back.
 	if voice_repo::delete::receipt(&mut tx, subject.as_str(), &note.id).await.map_err(refusal)?.is_some() {
-		return Err(FileHostError::Conflict(DELETED_FOR_GOOD));
+		return Err(FileHostError::DeletedForGood);
 	}
 	let change = voice_repo::put_note(&mut tx, subject.as_str(), &note, &body, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
@@ -489,8 +489,6 @@ pub struct NoteDeleted {
 	pub receipt: Receipt,
 }
 
-/// What a note sent again after it was deleted for good answers with.
-const DELETED_FOR_GOOD: &str = "this voice note was deleted for good, so it is not kept again";
 /// What a delete of a note home keeps answers with.
 const SWITCHED_OFF: &str = "this kind of voice note can't be deleted until the owner switches it on";
 /// What a delete of a note kept for good answers with.
@@ -1276,7 +1274,9 @@ mod tests {
 	}
 
 	/// A note deleted for good is refused when the phone sends it again,
-	/// and nothing is written: its receipt stands.
+	/// and nothing is written: its receipt stands. The refusal has its own
+	/// code, so the phone lets its copy go rather than reading it as another
+	/// recording under the same name (the generic `conflict`).
 	#[tokio::test]
 	async fn a_note_deleted_for_good_is_not_kept_again() {
 		let state = state().await;
@@ -1293,6 +1293,7 @@ mod tests {
 		.unwrap();
 		let (status, body) = put(&app, NOTE, Some(&phone), "audio/webm", TAKE).await;
 		assert_eq!(status, StatusCode::CONFLICT, "{body}");
+		assert_eq!(body["error"]["code"], "deleted_for_good", "{body}");
 		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note").fetch_one(&pool).await.unwrap();
 		assert_eq!(held, 0);
 	}
