@@ -760,11 +760,11 @@ on_term() {
 TMP_BASE=${TMPDIR:-/tmp}
 RECORDER=
 
-# Sourced, it only defines the above: render-calls.test.sh runs one pass at a
-# time over a temporary ROOT, with a fake recorder and a fake lane (CW5,
-# paulgsc/some-ui#2659; L4c, #708).
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  trap on_term TERM INT
+# The worker: the job a restart left, then a pass of every job each EVERY
+# seconds, for good. A failed episode is tried again on this clock alone,
+# once RETRY_AFTER has passed since its failure.
+serve() {
+  local job
   while true; do
     resume_left
     for job in "${JOBS[@]}"; do
@@ -772,4 +772,12 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     done
     sleep "$EVERY"
   done
+}
+
+# Sourced, it only defines the above: render-calls.test.sh runs one pass at a
+# time over a temporary ROOT, with a fake recorder and a fake lane (CW5,
+# paulgsc/some-ui#2659; L4c, #708), and `serve` itself on a test's clock.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  trap on_term TERM INT
+  serve
 fi
