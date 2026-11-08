@@ -492,7 +492,7 @@ pub fn said_in(text: &str) -> String {
 			|| line.starts_with("cache warning: ")
 	};
 	let lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
-	let line = lines.clone().filter(|line| !worker_own(line)).last().or_else(|| lines.last()).unwrap_or_default();
+	let line = lines.clone().rfind(|line| !worker_own(line)).or_else(|| lines.clone().next_back()).unwrap_or_default();
 	line.chars().take(SAID_CHARS).collect()
 }
 
