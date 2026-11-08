@@ -40,9 +40,10 @@ RUN corepack enable \
     && pnpm exec turbo run build --filter="@some-ui/video-render^..." \
        --filter="@some-ui/playoff-delta..."
 
-# paulgsc/some-ui 9e73952 (#2743's merge, HYPER3): @some-ui/video-motion, the
+# paulgsc/some-ui acc0912 (#2790's merge, HYPER4): @some-ui/video-motion, the
 # compositions and their pinned HyperFrames, with fonts from the lockfile, so
-# a render reaches no network, plus `motion walk` and `motion promo`. A
+# a render reaches no network, plus `motion walk` and `motion promo`, whose
+# sound cues come from `--brand` (home's ${STORAGE}/brand, mounted at /brand). A
 # worktree of the clone above, at its own commit, fetched first, since a cached
 # clone may predate it. Compositions draw in Playwright's headless shell, which
 # this image carries, through a wrapper written into the render's work folder,
@@ -57,7 +58,7 @@ RUN corepack enable \
 #
 #   make compose ARGS="run --rm --no-deps -w /opt/some-ui-motion/packages/video-motion \
 #     --entrypoint node_modules/.bin/tsx render src/cli.ts prove sample --work /renders"
-ARG MOTION_COMMIT=9e73952814c042a7f09e4d0a8288dac1635e1d8a
+ARG MOTION_COMMIT=acc0912bae91a7368d089894e705dd138af419bc
 
 RUN git -C /opt/some-ui fetch --filter=blob:none origin "$MOTION_COMMIT" \
     && git -C /opt/some-ui worktree add --detach /opt/some-ui-motion "$MOTION_COMMIT" \
