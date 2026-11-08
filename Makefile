@@ -208,7 +208,10 @@ compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose A
 # cut-list.json, walk.json, the walk's snips). Its sounds (HYPER4,
 # paulgsc/some-ui#2790) are home's: the render service's /brand, which is
 # ${STORAGE}/brand, the same folder the recorders take. APP and VERSION name a
-# folder under /renders, so each is held to plain characters first.
+# folder under /renders, so each is held to plain characters first. curl is
+# the host's, run without the dev shell's LD_LIBRARY_PATH: the `.#rust` shell
+# points it at its own older OpenSSL, which the host's libcurl refuses
+# (OPENSSL_3.2.0 not found), as envctl strips it for nix (apps/envctl/src/sops.rs).
 PROMO_DATA = https://raw.githubusercontent.com/paulgsc/testing/main/promo
 
 promo: envctl ## A release's promo on home, the same bytes twice: make promo APP=suspender-ledger VERSION=0.3.1
@@ -216,7 +219,7 @@ promo: envctl ## A release's promo on home, the same bytes twice: make promo APP
 	@case "$(VERSION)" in ''|*[!0-9.]*) echo "VERSION is a release: make promo APP=suspender-ledger VERSION=0.3.1"; exit 2;; esac
 	@data=$$(mktemp -d /tmp/promo.XXXXXX) && trap 'rm -r -- "$$data"' EXIT && \
 	  for file in release sample; do \
-	    curl -fsSL "$(PROMO_DATA)/$(APP)/$(VERSION)/$$file.json" -o "$$data/$$file.json" || exit 1; \
+	    env -u LD_LIBRARY_PATH curl -fsSL "$(PROMO_DATA)/$(APP)/$(VERSION)/$$file.json" -o "$$data/$$file.json" || exit 1; \
 	  done && chmod -R a+rX "$$data" && \
 	  $(ENVCTL_RUN) compose --role $(ROLE) -- run --rm --no-deps -v "$$data:/promo:ro" \
 	    -w /opt/some-ui-motion/packages/video-motion --entrypoint node_modules/.bin/tsx render \
