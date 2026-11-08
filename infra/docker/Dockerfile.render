@@ -21,14 +21,15 @@
 # which exists only once that package is built.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui 1505684 (#2781's merge, SFEED12): `record:preview`, a
-# template's preview recorded as the call is. call-stage stays on www 0.1.60
-# (031ca48): the pages the recorders drive, the stage's `/call` and
-# `/burn-ins?record`, are the same at both commits (only Studio's pages moved),
-# so the recorders still match the stage they record. Captions (SFEED11,
-# #2707) are recorded a scene at a time from `/burn-ins?record`, in the look
-# each series names.
-ARG SOME_UI_COMMIT=15056844a9e224d84c53d263291da13ee11ac38c
+# paulgsc/some-ui b219a5b (#2741's merge, the commit www 0.1.61 was published
+# from, so the recorders and call-stage's pin are one version again). It
+# carries SFEED10 (#2774): the call's template v3 and Playoff Delta's v3, drawn
+# by both stages (www's `/call` and `/playoff-delta`) in the template's theme,
+# Mochi Night, with the music bed their series pin from /brand. A recorder
+# newer than its stage would draw a v3 week in the old look, so the two pins
+# move together. Also `record:preview` (SFEED12, #2781), and captions
+# (SFEED11, #2707) recorded a scene at a time from `/burn-ins?record`.
+ARG SOME_UI_COMMIT=b219a5b400eb6b69c70a6a4d651c9ea47a0c4c94
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
