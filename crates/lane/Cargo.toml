@@ -1,0 +1,18 @@
+[package]
+name = "lane"
+description = "Home's batch lane: when the lowest class may run, pause or must let go of its memory, decided from the kernel's own signals"
+categories = ["os"]
+keywords = ["scheduling", "memory", "pressure", "admission"]
+readme = "README.md"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false

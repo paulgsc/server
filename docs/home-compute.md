@@ -27,6 +27,35 @@ pauses for interactive work, is evacuated when memory runs short, and
 resumes from its step cache. Until then, a render starts on its own hourly
 loop (`infra/render/render-calls.sh`), whatever else is running.
 
+## The lane
+
+The lane decides, each tick, whether the batch class may run now, must
+pause, or must stop and let go of its memory. It decides from the kernel's
+own signals (`/proc/meminfo`'s `MemAvailable`, `/proc/pressure/memory`'s
+`some avg10`) and from whether interactive work is waiting. No clock is
+involved: a render runs when there is room and gives way when anything else
+needs it.
+
+`crates/lane` is that decision, a pure function (`step`) with no I/O. The
+capacity simulation (#710) is meant to replay real traces through the same
+code. What it promises, each held by a test in `crates/lane/src/tests.rs`:
+
+- **LA1.** Batch work never runs while interactive work waits: it pauses, or
+  does not start.
+- **LA2.** Batch work never starts, or starts again after a stop, without
+  room for its measured peak above the floor, held for the hold-down. A
+  signal that could not be read is never room.
+- **LA3.** Batch work running or paused stops and lets go of its memory
+  once free memory falls under the floor, memory pressure passes its limit,
+  or a signal can no longer be read.
+- **LA4.** Stops for memory or pressure are counted until a batch job
+  finishes; from the policy's `stuck_after` in a row the decision says the
+  job is stuck, so one that never fits is reported, not retried silently.
+
+**Planned** (L4 #708): nothing runs the lane yet. file_host is to read the
+signals and write the decision where the render worker reads it, and the
+render worker is to pause, stop and resume on it.
+
 ## Who is killed first
 
 When home runs out of memory, the kernel kills the process with the highest
