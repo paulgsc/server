@@ -23,10 +23,9 @@ that adds it.
 
 The lane (below) decides when the batch class may run: a render starts
 only when no interactive work waits and its peak fits, pauses for
-interactive work, and is evacuated when memory runs short. **Planned** (L4c
-#708): the render worker obeys it, and resumes from its step cache. Until
-then, a render starts on its own hourly loop (`infra/render/render-calls.sh`),
-whatever else is running, and the lane's decision is only shown.
+interactive work, and is evacuated when memory runs short. The render
+worker obeys it (L4c #708, "What the render worker does" below), and
+resumes from its step cache: no clock starts a render.
 
 ## The lane
 
@@ -93,7 +92,7 @@ tick it reads:
 - The render worker's status folder, `${STORAGE}/renders/call-worker/`:
   `job`, the id of the job in progress (a decimal number), and `peak`, the
   bytes its last finished run measured. Both are written by the worker
-  (L4c); until it writes them there is no job, and the peak is the declared
+  (below); with none written there is no job, and the peak is the declared
   ceiling below. A file there that is not a number is an unreadable signal,
   and an unreadable `job` is never room: the lane says stop, `unknown`.
 
@@ -112,7 +111,7 @@ at=1731000000
 the worker never runs on a lane that has stopped deciding.
 
 **Tolerance:** a pause lands within one lane tick (5 s) of interactive work
-starting, plus the worker's own read interval (L4c). Interactive work
+starting, plus the worker's own read interval (2 s): within 7 s. Interactive work
 starts when the transcriber starts hearing a note or the runner is asked
 to record a program; a note waits for the transcriber's minute poll before
 that, and that wait is not interactive work.
@@ -152,9 +151,78 @@ how long, and `CallRenderOverdue` fires on the week left waiting.
     here.
   - file_host not answering a scrape is `FileHostDown`'s, not these.
 
-**Planned** (L4c #708): the render worker reads the decision every few
-seconds, pauses (SIGSTOP/SIGCONT) and stops on it, and writes `job` and
-`peak`.
+### What the render worker does
+
+`infra/render/render-calls.sh` (L4c #708), for each of its jobs alike (the
+call's, Playoff Delta's). `infra/render/render-calls.test.sh` holds each
+point below with a fake lane and a recorder slow enough to be caught half
+way; CI runs it on every PR.
+
+- **A job** is one episode's attempt, from its first try until it renders,
+  fails or is let go. Its id (the time in nanoseconds, or one past the last
+  id given, kept in `job-seq`) is never reused, and it keeps it through every
+  pause and stop, so LA4 counts its stops alone and a resumed job is never
+  admitted as new. Whichever job runs writes the one `job`: the lane admits
+  one batch job at a time. `job.state` says which job it is (`kind`, `key`,
+  `since`) and where (`state`: `waiting`, `rendering` or `paused`;
+  `state_since`; `yields`, the times it gave way; `ran`, the seconds it
+  rendered before `state_since`), for the phone's Renders page
+  (some-ui#2761). A job that renders leaves `took`, the seconds it rendered
+  with pauses and waits left out, in its kind's status folder: the next
+  one's rough bar measures against it.
+- **It starts** only on a `run` written after its id was, so the lane has
+  seen it and found room for its peak (LA2). A decision missing, unreadable,
+  or more than 30 s from now either way is stop.
+- **It reads the decision every 2 s** while a job waits or runs.
+  - `pause` freezes the recorder and every process under it (SIGSTOP; SIGCONT
+    on `run`). The tree is read from `/proc`, not the process group:
+    Playwright starts Chromium in a session of its own. Frozen, it keeps its
+    memory and takes no CPU. The speaker is another container and is not
+    frozen: a line it is saying finishes.
+  - `stop` freezes the tree, then kills it, so nothing escapes by outliving
+    its parent. The job keeps its work, its step cache included (each entry
+    is renamed into place whole, so a kill leaves no half entry), and waits
+    for the next `run`; the recorder then reruns over it, and every step it
+    had finished is a cache hit.
+  - An attempt that fails within 5 minutes of a pause or a resume, or dies
+    while frozen, is run again the same way, not failed: a page's timeout runs on while the
+    recorder is frozen. At most 3 times a job; past that, or later, it
+    failed, so a real failure never loops.
+  - **A job that let go of its memory without the lane's stop** (a restart
+    killed it, it failed of a pause, or its decision went stale) is taken
+    away (`job` removed) until the lane writes a decision without it, then
+    named again under the same id. The lane checks room only for a job it
+    has not seen running (LA2), so this is what makes it check before the
+    job takes its memory again. Its count of stops starts again (LA4); a
+    stop the lane decided never goes this way, so a job that never fits is
+    still counted to stuck. A restart in the moment the job is taken away
+    loses its id: it comes back as a new job, its count, `yields` and `ran`
+    started again (the phone's bar too), its work kept.
+  - **A yield is never a failure:** no `failed.log`, no `CallRenderFailed`.
+- **Its peak**, once it renders: the render container's `memory.peak` (its
+  most since the container started, so never less than this render's) plus
+  the speaker's room and the stage's cap, as the declared peak counts them.
+  An unreadable `memory.peak` writes none, and the lane keeps the declared
+  one.
+- **A restart keeps the job.** `job.state` names it, it runs before any
+  other, under the same id, and its work is never removed for the
+  `WORK_MAX_MB` cap while it waits. Docker stopping the container kills the
+  recorder's tree and leaves the job.
+- **The first render after a boot** waits for the lane's first `run`, which
+  is never sooner than its hold-down (30 s after file_host starts): home's
+  own services start first.
+- **It looks for work every minute**, a listing of two folders. Looking
+  never starts a render; the lane does. A failed episode is tried again an
+  hour after its failure, not at every look. While a job waits for room or
+  is paused, the worker stamps `last-pass` at least every minute, so a
+  worker the lane holds back is not `CallRenderWorkerStale`'s (a job that
+  never fits is `LaneStuck`'s). It never stamps while a render runs, so a
+  render that hangs still goes stale.
+- **Between jobs**, it clears every attempt log (`.<key>.log`) a killed
+  attempt left: none runs then, and the lane would read one as batch work
+  in progress for good.
+- Each recorder run has its own `TMPDIR`, removed after it, killed or not:
+  a killed Chromium leaves its profile behind, and `/tmp` is held in memory.
 
 ## At rest: what home costs while nothing is worked on
 
@@ -165,7 +233,7 @@ named in `job`, or an attempt of either of the render worker's jobs
 running, the call's or Playoff Delta's, which the worker marks with a
 `.<key>.log` in that job's status folder until the attempt ends; a log left
 by an attempt that was killed counts until that key's next attempt ends,
-within the hour).
+when that key's next attempt ends).
 The polls (mailbox, call weeks,
 game feed, the nudge waker), requests and scrapes keep running at rest:
 they are part of what keeping home up costs, and are counted.
@@ -202,7 +270,7 @@ order above decides only when the host as a whole runs out.
 
 | Killed | What it costs | What retries it | What says so |
 |---|---|---|---|
-| a process in `render` (ffmpeg, Chromium, the recorder) | the week's attempt fails | the next hourly pass; every step it finished is in the step cache, so the retry pays only for the step in flight and the stills | `HomeOomKill`, `CallRenderFailed` |
+| a process in `render` (ffmpeg, Chromium, the recorder) | the week's attempt fails (one the lane stops is no failure: it resumes, "What the render worker does") | an hour after the failure; every step it finished is in the step cache, so the retry pays only for the step in flight and the stills | `HomeOomKill`, `CallRenderFailed` |
 | `kokoro` | the line being said; the container restarts, and the render's attempt fails on the dropped connection | as above; takes already said are cached | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
 | `call-stage` | the render's attempt fails | as above | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
 | `ollama` | a request in flight; the container restarts | nothing in this repo calls it | `HomeOomKill` |
