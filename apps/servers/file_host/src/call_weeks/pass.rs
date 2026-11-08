@@ -14,7 +14,7 @@
 //!   ([`Pass::failures`]): no URL, body or week's words reaches a log.
 //! - **No network in tests.** Fetching is `game_feed`'s [`Fetch`] port.
 
-use crate::game_feed::pass::{Answer, Fetch};
+use crate::game_feed::pass::{fetch_capped, Fetch};
 use call_week_repo::{Kept, Week};
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use serde_json::Value;
@@ -100,24 +100,10 @@ pub fn is_week(body: &[u8], listed: &Listed) -> bool {
 		&& days.and_then(|days| days.get("to")).and_then(Value::as_str) == Some(listed.to.as_str())
 }
 
-/// Fetches `url`: its body when it answered 200 with at most [`MAX_BODY`]
-/// bytes, else the failure's kind, pushed onto `pass`.
+/// Fetches `url` ([`fetch_capped`] at [`MAX_BODY`]), pushing a failure's
+/// kind onto `pass`.
 async fn fetched<F: Fetch>(fetch: &F, url: &str, pass: &mut Pass) -> Option<Vec<u8>> {
-	match fetch.get(url).await {
-		Ok(Answer { status: 200, body }) if body.len() <= MAX_BODY => Some(body),
-		Ok(Answer { status: 200, .. }) => {
-			pass.failures.push("too_big");
-			None
-		}
-		Ok(_) => {
-			pass.failures.push("refused");
-			None
-		}
-		Err(no_answer) => {
-			pass.failures.push(no_answer.0);
-			None
-		}
-	}
+	fetch_capped(fetch, url, MAX_BODY).await.map_err(|kind| pass.failures.push(kind)).ok()
 }
 
 /// One pass: [`take_new`], then [`export`].
@@ -235,7 +221,7 @@ async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> Dat
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::game_feed::pass::{NoAnswer, Target};
+	use crate::game_feed::pass::{Answer, NoAnswer, Target};
 	use sqlx::sqlite::SqlitePoolOptions;
 	use std::collections::HashMap;
 	use std::sync::Mutex;

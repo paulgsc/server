@@ -48,6 +48,24 @@ pub trait Fetch: Send + Sync {
 	fn get(&self, url: &str) -> impl Future<Output = Result<Answer, NoAnswer>> + Send;
 }
 
+/// Fetches `url`, at most `max` bytes.
+///
+/// Its body when it answered 200 within `max`, else the failure's kind:
+/// `too_big`, `refused` (a status other than 200), or the [`NoAnswer`]'s.
+/// The keepers of `paulgsc/testing`'s files share it (`call_weeks::pass`,
+/// `pd_fills::pass`).
+///
+/// # Errors
+/// The failure's kind, never a URL or a body.
+pub async fn fetch_capped<F: Fetch>(fetch: &F, url: &str, max: usize) -> Result<Vec<u8>, &'static str> {
+	match fetch.get(url).await {
+		Ok(Answer { status: 200, body }) if body.len() <= max => Ok(body),
+		Ok(Answer { status: 200, .. }) => Err("too_big"),
+		Ok(_) => Err("refused"),
+		Err(no_answer) => Err(no_answer.0),
+	}
+}
+
 /// [`Fetch`] over `reqwest`.
 #[derive(Debug, Clone)]
 pub struct ReqwestFetch {
