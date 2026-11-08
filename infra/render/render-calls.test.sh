@@ -10,7 +10,14 @@
 # - a pass over a finished week leaves its folder untouched;
 # - the all-weeks cap removes only another waiting week's work, never a video;
 # - a week no longer held loses its waiting work and is not tried again;
-# - `cache warning:` lines reach <week>.cache.log, a failed attempt's too.
+# - `cache warning:` lines reach <week>.cache.log, a failed attempt's too;
+# - the recorder is handed the render policy's caps, the pinned stage and
+#   home's Kokoro speaker, and a video it refuses as past MAX_VIDEO_MB fails
+#   its attempt, which is tried again only RETRY_AFTER later (#752);
+# - the worker's own loop (`serve`) tries a failed week again on its own
+#   clock, RETRY_AFTER after the failure, with no pass run by hand;
+# - the stage and the speaker are pinned by digest, the recorders by commit,
+#   and the stage's pin names the recorders' commit.
 #
 # And the lane's (L4c, paulgsc/server#708), with a fake lane that rewrites
 # renders/call-worker/lane as file_host does, and a recorder whose steps are
@@ -125,10 +132,34 @@ lane_says() {
 # $FAKE/fail-after-pause makes it fail once after its steps. It keeps
 # its pid in $FAKE/pid, its child's in $FAKE/child, and the job it saw in
 # the lane's folder in $FAKE/seen-job.
+# Both recorders keep the arguments they were given, one to a line, in
+# $FAKE/args-<script> (call, preview), and stamp each run's start and end in
+# $FAKE/times (`start <s>`, `end <s>`). While $FAKE/too-large exists, each
+# makes its video and then refuses it in the real recorder's words
+# (some-ui packages/video-render/src/policy.ts), naming the --max-video-mb it
+# was given, and removes it, as the real one does.
 cat > "$TSX" <<'FAKE_RECORDER'
 #!/usr/bin/env bash
 set -u
 fake=$(dirname "$0")
+script=$(basename "$1" .ts)
+printf '%s\n' "$@" > "$fake/args-$script"
+echo "start $(date +%s)" >> "$fake/times"
+trap 'echo "end $(date +%s)" >> "$fake/times"' EXIT
+max_mb=
+prev=
+for arg in "$@"; do
+  [ "$prev" = --max-video-mb ] && max_mb=$arg
+  prev=$arg
+done
+# The real recorder's refusal of a video past --max-video-mb, once made.
+too_large() {
+  if [ -e "$fake/too-large" ]; then
+    rm -f "$1"
+    echo "the video is 512 MB, past the policy's $max_mb MB" >&2
+    exit 1
+  fi
+}
 # A preview (SFEED12): `tsx tests/record/preview.ts … --template <t> --out
 # <w>/<id>` writes preview.mp4, its sample week (naming the template's
 # version) and a cache into <w>/<id>, or fails as the real one does for a
@@ -153,6 +184,7 @@ if [ "$1" = tests/record/preview.ts ]; then
   echo intermediate > "$out/cache/frame"
   printf '{"template":{"id":"%s","version":2}}\n' "$template" > "$out/week.json"
   echo "preview of $template" > "$out/preview.mp4"
+  too_large "$out/preview.mp4"
   # As if an earlier attempt had written it: the worker's move dates it.
   touch -d '2 days ago' "$out/preview.mp4"
   exit 0
@@ -222,6 +254,7 @@ echo "video of $week" > "$dir/call.mp4"
 if [ -e "$fake/steps" ]; then
   cat "$dir"/steps/step-* >> "$dir/call.mp4"
 fi
+too_large "$dir/call.mp4"
 FAKE_RECORDER
 chmod +x "$TSX"
 
@@ -249,7 +282,8 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs"
+    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" \
+    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -683,6 +717,89 @@ echo 77 > "$ROOT/renders/call-worker/job"
 printf 'id=77\nkind=preview\nkey=%s\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0' "$ID" > "$ROOT/renders/call-worker/job.state"
 resume_left > "$SCRATCH/pass.out" 2>&1
 check "a preview a restart left is resumed" test -e "$ROOT/renders/preview/$ID/preview.mp4"
+
+# What every recorder is handed (CW5, paulgsc/some-ui#2659): the render
+# policy's caps, the pinned stage, and home's Kokoro speaker. Read from what
+# the fake recorders were given, written out, not from the script's variables,
+# so a cap changed without the ledger moving fails here.
+HANDED=(--app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
+  --max-video-minutes 15 --max-video-mb 500 --cache-mb 2048)
+# Whether `args` (one to a line) has each of HANDED's flags followed by its value.
+handed() {
+  local i
+  for (( i = 0; i < ${#HANDED[@]}; i += 2 )); do
+    grep -A1 -xF -- "${HANDED[i]}" "$1" | sed -n 2p | grep -qxF -- "${HANDED[i + 1]}" || return 1
+  done
+}
+fresh handed 2026-10-30
+mkdir -p "$ROOT/previews"
+echo '{}' > "$ROOT/previews/conference-call-20261108T090000Z.json"
+pass
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "the call's recorder is handed the policy's caps, the pinned stage and home's speaker" handed "$FAKE/args-call"
+check "and a preview's recorder the same" handed "$FAKE/args-preview"
+
+# A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
+# made and removes it, and the worker takes that as any failed attempt. A
+# week keeps no folder and is not tried again within RETRY_AFTER; a preview
+# keeps none and is never tried again.
+fresh too-large 2026-10-30
+RETRY_AFTER=3600
+touch "$FAKE/too-large"
+pass
+check "a video past MAX_VIDEO_MB fails its week's attempt, with the cap named" \
+  grep -qF "the video is 512 MB, past the policy's 500 MB" "$ROOT/renders/call-worker/2026-10-30.failed.log"
+check "and leaves no folder in renders/call" test ! -e "$ROOT/renders/call/2026-10-30"
+check "nor the video it refused" test ! -e "$ROOT/renders/call-work/2026-10-30/call.mp4"
+pass
+check "and is not tried again within RETRY_AFTER" test "$(runs_of 2026-10-30)" -eq 1
+RETRY_AFTER=0
+mkdir -p "$ROOT/previews"
+ID=conference-call-20261108T100000Z
+echo '{}' > "$ROOT/previews/$ID.json"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "a preview past MAX_VIDEO_MB fails, with the cap named" \
+  grep -qF "the video is 512 MB, past the policy's 500 MB" "$ROOT/renders/preview-worker/$ID.failed.log"
+check "and leaves no folder in renders/preview" test ! -e "$ROOT/renders/preview/$ID"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "and is never tried again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+
+# The worker's own loop retries a failed week on its own clock (CW5): `serve`
+# runs unattended, every EVERY seconds, and the week's second attempt starts
+# no sooner than RETRY_AFTER after its first one ended, and does start.
+# Times are the fake recorder's own stamps, whole seconds as the worker
+# counts them, so a slow runner can only make the gap longer.
+fresh serve 2026-10-30
+EVERY=0.2
+RETRY_AFTER=3
+touch "$FAKE/fail-2026-10-30"
+tried_twice() {
+  [ "$(runs_of 2026-10-30)" -ge 2 ]
+}
+( serve ) > "$SCRATCH/pass.out" 2>&1 &
+SERVE=$!
+within tried_twice
+kill "$SERVE" 2> /dev/null
+wait "$SERVE" 2> /dev/null
+check "serve tries a failed week again by itself" tried_twice
+ended=$(awk '$1 == "end" { print $2; exit }' "$FAKE/times")
+again=$(awk '$1 == "start" { n++ } n == 2 { print $2; exit }' "$FAKE/times")
+check "no sooner than RETRY_AFTER after its failure" test "$(( again - ended ))" -ge "$RETRY_AFTER"
+RETRY_AFTER=0
+
+# The stage and the speaker are pinned by digest, the recorders by a whole
+# commit, and the stage's pin names the commit the recorders are built at,
+# so the pages the recorders drive are the ones they were written for
+# (CW5: "from the pinned stage with each scene said by home's Kokoro speaker").
+COMPOSE=$HERE/../compose/call-render.yml
+stage=$(grep -A2 '^  call-stage:' "$COMPOSE" | grep -oE 'image: .*' | cut -d' ' -f2)
+check "the stage is pinned by digest" grep -qE '^pgathondu/www:[0-9.]+@sha256:[0-9a-f]{64}$' <<< "$stage"
+check "the speaker is built from a base pinned by digest" \
+  grep -qE '^FROM [^ ]+@sha256:[0-9a-f]{64}$' "$HERE/../docker/Dockerfile.kokoro"
+recorders=$(grep -oE '^ARG SOME_UI_COMMIT=[0-9a-f]+$' "$HERE/../docker/Dockerfile.render" | cut -d= -f2)
+check "the recorders are pinned by a whole commit" grep -qE '^[0-9a-f]{40}$' <<< "$recorders"
+published=$(grep -A1 '^  call-stage:' "$COMPOSE" | grep -oE 'paulgsc/some-ui [0-9a-f]{7,40}' | cut -d' ' -f2)
+check "the stage's pin names the recorders' commit" test -n "$published" -a "${recorders#"$published"}" != "$recorders"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures of the render worker's guarantees failed"
