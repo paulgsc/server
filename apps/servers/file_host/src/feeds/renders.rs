@@ -30,7 +30,8 @@
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
 //! an episode a week), a `stat` per episode, and a handful of small files,
 //! once per request. Nothing here adds a clock or a poll: the phone asks.
-//! It names no person; a failed attempt's line is the recorder's own words.
+//! It names no person and carries no words of an episode: a failed attempt is
+//! a code (who stopped it, and the recorder's exit), its log stays on home.
 
 use super::Feed;
 use crate::call_weeks::render::Held;
@@ -38,7 +39,7 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use chrono_tz::Tz;
 use serde::Serialize;
 use sqlx::SqlitePool;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -59,9 +60,6 @@ pub const DONE_SHOWN: usize = 5;
 
 /// How much of a failed attempt's log is read, from its end.
 const TAIL_BYTES: u64 = 16 * 1024;
-
-/// The longest failed-attempt line shown, in characters.
-const SAID_CHARS: usize = 200;
 
 /// The job in progress, as the worker writes it to `job.state`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +87,8 @@ pub enum Phase {
 	Rendering,
 	/// Frozen while home's interactive work runs.
 	Paused,
+	/// Rendered; its video is being moved into place.
+	Finishing,
 }
 
 impl Job {
@@ -101,6 +101,7 @@ impl Job {
 			"waiting" => Phase::Waiting,
 			"rendering" => Phase::Rendering,
 			"paused" => Phase::Paused,
+			"done" => Phase::Finishing,
 			_ => return None,
 		};
 		let kind = field("kind")?;
@@ -163,11 +164,16 @@ pub struct FeedSeen {
 	pub held: Vec<(String, i64)>,
 	/// Of those, each with its video, and when it was made.
 	pub videos: BTreeMap<String, i64>,
-	/// Of those with none, each whose last attempt failed: when, and its line.
-	pub failed: BTreeMap<String, (i64, String)>,
+	/// Of those with none, each whose last attempt failed: when, and how.
+	pub failed: BTreeMap<String, (i64, Failure)>,
+	/// Each episode the owner let go.
+	pub let_go: BTreeSet<String>,
+	/// When home took its newest episode, let go or not.
+	pub newest_taken: Option<i64>,
 	/// The seconds its last render rendered.
 	pub took: Option<u64>,
-	/// The newest `from` home holds, the call's only: its weeks are days.
+	/// The newest `from` home holds, let go or not, the call's only: its
+	/// weeks are days.
 	pub newest_week: Option<NaiveDate>,
 }
 
@@ -200,13 +206,48 @@ pub struct Now {
 	pub state_since: i64,
 	/// How often it gave way and picked up again.
 	pub gave_way: u32,
-	/// Why it waits or is paused, as the lane said it (`busy`, `memory`,
-	/// `pressure`, `settling`, `unknown`), or `silent` when the lane has
-	/// stopped deciding; `None` while it renders.
-	pub held_by: Option<String>,
-	/// The lane has stopped it so often for memory that it may never fit.
+	/// Why it isn't rendering, by the lane's decision; `None` while it
+	/// renders under a fresh `run`, or finishes.
+	pub held_by: Option<HeldBy>,
+	/// The lane has stopped it so often for memory that it may never fit, by
+	/// a fresh decision.
 	pub stuck: bool,
 	pub estimate: Option<Estimate>,
+}
+
+/// Why a job isn't rendering: the lane's reason, or `silent` when the lane
+/// has stopped deciding (its decision missing or stale), which is also what
+/// a job the worker left behind when it stopped reads as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HeldBy {
+	/// Interactive work goes first.
+	Busy,
+	/// Not enough free memory for it.
+	Memory,
+	/// Memory pressure past its limit.
+	Pressure,
+	/// Room came back, and is being held a while first.
+	Settling,
+	/// A signal couldn't be read.
+	Unknown,
+	/// Nothing holds it: it is about to start.
+	Clear,
+	/// The lane isn't deciding.
+	Silent,
+}
+
+impl HeldBy {
+	fn of(why: &str) -> Self {
+		match why {
+			"busy" => Self::Busy,
+			"memory" => Self::Memory,
+			"pressure" => Self::Pressure,
+			"settling" => Self::Settling,
+			"clear" => Self::Clear,
+			_ => Self::Unknown,
+		}
+	}
 }
 
 /// A rough share of the render done, and the time left at its pace.
@@ -236,8 +277,27 @@ pub struct Failed {
 	pub feed: String,
 	pub key: String,
 	pub at: i64,
-	/// The recorder's last line of it, at most [`SAID_CHARS`] characters.
-	pub said: String,
+	#[serde(flatten)]
+	pub failure: Failure,
+}
+
+/// How an attempt failed, as its log ends: never its words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Failure {
+	pub by: FailedBy,
+	/// The recorder's exit status, when it exited.
+	pub exit: Option<i32>,
+}
+
+/// What stopped an attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FailedBy {
+	/// The recorder refused or failed (its log says why, on home).
+	Recorder,
+	/// Home couldn't make or move the episode's files.
+	Home,
 }
 
 /// A feed's next expected episode, on its day by home's clock.
@@ -262,15 +322,20 @@ pub fn estimate(job: &Job, took: Option<u64>, now: i64) -> Option<Estimate> {
 	})
 }
 
-/// Why `job` isn't rendering, by the lane's decision.
-fn held_by(job: &Job, lane: Option<&Lane>, now: i64) -> Option<String> {
-	if job.state == Phase::Rendering {
-		return None;
-	}
+/// The lane's decision, while it is fresh: one the worker would obey.
+fn fresh(lane: Option<&Lane>, now: i64) -> Option<&Lane> {
 	let stale = i64::try_from(crate::call_weeks::lane::STALE_AFTER.as_secs()).unwrap_or(i64::MAX);
-	match lane {
-		Some(lane) if now.saturating_sub(lane.at).abs() <= stale => Some(lane.why.clone()),
-		_ => Some(String::from("silent")),
+	lane.filter(|lane| now.saturating_sub(lane.at).abs() <= stale)
+}
+
+/// Why `job` isn't rendering, by the lane's decision. A job that says it
+/// renders under no fresh `run` is not rendering: the worker stopped with it.
+fn held_by(job: &Job, lane: Option<&Lane>, now: i64) -> Option<HeldBy> {
+	match (job.state, fresh(lane, now)) {
+		(Phase::Finishing, _) => None,
+		(Phase::Rendering, Some(lane)) if lane.verb == "run" => None,
+		(_, Some(lane)) => Some(HeldBy::of(&lane.why)),
+		(_, None) => Some(HeldBy::Silent),
 	}
 }
 
@@ -282,7 +347,7 @@ fn on_or_after(day: NaiveDate, weekday: Weekday) -> NaiveDate {
 
 /// The day `feed`'s next episode is expected, if it is expecting one.
 fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<NaiveDate> {
-	let newest_taken = seen.held.iter().map(|(_, taken)| *taken).max()?;
+	let newest_taken = seen.newest_taken?;
 	if now.saturating_sub(newest_taken) > ACTIVE_DAYS * 86_400 {
 		return None;
 	}
@@ -304,6 +369,13 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 #[must_use]
 pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>, now: i64) -> Board {
 	let today = DateTime::<Utc>::from_timestamp(now, 0).map_or(NaiveDate::MIN, |at| at.with_timezone(&HOME_ZONE).date_naive());
+	// A job.state the worker left behind for an episode let go or already
+	// rendered is over.
+	let job = job.filter(|job| {
+		Feed::parse(&job.kind)
+			.and_then(|feed| feeds.iter().find(|(f, _)| *f == feed))
+			.is_none_or(|(_, seen)| !seen.let_go.contains(&job.key) && !seen.videos.contains_key(&job.key))
+	});
 	let now_view = job.map(|job| Now {
 		feed: job.kind.clone(),
 		key: job.key.clone(),
@@ -312,7 +384,7 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 		state_since: job.state_since,
 		gave_way: job.yields,
 		held_by: held_by(job, lane, now),
-		stuck: lane.is_some_and(|lane| lane.stuck),
+		stuck: fresh(lane, now).is_some_and(|lane| lane.stuck),
 		estimate: estimate(
 			job,
 			Feed::parse(&job.kind)
@@ -335,12 +407,12 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 					key: key.clone(),
 					at: *made,
 				});
-			} else if let Some((at, said)) = seen.failed.get(key).filter(|_| !current) {
+			} else if let Some((at, failure)) = seen.failed.get(key).filter(|_| !current) {
 				failed.push(Failed {
 					feed: name.to_owned(),
 					key: key.clone(),
 					at: *at,
-					said: said.clone(),
+					failure: *failure,
 				});
 			} else if !current {
 				waiting.push(Episode {
@@ -357,8 +429,9 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 			});
 		}
 	}
-	// The worker's own order: the call's first, each feed's oldest first.
-	waiting.sort_by_key(|episode| (episode.feed != Feed::Call.as_str(), episode.at));
+	// The worker's own order: the call's first, each feed's by key (its
+	// folder listing's order).
+	waiting.sort_by(|a, b| (a.feed != Feed::Call.as_str(), &a.key).cmp(&(b.feed != Feed::Call.as_str(), &b.key)));
 	failed.sort_by_key(|failed| std::cmp::Reverse(failed.at));
 	done.sort_by_key(|episode| std::cmp::Reverse(episode.at));
 	done.truncate(DONE_SHOWN);
@@ -436,16 +509,19 @@ async fn seen(feed: Feed, held: &[Held], let_go: &[String], renders: &Path, stat
 		..FeedSeen::default()
 	};
 	for episode in held {
-		if let_go.contains(&episode.key) {
-			continue;
-		}
 		let taken = DateTime::parse_from_rfc3339(&episode.taken_at).map_or(0, |at| at.timestamp());
-		seen.held.push((episode.key.clone(), taken));
+		// The feed's cadence counts every episode it took, let go or not.
+		seen.newest_taken = seen.newest_taken.max(Some(taken));
 		if feed == Feed::Call {
 			if let Ok(day) = NaiveDate::parse_from_str(&episode.key, "%Y-%m-%d") {
 				seen.newest_week = seen.newest_week.max(Some(day));
 			}
 		}
+		if let_go.contains(&episode.key) {
+			seen.let_go.insert(episode.key.clone());
+			continue;
+		}
+		seen.held.push((episode.key.clone(), taken));
 		if let Some(made) = modified(&renders.join(&episode.key).join(feed.video())).await {
 			seen.videos.insert(episode.key.clone(), made);
 			continue;
@@ -454,7 +530,14 @@ async fn seen(feed: Feed, held: &[Held], let_go: &[String], renders: &Path, stat
 		name.push_str(".failed.log");
 		let log = status.join(name);
 		if let Some(at) = modified(&log).await {
-			seen.failed.insert(episode.key.clone(), (at, last_said(&log).await.unwrap_or_default()));
+			let failure = tail(&log).await.as_deref().map_or(
+				Failure {
+					by: FailedBy::Recorder,
+					exit: None,
+				},
+				failure_in,
+			);
+			seen.failed.insert(episode.key.clone(), (at, failure));
 		}
 	}
 	seen.held.sort_by_key(|(_, taken)| *taken);
@@ -468,32 +551,38 @@ async fn modified(path: &Path) -> Option<i64> {
 	i64::try_from(since.as_secs()).ok()
 }
 
-/// The recorder's last line in a failed attempt's log: the worker's own
-/// lines (that it waited, paused, gave way, and the exit it saw) left out,
-/// so what is shown is what failed.
-async fn last_said(log: &Path) -> Option<String> {
+/// The end of a failed attempt's log.
+async fn tail(log: &Path) -> Option<String> {
 	let mut file = tokio::fs::File::open(log).await.ok()?;
 	let len = file.metadata().await.ok()?.len();
 	file.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES))).await.ok()?;
 	let mut bytes = Vec::new();
 	file.read_to_end(&mut bytes).await.ok()?;
-	Some(said_in(&String::from_utf8_lossy(&bytes)))
+	Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The last line of `text` that the recorder said, at most [`SAID_CHARS`].
+/// How a failed attempt's log says it ended, by the worker's own lines
+/// (`infra/render/render-calls.sh`): the recorder's exit, or home's files.
 #[must_use]
-pub fn said_in(text: &str) -> String {
-	let worker_own = |line: &str| {
-		line.starts_with("the recorder exited")
-			|| line.starts_with("paused the ")
-			|| line.starts_with("resumed the ")
-			|| line.contains(" waits for room on home ")
-			|| line.contains(" gave way (the lane: ")
-			|| line.starts_with("cache warning: ")
-	};
-	let lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
-	let line = lines.clone().rfind(|line| !worker_own(line)).or_else(|| lines.clone().next_back()).unwrap_or_default();
-	line.chars().take(SAID_CHARS).collect()
+pub fn failure_in(text: &str) -> Failure {
+	let home = |line: &str| line.contains(" could not be made") || line.contains(" could not be written") || line.contains(" could not be moved");
+	for line in text.lines().rev().map(str::trim) {
+		if let Some(code) = line.strip_prefix("the recorder exited ") {
+			if let Ok(exit) = code.parse() {
+				return Failure {
+					by: FailedBy::Recorder,
+					exit: Some(exit),
+				};
+			}
+		}
+		if home(line) {
+			return Failure { by: FailedBy::Home, exit: None };
+		}
+	}
+	Failure {
+		by: FailedBy::Recorder,
+		exit: None,
+	}
 }
 
 #[cfg(test)]
