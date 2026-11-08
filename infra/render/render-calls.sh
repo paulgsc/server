@@ -56,6 +56,9 @@ CACHE_MB=2048
 WORK_MAX_MB=4096
 
 EVERY=3600
+# Where the folders below are mounted: the container's root. Only
+# render-calls.test.sh moves it, to a temporary folder.
+ROOT=
 # tsx (a root devDependency of some-ui), not through pnpm: Corepack would fetch
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
@@ -76,10 +79,11 @@ JOBS=(call playoff-delta)
 use_job() {
   case $1 in
     call)
-      INPUT=/weeks RENDERS=/renders/call STATUS=/renders/call-worker WORK=/renders/call-work VIDEO=call.mp4 ;;
+      INPUT=$ROOT/weeks RENDERS=$ROOT/renders/call STATUS=$ROOT/renders/call-worker
+      WORK=$ROOT/renders/call-work VIDEO=call.mp4 ;;
     playoff-delta)
-      INPUT=/episodes RENDERS=/renders/playoff-delta STATUS=/renders/playoff-delta-worker
-      WORK=/renders/playoff-delta-work VIDEO=episode.mp4 ;;
+      INPUT=$ROOT/episodes RENDERS=$ROOT/renders/playoff-delta STATUS=$ROOT/renders/playoff-delta-worker
+      WORK=$ROOT/renders/playoff-delta-work VIDEO=episode.mp4 ;;
   esac
 }
 
@@ -223,9 +227,13 @@ run_job() {
   done
 }
 
-while true; do
-  for job in "${JOBS[@]}"; do
-    run_job "$job"
+# Sourced, it only defines the above: render-calls.test.sh runs one pass at a
+# time over a temporary ROOT, with a fake recorder (CW5, paulgsc/some-ui#2659).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  while true; do
+    for job in "${JOBS[@]}"; do
+      run_job "$job"
+    done
+    sleep "$EVERY"
   done
-  sleep "$EVERY"
-done
+fi
