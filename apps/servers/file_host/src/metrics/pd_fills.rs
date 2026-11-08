@@ -44,5 +44,6 @@ pub fn record_renders(seen: &Seen) {
 	metrics::gauge!("pd_render_episodes_unvoiced").set(count(seen.unvoiced));
 	metrics::gauge!("pd_render_episodes_waiting").set(count(seen.renders.waiting));
 	metrics::gauge!("pd_render_episodes_failed").set(count(seen.renders.failed));
+	metrics::gauge!("pd_render_episodes_let_go").set(count(seen.renders.let_go));
 	metrics::gauge!("pd_render_oldest_waiting_taken_timestamp_seconds").set(seen.renders.oldest_waiting_taken.map_or(0.0, as_f64));
 }

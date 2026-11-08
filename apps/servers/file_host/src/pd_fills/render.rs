@@ -58,6 +58,10 @@ pub struct Exported {
 
 /// Writes each voiced fill home holds that `folder` has no episode of.
 ///
+/// An episode whose video the owner let go from My data
+/// (`feeds::videos::let_go`) is never written, and a folder left of it is
+/// removed, so the worker never renders it again (as the call's CW8).
+///
 /// Each episode is written in a temporary folder and renamed into place
 /// whole, so the worker never reads half of one. An episode already written
 /// is left alone: home never rewrites a kept fill, so neither does this.
@@ -65,14 +69,22 @@ pub struct Exported {
 /// # Errors
 /// A storage failure.
 pub async fn export(db: &SqlitePool, folder: &Path) -> Result<Exported, sqlx::Error> {
+	// Held for the whole pass, so an episode let go while it runs is never
+	// written back (`feeds::FOLDERS`).
+	let _folders = crate::feeds::FOLDERS.lock().await;
 	let mut done = Exported::default();
-	let held = {
+	let (held, let_go) = {
 		let mut conn = db.acquire().await?;
-		pd_fill_repo::held(&mut conn).await?
+		(pd_fill_repo::held(&mut conn).await?, pd_fill_repo::video::let_go(&mut conn).await?)
 	};
+	for key in &let_go {
+		if crate::feeds::videos::remove_dir(&folder.join(key)).await.is_err() {
+			done.failed += 1;
+		}
+	}
 	let missing: Vec<_> = held
 		.into_iter()
-		.filter(|fill| fill.version >= VOICED_VERSION && !folder.join(fill.key()).exists())
+		.filter(|fill| fill.version >= VOICED_VERSION && !let_go.contains(&fill.key()) && !folder.join(fill.key()).exists())
 		.collect();
 	if missing.is_empty() {
 		return Ok(done);
@@ -133,15 +145,16 @@ pub struct Seen {
 	pub renders: Renders,
 }
 
-/// Reads what the worker has made of each voiced fill home holds.
+/// Reads what the worker has made of each voiced fill home holds; one whose
+/// video was let go is counted apart, never as waiting.
 ///
 /// # Errors
 /// A storage failure reading `pd_fill`. A file that cannot be read counts as
 /// missing: a video that cannot be seen is an episode still waiting.
 pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<Seen, sqlx::Error> {
-	let held = {
+	let (held, let_go) = {
 		let mut conn = db.acquire().await?;
-		pd_fill_repo::held(&mut conn).await?
+		(pd_fill_repo::held(&mut conn).await?, pd_fill_repo::video::let_go(&mut conn).await?)
 	};
 	let fills = held.len();
 	let voiced: Vec<Held> = held
@@ -155,7 +168,7 @@ pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<S
 	Ok(Seen {
 		fills,
 		unvoiced: fills - voiced.len(),
-		renders: tally(&voiced, &[], renders, status, VIDEO).await,
+		renders: tally(&voiced, &let_go, renders, status, VIDEO).await,
 	})
 }
 

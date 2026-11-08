@@ -12,6 +12,7 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+call_week_repo = { workspace = true }
 hex = "0.4.3"
 sha2 = "0.10.9"
 sqlx = { workspace = true, features = [

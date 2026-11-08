@@ -251,8 +251,8 @@ local count(title, description, expr, steps) =
   ),
 
   pdEpisodes: {
-    title: 'Fills held, waiting, failed and for my voice',
-    description: "Over time: a fill arrives, a voiced one waits for the render worker and leaves waiting once its video is kept; one written for your own voice is kept and never rendered.",
+    title: 'Fills held, waiting, failed, for my voice and let go',
+    description: "Over time: a fill arrives, a voiced one waits for the render worker and leaves waiting once its video is kept; one written for your own voice is kept and never rendered. An episode whose video you let go from My data, once its YouTube link was recorded, counts as let go, never as waiting.",
     type: 'timeseries',
     datasource: ds,
     targets: [
@@ -260,6 +260,7 @@ local count(title, description, expr, steps) =
       { expr: 'pd_render_episodes_waiting', legendFormat: 'waiting', refId: 'B' },
       { expr: 'pd_render_episodes_failed', legendFormat: 'failed', refId: 'C' },
       { expr: 'pd_render_episodes_unvoiced', legendFormat: 'for my voice', refId: 'D' },
+      { expr: 'pd_render_episodes_let_go', legendFormat: 'let go', refId: 'E' },
     ],
     fieldConfig: {
       defaults: {

@@ -3,6 +3,8 @@
 //! season file it was taken beside, append-only. The rules are
 //! `20261108000200_create_pd_fill.up.sql`'s.
 
+pub mod video;
+
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
 
@@ -65,6 +67,20 @@ pub fn key(season: &str, team: &str, week: i64) -> String {
 		key.push('0');
 	}
 	key + &week.to_string()
+}
+
+/// The episode a key names, `(season, team, week)`, when it is one
+/// [`key`] writes: four digits, two or three capitals, two digits.
+#[must_use]
+pub fn parse_key(key: &str) -> Option<(String, String, i64)> {
+	let mut parts = key.split('-');
+	let (season, team, week) = (parts.next()?, parts.next()?, parts.next()?);
+	let digits = |text: &str, len: usize| text.len() == len && text.bytes().all(|byte| byte.is_ascii_digit());
+	let capitals = (2..=3).contains(&team.len()) && team.bytes().all(|byte| byte.is_ascii_uppercase());
+	if parts.next().is_some() || !digits(season, 4) || !capitals || !digits(week, 2) {
+		return None;
+	}
+	Some((season.to_owned(), team.to_owned(), week.parse().ok()?))
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
@@ -171,6 +187,10 @@ mod tests {
 		let listed = held(&mut conn).await.unwrap();
 		let keys: Vec<String> = listed.iter().map(HeldFill::key).collect();
 		assert_eq!(keys, ["2026-SF-00", "2026-SF-08"], "by week, the legend first");
+		assert_eq!(parse_key("2026-SF-08"), Some(("2026".to_owned(), "SF".to_owned(), 8)));
+		for bad in ["2026-SF-8", "2026-sf-08", "26-SF-08", "2026-SF-08-x", "../SF-08", "2026-SFOO-08"] {
+			assert_eq!(parse_key(bad), None, "{bad}");
+		}
 		assert_eq!((listed[1].sha256.as_str(), listed[1].taken_at.as_str()), (sha256_hex(first).as_str(), at));
 		assert_eq!(listed[1].version, 2);
 	}

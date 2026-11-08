@@ -5,6 +5,7 @@ pub mod auth;
 pub mod call_videos;
 pub mod cors;
 pub mod db;
+pub mod feed_videos;
 pub mod health;
 pub mod ideas;
 pub mod inventory;
