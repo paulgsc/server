@@ -1743,6 +1743,7 @@ dependencies = [
  "futures",
  "game_feed_repo",
  "hex",
+ "http-body",
  "idea_repo",
  "intervention",
  "ipnet",
