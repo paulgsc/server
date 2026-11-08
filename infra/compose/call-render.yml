@@ -70,9 +70,7 @@ services:
       start_period: 60s
 
   call-stage:
-    # www 0.1.60, published from paulgsc/some-ui 031ca48, the commit
-    # Dockerfile.render's SOME_UI_COMMIT names: the stages leave the caption
-    # band, and `/burn-ins?record` draws the captions (SFEED11, #2707).
+    # Published from paulgsc/some-ui 031ca48; Dockerfile.render's SOME_UI_COMMIT moves with it.
     image: pgathondu/www:0.1.60@sha256:9157b5f0bc51a69888259bd4570b7ddd59f24b1a409dc760e6f793c8a359e355
     container_name: call-stage
     # Who the kernel kills first when home runs out of memory: batch
