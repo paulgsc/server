@@ -10,6 +10,7 @@ pub mod aph;
 pub mod app_events;
 pub mod auth;
 pub mod db;
+pub mod episode_notes;
 pub mod feed_videos;
 pub mod health;
 pub mod ideas;

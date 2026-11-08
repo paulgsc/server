@@ -188,6 +188,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each next scene's prompt the owner's phone asked for and sent home (paulgsc/some-ui#2179): the prompt's markdown as written, which holds the scene asked for and the last drama's review in the owner's words, its stamp, and when it reached home; see docs/identity.md invariant 31",
 	),
 	(
+		"episode_note",
+		"each note the owner's phone left at a moment of a feed's episode and sent home (paulgsc/some-ui#2745): the feed and episode, the moment, the categories picked from the fixed set, the voice note id of the take said for it if any, when it was written, and when it reached home; see docs/identity.md invariant 38",
+	),
+	(
 		"written_reflection",
 		"each written reflection the owner's phone sent home (paulgsc/some-ui#2178): the typed line as typed, the session it is about, when it was written and how far into the session, and when it reached home; see docs/identity.md invariant 29",
 	),
