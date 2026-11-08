@@ -227,3 +227,9 @@ jobs:
         run: >-
           docker run --rm -v "$PWD/infra/prometheus:/prometheus-config:ro" -w /prometheus-config/rules
           --entrypoint promtool prom/prometheus:v3.5.0 test rules home.test.yml
+
+      # CW5, CW6 (paulgsc/some-ui#2659): home's render worker, one pass at a
+      # time with a fake recorder. Here for the same reason: required, on
+      # every PR, and the worker is infra no other job runs.
+      - name: Prove the render worker's guarantees
+        run: bash infra/render/render-calls.test.sh

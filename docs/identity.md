@@ -210,6 +210,7 @@ above the button that deletes (invariant 22):
 | Korean's word sets and reading records | `korean_entry` |
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
+| Notes on the feeds' episodes | `episode_note` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds | `rust_round` |
@@ -722,9 +723,10 @@ nowhere is marked as such and belongs to review.
     for the Jobs routine and for the reflections routine, computed from
     these tables, with `voice_note`'s, and kept in none of them;
     paulgsc/server#509), `reflection` (each written reflection home
-    keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178) and
+    keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178),
     `prompt` (each drama prompt home keeps, as the routine's minimum,
-    invariant 31; paulgsc/some-ui#2179).
+    invariant 31; paulgsc/some-ui#2179) and `feedback` (each note on a
+    feed's episode home keeps, invariant 38; paulgsc/some-ui#2745).
     - `mailbox_item`, written only by the poller: each file it kept from
       those five folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
@@ -755,11 +757,11 @@ nowhere is marked as such and belongs to review.
       beyond the file itself.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
       `PUT /routine/opened`, `PUT /routine/reflections/:id`,
-      `PUT /routine/prompts/:stamp` and the poller's `file_transcripts` and
-      `file_leetype_logs`: a decisions or scouts file the phone filed, which
-      of the routine's lessons it opened, a written reflection, a drama
-      prompt, a transcript, or a LeetType session's log, its bytes, hash and
-      when.
+      `PUT /routine/prompts/:stamp`, `PUT /feeds/:feed/notes/:id` and the
+      poller's `file_transcripts` and `file_leetype_logs`: a decisions or
+      scouts file the phone filed, which of the routine's lessons it opened,
+      a written reflection, a drama prompt, a note on an episode, a
+      transcript, or a LeetType session's log, its bytes, hash and when.
       The jobs route files a decisions or scouts file as the phone sent it,
       a voice note it names by the phone's id included (paulgsc/server#508;
       until then it refused one, which only routed the owner through Drive):
@@ -784,6 +786,13 @@ nowhere is marked as such and belongs to review.
       paulgsc/some-ui#2179). Its scene notes are named in it by id only;
       what home heard in each goes as its transcript. A prompt sent again
       files nothing.
+      The episode notes route files each note it keeps for the first time
+      (invariant 38), in the transaction that keeps it, as
+      `feedback-<id>.json` in `some-ui.episode-note/1`: the note's id, feed,
+      episode, moment, categories, the voice note id of its take or `null`,
+      and when it was written, and nothing else (not when it reached home).
+      Its take is named by id only; what home heard in it goes as its
+      transcript. A note sent again files nothing.
       The poller files each `voice_transcript` row that heard something
       (never a failure or a silence) of a note said for `reflection`, `jobs`,
       `scene`, `studio` or `rust-round` (a Rust Rounds tutor reads what was
@@ -970,13 +979,15 @@ nowhere is marked as such and belongs to review.
     `a_backfilled_file_in_brief_is_counted_and_said_to_be_backfilled`, and its fake
     transport, which fails a `GET` of anything but the folders home reads and
     a `PUT` of anything but `decisions`, `scout`, `opened`, `transcript`,
-    `leetype-log`, `index`, `reflection` or `prompt`; `mailbox_kit`'s
+    `leetype-log`, `index`, `reflection`, `prompt` or `feedback`; `mailbox_kit`'s
     `the_token_never_appears_in_a_debug_or_an_error`; `handlers::routine`'s
     `files_answer_the_callers_own_scenes_and_dramas_newest_first`; and
     `handlers::jobs`'s `digests_answers_only_the_callers_own` and
     `files_take_a_file_that_names_a_voice_note`; and `handlers::routine`'s
     `a_written_reflection_is_kept_once_and_filed_once_as_text` and
-    `a_drama_prompt_is_kept_once_and_filed_once_as_text`.
+    `a_drama_prompt_is_kept_once_and_filed_once_as_text`; and
+    `handlers::episode_notes`'
+    `a_note_is_kept_once_and_filed_once_for_the_mailbox`.
     *Not enforced:* that nothing else writes these tables, which a
     `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
     shows today and review keeps; and what a digest or a session file says,
@@ -1002,16 +1013,16 @@ nowhere is marked as such and belongs to review.
     not store (other bytes already under its name, no account) is never asked
     for, and neither is a file from a folder home reads (`brief`, `scene`,
     `drama`, `run`, `leetype`) that `mailbox_item` does not hold, so the phone never loses one
-    to the archive. A written reflection or a drama prompt is archived the
-    same way, with two differences that keep a pass with nothing to do from
-    asking anything of its folder: the poller lists `reflection` or `prompt`
-    only once a file it filed there has been taken (or already held) by the
+    to the archive. A written reflection, a drama prompt or a note on an
+    episode is archived the same way, with two differences that keep a pass
+    with nothing to do from asking anything of its folder: the poller lists
+    `reflection`, `prompt` or `feedback` only once a file it filed there has been taken (or already held) by the
     mailbox for `MAILBOX_ARCHIVE_DAYS` and is not in `mailbox_archive`
     (`mailbox_repo::filed_due`, which reads home's own tables), and it never
     lists the asks for one (`mailbox::pass::ASKS`), since the routine cannot
-    ask either back (paulgsc/some-ui `apps/mailbox`, `ASKED`); their words
-    are `written_reflection`'s and `drama_prompt`'s in any case (invariants
-    29 and 31). Storing one makes it due no more, so a listing would never
+    ask any of them back (paulgsc/some-ui `apps/mailbox`, `ASKED`); their
+    words are `written_reflection`'s, `drama_prompt`'s and `episode_note`'s
+    in any case (invariants 29, 31 and 38). Storing one makes it due no more, so a listing would never
     find it again: the poller records the mailbox's answer to each ask to
     archive one (`mailbox_archive_answer`), and one it stored whose ask
     heard no answer (it never reached the mailbox, its answer was lost, or
@@ -1049,8 +1060,10 @@ nowhere is marked as such and belongs to review.
     `a_reflection_whose_archive_heard_no_answer_is_asked_for_again`,
     `an_idle_pass_asks_nothing_of_reflections`,
     `an_old_prompt_is_archived_once_and_its_asks_are_never_listed`,
-    `a_prompt_whose_archive_heard_no_answer_is_asked_for_again` and
-    `an_idle_pass_asks_nothing_of_prompts`; `mailbox_repo`'s
+    `a_prompt_whose_archive_heard_no_answer_is_asked_for_again`,
+    `an_idle_pass_asks_nothing_of_prompts`,
+    `an_old_episode_note_is_archived_once_and_an_idle_pass_asks_nothing_of_notes` and
+    `an_episode_note_whose_archive_heard_no_answer_is_asked_for_again`; `mailbox_repo`'s
     `an_archived_name_holds_one_body_and_hands_it_back`; `MailboxContext`'s
     refusal of an archive token equal to `MAILBOX_TOKEN` or of fewer than 30
     days (`a_disabled_mailbox_spawns_nothing`); and, in the mailbox, MB5's
@@ -2062,6 +2075,54 @@ nowhere is marked as such and belongs to review.
     `git grep -n admin_setting -- '*.rs'` shows today, and that no
     namespace is given a field that names a person, which belongs to
     review when a lever is added.
+
+38. **The owner's notes on the feeds' episodes are append-only, one per id,
+    and name a take only by id.** `episode_note` keeps each note the phone's
+    Feedback page left at a moment of a feed's episode and sent home
+    (paulgsc/some-ui#2745, SFEED6): the phone's id for it, the feed (`call`
+    or `playoff-delta`), the episode's key, the moment in milliseconds from
+    its start (at most a day), the categories picked from the fixed set of fourteen (each
+    once, in the set's order, at least one: the phone's `NoteSchema`, held
+    again by a trigger on the table), the voice note id of the library take
+    said for it if there is one, when it was written, and when it reached
+    home. Home is the owner's own store, so it is the record. A note is never
+    updated (a trigger aborts an `UPDATE`) or replaced (a different note
+    under a held id is a `409`), and never deleted but with the account:
+    there is no delete and no switch to turn one off (the owner's answer on
+    paulgsc/some-ui#2749). It is written only by
+    `PUT /feeds/:feed/notes/:id` and read only by `GET /feeds/:feed/notes`,
+    both a session's for its own subject (a paired phone's or a browser's),
+    and deleted with the account by both the sweep and the migration's
+    trigger (invariant 12). Rolling back the migration that creates it fails
+    once it holds a row, rather than dropping the record. The same `PUT`
+    files the note, once, for the mailbox's `feedback` folder as
+    `feedback-<id>.json` (`some-ui.episode-note/1`, invariant 19): all of it
+    but when it reached home. A spoken note's words reach the routine only
+    as its take's transcript in `transcript`, found by the take's id; its
+    audio stays a voice note (invariant 23) and nothing here points at it.
+    Home files no issue from a note (SFEED decision 6): the routine reads
+    it. Nothing of a note reaches a log line: each handler records only
+    `otel.kind` (invariant 6).
+    *Enforced by* `episode_note_repo`'s
+    `the_table_holds_exactly_its_described_columns`,
+    `a_note_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
+    `the_answer_is_the_note_as_the_phone_keeps_it`,
+    `notes_answer_one_feed_of_the_callers_own_oldest_written_first`,
+    `categories_are_the_sets_each_once_in_its_order`,
+    `the_table_refuses_categories_out_of_the_sets_order`,
+    `refusals_name_each_field`,
+    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_record_leaves_with_the_account`; `handlers::episode_notes`'
+    `a_note_is_kept_once_and_filed_once_for_the_mailbox`,
+    `notes_answer_the_callers_own_on_one_feed_oldest_first` and
+    `a_refused_note_writes_and_files_nothing`; and `mailbox::pass`'s
+    `a_filed_episode_note_is_handed_to_its_folder_naming_its_take_by_id`.
+    *Not enforced:* that nothing else writes or reads the table, which
+    `git grep -n episode_note -- '*.rs'` shows today; that the fixed set
+    matches the phone's `CATEGORIES`, which a category added on either side
+    breaks until the other names it (both sides list it in order); and that
+    a note's `take` names a voice note home holds, which is not checked, since
+    the phone's drain may send the note before the take's audio.
 
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them

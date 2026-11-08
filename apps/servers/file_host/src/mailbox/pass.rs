@@ -9,8 +9,9 @@
 //! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
 //! names a voice note by id at most), which lessons it opened, each written
 //! reflection it sent home (`PUT /routine/reflections/:id`, text only), each
-//! drama prompt it asked for (`PUT /routine/prompts/:stamp`, text only), those
-//! transcripts and those logs. Last of the handing, it puts the Jobs
+//! drama prompt it asked for (`PUT /routine/prompts/:stamp`, text only), each
+//! note it left on a feed's episode (`PUT /feeds/:feed/notes/:id`, which
+//! names a take by voice note id at most), those transcripts and those logs. Last of the handing, it puts the Jobs
 //! routine's index and the reflections routine's, each when what it counts
 //! has moved ([`super::index`], [`super::index::reflections`]), so each
 //! index counts what this pass handed. The index is a view home recomputes,
@@ -85,12 +86,12 @@ pub const ITEMS_PER_PASS: u32 = 20;
 /// nothing to archive or put back, and listing it would add two requests to
 /// every idle pass (MI6, paulgsc/some-ui `packages/assurance`).
 ///
-/// A written reflection's folder, and a drama prompt's, is listed only once
-/// one home filed there is due (`mailbox_repo::filed_due`, from home's own
-/// tables), and one home stored is asked for again only while its ask has
-/// no answer (`mailbox_repo::unanswered_archives`), so neither adds a
-/// request to an idle pass.
-pub const ARCHIVES: [Folder; 12] = [
+/// A written reflection's folder, a drama prompt's and an episode note's is
+/// listed only once one home filed there is due (`mailbox_repo::filed_due`,
+/// from home's own tables), and one home stored is asked for again only
+/// while its ask has no answer (`mailbox_repo::unanswered_archives`), so none
+/// adds a request to an idle pass.
+pub const ARCHIVES: [Folder; 13] = [
 	Folder::Brief,
 	Folder::Decisions,
 	Folder::Scout,
@@ -103,12 +104,14 @@ pub const ARCHIVES: [Folder; 12] = [
 	Folder::LeetypeLog,
 	Folder::Reflection,
 	Folder::Prompt,
+	Folder::Feedback,
 ];
 
 /// The folders whose asks a pass answers: every one it archives but
-/// `reflection` and `prompt`.
+/// `reflection`, `prompt` and `feedback`.
 ///
-/// The routine cannot ask a written reflection or a drama prompt back
+/// The routine cannot ask a written reflection, a drama prompt or an
+/// episode's note back
 /// (paulgsc/some-ui `apps/mailbox`, `ASKED`), so listing their asks would
 /// only add requests to every pass (MI6).
 pub const ASKS: [Folder; 10] = [
@@ -177,6 +180,33 @@ pub fn prompt_file(prompt: &drama_prompt_repo::Prompt) -> (String, Vec<u8>) {
 		"schema": PROMPT_SCHEMA,
 		"prompt": prompt.stamp,
 		"text": prompt.text,
+	});
+	(name, body.to_string().into_bytes())
+}
+
+/// What a note on an episode put to the mailbox's `feedback` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
+pub const FEEDBACK_SCHEMA: &str = "some-ui.episode-note/1";
+
+/// A note on a feed's episode as the mailbox takes it, and its name there.
+///
+/// paulgsc/some-ui#2745 (SFEED6): the note whole, but when it reached home.
+/// A spoken note names its take by voice note id only: what home heard in
+/// it goes as that take's transcript, in `transcript`, and nothing of its
+/// audio goes anywhere. Home files no issue from it (SFEED decision 6): the
+/// routine reads it.
+#[must_use]
+pub fn feedback_file(note: &episode_note_repo::Note) -> (String, Vec<u8>) {
+	let name = String::from("feedback-") + &note.id + ".json";
+	let body = serde_json::json!({
+		"schema": FEEDBACK_SCHEMA,
+		"note": note.id,
+		"feed": note.feed,
+		"episode": note.episode,
+		"atMs": note.at_ms,
+		"categories": note.categories,
+		"take": note.take,
+		"writtenAt": note.written_at,
 	});
 	(name, body.to_string().into_bytes())
 }
@@ -543,9 +573,11 @@ async fn hand_over<T: MailboxTransport>(
 			"leetype-log" => Folder::LeetypeLog,
 			"reflection" => Folder::Reflection,
 			"prompt" => Folder::Prompt,
+			"feedback" => Folder::Feedback,
 			// `PUT /jobs/files/:name`, `PUT /routine/opened`,
 			// `PUT /routine/reflections/:id`, `PUT /routine/prompts/:stamp`,
-			// `file_transcripts` and `file_leetype_logs` file only these.
+			// `PUT /feeds/:feed/notes/:id`, `file_transcripts` and
+			// `file_leetype_logs` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -747,7 +779,7 @@ async fn archive_old<T: MailboxTransport>(
 	};
 	let mut budget = ITEMS_PER_PASS as usize;
 	for folder in ARCHIVES {
-		// Home knows which reflections and prompts it filed and when the
+		// Home knows which reflections, prompts and notes it filed and when the
 		// mailbox took them, so it lists each folder only once one is old
 		// enough. One it stored whose ask heard no answer is no longer due, so
 		// it is asked for again by name first.
@@ -861,11 +893,11 @@ async fn archive_one<T: MailboxTransport>(
 }
 
 /// The folders whose archive answers home records (`mailbox_archive_answer`):
-/// a written reflection's and a drama prompt's, which home lists only while
-/// one is due, so a stored one whose ask heard no answer would never be
-/// listed again.
+/// a written reflection's, a drama prompt's and an episode note's, which home
+/// lists only while one is due, so a stored one whose ask heard no answer
+/// would never be listed again.
 const fn answers_recorded(folder: Folder) -> bool {
-	matches!(folder, Folder::Reflection | Folder::Prompt)
+	matches!(folder, Folder::Reflection | Folder::Prompt | Folder::Feedback)
 }
 
 /// Asks the mailbox to drop `item`, whose bytes home holds in
@@ -1135,11 +1167,12 @@ mod tests {
 						"/v1/transcript/items/",
 						"/v1/leetype-log/items/",
 						"/v1/reflection/items/",
-						"/v1/prompt/items/"
+						"/v1/prompt/items/",
+						"/v1/feedback/items/"
 					]
 					.iter()
 					.any(|put| path.starts_with(put)),
-					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes, written reflections and drama prompts: {path}"
+					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes, written reflections, drama prompts and episode notes: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -2477,6 +2510,127 @@ mod tests {
 			}),
 			"the routine's minimum: the stamp and the markdown, no audio"
 		);
+	}
+
+	fn episode_note(id: &str, take: Option<&str>) -> episode_note_repo::Note {
+		episode_note_repo::Note {
+			id: id.to_owned(),
+			feed: String::from("playoff-delta"),
+			episode: String::from("2026-SF-08"),
+			at_ms: 61_000,
+			categories: vec![String::from("shallow"), String::from("voice")],
+			take: take.map(str::to_owned),
+			written_at: String::from("2026-10-23T14:00:00.000Z"),
+		}
+	}
+
+	/// A note on an episode filed with home for the mailbox, as
+	/// `PUT /feeds/:feed/notes/:id` files it, and the mailbox's answer to it
+	/// recorded at `handed_at`.
+	async fn feedback_handed(pool: &SqlitePool, id: &str, handed_at: &str) -> (String, String) {
+		let (name, body) = super::feedback_file(&episode_note(id, None));
+		let mut conn = pool.acquire().await.unwrap();
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut conn, OWNER, "feedback", &name, &sha, &body, handed_at).await.unwrap();
+		mailbox_repo::record_handed(&mut conn, OWNER, "feedback", &name, mailbox_repo::Answer::Added, handed_at)
+			.await
+			.unwrap();
+		(name, String::from_utf8(body).unwrap())
+	}
+
+	/// paulgsc/some-ui#2745 (SFEED6): a note goes to `feedback` once, whole
+	/// but for when it reached home, naming its take by id and nothing else
+	/// of it.
+	#[tokio::test]
+	async fn a_filed_episode_note_is_handed_to_its_folder_naming_its_take_by_id() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = super::feedback_file(&episode_note("n1", Some("take-7")));
+		let sha = hex::encode(Sha256::digest(&body));
+		mailbox_repo::file_outgoing(&mut pool.acquire().await.unwrap(), OWNER, "feedback", &name, &sha, &body, "2026-10-23T14:00:01.000Z")
+			.await
+			.unwrap();
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["added"]);
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, Vec::<&str>::new(), "handed once");
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/feedback/items/feedback-n1.json"]);
+		let sent: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			sent,
+			serde_json::json!({
+				"schema": "some-ui.episode-note/1",
+				"note": "n1",
+				"feed": "playoff-delta",
+				"episode": "2026-SF-08",
+				"atMs": 61_000,
+				"categories": ["shallow", "voice"],
+				"take": "take-7",
+				"writtenAt": "2026-10-23T14:00:00.000Z",
+			})
+		);
+		let (_, unspoken) = super::feedback_file(&episode_note("n2", None));
+		let unspoken: serde_json::Value = serde_json::from_slice(&unspoken).unwrap();
+		assert_eq!(unspoken["take"], serde_json::Value::Null, "a note with no take says so");
+	}
+
+	/// MI6 and invariant 21: a note too young to archive costs an idle pass
+	/// no request; an old one is stored home before the mailbox drops it, and
+	/// its asks are never listed.
+	#[tokio::test]
+	async fn an_old_episode_note_is_archived_once_and_an_idle_pass_asks_nothing_of_notes() {
+		let (pool, vault) = (pool().await, Vault::default());
+		// The mailbox lists in `seq` order: the old note first. Home has filed
+		// only the young one yet.
+		let (old, old_body) = super::feedback_file(&episode_note("n-old", None));
+		let old_body = String::from_utf8(old_body).unwrap();
+		vault.add("feedback", 1, &old, &old_body, OLD);
+		let (young, young_body) = feedback_handed(&pool, "n-young", YOUNG).await;
+		vault.add("feedback", 2, &young, &young_body, YOUNG);
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+		let requests = vault.seen.lock().unwrap().clone();
+		assert_eq!(requests.len(), 25, "a note too young to archive costs no request: {requests:?}");
+		assert!(!requests.iter().any(|path| path.contains(" /v1/feedback/")), "{requests:?}");
+
+		feedback_handed(&pool, "n-old", OLD).await;
+		vault.seen.lock().unwrap().clear();
+		assert_eq!(archive_pass(&pool, &vault).await.archived, ["archived"]);
+		assert_eq!(vault.names(), [young]);
+		assert_eq!(archived_home(&pool).await, [(String::from("feedback"), old, old_body.into_bytes())]);
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/feedback/wanted")), "{requests:?}");
+
+		vault.seen.lock().unwrap().clear();
+		assert!(archive_pass(&pool, &vault).await.archived.is_empty(), "nothing old is left");
+		let requests = vault.seen.lock().unwrap().clone();
+		assert!(!requests.iter().any(|path| path.contains(" /v1/feedback/")), "an archived one is due no more: {requests:?}");
+	}
+
+	/// The same as a drama prompt's: invariant 21, MI6.
+	#[tokio::test]
+	async fn an_episode_note_whose_archive_heard_no_answer_is_asked_for_again() {
+		for (reach, again) in [(Reach::Never, "archived"), (Reach::AnswerLost, "unchanged")] {
+			let (pool, vault) = (pool().await, Vault::default());
+			let (name, body) = feedback_handed(&pool, "n-old", OLD).await;
+			vault.add("feedback", 1, &name, &body, OLD);
+			*vault.deletes_reach.lock().unwrap() = Some(reach);
+			assert!(archive_pass_ending(&pool, &vault).await.is_err(), "the ask heard no answer");
+			assert_eq!(archived_home(&pool).await.len(), 1, "home stored it before it asked");
+
+			*vault.deletes_reach.lock().unwrap() = None;
+			vault.seen.lock().unwrap().clear();
+			assert_eq!(archive_pass(&pool, &vault).await.archived, [again]);
+			let requests = vault.seen.lock().unwrap().clone();
+			let path = String::from("/v1/feedback/items/") + &name;
+			assert!(
+				requests.iter().filter(|seen| seen.contains(" /v1/feedback/")).eq([&(String::from("Delete ") + &path)]),
+				"asked again by name, with no listing: {requests:?}"
+			);
+			assert!(vault.names().is_empty(), "the mailbox holds it no more");
+
+			vault.seen.lock().unwrap().clear();
+			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
+			let idle = vault.seen.lock().unwrap().clone();
+			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert!(!idle.iter().any(|path| path.contains(" /v1/feedback/")), "answered, it is owed no more: {idle:?}");
+		}
 	}
 
 	fn session_file(title: &str) -> String {

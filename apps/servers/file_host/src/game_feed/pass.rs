@@ -46,7 +46,27 @@ pub struct NoAnswer(pub &'static str);
 /// The network, as the pass sees it.
 pub trait Fetch: Send + Sync {
 	fn get(&self, url: &str) -> impl Future<Output = Result<Answer, NoAnswer>> + Send;
+
+	/// [`Fetch::get`] for a reader that wants only a 200's body: a 200 whose
+	/// body passes `max` bytes is refused as `too_big`, and another status's
+	/// body may be left unread.
+	///
+	/// This default reads the whole answer first, which suits a fake.
+	/// [`ReqwestFetch`] stops reading once the body passes `max`, so an answer
+	/// over the cap costs home at most `max` bytes and one chunk.
+	fn get_at_most(&self, url: &str, max: usize) -> impl Future<Output = Result<Answer, NoAnswer>> + Send {
+		async move {
+			let answer = self.get(url).await?;
+			if answer.status == 200 && answer.body.len() > max {
+				return Err(NoAnswer(TOO_BIG));
+			}
+			Ok(answer)
+		}
+	}
 }
+
+/// The kind of an answer refused for passing its cap.
+const TOO_BIG: &str = "too_big";
 
 /// Fetches `url`, at most `max` bytes.
 ///
@@ -58,15 +78,15 @@ pub trait Fetch: Send + Sync {
 /// # Errors
 /// The failure's kind, never a URL or a body.
 pub async fn fetch_capped<F: Fetch>(fetch: &F, url: &str, max: usize) -> Result<Vec<u8>, &'static str> {
-	match fetch.get(url).await {
-		Ok(Answer { status: 200, body }) if body.len() <= max => Ok(body),
-		Ok(Answer { status: 200, .. }) => Err("too_big"),
+	match fetch.get_at_most(url, max).await {
+		Ok(Answer { status: 200, body }) => Ok(body),
 		Ok(_) => Err("refused"),
 		Err(no_answer) => Err(no_answer.0),
 	}
 }
 
-/// [`Fetch`] over `reqwest`.
+/// [`Fetch`] over `reqwest`. [`Fetch::get`] reads a whole answer, whatever
+/// its status: the game feed keeps every response raw, uncapped (GA3).
 #[derive(Debug, Clone)]
 pub struct ReqwestFetch {
 	client: reqwest::Client,
@@ -79,21 +99,53 @@ impl ReqwestFetch {
 	}
 }
 
+/// A `reqwest` failure's kind.
+fn no_answer(err: &reqwest::Error) -> NoAnswer {
+	NoAnswer(if err.is_timeout() {
+		"timeout"
+	} else if err.is_connect() {
+		"connect"
+	} else {
+		"transport"
+	})
+}
+
+impl ReqwestFetch {
+	/// `url`'s answer, read as [`read_body`] does.
+	async fn read(&self, url: &str, max: usize, only_ok: bool) -> Result<Answer, NoAnswer> {
+		let response = self.client.get(url).send().await.map_err(|err| no_answer(&err))?;
+		read_body(response, max, only_ok).await
+	}
+}
+
+/// An answer with its body read in chunks to at most `max` bytes; with
+/// `only_ok`, another status's body is left unread.
+async fn read_body(mut response: reqwest::Response, max: usize, only_ok: bool) -> Result<Answer, NoAnswer> {
+	let status = response.status().as_u16();
+	if only_ok && status != 200 {
+		return Ok(Answer { status, body: Vec::new() });
+	}
+	// A declared length over the cap is refused before any of the body.
+	if response.content_length().is_some_and(|length| usize::try_from(length).map_or(true, |length| length > max)) {
+		return Err(NoAnswer(TOO_BIG));
+	}
+	let mut body = Vec::new();
+	while let Some(chunk) = response.chunk().await.map_err(|err| no_answer(&err))? {
+		if body.len().saturating_add(chunk.len()) > max {
+			return Err(NoAnswer(TOO_BIG));
+		}
+		body.extend_from_slice(&chunk);
+	}
+	Ok(Answer { status, body })
+}
+
 impl Fetch for ReqwestFetch {
 	async fn get(&self, url: &str) -> Result<Answer, NoAnswer> {
-		let kind = |err: &reqwest::Error| {
-			NoAnswer(if err.is_timeout() {
-				"timeout"
-			} else if err.is_connect() {
-				"connect"
-			} else {
-				"transport"
-			})
-		};
-		let response = self.client.get(url).send().await.map_err(|err| kind(&err))?;
-		let status = response.status().as_u16();
-		let body = response.bytes().await.map_err(|err| kind(&err))?;
-		Ok(Answer { status, body: body.to_vec() })
+		self.read(url, usize::MAX, false).await
+	}
+
+	async fn get_at_most(&self, url: &str, max: usize) -> Result<Answer, NoAnswer> {
+		self.read(url, max, true).await
 	}
 }
 
@@ -407,6 +459,87 @@ mod tests {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
 		pool
+	}
+
+	/// An answer of `status` whose body is `body`, its length known.
+	fn answer(status: u16, body: Vec<u8>) -> reqwest::Response {
+		reqwest::Response::from(axum::http::Response::builder().status(status).body(body).unwrap())
+	}
+
+	/// A body that never ends and has no length: 64 KiB chunks, each counted
+	/// in `pulled` as it is read.
+	struct Unending {
+		pulled: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+		/// A length it declares, though it never ends.
+		declared: Option<u64>,
+	}
+
+	impl http_body::Body for Unending {
+		type Data = axum::body::Bytes;
+		type Error = std::convert::Infallible;
+
+		fn poll_frame(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+			self.pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+			std::task::Poll::Ready(Some(Ok(http_body::Frame::data(axum::body::Bytes::from(vec![b' '; 0x10000])))))
+		}
+
+		fn size_hint(&self) -> http_body::SizeHint {
+			self.declared.map_or_else(http_body::SizeHint::default, http_body::SizeHint::with_exact)
+		}
+	}
+
+	fn unending(status: u16, pulled: &std::sync::Arc<std::sync::atomic::AtomicUsize>, declared: Option<u64>) -> reqwest::Response {
+		let body = reqwest::Body::wrap(Unending {
+			pulled: std::sync::Arc::clone(pulled),
+			declared,
+		});
+		reqwest::Response::from(axum::http::Response::builder().status(status).body(body).unwrap())
+	}
+
+	const MIB: usize = 1_048_576;
+
+	#[tokio::test]
+	async fn an_answer_within_the_cap_is_read_whole() {
+		let read = read_body(answer(200, b"hello".to_vec()), 5, true).await;
+		assert_eq!(read.map(|a| a.body), Ok(b"hello".to_vec()));
+	}
+
+	#[tokio::test]
+	async fn a_declared_length_over_the_cap_is_refused_before_its_body() {
+		let pulled = std::sync::Arc::default();
+		let read = read_body(unending(200, &pulled, Some(u64::try_from(MIB).unwrap() + 1)), MIB, true).await;
+		assert_eq!(read.map(|a| a.status), Err(NoAnswer("too_big")));
+		assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), 0, "none of its body is read");
+	}
+
+	/// An answer with no length that never ends: the read stops at the chunk
+	/// that passes the cap, 1 MiB and one chunk in.
+	#[tokio::test]
+	async fn an_unending_answer_is_refused_once_it_passes_the_cap() {
+		let pulled = std::sync::Arc::default();
+		let read = tokio::time::timeout(Duration::from_secs(10), read_body(unending(200, &pulled, None), MIB, true)).await;
+		assert_eq!(read.map(|r| r.map(|a| a.status)), Ok(Err(NoAnswer("too_big"))));
+		assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), MIB / 0x10000 + 1);
+	}
+
+	/// Another status is a refusal whatever its size, and its body is not read.
+	#[tokio::test]
+	async fn a_refusal_over_the_cap_is_still_a_refusal() {
+		let declared = read_body(answer(503, vec![b' '; MIB + 1]), MIB, true).await;
+		assert_eq!(declared.map(|a| (a.status, a.body.len())), Ok((503, 0)));
+		let pulled = std::sync::Arc::default();
+		let unread = read_body(unending(404, &pulled, None), MIB, true).await;
+		assert_eq!(unread.map(|a| (a.status, a.body.len())), Ok((404, 0)));
+		assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), 0, "its body is never read");
+		let refused = Canned::default();
+		refused.answers.lock().unwrap().push((
+			String::from("x"),
+			Ok(Answer {
+				status: 503,
+				body: vec![b' '; MIB + 1],
+			}),
+		));
+		assert_eq!(fetch_capped(&refused, "x", MIB).await, Err("refused"));
 	}
 
 	fn at(text: &str) -> DateTime<Utc> {

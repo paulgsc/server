@@ -37,6 +37,7 @@ members = [
   "crates/db/studio_video",
   "crates/db/reflection",
   "crates/db/drama_prompt",
+  "crates/db/episode_note",
   "crates/db/leetype_round",
   "crates/db/learner_shelf",
   "crates/db/mood_event",
@@ -184,6 +185,7 @@ idea_repo = { path = "crates/db/idea" }
 studio_video_repo = { path = "crates/db/studio_video" }
 reflection_repo = { path = "crates/db/reflection" }
 drama_prompt_repo = { path = "crates/db/drama_prompt" }
+episode_note_repo = { path = "crates/db/episode_note" }
 leetype_round_repo = { path = "crates/db/leetype_round" }
 learner_shelf_repo = { path = "crates/db/learner_shelf" }
 leetype_runner = { path = "crates/leetype_runner" }

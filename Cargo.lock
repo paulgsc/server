@@ -1621,6 +1621,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "episode_note_repo"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1739,10 +1750,12 @@ dependencies = [
  "curriculum_repo",
  "drama_prompt_repo",
  "engagement_repo",
+ "episode_note_repo",
  "fcm_kit",
  "futures",
  "game_feed_repo",
  "hex",
+ "http-body",
  "idea_repo",
  "intervention",
  "ipnet",

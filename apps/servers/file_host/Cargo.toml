@@ -142,6 +142,7 @@ idea_repo = { workspace = true }
 studio_video_repo = { workspace = true }
 reflection_repo = { workspace = true }
 drama_prompt_repo = { workspace = true }
+episode_note_repo = { workspace = true }
 leetype_round_repo = { workspace = true }
 learner_shelf_repo = { workspace = true }
 # Only `src/bin/record_leetype_runs.rs` uses it; `tests/leetype_runs.rs`
@@ -178,6 +179,8 @@ rustix = { version = "1.1.5", features = ["fs"] }
 
 
 [dev-dependencies]
+# An answer whose body never ends, for `game_feed::pass`'s bounded read.
+http-body = "1.0.1"
 # `test-util` gives the paused clock the sliding-window rate limiter tests use
 # to step over a sixty-second window without sleeping for it.
 tokio = { workspace = true, features = [

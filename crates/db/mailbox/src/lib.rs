@@ -512,9 +512,12 @@ pub const REFLECTION: &str = "reflection";
 /// The folder home's drama prompts go to.
 pub const PROMPT: &str = "prompt";
 
+/// The folder home's notes on the feeds' episodes go to.
+pub const FEEDBACK: &str = "feedback";
+
 /// Whether one of the files `subject`'s home filed itself in `folder` is due
-/// to be archived: the [`REFLECTION`] and [`PROMPT`] folders, whose files the
-/// routine cannot ask back.
+/// to be archived: the [`REFLECTION`], [`PROMPT`] and [`FEEDBACK`] folders,
+/// whose files the routine cannot ask back.
 ///
 /// That is one home filed, which the mailbox took (or already held) at
 /// `cutoff` or before, and which home has not archived: the one reason a

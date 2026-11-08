@@ -221,17 +221,19 @@ groups:
 
       - alert: CallRenderOverdue
         # CW5: a week has waited 3 hours since home took it, with no failed
-        # attempt, so the worker is not trying it: stopped, or stuck in a
-        # render. The worker passes hourly and a render takes well under an
-        # hour, so 3 hours is past any pass that started. A week whose
-        # attempt failed is CallRenderFailed's.
+        # attempt: the worker is stopped, stuck in a render, or held back by
+        # the lane for want of room (L4c, docs/home-compute.md, "What the
+        # render worker does"). The worker looks every minute and a render
+        # takes well under an hour, so 3 hours is past any render that
+        # started. A week whose attempt failed is CallRenderFailed's; a lane
+        # that holds one job back for good is LaneStuck's too.
         expr: |
           max(call_render_weeks_waiting) > 0
           and on() (time() - max(call_render_oldest_waiting_taken_timestamp_seconds)) > 10800
           and on() max(call_render_weeks_failed) == 0
         labels:
           objective: CW5
-          says: "A week of the call has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+          says: "A week of the call has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
 
       - alert: PlayoffDeltaRenderFailed
         # PK5 (some-ui#2647): a voiced fill home holds has no video and the
@@ -255,12 +257,13 @@ groups:
           and on() max(pd_render_episodes_failed) == 0
         labels:
           objective: PK5
-          says: "A week of Playoff Delta has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+          says: "A week of Playoff Delta has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
 
       - alert: CallRenderWorkerStale
-        # CW5: the worker stamps each pass it starts and sleeps an hour after
-        # one ends, so a pass with a render in it spaces two stamps by the
-        # render and an hour. Four hours is a worker that stopped, which this
+        # CW5: the worker stamps each pass it starts, a minute apart, and
+        # every minute while a job waits for room or is paused (L4c), never
+        # while a render runs: four hours is a worker that stopped, or a
+        # render that hung (one longer than four hours trips it too), which this
         # catches even with no week waiting. A worker that never stamped
         # (not deployed) is not this; a week it leaves waiting is
         # CallRenderOverdue's.
@@ -269,7 +272,7 @@ groups:
           and on() (time() - max(call_render_worker_last_pass_timestamp_seconds)) > 14400
         labels:
           objective: CW5
-          says: "Home's render worker has not started a pass for 4 hours (it starts one hourly): docker logs render says why."
+          says: "Home's render worker has not stamped a pass for 4 hours (it stamps one every minute, waiting for room or not): docker logs render says why."
 
       - alert: CallServiceRestarted
         # CW5: the speaker, the stage or the render worker died and Docker's
