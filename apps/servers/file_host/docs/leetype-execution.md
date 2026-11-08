@@ -331,9 +331,12 @@ arrival", below): the phone puts a round, home keeps it as an append-only
 row and queues each distinct program, and a background pass in file_host
 hands each to the runner over its socket and keeps how it ended. The runner
 is in `docker-compose.yml`'s stack, its socket's volume mounted read-only
-into file-host (`infra/compose/file_host.yml`); `RUST_ROUNDS_ENABLED` stays
-off until home turns it on, and until then file_host asks it nothing. Not
-yet done: the rounds, runs and task placed in some-ui's assurance ledger.
+into file-host (`infra/compose/file_host.yml`). The pass always runs, and
+records unless the operator has paused it from the web app (the
+`rust-rounds` admin setting, `settings::RustRounds`, on by default;
+`RUST_ROUNDS_ENABLED` is gone, paulgsc/some-ui#2357). A machine with no
+runner, where nothing is at the socket, is a deployment fact the pass says
+once, not an outage (`rust_rounds`, "No runner on this machine").
 
 ### Why a socket and no network, not "an internal network"
 
@@ -560,7 +563,7 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
 | `GET /api/v1/rust-rounds`, `GET /api/v1/rust-rounds/:id` | The caller's subject's newest rounds; one of its rounds, byte for byte, with each read and variant card's program and every run kept for it (`toolchain`, `ended`, `refusal`, and `rustc`, some-ui's `RustcRunSchema`; never when it was kept, since a run is shared across subjects). The `ETag` is the body's hash, so it moves when a run is kept; `If-None-Match` answers `304`. Another subject's id is a `404`. |
 | `GET /api/v1/rust-weeks`, `GET /api/v1/rust-weeks/:id` (RR12, paulgsc/some-ui#2687) | The weeks the routine put in the mailbox (`some-ui.rust-week/1`, riding `brief` as `rust-week-<id>.json`), newest first; one week, byte for byte, with each ticket's program and every run kept for it, shaped and tagged as a round's. `mailbox::pass` keeps a week and queues each ticket's program it does not hold yet in one transaction (`rust_round_repo::week::read`, `queue_week`), so the same pass records it. There is no `PUT`. |
 | `rust_round`, `rust_round_source`, `rust_round_run`, `rust_round_drop` (`migrations/20261031000100_create_rust_round.up.sql`, `crates/db/rust_round`) | The rounds; each distinct program once, in arrival order (the queue); one run per program and toolchain (`recorded`, `refused` or `runner-lost`, RP3); and each time the runner was lost holding a program. None is ever updated. `rust_round` is subject-scoped, read only by its subject and deleted only with its account; the other three name no subject, are never deleted, and are shared by every round holding the program (docs/identity.md invariant 28). |
-| `rust_rounds` (`src/rust_rounds.rs`, `src/rust_rounds/pass.rs`) | The background pass, every `rust_rounds::INTERVAL`: asks the runner its toolchain, reads what waits under it, and hands each program over the socket (`rust_rounds_wire::protocol::exchange`), keeping how it ended. Off unless `RUST_ROUNDS_ENABLED`. |
+| `rust_rounds` (`src/rust_rounds.rs`, `src/rust_rounds/pass.rs`) | The background pass, every `rust_rounds::INTERVAL`: asks the runner its toolchain, reads what waits under it, and hands each program over the socket (`rust_rounds_wire::protocol::exchange`), keeping how it ended. Always runs; each pass reads the operator's `rust-rounds` setting first and asks nothing while it is paused. |
 
 **A round's id is never reused, so another body under it is refused.** The
 format says ids are "unique across rounds, never reused", so a second body

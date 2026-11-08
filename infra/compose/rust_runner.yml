@@ -7,7 +7,8 @@
 #
 # In docker-compose.yml's `include`: file-host mounts the socket's volume
 # read-only (infra/compose/file_host.yml) and asks it from its recording
-# pass, `rust_rounds`, which is off until RUST_ROUNDS_ENABLED. Nothing can
+# pass, `rust_rounds`, which records unless the operator pauses it from the
+# web app (the `rust-rounds` admin setting, on by default). Nothing can
 # scrape it (no network), so infra/prometheus/inventory.yml says why. It
 # also runs on its own:
 #

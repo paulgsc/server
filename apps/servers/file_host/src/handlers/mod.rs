@@ -5,6 +5,7 @@
 //! that folds a new variant into an old answer is allowed here.
 #![warn(clippy::let_underscore_must_use, clippy::wildcard_enum_match_arm)]
 
+pub mod admin_settings;
 pub mod aph;
 pub mod app_events;
 pub mod auth;

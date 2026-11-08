@@ -1,3 +1,4 @@
+pub mod admin_settings;
 pub mod aph;
 pub mod app_events;
 pub mod auth;

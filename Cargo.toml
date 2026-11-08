@@ -16,6 +16,7 @@ members = [
   "crates/app-config",
   "crates/cursorium",
   "crates/db/activity",
+  "crates/db/admin_setting",
   "crates/db/aph",
   "crates/db/auth",
   "crates/db/capture",
@@ -158,6 +159,7 @@ some-metrics = { path = "crates/some-metrics" }
 some-shutdown = { path = "crates/some-shutdown" }
 app-config = { path = "crates/app-config" }
 activity_repo = { path = "crates/db/activity" }
+admin_setting_repo = { path = "crates/db/admin_setting" }
 aph_repo = { path = "crates/db/aph" }
 auth_repo = { path = "crates/db/auth" }
 capture_repo = { path = "crates/db/capture" }

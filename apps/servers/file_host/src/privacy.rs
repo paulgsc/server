@@ -62,6 +62,10 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 	("_sqlx_migrations", "sqlx's own migration ledger"),
 	("activities", "the activity catalogue — corpus-wide"),
 	(
+		"admin_setting",
+		"the operator's levers, every revision: the deployment's policy, with who set each as a role (owner or operator), never a subject (invariant 37)",
+	),
+	(
 		"call_week",
 		"each week of the weekly call, as paulgsc/testing served it — what merged in two public repositories, nobody's record",
 	),

@@ -1,7 +1,9 @@
 //! Who may change what everyone is served.
 //!
 //! The operator routes rewrite, retire and restore corpus-wide content: the
-//! lessons (`routes::db::curriculum_operator`). Before passkey auth they had
+//! lessons (`routes::db::curriculum_operator`); and they set the levers home
+//! follows while it runs (`routes::admin_settings`), which record who set
+//! each as [`Operator::role`], never the subject. Before passkey auth they had
 //! no gate but the CORS allowlist. Now the operator is **the owner's
 //! account**: the only account, which is what a box with sign-up closed after
 //! its first account has (`auth::owner`, docs/identity.md "Who is an
@@ -35,6 +37,7 @@ use crate::{
 	subject::{BrowserSubject, SubjectId},
 	FileHostError,
 };
+use admin_setting_repo::SetBy;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 
@@ -45,6 +48,18 @@ pub struct Operator {
 	/// Held, not read: it carries the request's hold against the account
 	/// being deleted, like any `SubjectId`.
 	_subject: SubjectId,
+	/// Whether this is the owner's account or a listed subject: what an
+	/// admin setting records as who set it, in place of the subject
+	/// (`settings`, docs/identity.md invariant 37).
+	role: SetBy,
+}
+
+impl Operator {
+	/// Who this operator is, as a role: never the subject.
+	#[must_use]
+	pub const fn role(&self) -> SetBy {
+		self.role
+	}
 }
 
 /// `OPERATOR_SUBJECTS` as configured: each entry trimmed, empty ones dropped.
@@ -66,7 +81,14 @@ where
 		let BrowserSubject(subject) = BrowserSubject::from_request_parts(parts, state).await?;
 		let verdict = AuthContext::from_ref(state).operator_verdict(subject.as_str()).await?;
 		match verdict {
-			OperatorVerdict::Operator => Ok(Self { _subject: subject }),
+			OperatorVerdict::Owner => Ok(Self {
+				_subject: subject,
+				role: SetBy::Owner,
+			}),
+			OperatorVerdict::Listed => Ok(Self {
+				_subject: subject,
+				role: SetBy::Operator,
+			}),
 			OperatorVerdict::NotListed => {
 				// How an operator finds the id to configure; see the module docs.
 				tracing::info!(subject = %subject.as_str(), "a subject not in OPERATOR_SUBJECTS called an operator route");
@@ -128,7 +150,7 @@ mod tests {
 	}
 
 	fn operator_modules() -> Vec<Module<TestState>> {
-		vec![crate::routes::db::curriculum_operator()]
+		vec![crate::routes::db::curriculum_operator(), crate::routes::admin_settings::admin_settings()]
 	}
 
 	async fn state(operators: &[&str]) -> TestState {

@@ -126,7 +126,10 @@ struct Settings {
 /// Whether a signed-in subject may use the operator routes, and if not, why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperatorVerdict {
-	Operator,
+	/// The owner's account, with `OPERATOR_SUBJECTS` unset.
+	Owner,
+	/// A subject `OPERATOR_SUBJECTS` lists.
+	Listed,
 	/// `OPERATOR_SUBJECTS` is set and does not list the subject.
 	NotListed,
 	/// `OPERATOR_SUBJECTS` is unset and the subject is not the only account.
@@ -388,13 +391,13 @@ impl AuthContext {
 		let listed = &self.inner.settings.operators;
 		if !listed.is_empty() {
 			return Ok(if listed.iter().any(|operator| operator == subject) {
-				OperatorVerdict::Operator
+				OperatorVerdict::Listed
 			} else {
 				OperatorVerdict::NotListed
 			});
 		}
 		Ok(if self.owner().await?.subject() == Some(subject) {
-			OperatorVerdict::Operator
+			OperatorVerdict::Owner
 		} else {
 			OperatorVerdict::NotTheOwner
 		})
