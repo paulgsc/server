@@ -1,13 +1,20 @@
 use crate::Config;
-use axum::http::{HeaderName, HeaderValue, Method};
+use axum::http::{header::RETRY_AFTER, HeaderName, HeaderValue, Method};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 fn origins(config: &Config) -> AllowOrigin {
 	AllowOrigin::list(config.allowed_origins.iter().filter_map(|origin| origin.parse::<HeaderValue>().ok()))
 }
 
+/// Exposes `Retry-After`, so a browser client refused by the rate limiter
+/// can read how long to wait (CORS hides every response header but a few
+/// safelisted ones unless named here).
 pub fn allowlisted_cors(config: &Config, methods: Vec<Method>, headers: Vec<HeaderName>) -> CorsLayer {
-	CorsLayer::new().allow_origin(origins(config)).allow_methods(methods).allow_headers(headers)
+	CorsLayer::new()
+		.allow_origin(origins(config))
+		.allow_methods(methods)
+		.allow_headers(headers)
+		.expose_headers([RETRY_AFTER])
 }
 
 /// Same allowlist, plus `Access-Control-Allow-Credentials`.

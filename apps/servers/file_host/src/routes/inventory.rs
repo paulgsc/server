@@ -159,8 +159,10 @@ where
 ///
 /// Returns the versioned half, which the caller nests under
 /// [`API_V1_BASE_PATH`] after adding its own layers, and the unversioned
-/// half, which it merges at the root.
-pub fn routers<S>(config: &Config) -> (Router<S>, Router<S>)
+/// half, which it merges at the root. `versioned` wraps each versioned
+/// module's table inside that module's CORS (`main.rs` passes the rate
+/// limiter), so what it answers on its own still carries CORS headers.
+pub fn routers<S>(config: &Config, versioned: impl Fn(Router<S>) -> Router<S>) -> (Router<S>, Router<S>)
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
@@ -168,7 +170,13 @@ where
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 {
-	split(|module| module.into_router(config))
+	split(|module| {
+		if module.is_versioned() {
+			module.into_router(config, &versioned)
+		} else {
+			module.into_router(config, |router| router)
+		}
+	})
 }
 
 fn split<S>(build: impl Fn(Module<S>) -> Router<S>) -> (Router<S>, Router<S>)

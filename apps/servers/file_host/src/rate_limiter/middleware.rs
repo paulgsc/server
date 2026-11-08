@@ -97,4 +97,54 @@ mod tests {
 		clock.advance(Duration::from_secs(30));
 		assert_eq!(ask().await.unwrap().status(), StatusCode::OK);
 	}
+
+	fn module_cors(config: &crate::Config) -> tower_http::cors::CorsLayer {
+		crate::routes::cors::allowlisted_cors_with_credentials(config, vec![axum::http::Method::GET], vec![])
+	}
+
+	/// A browser on an allowed origin can read the refusal and its wait: the
+	/// limiter sits inside the module's CORS, so the `429` carries the CORS
+	/// headers and exposes `Retry-After`. Outside it, the browser saw a network
+	/// error and could not back off (Codex review on #729).
+	#[tokio::test]
+	async fn a_cross_origin_refusal_is_readable() {
+		use crate::routes::table::{Module, RouteTable};
+		use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, ORIGIN};
+		use clap::Parser;
+
+		let config = crate::Config::try_parse_from([
+			"file_host",
+			"--database-url",
+			"sqlite::memory:",
+			"--auth-enabled",
+			"false",
+			"--allowed-origins",
+			"https://app.example",
+			"--app-base-url",
+			"https://app.example/",
+			"--nats-url",
+			"nats://nats:4222",
+			"--redis-url",
+			"redis://redis:6379",
+		])
+		.unwrap();
+		let quota = Quota::per_period(NonZeroU32::MIN, Duration::from_secs(60));
+		let limiter = Arc::new(KeyedLimiter::new(quota, Arc::new(ManualClock::new())));
+		let module = Module::versioned("probe", RouteTable::new().get("/", || async { "ok" })).with_cors(module_cors);
+		let app = module
+			.into_router(&config, |router| router.layer(from_fn_with_state(limiter, rate_limit_middleware)))
+			.layer(MockConnectInfo(SocketAddr::from(([10, 1, 2, 3], 5555))));
+		let ask = || app.clone().oneshot(Request::get("/").header(ORIGIN, "https://app.example").body(Body::empty()).unwrap());
+
+		assert_eq!(ask().await.unwrap().status(), StatusCode::OK);
+		let refused = ask().await.unwrap();
+		assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+		assert_eq!(refused.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "https://app.example");
+		assert!(refused.headers()[ACCESS_CONTROL_EXPOSE_HEADERS]
+			.to_str()
+			.unwrap()
+			.to_ascii_lowercase()
+			.contains("retry-after"));
+		assert_eq!(refused.headers()[RETRY_AFTER], "60");
+	}
 }

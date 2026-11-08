@@ -135,8 +135,6 @@ async fn main() -> Result<()> {
 	// Every route module comes from `inventory::modules`, the same list
 	// `dump-routes` reads, so what is served here and what the client's
 	// snapshot says is served cannot differ. See `routes::table`.
-	let (mut versioned_routes, unversioned_routes) = inventory::routers(&config);
-
 	// #215 (A1/A2): capacity is `config.rate_limit` — documented as requests
 	// per minute — never `max_request_size`, which is megabytes of payload
 	// and was only ever the rate limiter's capacity by coincidence of both
@@ -151,7 +149,14 @@ async fn main() -> Result<()> {
 	let rate_limiter = Arc::new(HttpLimiter::new(Quota::per_period(limit, Duration::from_secs(60)), MonotonicClock::new()));
 	file_host::metrics::rate_limit::record_capacity(config.rate_limit);
 	file_host::metrics::rate_limit::register_all();
-	versioned_routes = versioned_routes.layer(from_fn_with_state(rate_limiter.clone(), rate_limit_middleware));
+
+	// Every route module comes from `inventory::modules`, the same list
+	// `dump-routes` reads, so what is served here and what the client's
+	// snapshot says is served cannot differ. See `routes::table`. The limiter
+	// goes inside each versioned module's CORS, so a 429 still carries that
+	// module's CORS headers (and exposes `Retry-After`): outside them, a
+	// browser reads the refusal as a network error and cannot back off.
+	let (versioned_routes, unversioned_routes) = inventory::routers(&config, |router| router.layer(from_fn_with_state(rate_limiter.clone(), rate_limit_middleware)));
 
 	let app = Router::new()
 		.nest(API_V1_BASE_PATH, versioned_routes)
