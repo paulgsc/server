@@ -164,7 +164,11 @@ async fn observe_renders(db: &sqlx::SqlitePool) {
 		warn!(error = "storage", "call render observation failed");
 	}
 	let work = std::path::Path::new(render::WORK_FOLDER);
-	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await);
+	// The worker's Playoff Delta job keeps its videos, work and cache
+	// warnings on the same drive, so the drive's numbers, and
+	// CallRenderCacheFull, count both jobs.
+	let pd = crate::pd_fills::render::disk().await;
+	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await.and(&pd));
 }
 
 /// The pass's one log line, when it added a week or something went wrong.

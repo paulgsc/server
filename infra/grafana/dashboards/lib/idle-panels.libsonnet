@@ -5,7 +5,7 @@
 // `lane_idle` (apps/servers/file_host/src/call_weeks/lane.rs): no
 // interactive work held in its 5 s tick (no voice note being heard, no Rust
 // Rounds program being recorded) and no batch work in progress (no render
-// job named, no week's attempt running). Everything else keeps running at
+// job named, no attempt of the call's or Playoff Delta's running). Everything else keeps running at
 // rest, and is counted: the polls (mailbox, call weeks, game feed, the nudge
 // waker), requests, and every container staying up. That is the cost the
 // row measures.

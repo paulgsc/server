@@ -617,6 +617,38 @@ tests:
         alertname: CallRenderFailed
         exp_alerts: []
 
+  - name: a Playoff Delta episode whose render failed alerts at once, and one waiting 3 hours unattempted is overdue (PK5)
+    interval: 1m
+    input_series:
+      - series: 'pd_render_episodes_waiting{job="file_host"}'
+        values: '1x400'
+      - series: 'pd_render_episodes_failed{job="file_host"}'
+        values: '0x200 1x200'
+      - series: 'pd_render_oldest_waiting_taken_timestamp_seconds{job="file_host"}'
+        values: '0x400'
+    alert_rule_test:
+      - eval_time: 2h55m
+        alertname: PlayoffDeltaRenderOverdue
+        exp_alerts: []
+      - eval_time: 3h05m
+        alertname: PlayoffDeltaRenderOverdue
+        exp_alerts:
+          - exp_labels:
+              objective: PK5
+              says: "A week of Playoff Delta has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+      - eval_time: 3h05m
+        alertname: PlayoffDeltaRenderFailed
+        exp_alerts: []
+      - eval_time: 3h25m
+        alertname: PlayoffDeltaRenderFailed
+        exp_alerts:
+          - exp_labels:
+              objective: PK5
+              says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+      - eval_time: 3h25m
+        alertname: PlayoffDeltaRenderOverdue
+        exp_alerts: []
+
   - name: a render worker that stopped stamping is stale past 4 hours, and one never deployed is not (CW5)
     interval: 1m
     input_series:

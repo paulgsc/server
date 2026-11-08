@@ -161,9 +161,11 @@ seconds, pauses (SIGSTOP/SIGCONT) and stops on it, and writes `job` and
 Home's idle footprint is what its services take while nobody's work is
 running. The lane knows when that is, so it says it: `lane_idle` is 1 in a
 tick with no interactive work held and no batch work in progress (a job
-named in `job`, or a week's attempt running, which the worker marks with
-its `.<week>.log` until the attempt ends; a log left by an attempt that
-was killed counts until that week's next attempt ends, within the hour).
+named in `job`, or an attempt of either of the render worker's jobs
+running, the call's or Playoff Delta's, which the worker marks with a
+`.<key>.log` in that job's status folder until the attempt ends; a log left
+by an attempt that was killed counts until that key's next attempt ends,
+within the hour).
 The polls (mailbox, call weeks,
 game feed, the nudge waker), requests and scrapes keep running at rest:
 they are part of what keeping home up costs, and are counted.

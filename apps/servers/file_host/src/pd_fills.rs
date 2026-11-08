@@ -16,12 +16,17 @@
 //! It reads one public folder, `paulgsc/testing`'s `playoff-delta/` on
 //! `main`, without a token, and writes one table, `pd_fill`, append-only; a
 //! fill is kept once, as first served ([`pass`]'s module doc has the rest).
+//! It also writes each voiced fill it holds to [`render::EPISODES_FOLDER`]
+//! for home's render worker, which records and renders the week from it
+//! (`infra/compose/call-render.yml`).
 //!
-//! **What it says.** Each pass's start and whether it failed (PK2): the
-//! `PlayoffDeltaFills*` alerts in `infra/prometheus/rules/home.yml`, which
-//! reach the owner on Slack.
+//! **What it says.** Each pass's start and whether it failed (PK2), and each
+//! minute what the render worker has made of the fills held ([`render`],
+//! PK5): the CALL dashboard and the `PlayoffDelta*` alerts in
+//! `infra/prometheus/rules/home.yml`, which reach the owner on Slack.
 
 pub mod pass;
+pub mod render;
 
 use crate::AppState;
 use std::time::Duration;
@@ -44,7 +49,16 @@ const _: () = assert!(RETRY.as_secs() <= INTERVAL.as_secs() && TICK.as_secs() <=
 /// Always on, as the call's: it reads one public folder and needs no secret.
 /// It shares the call weeks worker's HTTP client
 /// (`call_weeks::CallWeeksContext`), which reads the same repository.
+///
+/// Its folders and the render worker's are made first, before the server
+/// answers its health check, by this server's uid, which the worker runs as
+/// too, so the worker never finds one missing or not its own.
 pub fn start(state: &AppState) {
+	for folder in [render::EPISODES_FOLDER, render::RENDERS_FOLDER, render::WORK_FOLDER, render::STATUS_FOLDER] {
+		if std::fs::create_dir_all(folder).is_err() {
+			error!(error = "render folder", "playoff delta fills worker cannot make the render worker's folders");
+		}
+	}
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
 	let fetch = state.call_weeks.fetch.clone();
@@ -62,12 +76,13 @@ pub fn start(state: &AppState) {
 					return;
 				}
 				_ = ticker.tick() => {
+					observe_renders(&db).await;
 					let now = chrono::Utc::now();
 					if !schedule.due(now) {
 						continue;
 					}
 					crate::metrics::pd_fills::record_pass_started();
-					let result = pass::run_once(&db, &fetch, &chrono::Utc::now).await;
+					let result = run_once(&db, &fetch).await;
 					crate::metrics::pd_fills::record_pass(&result);
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
 						schedule.succeeded(now, INTERVAL);
@@ -81,12 +96,34 @@ pub fn start(state: &AppState) {
 	});
 }
 
+/// One pass ([`pass::run_once`]), then the render worker's folder written
+/// ([`render::export`]), whatever the pass fetched: home's fills are
+/// written for the worker even when the repository can't be read.
+async fn run_once(db: &sqlx::SqlitePool, fetch: &crate::game_feed::pass::ReqwestFetch) -> Result<pass::Pass, sqlx::Error> {
+	let mut done = pass::run_once(db, fetch, &chrono::Utc::now).await?;
+	let exported = render::export(db, std::path::Path::new(render::EPISODES_FOLDER)).await?;
+	done.exported = exported.written;
+	done.failures.extend(std::iter::repeat_n("export", exported.failed));
+	Ok(done)
+}
+
+/// What the render worker has made of the fills held, as metrics. A failing
+/// read leaves the last values and logs.
+async fn observe_renders(db: &sqlx::SqlitePool) {
+	let (renders, status) = (std::path::Path::new(render::RENDERS_FOLDER), std::path::Path::new(render::STATUS_FOLDER));
+	if let Ok(seen) = render::observe(db, renders, status).await {
+		crate::metrics::pd_fills::record_renders(&seen);
+	} else {
+		warn!(error = "storage", "playoff delta render observation failed");
+	}
+}
+
 /// The pass's one log line, when it added a fill or something went wrong.
 fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	match result {
-		Ok(done) if done.added == 0 && done.failures.is_empty() => {}
-		Ok(done) if done.failures.is_empty() => info!(added = done.added, held = done.held, "playoff delta fills pass"),
-		Ok(done) => warn!(added = done.added, held = done.held, failures = ?done.failures, "playoff delta fills pass"),
+		Ok(done) if done.added == 0 && done.exported == 0 && done.failures.is_empty() => {}
+		Ok(done) if done.failures.is_empty() => info!(added = done.added, held = done.held, exported = done.exported, "playoff delta fills pass"),
+		Ok(done) => warn!(added = done.added, held = done.held, exported = done.exported, failures = ?done.failures, "playoff delta fills pass"),
 		Err(_) => error!(error = "storage", "playoff delta fills pass failed"),
 	}
 }

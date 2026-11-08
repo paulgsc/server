@@ -10,6 +10,11 @@
 // Healthy is quiet: weeks held, none waiting, both workers stamping within
 // their hour. The Call* alerts in infra/prometheus/rules/home.yml say the
 // same to Slack.
+//
+// The render worker's second job, Playoff Delta (paulgsc/some-ui#2647,
+// FEED4), has its own row, from metrics/pd_fills.rs: the pd_fills worker
+// (PK2) and what the worker has made of each voiced fill (pd_fills::render,
+// PK5). The containers and the drive are shared, so their panels are too.
 
 local ds = { type: 'prometheus', uid: 'prometheus' };
 
@@ -201,6 +206,72 @@ local count(title, description, expr, steps) =
     options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
   },
 
+  pdHeld: count(
+    'FILLS HELD',
+    "Fills of Playoff Delta home keeps (pd_fill), each with its season, for good.",
+    'pd_fills_held',
+    [{ color: 'green', value: null }],
+  ),
+
+  pdSinceRead: stat(
+    'SINCE LAST READ',
+    "Time since home last read paulgsc/testing's index of fills. It reads hourly, sooner after a failure; past 2 hours PlayoffDeltaFillsStale fires.",
+    'time() - pd_fills_last_attempt_timestamp_seconds',
+    's',
+    [{ color: 'green', value: null }, { color: 'red', value: 7200 }],
+  ),
+
+  pdReadFailing: stat(
+    'READ FAILING',
+    "Whether home's last read of the fills failed, on storage, on a fill or season it could not read, or on one it could not write for the worker: 0 is healthy.",
+    'pd_fills_pass_failing',
+    'none',
+    [{ color: 'green', value: null }, { color: 'red', value: 1 }],
+  ),
+
+  pdWaiting: count(
+    'WAITING FOR A VIDEO',
+    'Voiced fills home holds with no video yet in renders/playoff-delta/<season>-<team>-<NN>/. A new fill waits until the render worker next passes, within the hour.',
+    'pd_render_episodes_waiting',
+    [{ color: 'green', value: null }, { color: 'orange', value: 1 }],
+  ),
+
+  pdFailed: count(
+    'FAILED',
+    "Of those, episodes whose last attempt failed. Its whole output is renders/playoff-delta-worker/<key>.failed.log on home's database drive, until it renders.",
+    'pd_render_episodes_failed',
+    [{ color: 'green', value: null }, { color: 'red', value: 1 }],
+  ),
+
+  pdUnvoiced: count(
+    'FOR MY VOICE',
+    'Fills written for your own voice (format version 1): kept as the record of what was said, never rendered by home.',
+    'pd_render_episodes_unvoiced',
+    [{ color: 'green', value: null }],
+  ),
+
+  pdEpisodes: {
+    title: 'Fills held, waiting, failed and for my voice',
+    description: "Over time: a fill arrives, a voiced one waits for the render worker and leaves waiting once its video is kept; one written for your own voice is kept and never rendered.",
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      { expr: 'pd_fills_held', legendFormat: 'held', refId: 'A' },
+      { expr: 'pd_render_episodes_waiting', legendFormat: 'waiting', refId: 'B' },
+      { expr: 'pd_render_episodes_failed', legendFormat: 'failed', refId: 'C' },
+      { expr: 'pd_render_episodes_unvoiced', legendFormat: 'for my voice', refId: 'D' },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 'none',
+        decimals: 0,
+        custom: { drawStyle: 'line', lineInterpolation: 'stepAfter', lineWidth: 1, fillOpacity: 10, spanNulls: false },
+      },
+      overrides: [],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
   // ---- LANE: when the render may run (L4b, server#708) ----
   // Every series here is file_host's batch lane (metrics/lane.rs,
   // call_weeks::lane), which decides every 5 s from /proc and home's own
@@ -332,7 +403,7 @@ local count(title, description, expr, steps) =
 
   laneWork: {
     title: 'Who was working',
-    description: 'Interactive work (a voice note being heard, a Rust Rounds program being recorded), batch work in progress (a render job named, or a week\'s attempt running), and the render job the worker named, if any. When none is, home is at rest: WHO DUNNIT\'s AT REST row measures what that costs.',
+    description: 'Interactive work (a voice note being heard, a Rust Rounds program being recorded), batch work in progress (a render job named, or an attempt of the call\'s or Playoff Delta\'s running), and the render job the worker named, if any. When none is, home is at rest: WHO DUNNIT\'s AT REST row measures what that costs.',
     type: 'state-timeline',
     datasource: ds,
     targets: [

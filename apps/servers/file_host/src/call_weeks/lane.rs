@@ -192,23 +192,27 @@ impl Number {
 struct Batch {
 	job: Number,
 	peak: Number,
-	/// A week's attempt is in progress: the worker keeps its log as
-	/// `.<week>.log` until the attempt ends (`infra/render/render-calls.sh`).
-	/// A folder that cannot be listed counts as one, so home is never
-	/// called idle on a guess.
+	/// An attempt of either of the render worker's jobs is in progress: the
+	/// worker keeps its log as `.<key>.log` in that job's status folder until
+	/// the attempt ends (`infra/render/render-calls.sh`). A folder that cannot
+	/// be listed counts as one, so home is never called idle on a guess.
 	attempting: bool,
 }
 
 impl Batch {
-	async fn read(status: &Path) -> Self {
+	async fn read(status: &Path, attempts: &[PathBuf]) -> Self {
+		let mut attempting_any = false;
+		for folder in attempts {
+			attempting_any = attempting_any || attempting(folder).await;
+		}
 		Self {
 			job: Number::read(&status.join(JOB)).await,
 			peak: Number::read(&status.join(PEAK)).await,
-			attempting: attempting(status).await,
+			attempting: attempting_any,
 		}
 	}
 
-	/// Batch work is in progress: a job named, or a week's attempt running.
+	/// Batch work is in progress: a job named, or an attempt running.
 	const fn active(&self) -> bool {
 		matches!(self.job, Number::Value(_)) || self.attempting
 	}
@@ -231,12 +235,16 @@ async fn attempting(status: &Path) -> bool {
 	}
 }
 
-/// `.YYYY-MM-DD.log`, a week's attempt in progress.
+/// `.<key>.log`, an attempt in progress, where a key is one plain segment of
+/// letters, digits and dashes (a week, `2026-10-30`; an episode,
+/// `2026-SF-10`). The worker's other hidden files are not: a cache log's
+/// name has a second dot (`.<key>.cache.log`, `.work.cache.log`), and a
+/// status file written whole (`.last-pass`, the lane's `.lane`) is no log.
 fn is_attempt_log(name: &str) -> bool {
-	name.strip_prefix('.').and_then(|rest| rest.strip_suffix(".log")).is_some_and(|week| {
-		let bytes = week.as_bytes();
-		bytes.len() == 10 && bytes.iter().enumerate().all(|(i, b)| if i == 4 || i == 7 { *b == b'-' } else { b.is_ascii_digit() })
-	})
+	name
+		.strip_prefix('.')
+		.and_then(|rest| rest.strip_suffix(".log"))
+		.is_some_and(|key| !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 /// Whether each signal could be read this tick.
@@ -323,7 +331,10 @@ async fn write_whole(status: &Path, name: &str, text: &str) -> std::io::Result<(
 struct Paths {
 	meminfo: PathBuf,
 	pressure: PathBuf,
+	/// The call's status folder: the job, its peak, and the decision.
 	status: PathBuf,
+	/// Every job's status folder, read for an attempt in progress.
+	attempts: Vec<PathBuf>,
 }
 
 impl Paths {
@@ -332,6 +343,7 @@ impl Paths {
 			meminfo: PathBuf::from(MEMINFO),
 			pressure: PathBuf::from(PRESSURE),
 			status: PathBuf::from(super::render::STATUS_FOLDER),
+			attempts: vec![PathBuf::from(super::render::STATUS_FOLDER), PathBuf::from(crate::pd_fills::render::STATUS_FOLDER)],
 		}
 	}
 }
@@ -369,7 +381,7 @@ impl Lane {
 		let meminfo = tokio::fs::read_to_string(&paths.meminfo).await.ok();
 		let pressure = tokio::fs::read_to_string(&paths.pressure).await.ok();
 		let waiting = self.since.waiting(interactive.reading());
-		let batch = Batch::read(&paths.status).await;
+		let batch = Batch::read(&paths.status, &paths.attempts).await;
 		let now_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
 		let (signals, readable) = signals(now_ms, meminfo.as_deref(), pressure.as_deref(), waiting, &batch);
 		let (state, decision) = ::lane::step(self.state, &signals, &POLICY);
@@ -450,8 +462,11 @@ mod tests {
 			meminfo: dir.join("meminfo"),
 			pressure: dir.join("pressure"),
 			status: dir.join("status"),
+			attempts: vec![dir.join("status"), dir.join("pd-status")],
 		};
-		std::fs::create_dir_all(&paths.status).unwrap();
+		for folder in &paths.attempts {
+			std::fs::create_dir_all(folder).unwrap();
+		}
 		std::fs::write(&paths.meminfo, MEMINFO_ROOM).unwrap();
 		std::fs::write(&paths.pressure, PRESSURE_CALM).unwrap();
 		paths
@@ -485,16 +500,19 @@ mod tests {
 	}
 
 	#[test]
-	fn only_a_weeks_attempt_log_is_an_attempt() {
+	fn only_an_attempts_log_is_an_attempt() {
 		assert!(is_attempt_log(".2026-10-30.log"));
+		assert!(is_attempt_log(".2026-SF-10.log"), "a Playoff Delta episode's");
 		for name in [
 			"2026-10-30.failed.log",
 			".2026-10-30.cache.log",
 			".work.cache.log",
 			".lane",
 			"last-pass",
-			".2026-1-30.log",
 			"job",
+			".log",
+			"..log",
+			".2026-10-30.partial",
 		] {
 			assert!(!is_attempt_log(name), "{name}");
 		}
@@ -555,7 +573,7 @@ mod tests {
 		assert!(ticked.idle);
 		assert_eq!(decision_file(&paths), "verb=stop\nwhy=settling\nstops=0\nstuck=false\nat=1731000000\n");
 		assert!(!paths.status.join(".lane").exists(), "nothing half written is left behind");
-		assert!(!Batch::read(&paths.status).await.attempting, "its own file is not an attempt");
+		assert!(!Batch::read(&paths.status, &paths.attempts).await.attempting, "its own file is not an attempt");
 	}
 
 	#[tokio::test]
@@ -574,6 +592,10 @@ mod tests {
 		assert!(!ticked.signals.interactive_waiting, "seen at the last tick, and gone");
 		assert!(ticked.batch_active && !ticked.idle, "a week's attempt is batch work");
 		std::fs::remove_file(paths.status.join(".2026-10-30.log")).unwrap();
+		std::fs::write(paths.attempts[1].join(".2026-SF-10.log"), b"rendering").unwrap();
+		let ticked = lane.tick(&paths, &interactive, 3).await;
+		assert!(ticked.batch_active && !ticked.idle, "Playoff Delta's attempt is batch work too");
+		std::fs::remove_file(paths.attempts[1].join(".2026-SF-10.log")).unwrap();
 		std::fs::write(paths.status.join(JOB), b"41\n").unwrap();
 		let ticked = lane.tick(&paths, &interactive, 3).await;
 		assert_eq!(ticked.signals.batch_job, Some(41));
