@@ -26,7 +26,13 @@
 //! minute what the render worker has made of the weeks held ([`render`],
 //! CW5): the CALL dashboard and the `CallWeeks*` and `CallRender*` alerts in
 //! `infra/prometheus/rules/home.yml`, which reach the owner on Slack.
+//!
+//! **When the render may run.** [`lane`] decides every five seconds whether
+//! home's batch class may run, must pause or must stop (L4b, #708), writes
+//! the decision where the render worker reads it, and says it on the CALL
+//! dashboard and in the `Lane*` alerts.
 
+pub mod lane;
 pub mod pass;
 pub mod render;
 pub mod videos;
@@ -106,6 +112,7 @@ pub fn start(state: &AppState) {
 		}
 	}
 	spawn(state, state.call_weeks.clone());
+	lane::spawn(state);
 }
 
 /// Spawn the worker, cancelled through the shared token. Its first pass is

@@ -128,6 +128,10 @@ pub struct AppState {
 	/// `None` unless `GAME_FEED_ENABLED`: home follows no NFL game.
 	pub game_feed: Option<game_feed::GameFeedContext>,
 	pub call_weeks: call_weeks::CallWeeksContext,
+	/// Interactive work in progress (a note being heard, a program being
+	/// recorded), held by those workers and read by the batch lane, which
+	/// pauses a render for it (`call_weeks::lane`, LA1).
+	pub interactive: call_weeks::lane::Interactive,
 	/// Passkey auth: sessions, ceremonies, and the relying party. Always
 	/// present; with `AUTH_ENABLED=false` it refuses every ceremony with `503`,
 	/// and with auth on but unconfigured the server does not start (see
@@ -199,6 +203,7 @@ impl AppState {
 			rust_rounds,
 			game_feed,
 			call_weeks,
+			interactive: call_weeks::lane::Interactive::default(),
 			auth,
 		})
 	}

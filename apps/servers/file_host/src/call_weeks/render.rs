@@ -13,6 +13,10 @@
 //! A week whose video the owner let go from My data (`videos::let_go`) is
 //! counted apart, never as waiting (CW8).
 //!
+//! The same folder carries the batch lane's files (`super::lane`): `lane`,
+//! the decision this server writes for the worker, and `job` and `peak`, the
+//! job in progress and its measured peak, which the worker writes (L4c).
+//!
 //! It reads file names and one number, never a week's words or a log's.
 //! Cost: one read of `call_week`'s days and up to two `stat`s per week held,
 //! each minute; the table grows by a week a week.

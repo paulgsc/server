@@ -375,3 +375,49 @@ groups:
         labels:
           objective: LN2
           says: "The kernel killed a process on home for memory in the last hour that no container is named for: the WHO DUNNIT dashboard's OOM tile counts it, and journalctl -k on home names it."
+
+  # The batch lane (L4b, #708): file_host decides every 5 s whether home's
+  # batch class may run, must pause or must stop (call_weeks::lane, from
+  # crates/lane), and writes the decision where the render worker reads it.
+  # docs/home-compute.md ("The lane") says what it reads and home's policy.
+  # Each rule reads a gauge file_host sets every tick, so file_host not
+  # answering a scrape is FileHostDown's, not these.
+  - name: home-lane
+    rules:
+      - alert: LaneStale
+        # The lane writes a decision every 5 s, and the render worker treats
+        # one older than 30 s as stop (call_weeks::lane::STALE_AFTER). A
+        # decision a minute old, held for a minute, is a lane that stopped
+        # or cannot write: never one slow tick. A lane that never wrote one
+        # reads 0, so it is caught too.
+        expr: |
+          (time() - max(lane_last_decision_timestamp_seconds)) > 60
+        for: 1m
+        labels:
+          objective: LN3
+          says: "Home's batch lane has not written a decision for over a minute, so the render worker reads it as stop: file-host-server's log says why (it writes every 5 s)."
+
+      - alert: LaneStuck
+        # LA4: the render in progress was stopped for memory or pressure
+        # three times in a row (call_weeks::lane::POLICY.stuck_after). The
+        # lane decides this, so no wait is added: a job stays stuck until
+        # the worker finishes or gives it up, and a new job starts at zero.
+        expr: |
+          max(lane_stuck) == 1
+        labels:
+          objective: LN3
+          says: "A render on home was stopped three times in a row for memory or pressure: it may never fit. The CALL dashboard's LANE row shows free memory against its peak and the floor."
+
+      - alert: LaneSignalsUnreadable
+        # A signal the lane decides from could not be read (no PSI in the
+        # kernel, /proc/meminfo, or a garbled job or peak file from the
+        # render worker). Under LA2 that is never room, so batch work never
+        # starts; every `unknown` decision comes from one of these. Held 5
+        # minutes: a reading that comes back within that is said by the
+        # dashboard, not paged.
+        expr: |
+          min by (signal) (lane_signal_readable) == 0
+        for: 5m
+        labels:
+          objective: LN3
+          says: "Home's batch lane has not been able to read its {{ $labels.signal }} signal for 5 minutes, so no render may start: docs/home-compute.md (The lane) says where each signal comes from."

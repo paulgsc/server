@@ -869,3 +869,101 @@ tests:
       - eval_time: 14m
         alertname: HomeOomKillUnattributed
         exp_alerts: []
+
+  - name: a lane that stops writing is stale within two minutes (LN3)
+    interval: 1m
+    input_series:
+      - series: 'lane_last_decision_timestamp_seconds{job="file_host"}'
+        values: '0+60x10 600x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LaneStale
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: LaneStale
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: LaneStale
+        exp_alerts:
+          - exp_labels:
+              objective: LN3
+              says: "Home's batch lane has not written a decision for over a minute, so the render worker reads it as stop: file-host-server's log says why (it writes every 5 s)."
+
+  - name: a lane that never wrote a decision is stale (LN3)
+    interval: 1m
+    input_series:
+      - series: 'lane_last_decision_timestamp_seconds{job="file_host"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LaneStale
+        exp_alerts:
+          - exp_labels:
+              objective: LN3
+              says: "Home's batch lane has not written a decision for over a minute, so the render worker reads it as stop: file-host-server's log says why (it writes every 5 s)."
+
+  - name: a lane writing every tick is not stale, from its first decision (LN3)
+    interval: 1m
+    input_series:
+      - series: 'lane_last_decision_timestamp_seconds{job="file_host"}'
+        values: '0 60+60x30'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: LaneStale
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: LaneStale
+        exp_alerts: []
+
+  - name: a render stopped three times in a row is stuck, and a new job clears it (LN3)
+    interval: 1m
+    input_series:
+      - series: 'lane_stuck{job="file_host"}'
+        values: '0x5 1x10 0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LaneStuck
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: LaneStuck
+        exp_alerts:
+          - exp_labels:
+              objective: LN3
+              says: "A render on home was stopped three times in a row for memory or pressure: it may never fit. The CALL dashboard's LANE row shows free memory against its peak and the floor."
+      - eval_time: 20m
+        alertname: LaneStuck
+        exp_alerts: []
+
+  - name: a signal unreadable for 5 minutes is said, naming it (LN3)
+    interval: 1m
+    input_series:
+      - series: 'lane_signal_readable{job="file_host",signal="pressure"}'
+        values: '0x20'
+      - series: 'lane_signal_readable{job="file_host",signal="meminfo"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LaneSignalsUnreadable
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: LaneSignalsUnreadable
+        exp_alerts:
+          - exp_labels:
+              objective: LN3
+              signal: pressure
+              says: "Home's batch lane has not been able to read its pressure signal for 5 minutes, so no render may start: docs/home-compute.md (The lane) says where each signal comes from."
+
+  - name: every signal read, or one lost for a minute, says nothing (LN3)
+    interval: 1m
+    input_series:
+      - series: 'lane_signal_readable{job="file_host",signal="peak"}'
+        values: '1x5 0 1x15'
+      - series: 'lane_signal_readable{job="file_host",signal="meminfo"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: LaneSignalsUnreadable
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LaneSignalsUnreadable
+        exp_alerts: []

@@ -167,6 +167,7 @@ capture_repo = { path = "crates/db/capture" }
 curriculum_repo = { path = "crates/db/curriculum" }
 game_feed_repo = { path = "crates/db/game_feed" }
 call_week_repo = { path = "crates/db/call_week" }
+lane = { path = "crates/lane" }
 pd_fill_repo = { path = "crates/db/pd_fill" }
 jobs_repo = { path = "crates/db/jobs" }
 korean_repo = { path = "crates/db/korean" }

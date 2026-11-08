@@ -8,6 +8,7 @@ pub mod call_weeks;
 pub mod game_feed;
 pub mod http;
 pub mod instruments;
+pub mod lane;
 pub mod mailbox;
 pub mod observability;
 pub mod pd_fills;
