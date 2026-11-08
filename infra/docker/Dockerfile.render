@@ -15,15 +15,17 @@
 #   without moving the recorders away from call-stage's pin.
 #
 # The image builds only what the recorders and the motion need
-# (@some-ui/video-render, @some-ui/video-motion and their dependencies), never
-# the app: the stage is the published image.
+# (@some-ui/video-render, @some-ui/playoff-delta, @some-ui/video-motion and
+# their dependencies), never the app: the stage is the published image.
+# `record:playoff-delta` imports @some-ui/playoff-delta's `recording` entry,
+# which exists only once that package is built.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
-# paulgsc/some-ui 4994e17 (#2653's merge, the commit www 0.1.59 was published
-# from, so the recorders and call-stage's pin are one version): FEED3 #2703's
-# `record:playoff-delta --narration --season-file --voices kokoro` beside the
-# call's template v2 (#2679), the two recorders sharing tests/record/voiced.ts.
-ARG SOME_UI_COMMIT=4994e17f7fa602196b3da6c8c490ef206de372a7
+# paulgsc/some-ui 031ca48 (#2714's merge, the commit www 0.1.60 was published
+# from, so the recorders and call-stage's pin are one version): SFEED11's
+# captions (#2707), recorded a scene at a time from the stage's own
+# `/burn-ins?record` page, in the look each series names.
+ARG SOME_UI_COMMIT=031ca4866caf8d7c69ca4275f025f64b214aaeef
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
@@ -35,7 +37,8 @@ RUN git clone --filter=blob:none https://github.com/paulgsc/some-ui.git /opt/som
 WORKDIR /opt/some-ui
 RUN corepack enable \
     && pnpm install --frozen-lockfile --filter "www..." \
-    && pnpm exec turbo run build --filter="@some-ui/video-render^..."
+    && pnpm exec turbo run build --filter="@some-ui/video-render^..." \
+       --filter="@some-ui/playoff-delta..."
 
 # paulgsc/some-ui 4fcc141 (#2734's merge): @some-ui/video-motion, the
 # compositions and their pinned HyperFrames, with fonts from the lockfile, so
