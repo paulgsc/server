@@ -31,7 +31,13 @@ fn render(folders: &Folders, id: &str, made: SystemTime) {
 	std::fs::create_dir_all(&folder).unwrap();
 	std::fs::write(folder.join("preview.mp4"), b"0123456789").unwrap();
 	let template = template_of(id).unwrap();
-	std::fs::write(folder.join("week.json"), serde_json::json!({ "template": { "id": template, "version": 2 } }).to_string()).unwrap();
+	// The sample as recorded: the call's week, Playoff Delta's fill.
+	let (file, sample) = if template == "conference-call" {
+		("week.json", serde_json::json!({ "template": { "id": template, "version": 2 } }))
+	} else {
+		("narration.json", serde_json::json!({ "format": { "id": template, "version": 2 } }))
+	};
+	std::fs::write(folder.join(file), sample.to_string()).unwrap();
 	set_mtime(&folder.join("preview.mp4"), made);
 }
 
@@ -347,4 +353,24 @@ async fn a_job_rendered_and_being_moved_into_place_reads_as_rendering() {
 	};
 	job(&folders, &asked.id, "done", 2);
 	assert_eq!(read(&folders, &asked.id).await.unwrap().state, State::Rendering);
+}
+
+#[tokio::test]
+async fn a_playoff_delta_preview_says_its_version_from_the_fill_it_recorded() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	for template in ["playoff-delta-legend", "playoff-delta-week"] {
+		request(&folders, template, at(0)).await.unwrap();
+		let id = String::from(template) + "-20261108T074500Z";
+		render(&folders, &id, at(300));
+		assert_eq!(read(&folders, &id).await.unwrap().version, Some(2), "{template}");
+	}
+	// A fill of another format names no version of this one.
+	let folder = folders.renders.join("playoff-delta-week-20261108T074500Z");
+	std::fs::write(
+		folder.join("narration.json"),
+		serde_json::json!({ "format": { "id": "playoff-delta-legend", "version": 4 } }).to_string(),
+	)
+	.unwrap();
+	assert_eq!(read(&folders, "playoff-delta-week-20261108T074500Z").await.unwrap().version, None);
 }

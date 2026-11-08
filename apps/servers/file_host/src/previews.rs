@@ -16,8 +16,8 @@
 //!   does.
 //! - **The preview.** The worker keeps it whole in
 //!   `renders/preview/<id>/` ([`RENDERS_FOLDER`]): `preview.mp4` ([`VIDEO`])
-//!   and the sample week it recorded (`week.json`, which names the template's
-//!   pinned version). A failed attempt's output is
+//!   and the sample it recorded, which names the template's pinned version
+//!   (the call's week, `week.json`; Playoff Delta's fill, `narration.json`). A failed attempt's output is
 //!   `renders/preview-worker/<id>.failed.log`. A failed preview is never
 //!   tried again: the owner asks for another.
 //! - **Its state** is read from those files and the lane's `job.state`
@@ -89,8 +89,9 @@ const PARTIAL_AFTER: Duration = Duration::from_secs(60);
 /// The most bytes of a failed attempt's log read for its reason.
 const FAILED_LOG_CEILING: u64 = 64 * 1024;
 
-/// The most bytes of a preview's `week.json` read for its version.
-const WEEK_CEILING: u64 = 1024 * 1024;
+/// The most bytes of a preview's `week.json` or `narration.json` read for its
+/// version.
+const SAMPLE_CEILING: u64 = 1024 * 1024;
 
 /// Held across a request and a prune, so a prune never removes a request
 /// being written, and two requests never make two previews of a template.
@@ -278,11 +279,23 @@ fn failure_class(log: &str) -> &'static str {
 }
 
 /// The template's pinned version a finished preview was made from, as its
-/// sample week names it.
+/// sample names it: the call's sample week (`week.json`, its `template`), or
+/// Playoff Delta's fill as recorded (`narration.json`, its `format`), each
+/// only when it names `template`.
 async fn version_of(folder: &Path, template: &str) -> Option<u32> {
-	let bytes = read_small(&folder.join("week.json"), WEEK_CEILING).await?;
-	let week: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-	let named = week.get("template")?;
+	for (file, key) in [("week.json", "template"), ("narration.json", "format")] {
+		if let Some(version) = named_version(&folder.join(file), key, template).await {
+			return Some(version);
+		}
+	}
+	None
+}
+
+/// The `version` of `path`'s `key` object, when its `id` is `template`.
+async fn named_version(path: &Path, key: &str, template: &str) -> Option<u32> {
+	let bytes = read_small(path, SAMPLE_CEILING).await?;
+	let sample: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+	let named = sample.get(key)?;
 	if named.get("id").and_then(serde_json::Value::as_str) != Some(template) {
 		return None;
 	}
