@@ -90,7 +90,10 @@ pub mod takes;
 pub mod transcript;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use rust_round_repo::round::is_slug;
+use rust_round_repo::{
+	round::is_slug,
+	week::{is_ticket_key, is_week_id},
+};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use sqlx::SqliteConnection;
@@ -425,20 +428,30 @@ pub fn is_note_id(id: &str) -> bool {
 	is_name(id, MAX_ID_CHARS) && !ROUTE_NAMES.contains(&id)
 }
 
-/// Whether `of_ref` names a Rust Rounds card, as a [`Of::RustRound`] note's does.
+/// Whether `of_ref` names what a [`Of::RustRound`] note answers: a card of a
+/// round, or a ticket of a week.
 ///
-/// That is `<round>:<card>`, or `<round>:<card>:<note>` on a refine card,
-/// `<note>` the earlier note's id (which may itself hold `:`): a refine's new
-/// take names the note it refines, so the pair is home's record. The round
-/// and card are ids as a round has them (`rust_round_repo::round::is_slug`),
-/// within the rule every `ref` meets, which [`describe`] checks too.
+/// - **A card:** `<round>:<card>`, or `<round>:<card>:<note>` on a refine
+///   card, `<note>` the earlier note's id (which may itself hold `:`): a
+///   refine's new take names the note it refines, so the pair is home's
+///   record. The round and card are ids as a round has them
+///   (`rust_round_repo::round::is_slug`).
+/// - **A ticket** (RR13, paulgsc/some-ui#2688): `<week>:<ticket>`, like
+///   `2026-w46:QM-311`, the week's id and the ticket's key as a week has them
+///   (`rust_round_repo::week::is_week_id`, `is_ticket_key`). A ticket's key
+///   holds a capital and a slug never does, so no ref reads as both.
+///
+/// Both sit within the rule every `ref` meets, which [`describe`] checks too.
 #[must_use]
 pub fn is_rust_round_ref(of_ref: &str) -> bool {
 	let mut parts = of_ref.splitn(3, ':');
-	let (Some(round), Some(card)) = (parts.next(), parts.next()) else {
+	let (Some(first), Some(second)) = (parts.next(), parts.next()) else {
 		return false;
 	};
-	is_slug(round) && is_slug(card) && parts.next().is_none_or(is_note_id)
+	let rest = parts.next();
+	let card = is_slug(first) && is_slug(second) && rest.is_none_or(is_note_id);
+	let ticket = is_week_id(first) && is_ticket_key(second) && rest.is_none();
+	card || ticket
 }
 
 /// Whether `text` is a non-empty name of at most `max` characters, each a
@@ -1875,11 +1888,17 @@ mod tests {
 	}
 
 	/// RR6 (paulgsc/some-ui#2237): a Rust Rounds note names its card, and on
-	/// a refine card the earlier note too; any other `ref` is refused for it,
-	/// and its rule binds no other kind.
+	/// a refine card the earlier note too; RR13 (#2688): or a week's ticket.
+	/// Any other `ref` is refused for it, and its rule binds no other kind.
 	#[test]
 	fn a_rust_round_note_names_its_card_and_what_it_refines() {
-		for good in ["indexing-01:a", "indexing-01:b-2:9f1c2d3e-0000-4000-8000-000000000001", "r:c:note:with:colons"] {
+		for good in [
+			"indexing-01:a",
+			"indexing-01:b-2:9f1c2d3e-0000-4000-8000-000000000001",
+			"r:c:note:with:colons",
+			"2026-w46:QM-311",
+			"2026-w01:A-1",
+		] {
 			assert!(is_rust_round_ref(good), "{good}");
 			let note = describe("r1", said_take("rust-round", good), b"said").unwrap();
 			assert_eq!((note.of, note.of_ref.as_str()), (Of::RustRound, good));
@@ -1893,6 +1912,10 @@ mod tests {
 			"indexing-01:a:",
 			"indexing-01:a:on-drive",
 			"r/c",
+			"2026-w54:QM-311",
+			"2026-w46:QM-311:note",
+			"2026-w46:QM311",
+			"w46:QM-311",
 		] {
 			assert!(!is_rust_round_ref(bad), "{bad}");
 			let refused = describe("r1", said_take("rust-round", bad), b"said").unwrap_err();
