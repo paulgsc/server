@@ -57,7 +57,10 @@ pub struct NoteKept {
 	/// `added` or `unchanged` — `episode_note_repo::Change`.
 	pub change: &'static str,
 	/// The note as home holds it, which the phone compares with what it sent
-	/// before it counts it as home's.
+	/// before it counts it as home's. Its `writtenAt` is the time sent,
+	/// normalised to the millisecond (`…T08:15:00Z` answers
+	/// `…T08:15:00.000Z`): the phone's `toISOString()` writes milliseconds
+	/// already, so for the phone the two are the same bytes.
 	pub note: episode_note_repo::Note,
 }
 

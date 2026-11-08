@@ -4,7 +4,8 @@
 //! ```text
 //! PUT /feeds/:feed/notes/:id → { change, note }: a note at a moment of one
 //!                              of the feed's episodes, kept on home and
-//!                              filed for the mailbox's `feedback` folder
+//!                              filed for the mailbox's `feedback` folder;
+//!                              `note.writtenAt` comes back to the millisecond
 //! GET /feeds/:feed/notes     → { notes: [{ id, episode, atMs, categories,
 //!                              take, writtenAt, storedAt }] }: oldest first
 //! ```
