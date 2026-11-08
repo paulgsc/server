@@ -45,6 +45,7 @@ members = [
   "crates/db/presence",
   "crates/db/push",
   "crates/intervention",
+  "crates/lane",
   "crates/leetype_runner",
   "crates/rust_runner",
   "crates/rust_rounds_wire",

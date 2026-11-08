@@ -66,7 +66,7 @@ services:
       start_period: 60s
 
   call-stage:
-    image: pgathondu/www:0.1.58@sha256:b583c771ae97b6ce8c8581138ba01f58df113585a5bd2b825835dc7f6d160805
+    image: pgathondu/www:0.1.59@sha256:532130ec1cbcb98603b163a1a9e3dfc21e956b9642479816911e7f514611c6af
     container_name: call-stage
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").

@@ -1,0 +1,266 @@
+//! Home's batch lane (paulgsc/server#705, L4 #708).
+//!
+//! Renders are home's lowest class (`docs/home-compute.md`, "Classes"). No
+//! clock starts them: they run when the box has room, and give way the
+//! moment anything else needs it. [`step`] is that decision, made each tick
+//! from the kernel's own signals. It does no I/O, so `file_host` is to run it
+//! against `/proc` (L4b, #708), and the capacity simulation (#710) the same
+//! code against a model of another machine.
+//!
+//! What it promises (declared in `docs/home-compute.md`, "The lane"):
+//!
+//! - **LA1.** Batch work never runs while interactive work waits: it is told
+//!   to pause ([`Verb::Pause`], [`Why::Busy`]), or not to start.
+//! - **LA2.** Batch work never starts or resumes after a stop without room
+//!   for its peak above the floor, held for the hold-down; and while the lane
+//!   says run, a job not seen before (or none yet) keeps that permission only
+//!   while that room holds. A signal that could not be read, or no peak at
+//!   all, is never room ([`Why::Unknown`]).
+//! - **LA3.** Batch work running or paused is told to stop and let go of its
+//!   memory ([`Verb::Stop`]) once free memory falls under the floor or
+//!   memory pressure passes its limit, or a signal can no longer be read.
+//! - **LA4.** Stops for memory or pressure are counted against the job in
+//!   progress, named by its id ([`Signals::batch_job`]), and from
+//!   [`Policy::stuck_after`] in a row the decision says it is stuck, so a job
+//!   that never fits is reported, never retried silently. A tick with another
+//!   id, or none, starts the count again, so one job's stops are never
+//!   another's, and an idle lane is never called stuck.
+
+use std::cmp::Ordering;
+use std::num::NonZeroU32;
+
+/// What the kernel and home say this tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Signals {
+	/// A monotonic clock, in milliseconds.
+	pub now_ms: u64,
+	/// `/proc/meminfo`'s `MemAvailable`; `None` when it could not be read.
+	pub mem_available_bytes: Option<u64>,
+	/// `/proc/pressure/memory`'s `some avg10`, a percentage; `None` when it
+	/// could not be read.
+	pub memory_pressure_pct: Option<f64>,
+	/// Interactive work is waiting or running (a voice note, a Rust round).
+	pub interactive_waiting: bool,
+	/// The batch job in progress: an id the worker gives each job when it
+	/// starts it, never reused, and keeps through pauses and stops
+	/// (evacuations) until the job finishes or is given up. `None` when no
+	/// job is in progress. LA4 counts stops against this id alone.
+	pub batch_job: Option<u64>,
+	/// The most a batch job may take: its peak as measured on earlier runs,
+	/// or, before any run has been measured, the ceiling the caller declares
+	/// for it (its containers' memory caps). `None` only when the caller has
+	/// neither, which is never room (LA2).
+	pub batch_peak_bytes: Option<u64>,
+}
+
+/// The lane's thresholds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Policy {
+	/// Free memory that must stay free beyond what batch work takes.
+	pub floor_bytes: u64,
+	/// Memory pressure (`some avg10`, percent) past which batch work stops.
+	pub pressure_limit_pct: f64,
+	/// How long room must hold before batch work starts after a stop.
+	pub hold_down_ms: u64,
+	/// Stops for memory or pressure in a row before a job is called stuck.
+	pub stuck_after: NonZeroU32,
+}
+
+/// What batch work is told to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+	/// Run, or start.
+	Run,
+	/// Stay where it is without taking the CPU; its memory stays held.
+	Pause,
+	/// Not run: stop if running or paused, letting go of its memory, and do
+	/// not start.
+	Stop,
+}
+
+/// Why the lane decided what it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+	/// Nothing holds batch work back.
+	Clear,
+	/// Interactive work is waiting.
+	Busy,
+	/// Free memory is under the floor, or under the floor plus the batch
+	/// peak for a start.
+	Memory,
+	/// Memory pressure is past its limit.
+	Pressure,
+	/// A signal could not be read, or the batch peak is not known.
+	Unknown,
+	/// Room has come back, and is being held for the hold-down.
+	Settling,
+}
+
+impl Verb {
+	/// Its name, as the state file and the metrics carry it.
+	#[must_use]
+	pub const fn name(self) -> &'static str {
+		match self {
+			Self::Run => "run",
+			Self::Pause => "pause",
+			Self::Stop => "stop",
+		}
+	}
+}
+
+impl Why {
+	/// Its name, as the state file and the metrics carry it.
+	#[must_use]
+	pub const fn name(self) -> &'static str {
+		match self {
+			Self::Clear => "clear",
+			Self::Busy => "busy",
+			Self::Memory => "memory",
+			Self::Pressure => "pressure",
+			Self::Unknown => "unknown",
+			Self::Settling => "settling",
+		}
+	}
+}
+
+/// What the lane remembers between ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct State {
+	verb: Verb,
+	room_since_ms: Option<u64>,
+	stops: u32,
+	job: Option<u64>,
+}
+
+impl Default for State {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl State {
+	/// The lane at start: stopped, so nothing runs before the first reading.
+	#[must_use]
+	pub const fn new() -> Self {
+		Self {
+			verb: Verb::Stop,
+			room_since_ms: None,
+			stops: 0,
+			job: None,
+		}
+	}
+}
+
+/// One tick's decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decision {
+	pub verb: Verb,
+	pub why: Why,
+	/// Stops for memory or pressure of the job in progress (LA4); zero when
+	/// none is.
+	pub stops: u32,
+	/// LA4: `stops` has reached [`Policy::stuck_after`].
+	pub stuck: bool,
+}
+
+/// What forces batch work to stop now, if anything (LA3). Free memory read
+/// under the floor is a shortage of memory whatever else could not be read,
+/// so it is counted (LA4); a pressure that is not a finite number is
+/// unknown, and a limit that is not one stops batch work.
+fn shortage(signals: &Signals, policy: &Policy) -> Option<Why> {
+	if signals.mem_available_bytes.is_some_and(|available| available < policy.floor_bytes) {
+		return Some(Why::Memory);
+	}
+	let (Some(_), Some(pressure)) = (signals.mem_available_bytes, signals.memory_pressure_pct) else {
+		return Some(Why::Unknown);
+	};
+	if !pressure.is_finite() {
+		Some(Why::Unknown)
+	} else if matches!(pressure.partial_cmp(&policy.pressure_limit_pct), Some(Ordering::Less | Ordering::Equal)) {
+		None
+	} else {
+		Some(Why::Pressure)
+	}
+}
+
+/// Whether free memory leaves room for the batch peak above the floor;
+/// `None` when either is not known (LA2).
+fn room_for_peak(signals: &Signals, policy: &Policy) -> Option<bool> {
+	signals
+		.mem_available_bytes
+		.zip(signals.batch_peak_bytes)
+		.map(|(available, peak)| available >= peak.saturating_add(policy.floor_bytes))
+}
+
+/// The lane's decision this tick, and what it remembers for the next.
+#[must_use]
+pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decision) {
+	// The job seen last tick is still the job in progress: it was admitted,
+	// and its memory is already in what is free. Anything else (no job, or
+	// a job not seen before) is a start, which needs room for its peak.
+	let continuing = signals.batch_job.is_some() && signals.batch_job == state.job;
+	let mut stops = if continuing { state.stops } else { 0 };
+	let (verb, why, room_since_ms) = match state.verb {
+		Verb::Run | Verb::Pause => match (shortage(signals, policy), room_for_peak(signals, policy)) {
+			(Some(why), _) => (Verb::Stop, why, None),
+			(None, None) if !continuing => (Verb::Stop, Why::Unknown, None),
+			(None, Some(false)) if !continuing => (Verb::Stop, Why::Memory, None),
+			_ if signals.interactive_waiting => (Verb::Pause, Why::Busy, None),
+			_ => (Verb::Run, Why::Clear, None),
+		},
+		Verb::Stop => match (shortage(signals, policy), room_for_peak(signals, policy)) {
+			_ if signals.interactive_waiting => (Verb::Stop, Why::Busy, None),
+			(Some(why), _) => (Verb::Stop, why, None),
+			(None, None) => (Verb::Stop, Why::Unknown, None),
+			(None, Some(false)) => (Verb::Stop, Why::Memory, None),
+			(None, Some(true)) => match state.room_since_ms {
+				Some(since) if signals.now_ms.saturating_sub(since) >= policy.hold_down_ms => (Verb::Run, Why::Clear, None),
+				Some(since) => (Verb::Stop, Why::Settling, Some(since)),
+				None => (Verb::Stop, Why::Settling, Some(signals.now_ms)),
+			},
+		},
+	};
+	// A stop of a running or paused job for memory or pressure is that job's,
+	// its first included (LA4); a stop with no job is nobody's.
+	if matches!(state.verb, Verb::Run | Verb::Pause) && verb == Verb::Stop && signals.batch_job.is_some() && matches!(why, Why::Memory | Why::Pressure) {
+		stops = stops.saturating_add(1);
+	}
+	let next = State {
+		verb,
+		room_since_ms,
+		stops,
+		job: signals.batch_job,
+	};
+	(
+		next,
+		Decision {
+			verb,
+			why,
+			stops,
+			stuck: stops >= policy.stuck_after.get(),
+		},
+	)
+}
+
+/// `MemAvailable` in bytes, from the text of `/proc/meminfo`.
+#[must_use]
+pub fn mem_available_bytes(meminfo: &str) -> Option<u64> {
+	let line = meminfo.lines().find(|line| line.starts_with("MemAvailable:"))?;
+	let mut words = line.split_whitespace().skip(1);
+	let value: u64 = words.next()?.parse().ok()?;
+	match words.next() {
+		Some("kB") => value.checked_mul(1024),
+		_ => None,
+	}
+}
+
+/// The `some avg10` percentage, from the text of a `/proc/pressure/*` file.
+#[must_use]
+pub fn pressure_some_avg10(pressure: &str) -> Option<f64> {
+	let line = pressure.lines().find(|line| line.starts_with("some "))?;
+	let value = line.split_whitespace().find_map(|field| field.strip_prefix("avg10="))?;
+	value.parse().ok().filter(|pct: &f64| pct.is_finite() && *pct >= 0.0)
+}
+
+#[cfg(test)]
+mod tests;
