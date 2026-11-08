@@ -18,6 +18,7 @@ pub mod outcomes;
 pub mod presence;
 pub mod push;
 pub mod readiness;
+pub mod renders;
 pub mod routine;
 pub mod rust_rounds;
 pub mod shelf;

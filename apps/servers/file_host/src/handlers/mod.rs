@@ -22,6 +22,7 @@ pub mod outcomes;
 pub mod pipeline;
 pub mod presence;
 pub mod push;
+pub mod renders;
 pub mod readiness;
 pub mod routine;
 pub mod rust_rounds;
