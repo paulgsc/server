@@ -226,6 +226,13 @@ heartbeat() {
   [ "$STATUS" = "$LANE" ] || put_in "$LANE" last-pass "$now"
 }
 
+# Now, in Unix seconds, against which a decision's age is read.
+# render-calls.test.sh puts its fake lane's own clock here, so a fake lane
+# a busy machine runs late is late, not stale.
+lane_now() {
+  date +%s
+}
+
 # The lane's decision now, in LANE_VERB (run, pause or stop), LANE_WHY and
 # LANE_AT (Unix seconds; 0 when there is none). Missing, unreadable, stale
 # either way, or a verb it doesn't know: stop.
@@ -244,7 +251,7 @@ read_lane() {
     esac
   done < "$LANE/lane"
   [[ "$at" =~ ^[0-9]{1,12}$ ]] || return 0
-  now=$(date +%s)
+  now=$(lane_now)
   age=$(( now - at ))
   if [ "${age#-}" -gt "$STALE_AFTER" ]; then
     LANE_WHY=stale

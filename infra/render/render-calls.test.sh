@@ -49,20 +49,39 @@ CGROUP=$SCRATCH/cgroup
 mkdir -p "$CGROUP"
 echo 3000000000 > "$CGROUP/memory.peak"
 
+# Written whole, so a reader never sees a half-written file.
+whole() {
+  printf '%s\n' "$2" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+
 # The fake lane: file_host's decision, rewritten whole every 0.1 s into the
 # current ROOT's lane folder, saying $SCRATCH/verb (`stale` writes one a
 # minute old; `hold` stops writing, as a file_host that stopped would).
-echo run > "$SCRATCH/verb"
+#
+# Nothing here leans on the machine's pace (#747, #745):
+# - **Its own clock.** Each round it stamps $SCRATCH/tick, and the worker
+#   reads a decision's age against that tick (`lane_now`, below), not
+#   against the wall. A fake lane a busy runner starves is late, never
+#   stale. `hold` keeps the tick going and stops the decisions, so a held
+#   lane does go stale, as a file_host that stopped would.
+# - **Its word, whole.** $SCRATCH/verb is `<n> <verb>`, written whole by
+#   `lane_says`, and each round echoes back in $SCRATCH/wrote the `<n>` it
+#   has written. `lane_says` waits for that echo, not for a guessed time.
+whole "$SCRATCH/verb" "0 run"
 (
   while :; do
+    now=$(date +%s)
+    whole "$SCRATCH/tick" "$now"
+    read -r n verb < "$SCRATCH/verb"
     root=$(cat "$SCRATCH/root" 2> /dev/null) && [ -n "$root" ] && mkdir -p "$root/renders/call-worker" && {
-      verb=$(cat "$SCRATCH/verb") at=$(date +%s)
-      [ "$verb" = stale ] && verb=run at=$(( at - 60 ))
+      at=$now
+      [ "$verb" = stale ] && verb=run at=$(( now - 60 ))
       if [ "$verb" != hold ]; then
         cat "$root/renders/call-worker/job" 2> /dev/null >> "$SCRATCH/saw" || echo none >> "$SCRATCH/saw"
         printf 'verb=%s\nwhy=test\nstops=0\nstuck=false\nat=%s\n' "$verb" "$at" > "$root/renders/call-worker/.lane" &&
           mv "$root/renders/call-worker/.lane" "$root/renders/call-worker/lane"
       fi
+      whole "$SCRATCH/wrote" "$n"
     }
     sleep 0.1
   done
@@ -70,10 +89,22 @@ echo run > "$SCRATCH/verb"
 LANE_WRITER=$!
 trap 'kill "$LANE_WRITER" 2> /dev/null; rm -rf "$SCRATCH"' EXIT
 
+# A decision's age, against the fake lane's clock (render-calls.sh's own
+# `lane_now` reads the wall).
+lane_now() {
+  cat "$SCRATCH/tick"
+}
+
+SAID=0
+lane_said() {
+  [ "$(cat "$SCRATCH/wrote" 2> /dev/null)" = "$1" ]
+}
+
+# The fake lane says `verb` from now on; back once it has written it.
 lane_says() {
-  echo "$1" > "$SCRATCH/verb"
-  # Long enough for the fake lane to write it.
-  sleep 0.3
+  SAID=$(( SAID + 1 ))
+  whole "$SCRATCH/verb" "$SAID $1"
+  within lane_said "$SAID" || echo "the fake lane did not take $1 within 20 s"
 }
 
 # The fake recorder: `tsx tests/record/call.ts … --week-file <f> --out <w>`.
@@ -85,7 +116,8 @@ lane_says() {
 # kept whole, each taking $FAKE/slow seconds in a child it waits on, and
 # saying `cache hit: step <n>` for one already kept; the video is made of
 # them; while $FAKE/hold-at holds a number n, it waits before step n + 1,
-# in a child too, so a case acts on it half way without racing it.
+# in one child that lives as long as the hold, so a case acts on it half
+# way without racing it.
 # $FAKE/fail-after-pause makes it fail once after its steps. It keeps
 # its pid in $FAKE/pid, its child's in $FAKE/child, and the job it saw in
 # the lane's folder in $FAKE/seen-job.
@@ -129,11 +161,17 @@ if [ -e "$fake/steps" ]; then
       echo "cache hit: step $i"
       continue
     fi
-    while [ -e "$fake/hold-at" ] && [ "$i" -gt "$(cat "$fake/hold-at" 2> /dev/null || echo 99)" ]; do
-      sleep 0.05 &
+    # Held in one child that lives as long as the hold, so the child a case
+    # looks at is never one that has just ended between two short sleeps.
+    if [ -e "$fake/hold-at" ] && [ "$i" -gt "$(cat "$fake/hold-at" 2> /dev/null || echo 99)" ]; then
+      (
+        while [ -e "$fake/hold-at" ] && [ "$i" -gt "$(cat "$fake/hold-at" 2> /dev/null || echo 99)" ]; do
+          sleep 0.05
+        done
+      ) &
       echo $! > "$fake/child"
       wait $!
-    done
+    fi
     sleep "$(cat "$fake/slow" 2> /dev/null || echo 0)" &
     echo $! > "$fake/child"
     wait $!
@@ -335,9 +373,9 @@ check "a stale decision starts no render" test "$(runs_of 2026-10-30)" -eq 0
 check "a job waiting for room is named where the lane reads it" test -s "$ROOT/renders/call-worker/job"
 check "and its state says it waits" job_state_is waiting
 check "and its log is an attempt in progress, so home is not called idle" test -e "$ROOT/renders/call-worker/.2026-10-30.log"
+lane_says stop
 rm -f "$ROOT/renders/call-worker/lane"
-echo stop > "$SCRATCH/verb"
-sleep 0.5
+lane_says hold
 rm -f "$ROOT/renders/call-worker/lane"
 sleep 0.3
 check "a missing decision starts no render" test "$(runs_of 2026-10-30)" -eq 0
@@ -554,13 +592,19 @@ check "and is, RETRY_AFTER after its failure" test "$(runs_of 2026-10-30)" -eq 2
 
 # RETRY_AFTER counts from the failure, not from the log's last line: a
 # recorder silent for a while before it fails is not tried again at once.
+# It is read from the log's own time, not from how soon the next pass
+# comes, so a slow runner can't make it pass or fail.
 fresh silent 2026-10-30
 RETRY_AFTER=5
 touch "$FAKE/fail-2026-10-30"
 echo 6 > "$FAKE/silent"
+began=$(date +%s)
 pass
+check "a failure's time is when it failed, not its log's last line" \
+  test "$(stat -c %Y "$ROOT/renders/call-worker/2026-10-30.failed.log")" -ge $(( began + 6 ))
+touch -d '1 second ago' "$ROOT/renders/call-worker/2026-10-30.failed.log"
 pass
-check "a failure's time is when it failed, not its log's last line" test "$(runs_of 2026-10-30)" -eq 1
+check "so a failure is not tried again within RETRY_AFTER of it" test "$(runs_of 2026-10-30)" -eq 1
 RETRY_AFTER=0
 
 if [ "$failures" -ne 0 ]; then
