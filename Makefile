@@ -203,12 +203,10 @@ compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose A
 # A release's promo (HYPER3, paulgsc/some-ui#2726), rendered on home in one
 # command: the release's words and its walk's sample, fetched here from
 # paulgsc/testing (the render service's network reaches nothing), then
-# `motion promo --prove` in the render service, which walks the app, draws the
-# promo's three scenes and renders it twice from nothing, refusing unless the
-# bytes match. The promo and what it was made from are kept in
-# ${STORAGE}/renders/promo/<app>-<version>/ (video.mp4, cut-list.json,
-# walk.json, the walk's snips). The fetched files are read in a folder of
-# mktemp's, removed on exit.
+# `motion promo --prove` in the render service. The promo and what it was made
+# from are kept in ${STORAGE}/renders/promo/<app>-<version>/ (video.mp4,
+# cut-list.json, walk.json, the walk's snips). APP and VERSION name a folder
+# under /renders, so each is held to plain characters first.
 PROMO_DATA = https://raw.githubusercontent.com/paulgsc/testing/main/promo
 
 promo: envctl ## A release's promo on home, the same bytes twice: make promo APP=suspender-ledger VERSION=0.3.1
