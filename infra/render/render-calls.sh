@@ -100,7 +100,7 @@ CACHE_MB=2048
 WORK_MAX_MB=4096
 
 # How often the worker looks for an episode with no video. Looking is a
-# listing of two folders; what starts a render is the lane, not this.
+# listing of three folders; what starts a render is the lane, not this.
 EVERY=60
 # A failed episode is tried again this long after its failure, not on every
 # look: a week that fails for a reason that stays would fail every minute.

@@ -16,6 +16,7 @@ pub mod leetype_log;
 pub mod metrics;
 pub mod outcomes;
 pub mod presence;
+pub mod previews;
 pub mod push;
 pub mod readiness;
 pub mod renders;

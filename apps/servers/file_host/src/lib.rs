@@ -26,6 +26,7 @@ pub mod models;
 pub mod net;
 pub mod nudge;
 pub mod pd_fills;
+pub mod previews;
 #[cfg(test)]
 mod privacy;
 pub mod rate_limiter;
@@ -297,6 +298,7 @@ pub fn start_polls(state: &AppState) {
 	game_feed::start(state);
 	call_weeks::start(state);
 	pd_fills::start(state);
+	previews::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

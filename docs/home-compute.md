@@ -154,7 +154,7 @@ how long, and `CallRenderOverdue` fires on the week left waiting.
 ### What the render worker does
 
 `infra/render/render-calls.sh` (L4c #708), for each of its jobs alike (the
-call's, Playoff Delta's). `infra/render/render-calls.test.sh` holds each
+call's, Playoff Delta's, a template's preview's). `infra/render/render-calls.test.sh` holds each
 point below with a fake lane and a recorder slow enough to be caught half
 way; CI runs it on every PR.
 
@@ -211,7 +211,7 @@ way; CI runs it on every PR.
 - **The first render after a boot** waits for the lane's first `run`, which
   is never sooner than its hold-down (30 s after file_host starts): home's
   own services start first.
-- **It looks for work every minute**, a listing of two folders. Looking
+- **It looks for work every minute**, a listing of three folders. Looking
   never starts a render; the lane does. A failed episode is tried again an
   hour after its failure, not at every look. While a job waits for room or
   is paused, the worker stamps `last-pass` at least every minute, so a
@@ -223,6 +223,17 @@ way; CI runs it on every PR.
   in progress for good.
 - Each recorder run has its own `TMPDIR`, removed after it, killed or not:
   a killed Chromium leaves its profile behind, and `/tmp` is held in memory.
+- **A template's preview** (SFEED12, paulgsc/some-ui#2757) is its third job,
+  after the call's and Playoff Delta's, with no priority over either: the
+  owner asks for one from Studio (`POST /previews/:template`), file_host
+  writes the request to `${STORAGE}/preview-requests`, and the worker makes
+  it from the template's sample under the lane like any episode, counted
+  against the same declared peak until one is measured. Unlike an episode, a
+  preview that fails is never tried again (the owner asks for another), and
+  it is not kept: file_host removes it a day after it is made, and an older
+  one of its template as soon as a newer one is ready (`previews::prune`,
+  every 10 minutes, never the job in progress), at the owner's word, with no
+  switch and no receipt.
 
 ## At rest: what home costs while nothing is worked on
 
