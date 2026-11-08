@@ -11,6 +11,9 @@
 //! - [`list`]: each episode home holds, newest first, with the bytes of its
 //!   video and of the rest of its folder, its link and its receipts.
 //! - [`video_file`]: where a rendered episode's video is, for the download.
+//! - [`description`]: the chapters the recorder wrote beside it, for the
+//!   phone to show and copy into `YouTube`'s upload screen (SFEED4,
+//!   paulgsc/some-ui#2763).
 //! - [`let_go`]: one step of letting an episode go, with its receipt.
 //!
 //! **What a step deletes, and in what order.** The video's step removes the
@@ -42,6 +45,7 @@ use crate::call_weeks::render::bytes_under;
 use call_week_repo::video::{self, Receipt, Recorded, Step};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncReadExt as _;
 
 /// An episode as the phone sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +115,85 @@ pub async fn video_file(db: &SqlitePool, feed: Feed, renders: &Path, key: &str) 
 	}
 	let file = renders.join(key).join(feed.video());
 	Ok(tokio::fs::metadata(&file).await.is_ok_and(|meta| meta.is_file()).then_some(file))
+}
+
+/// The file the recorder writes beside an episode's video: its `YouTube`
+/// chapter lines (paulgsc/some-ui#2767), absent when it has fewer than three
+/// chapters or was rendered before the recorder wrote one.
+pub const DESCRIPTION: &str = "description.txt";
+
+/// The most bytes [`description`] reads: `YouTube`'s own ceiling on a
+/// video's description, within which the recorder writes.
+pub const DESCRIPTION_CEILING: u64 = 5_000;
+
+/// What [`description`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Description {
+	/// Home holds no such episode, it isn't rendered, or it has no
+	/// description (fewer than three chapters, rendered before the recorder
+	/// wrote one, or let go with the rest of its folder).
+	Absent,
+	/// The file's bytes, as the recorder wrote them.
+	Text(Vec<u8>),
+	/// The file is over [`DESCRIPTION_CEILING`], which the recorder never
+	/// writes: it is not read.
+	OverCeiling,
+}
+
+/// The chapters the recorder wrote beside a rendered episode's video.
+///
+/// The folder is joined only after the feed's table says home holds the
+/// episode (the module's "Paths"), and a file over [`DESCRIPTION_CEILING`]
+/// is never read.
+///
+/// # Errors
+/// A storage failure, or the drive refusing a read of a file that is there.
+pub async fn description(db: &SqlitePool, feed: Feed, renders: &Path, key: &str) -> Result<Description, DescriptionError> {
+	let holds = {
+		let mut conn = db.acquire().await?;
+		feed.holds(&mut conn, key).await?
+	};
+	if !holds {
+		return Ok(Description::Absent);
+	}
+	let path = renders.join(key).join(DESCRIPTION);
+	// The recorder writes a plain file: a link, a folder or anything else
+	// under its name is not one, and is never followed.
+	match tokio::fs::symlink_metadata(&path).await {
+		Ok(meta) if meta.file_type().is_file() => {}
+		Ok(_) => return Ok(Description::Absent),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Description::Absent),
+		Err(err) => return Err(DescriptionError::Drive(err)),
+	}
+	let file = match tokio::fs::File::open(&path).await {
+		Ok(file) => file,
+		// It went between the two looks: let go with the rest.
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Description::Absent),
+		Err(err) => return Err(DescriptionError::Drive(err)),
+	};
+	// One byte past the ceiling at most, whatever the file holds by now.
+	let mut bytes = Vec::new();
+	file.take(DESCRIPTION_CEILING + 1).read_to_end(&mut bytes).await.map_err(DescriptionError::Drive)?;
+	Ok(if u64::try_from(bytes.len()).is_ok_and(|read| read <= DESCRIPTION_CEILING) {
+		Description::Text(bytes)
+	} else {
+		Description::OverCeiling
+	})
+}
+
+/// Why [`description`] could not answer.
+#[derive(Debug)]
+pub enum DescriptionError {
+	/// Reading which episodes home holds failed.
+	Storage(sqlx::Error),
+	/// The drive refused a read of a file that is there.
+	Drive(std::io::Error),
+}
+
+impl From<sqlx::Error> for DescriptionError {
+	fn from(err: sqlx::Error) -> Self {
+		Self::Storage(err)
+	}
 }
 
 /// What [`record_link`] did with a pasted link.
@@ -327,6 +410,41 @@ mod tests {
 		);
 		assert_eq!(video_file(&pool, Feed::Call, &renders, "2026-11-06").await.unwrap(), None, "not rendered");
 		assert_eq!(video_file(&pool, Feed::Call, &renders, "2026-01-02").await.unwrap(), None, "not held");
+	}
+
+	#[tokio::test]
+	async fn an_episodes_description_is_read_only_when_held_rendered_and_within_the_ceiling() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let renders = dir.path().join("call");
+		hold(&pool, "2026-10-30", "2026-11-05").await;
+		hold(&pool, "2026-11-06", "2026-11-12").await;
+		render(&renders, "2026-10-30");
+		render(&renders, "2026-11-06");
+		let chapters = "0:00 Opening\n0:20 The board\n0:53 Which music?\n";
+		std::fs::write(renders.join("2026-10-30").join(DESCRIPTION), chapters).unwrap();
+		let read = |key: &'static str| {
+			let (pool, renders) = (&pool, &renders);
+			async move { description(pool, Feed::Call, renders, key).await.unwrap() }
+		};
+		assert_eq!(read("2026-10-30").await, Description::Text(chapters.as_bytes().to_vec()));
+		assert_eq!(read("2026-11-06").await, Description::Absent, "fewer than three chapters, or rendered before");
+		assert_eq!(read("2026-01-02").await, Description::Absent, "not held");
+		std::fs::create_dir_all(renders.join("2026-01-02")).unwrap();
+		std::fs::write(renders.join("2026-01-02").join(DESCRIPTION), chapters).unwrap();
+		assert_eq!(read("2026-01-02").await, Description::Absent, "a folder the table does not hold is never read");
+
+		let ceiling = usize::try_from(DESCRIPTION_CEILING).unwrap();
+		std::fs::write(renders.join("2026-11-06").join(DESCRIPTION), vec![b'a'; ceiling]).unwrap();
+		assert!(
+			matches!(read("2026-11-06").await, Description::Text(bytes) if bytes.len() == ceiling),
+			"the ceiling itself is read"
+		);
+		std::fs::write(renders.join("2026-11-06").join(DESCRIPTION), vec![b'a'; ceiling + 1]).unwrap();
+		assert_eq!(read("2026-11-06").await, Description::OverCeiling);
+
+		std::fs::remove_file(renders.join("2026-11-06").join(DESCRIPTION)).unwrap();
+		std::os::unix::fs::symlink(renders.join("2026-10-30").join(DESCRIPTION), renders.join("2026-11-06").join(DESCRIPTION)).unwrap();
+		assert_eq!(read("2026-11-06").await, Description::Absent, "a link is never followed");
 	}
 
 	#[tokio::test]
