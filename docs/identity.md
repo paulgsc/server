@@ -1119,7 +1119,9 @@ nowhere is marked as such and belongs to review.
     Rounds note is a voice note** too (paulgsc/some-ui#2237, RR6, under
     HOME-FIRST's D1): said for `rust-round`, its `ref` the card as
     `<round>:<card>`, or on a refine card `<round>:<card>:<note>`, naming the
-    earlier note it brings back, so the pair is home's record
+    earlier note it brings back, so the pair is home's record; or, for a
+    week's ticket (RR13, paulgsc/some-ui#2688), `<week>:<ticket>` such as
+    `2026-w46:QM-311`, which no card's ref can read as
     (`voice_repo::is_rust_round_ref`; any other `ref` is a `422`). It
     carries nothing beside it (`20261102000100_add_rust_round_to_voice_note`),
     is heard by the transcriber like every note, and has its transcript
