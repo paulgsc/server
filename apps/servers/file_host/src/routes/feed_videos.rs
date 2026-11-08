@@ -1,6 +1,5 @@
 //! `/api/v1/feeds/:feed/videos` — each feed's videos on the phone, the
-//! call's and Playoff Delta's alike (FEED4: paulgsc/some-ui#2647), as
-//! `routes::call_videos` serves the call's in its older shape.
+//! call's and Playoff Delta's alike (FEED4: paulgsc/some-ui#2647).
 //!
 //! ```text
 //! GET    /feeds/:feed/videos             → { episodes: [{ key, videoBytes, restBytes, link, receipts }] }: newest first
@@ -12,7 +11,7 @@
 //!
 //! `:feed` is `call` or `playoff-delta` (`feeds::Feed`); any other is `404`.
 //!
-//! **Trust model:** a paired phone's only, as `routes::call_videos`'. Every
+//! **Trust model:** a paired phone's only, as `routes::voice`'s delete. Every
 //! handler takes a `Paired`, so a request without a session is `401` and a
 //! browser's session `403`.
 //!

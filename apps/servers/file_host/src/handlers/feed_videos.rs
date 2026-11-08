@@ -1,8 +1,7 @@
 //! Handlers for `routes::feed_videos`: each feed's videos on the phone.
 //!
 //! The call's and Playoff Delta's alike (FEED4, paulgsc/some-ui#2647). What each
-//! does is `feeds::videos`'s; these validate and answer, as
-//! `handlers::call_videos` does for the call's older routes.
+//! does is `feeds::videos`'s; these validate and answer.
 //!
 //! **A paired phone's only.** Every handler takes [`Paired`], so a request
 //! without a session is `401` and a browser's session `403`.
@@ -12,9 +11,8 @@
 //! refused in fixed words, never echoed. A feed the routes don't know is
 //! `404`, as an episode home doesn't hold is.
 
-use super::call_videos::{let_go_answer, now, LinkBody, LinkKept, LinkView};
 use crate::feeds::{
-	videos::{self, EpisodeVideo, LinkRecorded},
+	videos::{self, EpisodeVideo, Folders, LetGo, LetGoError, LinkRecorded},
 	Feed,
 };
 use crate::subject::Paired;
@@ -27,11 +25,71 @@ use axum::{
 	Json,
 };
 use call_week_repo::video::{link_of, Receipt, Step};
-use serde::Serialize;
+use chrono::{SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use tracing::instrument;
+
+/// The 409 when an episode's video is let go before its link is recorded.
+/// The three say "week" for every feed, as the phone shows them.
+const NO_LINK: &str = "record the week's YouTube link before its video goes";
+/// The 409 when the rest of an episode is let go before its video.
+const VIDEO_FIRST: &str = "the rest of a week goes only after its video";
+/// The 409 when an episode with no video is let go.
+const NOT_RENDERED: &str = "the week has no video yet";
+
+fn now() -> String {
+	// Fixed width, as `handlers::jobs`'s.
+	Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// An episode's link as the phone reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkView {
+	/// `https://youtu.be/<id>`.
+	pub url: String,
+	pub recorded_at: String,
+}
+
+/// `PUT /feeds/:feed/videos/:key/link`'s body.
+#[derive(Debug, Deserialize)]
+pub struct LinkBody {
+	/// The link as pasted: `youtube.com/watch?v=…`, `youtu.be/…` or
+	/// `youtube.com/shorts/…`.
+	pub link: String,
+}
+
+/// `PUT /feeds/:feed/videos/:key/link`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LinkKept {
+	/// `https://youtu.be/<id>`: the episode's link now.
+	pub url: String,
+}
+
+/// One step of letting an episode of `feed` go, as the routes answer it.
+///
+/// # Errors
+/// 404 for an episode home doesn't hold, 409 for one with no link, no video,
+/// or the rest before the video, and 500 for a storage failure or a file the
+/// drive would not remove.
+async fn let_go_answer(db: &SqlitePool, feed: Feed, key: &str, step: Step) -> Result<Receipt, FileHostError> {
+	let folders = Folders {
+		renders: feed.renders(),
+		input: feed.input(),
+	};
+	match videos::let_go(db, feed, folders, key, step, &now()).await {
+		Ok(LetGo::Gone(receipt)) => Ok(receipt),
+		Ok(LetGo::NoEpisode) => Err(FileHostError::NotFound),
+		Ok(LetGo::NoLink) => Err(FileHostError::Conflict(NO_LINK)),
+		Ok(LetGo::VideoFirst) => Err(FileHostError::Conflict(VIDEO_FIRST)),
+		Ok(LetGo::NotRendered) => Err(FileHostError::Conflict(NOT_RENDERED)),
+		Err(LetGoError::Storage(error)) => Err(FileHostError::Sqlite(error)),
+		Err(LetGoError::Drive(error)) => Err(FileHostError::IoError(error)),
+	}
+}
 
 fn feed_of(name: &str) -> Result<Feed, FileHostError> {
 	Feed::parse(name).ok_or(FileHostError::NotFound)
@@ -211,9 +269,8 @@ pub async fn delete_rest(_paired: Paired, State(db): State<SqlitePool>, Path((fe
 
 #[cfg(test)]
 mod tests {
-	//! Through the real router, with a paired phone's session and a browser's,
-	//! as `handlers::call_videos`' tests are; `feeds::videos`' tests hold
-	//! what goes on the drive.
+	//! Through the real router, with a paired phone's session and a browser's;
+	//! `feeds::videos`' tests hold what goes on the drive.
 
 	use crate::auth::{
 		cookie::{Carrier, SessionToken},
@@ -330,10 +387,29 @@ mod tests {
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 		assert!(!refused.to_string().contains("@me"), "a pasted link is never echoed");
 		let video = "/feeds/playoff-delta/videos/2026-SF-09/video";
-		assert_eq!(send(&app, Method::DELETE, video, Some(&phone), None).await.0, StatusCode::CONFLICT, "no link, nothing goes");
+		let rest = "/feeds/playoff-delta/videos/2026-SF-09/rest";
+		let refused = |answer: (StatusCode, Value), words: &str| answer.0 == StatusCode::CONFLICT && answer.1.to_string().contains(words);
+		assert!(
+			refused(send(&app, Method::DELETE, video, Some(&phone), None).await, super::NO_LINK),
+			"no link, nothing goes"
+		);
+		assert!(
+			refused(send(&app, Method::DELETE, rest, Some(&phone), None).await, super::NO_LINK),
+			"no link, not the rest either"
+		);
 		let (status, kept) = send(&app, Method::PUT, link, Some(&phone), Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" }))).await;
 		assert_eq!((status, kept), (StatusCode::OK, json!({ "url": "https://youtu.be/dQw4w9WgXcQ" })));
+		assert_eq!(
+			send(&app, Method::GET, list, Some(&phone), None).await.1["episodes"][0]["link"]["url"],
+			"https://youtu.be/dQw4w9WgXcQ"
+		);
 		assert_eq!(send(&app, Method::GET, video, Some(&phone), None).await.0, StatusCode::NOT_FOUND, "not rendered here");
+		assert!(
+			refused(send(&app, Method::DELETE, video, Some(&phone), None).await, super::NOT_RENDERED),
+			"no video, nothing goes"
+		);
+		let unheld_video = "/feeds/playoff-delta/videos/2026-SF-10/video";
+		assert_eq!(send(&app, Method::DELETE, unheld_video, Some(&phone), None).await.0, StatusCode::NOT_FOUND);
 		assert_eq!(send(&app, Method::DELETE, video, Some(&browser), None).await.0, StatusCode::FORBIDDEN);
 		let unheld = send(
 			&app,

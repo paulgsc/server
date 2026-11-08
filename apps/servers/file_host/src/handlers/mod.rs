@@ -9,7 +9,6 @@ pub mod admin_settings;
 pub mod aph;
 pub mod app_events;
 pub mod auth;
-pub mod call_videos;
 pub mod db;
 pub mod feed_videos;
 pub mod health;

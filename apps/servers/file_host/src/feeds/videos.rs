@@ -5,7 +5,7 @@
 //! The owner watches each episode's video on the phone, shares it to the
 //! `YouTube` app, records its `YouTube` link, and then lets home's copy go
 //! from My data in two steps: the video, then the rest of the folder. This is
-//! what `handlers::feed_videos` (and the call's older `handlers::call_videos`)
+//! what `handlers::feed_videos`
 //! answers a paired phone with, for any [`Feed`]:
 //!
 //! - [`list`]: each episode home holds, newest first, with the bytes of its
