@@ -470,6 +470,8 @@ mod tests {
 	/// in `pulled` as it is read.
 	struct Unending {
 		pulled: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+		/// A length it declares, though it never ends.
+		declared: Option<u64>,
 	}
 
 	impl http_body::Body for Unending {
@@ -480,11 +482,16 @@ mod tests {
 			self.pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 			std::task::Poll::Ready(Some(Ok(http_body::Frame::data(axum::body::Bytes::from(vec![b' '; 0x10000])))))
 		}
+
+		fn size_hint(&self) -> http_body::SizeHint {
+			self.declared.map_or_else(http_body::SizeHint::default, http_body::SizeHint::with_exact)
+		}
 	}
 
-	fn unending(status: u16, pulled: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> reqwest::Response {
+	fn unending(status: u16, pulled: &std::sync::Arc<std::sync::atomic::AtomicUsize>, declared: Option<u64>) -> reqwest::Response {
 		let body = reqwest::Body::wrap(Unending {
 			pulled: std::sync::Arc::clone(pulled),
+			declared,
 		});
 		reqwest::Response::from(axum::http::Response::builder().status(status).body(body).unwrap())
 	}
@@ -498,8 +505,11 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_declared_length_over_the_cap_is_refused() {
-		assert_eq!(read_body(answer(200, vec![b' '; MIB + 1]), MIB, true).await.map(|a| a.status), Err(NoAnswer("too_big")));
+	async fn a_declared_length_over_the_cap_is_refused_before_its_body() {
+		let pulled = std::sync::Arc::default();
+		let read = read_body(unending(200, &pulled, Some(u64::try_from(MIB).unwrap() + 1)), MIB, true).await;
+		assert_eq!(read.map(|a| a.status), Err(NoAnswer("too_big")));
+		assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), 0, "none of its body is read");
 	}
 
 	/// An answer with no length that never ends: the read stops at the chunk
@@ -507,7 +517,7 @@ mod tests {
 	#[tokio::test]
 	async fn an_unending_answer_is_refused_once_it_passes_the_cap() {
 		let pulled = std::sync::Arc::default();
-		let read = tokio::time::timeout(Duration::from_secs(10), read_body(unending(200, &pulled), MIB, true)).await;
+		let read = tokio::time::timeout(Duration::from_secs(10), read_body(unending(200, &pulled, None), MIB, true)).await;
 		assert_eq!(read.map(|r| r.map(|a| a.status)), Ok(Err(NoAnswer("too_big"))));
 		assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), MIB / 0x10000 + 1);
 	}
@@ -518,7 +528,7 @@ mod tests {
 		let declared = read_body(answer(503, vec![b' '; MIB + 1]), MIB, true).await;
 		assert_eq!(declared.map(|a| (a.status, a.body.len())), Ok((503, 0)));
 		let pulled = std::sync::Arc::default();
-		let unread = read_body(unending(404, &pulled), MIB, true).await;
+		let unread = read_body(unending(404, &pulled, None), MIB, true).await;
 		assert_eq!(unread.map(|a| (a.status, a.body.len())), Ok((404, 0)));
 		assert_eq!(pulled.load(std::sync::atomic::Ordering::SeqCst), 0, "its body is never read");
 		let refused = Canned::default();
