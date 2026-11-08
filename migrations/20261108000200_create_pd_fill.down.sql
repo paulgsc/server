@@ -1,4 +1,4 @@
--- Reverses 20261108000100_create_pd_fill.up.sql.
+-- Reverses 20261108000200_create_pd_fill.up.sql.
 --
 -- **It refuses rather than discards,** as
 -- 20261106000100_create_call_week.down.sql does: `pd_fill` is home's record

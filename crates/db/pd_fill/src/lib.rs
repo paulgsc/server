@@ -1,7 +1,7 @@
 //! Home's record of Playoff Delta's fills (paulgsc/some-ui#2647, FEED4):
 //! `pd_fill`, each fill once by its episode (season, team, week), with the
 //! season file it was taken beside, append-only. The rules are
-//! `20261108000100_create_pd_fill.up.sql`'s.
+//! `20261108000200_create_pd_fill.up.sql`'s.
 
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
