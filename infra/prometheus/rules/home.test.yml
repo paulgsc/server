@@ -609,7 +609,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: CW5
-              says: "A week of the call has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+              says: "A week of the call has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
       - eval_time: 3h35m
         alertname: CallRenderOverdue
         exp_alerts: []
@@ -635,7 +635,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: PK5
-              says: "A week of Playoff Delta has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck (docker logs render)."
+              says: "A week of Playoff Delta has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
       - eval_time: 3h05m
         alertname: PlayoffDeltaRenderFailed
         exp_alerts: []
@@ -663,7 +663,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: CW5
-              says: "Home's render worker has not started a pass for 4 hours (it starts one hourly): docker logs render says why."
+              says: "Home's render worker has not stamped a pass for 4 hours (it stamps one every minute, waiting for room or not): docker logs render says why."
 
   - name: a render worker that never stamped is not stale (CW5)
     interval: 1m
