@@ -201,6 +201,8 @@ check() {
     echo "ok: $what"
   else
     echo "FAILED: $what"
+    # What the worker said, so a failure on a runner can be read from its log.
+    [ -e "$SCRATCH/pass.out" ] && sed 's/^/  pass.out: /' "$SCRATCH/pass.out" | tail -n 40
     failures=$((failures + 1))
   fi
 }
