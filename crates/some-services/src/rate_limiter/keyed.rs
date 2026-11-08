@@ -48,11 +48,14 @@ impl<K: Eq + Hash + Clone, C: Clock> KeyedLimiter<K, C> {
 	///
 	/// The read and the write are one step under the key's shard lock, so two
 	/// requests from one client cannot both spend the same allowance, and a
-	/// busy client never sees a refusal it didn't earn.
+	/// busy client never sees a refusal it didn't earn. The clock is read
+	/// inside the lock too: read before it, a request delayed on the way in
+	/// would be judged at its old time against a TAT a later request already
+	/// moved, and refused for time that has in fact passed.
 	pub fn check(&self, key: &K) -> Decision {
-		let now = self.clock.now();
 		match self.tats.entry(key.clone()) {
 			Entry::Occupied(mut held) => {
+				let now = self.clock.now();
 				let (decision, next) = gcra::decide(Some(*held.get()), now, &self.quota);
 				if let Some(next) = next {
 					*held.get_mut() = next;
@@ -60,6 +63,7 @@ impl<K: Eq + Hash + Clone, C: Clock> KeyedLimiter<K, C> {
 				decision
 			}
 			Entry::Vacant(empty) => {
+				let now = self.clock.now();
 				let (decision, next) = gcra::decide(None, now, &self.quota);
 				if let Some(next) = next {
 					empty.insert(next);
