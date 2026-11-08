@@ -343,7 +343,11 @@ impl Paths {
 			meminfo: PathBuf::from(MEMINFO),
 			pressure: PathBuf::from(PRESSURE),
 			status: PathBuf::from(super::render::STATUS_FOLDER),
-			attempts: vec![PathBuf::from(super::render::STATUS_FOLDER), PathBuf::from(crate::pd_fills::render::STATUS_FOLDER)],
+			attempts: vec![
+				PathBuf::from(super::render::STATUS_FOLDER),
+				PathBuf::from(crate::pd_fills::render::STATUS_FOLDER),
+				PathBuf::from(crate::previews::STATUS_FOLDER),
+			],
 		}
 	}
 }

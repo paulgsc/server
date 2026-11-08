@@ -7,7 +7,7 @@
 # - `call-stage`, the stage: the published home-network app image, pinned by
 #   digest (the owner's choice on paulgsc/some-ui#2639), serving `/call` and
 #   `/playoff-delta`. Bump the pin when either stage changes.
-# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with two jobs
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with three jobs
 #   (infra/render/render-calls.sh): for each week `file_host` writes to
 #   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
 #   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
@@ -16,7 +16,11 @@
 #   speaker and renders it. Each video is kept in ${STORAGE}/renders/call/<from>/
 #   or ${STORAGE}/renders/playoff-delta/<season>-<team>-<NN>/, on the same
 #   drive as home's database, until the owner lets it go (paulgsc/some-ui#2640,
-#   #2661).
+#   #2661). Its third job is a template's preview (SFEED12,
+#   paulgsc/some-ui#2757): each request file_host writes to
+#   ${STORAGE}/preview-requests (`previews::REQUESTS_FOLDER`) is made from the
+#   template's sample into ${STORAGE}/renders/preview/<id>/, which file_host
+#   removes a day later (`previews::prune`).
 #
 #   make compose ARGS="up -d --build kokoro call-stage render"
 #   curl -s http://127.0.0.1:8880/health
@@ -109,9 +113,10 @@ services:
         condition: service_started
       call-stage:
         condition: service_started
-      # file_host makes ${STORAGE}/call-weeks and
-      # ${STORAGE}/playoff-delta-episodes before it answers its health check
-      # (call_weeks::start, pd_fills::start), so each is its own, never
+      # file_host makes ${STORAGE}/call-weeks,
+      # ${STORAGE}/playoff-delta-episodes and ${STORAGE}/preview-requests
+      # before it answers its health check (call_weeks::start,
+      # pd_fills::start, previews::start), so each is its own, never
       # Docker's.
       file-host:
         condition: service_healthy
@@ -132,6 +137,15 @@ services:
       - type: volume
         source: pd_episode_files
         target: /episodes
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`previews::REQUESTS_FOLDER`), read here only,
+      # through `preview_request_files` (below): one file per preview the
+      # owner asked for.
+      - type: volume
+        source: preview_request_files
+        target: /previews
         read_only: true
         volume:
           nocopy: true
@@ -194,6 +208,15 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/playoff-delta-episodes
+  # ${STORAGE}/preview-requests, where file_host writes each preview the owner
+  # asks for; bound as call_week_files is, for the same reason
+  # (previews::start makes it).
+  preview_request_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/preview-requests
 
 networks:
   # Internal: none of the three reaches the internet or the rest of the stack.

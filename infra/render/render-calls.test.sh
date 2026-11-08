@@ -27,6 +27,10 @@
 #   reads them, and the job is gone once it renders, fails or is let go;
 # - a job a restart left keeps its id and its work, and runs first;
 # - a failed week waits RETRY_AFTER before it is tried again.
+#
+# And a template's preview (SFEED12, paulgsc/some-ui#2757): rendered with
+# the template its id names and kept whole; a failed one never tried again;
+# one a restart left resumed first.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -125,6 +129,34 @@ cat > "$TSX" <<'FAKE_RECORDER'
 #!/usr/bin/env bash
 set -u
 fake=$(dirname "$0")
+# A preview (SFEED12): `tsx tests/record/preview.ts … --template <t> --out
+# <w>/<id>` writes preview.mp4, its sample week (naming the template's
+# version) and a cache into <w>/<id>, or fails as the real one does for a
+# template with no sample fill while $FAKE/no-sample exists. Each run is
+# counted in $FAKE/preview-runs as `<template> <out>`.
+if [ "$1" = tests/record/preview.ts ]; then
+  template= out=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --template) template=$2; shift ;;
+      --out) out=$2; shift ;;
+      --week | --week-file) echo "preview.ts takes no $1"; exit 2 ;;
+    esac
+    shift
+  done
+  echo "$template $out" >> "$fake/preview-runs"
+  if [ -e "$fake/no-sample" ]; then
+    echo "$template has no sample fill yet" >&2
+    exit 1
+  fi
+  mkdir -p "$out/cache"
+  echo intermediate > "$out/cache/frame"
+  printf '{"template":{"id":"%s","version":2}}\n' "$template" > "$out/week.json"
+  echo "preview of $template" > "$out/preview.mp4"
+  # As if an earlier attempt had written it: the worker's move dates it.
+  touch -d '2 days ago' "$out/preview.mp4"
+  exit 0
+fi
 [ "$1" = tests/record/call.ts ] || { echo "not the call's recorder: $1"; exit 2; }
 week_file= out=
 while [ $# -gt 0 ]; do
@@ -217,7 +249,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job"
+    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -608,6 +640,49 @@ touch -d '1 second ago' "$ROOT/renders/call-worker/2026-10-30.failed.log"
 pass
 check "so a failure is not tried again within RETRY_AFTER of it" test "$(runs_of 2026-10-30)" -eq 1
 RETRY_AFTER=0
+
+# A template's preview (SFEED12, paulgsc/some-ui#2757): the owner's request
+# file_host wrote is rendered with the template its id names, moved whole
+# into renders/preview without its cache, and a request of another shape is
+# never read.
+fresh preview
+mkdir -p "$ROOT/previews"
+ID=conference-call-20261108T074500Z
+echo '{}' > "$ROOT/previews/$ID.json"
+echo '{}' > "$ROOT/previews/not-a-template-20261108T074500Z.json"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "a preview is recorded with its template, into its own work folder" \
+  test "$(cat "$FAKE/preview-runs")" = "conference-call $ROOT/renders/preview-work/$ID"
+check "and kept whole in renders/preview" test -e "$ROOT/renders/preview/$ID/preview.mp4" -a -e "$ROOT/renders/preview/$ID/week.json"
+check "without its cache, and its work gone" test ! -e "$ROOT/renders/preview/$ID/cache" -a ! -e "$ROOT/renders/preview-work/$ID"
+check "a request of a template there is none of is never read" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+check "its job is over" test ! -e "$ROOT/renders/call-worker/job"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "a ready preview is not made again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+check "its video's time is when it was moved into place" test "$(( $(date +%s) - $(stat -c %Y "$ROOT/renders/preview/$ID/preview.mp4") ))" -lt 60
+
+# A preview that fails stays failed, RETRY_AFTER or not: the owner asks for
+# another, under a new id.
+fresh preview-failed
+mkdir -p "$ROOT/previews"
+ID=playoff-delta-week-20261108T074500Z
+echo '{}' > "$ROOT/previews/$ID.json"
+touch "$FAKE/no-sample"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "a failed preview's output is its failed.log" grep -q "has no sample fill yet" "$ROOT/renders/preview-worker/$ID.failed.log"
+check "and it leaves no folder in renders/preview" test ! -e "$ROOT/renders/preview/$ID"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "a failed preview is never tried again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+
+# A preview a restart left runs first, as any job does.
+fresh preview-left
+mkdir -p "$ROOT/previews" "$ROOT/renders/call-worker"
+ID=conference-call-20261108T080000Z
+echo '{}' > "$ROOT/previews/$ID.json"
+echo 77 > "$ROOT/renders/call-worker/job"
+printf 'id=77\nkind=preview\nkey=%s\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0' "$ID" > "$ROOT/renders/call-worker/job.state"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a preview a restart left is resumed" test -e "$ROOT/renders/preview/$ID/preview.mp4"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures of the render worker's guarantees failed"
