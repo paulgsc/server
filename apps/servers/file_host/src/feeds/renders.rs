@@ -313,7 +313,13 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 		gave_way: job.yields,
 		held_by: held_by(job, lane, now),
 		stuck: lane.is_some_and(|lane| lane.stuck),
-		estimate: estimate(job, Feed::parse(&job.kind).and_then(|feed| feeds.iter().find(|(f, _)| *f == feed)).and_then(|(_, seen)| seen.took), now),
+		estimate: estimate(
+			job,
+			Feed::parse(&job.kind)
+				.and_then(|feed| feeds.iter().find(|(f, _)| *f == feed))
+				.and_then(|(_, seen)| seen.took),
+			now,
+		),
 	});
 	let mut waiting = Vec::new();
 	let mut failed = Vec::new();
@@ -324,7 +330,11 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 		for (key, taken) in &seen.held {
 			let current = job.is_some_and(|job| job.kind == name && job.key == *key);
 			if let Some(made) = seen.videos.get(key) {
-				done.push(Episode { feed: name.to_owned(), key: key.clone(), at: *made });
+				done.push(Episode {
+					feed: name.to_owned(),
+					key: key.clone(),
+					at: *made,
+				});
 			} else if let Some((at, said)) = seen.failed.get(key).filter(|_| !current) {
 				failed.push(Failed {
 					feed: name.to_owned(),
@@ -333,7 +343,11 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 					said: said.clone(),
 				});
 			} else if !current {
-				waiting.push(Episode { feed: name.to_owned(), key: key.clone(), at: *taken });
+				waiting.push(Episode {
+					feed: name.to_owned(),
+					key: key.clone(),
+					at: *taken,
+				});
 			}
 		}
 		if let Some(on) = coming(*feed, seen, now, today) {
@@ -373,7 +387,11 @@ impl Folders {
 	pub fn server() -> Self {
 		Self {
 			feeds: vec![
-				(Feed::Call, PathBuf::from(crate::call_weeks::render::RENDERS_FOLDER), PathBuf::from(crate::call_weeks::render::STATUS_FOLDER)),
+				(
+					Feed::Call,
+					PathBuf::from(crate::call_weeks::render::RENDERS_FOLDER),
+					PathBuf::from(crate::call_weeks::render::STATUS_FOLDER),
+				),
 				(
 					Feed::PlayoffDelta,
 					PathBuf::from(crate::pd_fills::render::RENDERS_FOLDER),

@@ -122,7 +122,14 @@ fn each_episode_is_in_one_place() {
 	let feeds = [(Feed::Call, call_seen()), (Feed::PlayoffDelta, pd_seen(NOW - 86_400))];
 	let read = board(&feeds, None, None, NOW);
 	assert_eq!(read.now, None);
-	assert_eq!(read.done, [Episode { feed: String::from("call"), key: String::from("2026-10-23"), at: NOW - 15 * 86_400 }]);
+	assert_eq!(
+		read.done,
+		[Episode {
+			feed: String::from("call"),
+			key: String::from("2026-10-23"),
+			at: NOW - 15 * 86_400
+		}]
+	);
 	assert_eq!(read.failed.len(), 1);
 	assert_eq!(read.failed[0].said, "the stage did not answer");
 	let waiting: Vec<(&str, &str)> = read.waiting.iter().map(|e| (e.feed.as_str(), e.key.as_str())).collect();
@@ -169,7 +176,13 @@ fn only_the_last_few_finished_are_shown_newest_first() {
 #[test]
 fn the_call_s_next_week_is_a_week_after_its_newest() {
 	let read = board(&[(Feed::Call, call_seen())], None, None, NOW);
-	assert_eq!(read.coming, [Coming { feed: String::from("call"), on: String::from("2026-11-13") }]);
+	assert_eq!(
+		read.coming,
+		[Coming {
+			feed: String::from("call"),
+			on: String::from("2026-11-13")
+		}]
+	);
 }
 
 #[test]
@@ -183,7 +196,13 @@ fn a_call_week_long_past_comes_on_its_next_friday() {
 fn playoff_delta_comes_on_the_tuesday_after_its_newest_fill() {
 	// Taken Saturday Nov 7 at home: next Tuesday is Nov 10.
 	let read = board(&[(Feed::PlayoffDelta, pd_seen(NOW - 86_400))], None, None, NOW);
-	assert_eq!(read.coming, [Coming { feed: String::from("playoff-delta"), on: String::from("2026-11-10") }]);
+	assert_eq!(
+		read.coming,
+		[Coming {
+			feed: String::from("playoff-delta"),
+			on: String::from("2026-11-10")
+		}]
+	);
 }
 
 #[test]
@@ -214,10 +233,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	let db = pool().await;
 	{
 		let mut conn = db.acquire().await.unwrap();
-		for (from, to, taken_at) in [
-			("2026-10-30", "2026-11-05", "2026-10-31T12:00:00Z"),
-			("2026-11-06", "2026-11-12", "2026-11-07T12:00:00Z"),
-		] {
+		for (from, to, taken_at) in [("2026-10-30", "2026-11-05", "2026-10-31T12:00:00Z"), ("2026-11-06", "2026-11-12", "2026-11-07T12:00:00Z")] {
 			let week = Week { from, to, body: b"{}", taken_at };
 			call_week_repo::keep(&mut conn, &week).await.unwrap();
 		}
@@ -243,5 +259,11 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9);
 	assert_eq!(read.done.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["2026-10-30"]);
 	assert_eq!(read.waiting, []);
-	assert_eq!(read.coming, [Coming { feed: String::from("call"), on: String::from("2026-11-13") }]);
+	assert_eq!(
+		read.coming,
+		[Coming {
+			feed: String::from("call"),
+			on: String::from("2026-11-13")
+		}]
+	);
 }
