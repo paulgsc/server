@@ -216,8 +216,14 @@ pub struct Now {
 }
 
 /// Why a job isn't rendering: the lane's reason, or `silent` when the lane
-/// has stopped deciding (its decision missing or stale), which is also what
-/// a job the worker left behind when it stopped reads as.
+/// has stopped deciding (its decision missing or stale).
+///
+/// `silent` says nothing of the worker itself: a worker that stopped or hung
+/// while the lane keeps deciding `run` still reads as rendering (or about to
+/// start, or finishing), its bar resting at [`MOST_SHOWN`], because the
+/// worker writes no sign of life while it renders (it stamps `last-pass`
+/// only while held back, so `CallRenderWorkerStale` catches a hung render
+/// after 4 hours). A worker that stops for good leaves `CallRenderOverdue`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HeldBy {
@@ -579,6 +585,8 @@ pub fn failure_in(text: &str) -> Failure {
 			return Failure { by: FailedBy::Home, exit: None };
 		}
 	}
+	// Every way the worker ends a failed log is one of the above; a log cut
+	// short or unreadable is put on the recorder, the likelier.
 	Failure {
 		by: FailedBy::Recorder,
 		exit: None,

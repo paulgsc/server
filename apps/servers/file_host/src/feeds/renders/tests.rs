@@ -321,6 +321,14 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "recorder", "exit": 1 }));
+	let json = serde_json::to_value(Failed {
+		feed: String::from("call"),
+		key: String::from("2026-11-06"),
+		at: 1,
+		failure: failure_in(home),
+	})
+	.unwrap();
+	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "home", "exit": null }));
 }
 
 #[test]
