@@ -38,9 +38,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# editor swap files (vim's, for any file it has open)
+*.swp
+*.swo
+
 # local env files
 .env
-.env.swp
 .env.local
 .env.development.local
 .env.test.local

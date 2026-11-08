@@ -1,0 +1,5 @@
+# Build output of scripts/build.sh, written here by compose's dashboard-builder
+# on every `up` (infra/grafana/README.md). This file keeps the directory, so
+# the bind mounts in infra/compose/monitoring.yml always have a source.
+*
+!.gitignore

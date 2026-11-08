@@ -3,12 +3,12 @@
 Sources live in `dashboards/*.jsonnet` (plus `dashboards/lib/`), built by
 `scripts/build.sh` into `generated/*.json`, which Grafana loads read-only
 via `infra/compose/monitoring.yml`'s `dashboard-builder` + `grafana`
-services. `generated/*.json` is checked in so a fresh `docker compose up`
-doesn't depend on the builder succeeding at exactly the right moment — but
-it's build output, not a second source of truth: `scripts/build.sh` (with
-`jsonnet -J lib`, then `jq .` to format) is what produced it, and that's
-what any diff between the two should be resolved by re-running, not by
-hand-editing the JSON.
+services. The builder runs on every `up`, and Grafana starts only once it
+has succeeded (`depends_on: dashboard-builder: service_completed_successfully`),
+so `generated/*.json` is build output and is not checked in
+(`generated/.gitignore`): the sources are the only copy, and nothing can
+drift from them. To see a dashboard's JSON without the stack, run the
+builder: `make compose ARGS="run --rm dashboard-builder"`.
 
 Every panel's query is checked against what this workspace actually emits
 by `scripts/check_metric_contract.py` (#217) — see
