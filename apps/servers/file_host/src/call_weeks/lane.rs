@@ -259,16 +259,22 @@ fn signals(now_ms: u64, meminfo: Option<&str>, pressure: Option<&str>, interacti
 		Number::Absent | Number::Unreadable => None,
 	};
 	// A peak of nothing is no measurement.
-	let batch_peak_bytes = match batch.peak {
+	let peak = match batch.peak {
 		Number::Absent => Some(DECLARED_PEAK_BYTES),
 		Number::Value(peak) if peak > 0 => Some(peak),
 		Number::Value(_) | Number::Unreadable => None,
 	};
+	let job_readable = batch.job != Number::Unreadable;
+	// A job that cannot be read is no job the lane can admit: it is passed
+	// with no peak, which is never room, so the lane says stop, `unknown`,
+	// whatever it said before (LA2, LA3). The job's stop count starts again
+	// once it can be read; `LaneSignalsUnreadable` says so meanwhile.
+	let batch_peak_bytes = peak.filter(|_| job_readable);
 	let readable = Readable {
 		meminfo: mem_available_bytes.is_some(),
 		pressure: memory_pressure_pct.is_some(),
-		job: batch.job != Number::Unreadable,
-		peak: batch_peak_bytes.is_some(),
+		job: job_readable,
+		peak: peak.is_some(),
 	};
 	(
 		Signals {
@@ -513,6 +519,9 @@ mod tests {
 		let (signals, readable) = signals_of(&batch(Number::Unreadable, Number::Unreadable));
 		assert_eq!((signals.batch_job, signals.batch_peak_bytes), (None, None));
 		assert!(!readable.job && !readable.peak);
+		let (signals, readable) = signals_of(&batch(Number::Unreadable, Number::Absent));
+		assert_eq!((signals.batch_job, signals.batch_peak_bytes), (None, None), "an unreadable job is never room");
+		assert!(!readable.job && readable.peak, "each file says for itself");
 		let (signals, readable) = signals_of(&batch(Number::Absent, Number::Value(0)));
 		assert_eq!(signals.batch_peak_bytes, None, "a peak of nothing is no measurement");
 		assert!(!readable.peak);
@@ -596,5 +605,31 @@ mod tests {
 		let ticked = lane.tick(&paths, &Interactive::default(), 2).await;
 		assert_eq!((ticked.decision.verb, ticked.decision.why), (Verb::Run, Why::Clear));
 		assert!(decision_file(&paths).starts_with("verb=run\nwhy=clear\n"));
+	}
+
+	#[tokio::test]
+	async fn an_unreadable_job_stops_a_run_and_never_starts_one() {
+		let dir = tempfile::tempdir().unwrap();
+		let paths = paths(dir.path());
+		let mut lane = Lane::new();
+		lane.tick(&paths, &Interactive::default(), 1).await;
+		lane.started = lane.started.checked_sub(Duration::from_millis(POLICY.hold_down_ms)).unwrap();
+		std::fs::write(paths.status.join(JOB), b"not a number\n").unwrap();
+		let ticked = lane.tick(&paths, &Interactive::default(), 2).await;
+		assert_eq!((ticked.decision.verb, ticked.decision.why), (Verb::Stop, Why::Unknown), "room held, but no start");
+		std::fs::write(paths.status.join(JOB), b"7\n").unwrap();
+		let ticked = lane.tick(&paths, &Interactive::default(), 3).await;
+		assert_eq!(ticked.decision.verb, Verb::Stop, "settling again: the hold-down starts over");
+		lane.started = lane.started.checked_sub(Duration::from_millis(POLICY.hold_down_ms)).unwrap();
+		let ticked = lane.tick(&paths, &Interactive::default(), 4).await;
+		assert_eq!((ticked.decision.verb, ticked.decision.why), (Verb::Run, Why::Clear));
+		std::fs::write(paths.status.join(JOB), b"7?\n").unwrap();
+		let ticked = lane.tick(&paths, &Interactive::default(), 5).await;
+		assert_eq!(
+			(ticked.decision.verb, ticked.decision.why),
+			(Verb::Stop, Why::Unknown),
+			"a running job whose file is garbled is stopped"
+		);
+		assert!(!ticked.readable.job);
 	}
 }

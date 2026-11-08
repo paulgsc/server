@@ -94,7 +94,8 @@ tick it reads:
   `job`, the id of the job in progress (a decimal number), and `peak`, the
   bytes its last finished run measured. Both are written by the worker
   (L4c); until it writes them there is no job, and the peak is the declared
-  ceiling below. A file there that is not a number is an unreadable signal.
+  ceiling below. A file there that is not a number is an unreadable signal,
+  and an unreadable `job` is never room: the lane says stop, `unknown`.
 
 It runs `lane::step`, and writes the decision whole (a hidden file, then a
 rename) to `${STORAGE}/renders/call-worker/lane`, one `key=value` a line:
