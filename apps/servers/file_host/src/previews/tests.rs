@@ -1,4 +1,4 @@
-use super::{current, id_at, prune, read, request, template_of, Asked, Folders, State, LIFETIME, TEMPLATES};
+use super::{current, failure_class, id_at, prune, read, request, template_of, Asked, Folders, State, LIFETIME, TEMPLATES};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -161,6 +161,21 @@ async fn a_failed_preview_says_why_in_a_class_never_its_log() {
 			panic!("a failed one is no pending one")
 		};
 		assert_ne!(again.id, asked.id);
+	}
+}
+
+#[test]
+fn each_refusal_the_recorder_words_has_its_class() {
+	// The wording is paulgsc/some-ui `packages/video-render/src/policy.ts`'s
+	// and `tests/record/preview.ts`'s at the image's SOME_UI_COMMIT.
+	for (log, class) in [
+		("playoff-delta-week has no sample fill yet, so it can't be previewed", "no-sample"),
+		("the video would run 16 min, past the policy's 15 min", "too-long"),
+		("the video is 512 MB, past the policy's 500 MB", "too-large"),
+		("cache warning: step 3 grew the cache from 600 MB past the policy's 500 MB; kept", "render"),
+		("Error: page.goto: Timeout 30000ms exceeded", "render"),
+	] {
+		assert_eq!(failure_class(log), class, "{log}");
 	}
 }
 
