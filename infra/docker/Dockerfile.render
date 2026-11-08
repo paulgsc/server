@@ -33,6 +33,33 @@ RUN corepack enable \
     && pnpm install --frozen-lockfile --filter "www..." \
     && pnpm exec turbo run build --filter="@some-ui/video-render^..."
 
+# HyperFrames' compositions (HYPER1, paulgsc/some-ui#2724), from their own
+# checkout at MOTION_COMMIT, so moving the motion never moves the recorders
+# away from call-stage's pin above, nor the other way round. Only
+# @some-ui/video-motion and what it needs are installed: hyperframes pinned at
+# 0.9.22 and the fonts it draws with (the lockfile's @fontsource files), so a
+# render reaches no network. It draws with this image's Chromium (Playwright's,
+# found by playwright-core 1.62.1, the same as the recorders') and encodes with
+# the ffmpeg above. paulgsc/some-ui 4fcc141 is #2734's merge, HYPER1.
+#
+# Measured on this image with call-render.yml's limits (--memory 4g --cpus 2,
+# no network, uid 10000, root read-only), 2026-11-08: the sample composition
+# (2 s, 60 frames at 1080x1920) takes 9.5 s a render and peaks at 528 MB, the
+# same bytes twice. On home, through tsx as render-calls.sh runs the recorders
+# (pnpm would have Corepack fetch itself at run time):
+#
+#   make compose ARGS="run --rm --no-deps -w /opt/some-ui-motion/packages/video-motion \
+#     --entrypoint node_modules/.bin/tsx render src/cli.ts prove sample --work /renders"
+ARG MOTION_COMMIT=4fcc141f23d945448b6cfba70bb272d4d03a7530
+
+RUN git clone --filter=blob:none https://github.com/paulgsc/some-ui.git /opt/some-ui-motion \
+    && git -C /opt/some-ui-motion checkout --detach "$MOTION_COMMIT"
+
+WORKDIR /opt/some-ui-motion
+RUN pnpm install --frozen-lockfile --filter "@some-ui/video-motion..." \
+    && pnpm exec turbo run build --filter="@some-ui/video-motion^..."
+
+WORKDIR /opt/some-ui
 COPY infra/render/render-calls.sh /usr/local/bin/render-calls
 
 # The root is read-only at run time (call-render.yml); tsx and the renderer
