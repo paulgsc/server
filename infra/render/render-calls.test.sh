@@ -39,9 +39,12 @@ APP_DIR=$SCRATCH/app
 TSX=$FAKE/tsx
 mkdir -p "$FAKE" "$APP_DIR"
 # The worker's timing, at a test's pace; a failed week is tried again on the
-# next pass unless a case says otherwise.
+# next pass unless a case says otherwise. A decision goes stale after 5 s, not
+# the 0.1 s the fake lane writes at: a busy runner can starve the fake lane for
+# seconds, and a decision gone stale is a stop, which turns a pause case into
+# a stop (#747).
 LANE_POLL=0.1
-STALE_AFTER=2
+STALE_AFTER=5
 KILL_WAIT=5
 RETRY_AFTER=0
 TMP_BASE=$SCRATCH/tmp
@@ -163,6 +166,8 @@ check() {
     echo "ok: $what"
   else
     echo "FAILED: $what"
+    # What the worker said, so a failure on a runner can be read from its log.
+    [ -e "$SCRATCH/pass.out" ] && sed 's/^/  pass.out: /' "$SCRATCH/pass.out" | tail -n 40
     failures=$((failures + 1))
   fi
 }
