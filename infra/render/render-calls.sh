@@ -517,7 +517,7 @@ render_episode() {
   keep_peak
   # How long it rendered, pauses and waits left out: the next job of this
   # kind's rough bar measures against it.
-  job_state done
+  job_state 'done'
   put took "$JOB_RAN"
   made=$(finished "$job" "$key")
   # The renderer's intermediates can be made again from what is kept.
