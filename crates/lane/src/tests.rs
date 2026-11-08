@@ -294,3 +294,46 @@ fn la4_a_pause_is_never_counted_as_a_stop() {
 	let decisions = run(&[roomy(0), roomy(60_000), busy(61_000), busy(62_000), roomy(63_000)]);
 	assert!(decisions.iter().all(|d| d.stops == 0));
 }
+
+#[test]
+fn la4_a_job_given_up_takes_its_stops_with_it() {
+	let short = |now_ms| Signals {
+		mem_available_bytes: Some(GB),
+		..roomy(now_ms)
+	};
+	let mut ticks = Vec::new();
+	for round in 0..3 {
+		let t = round * 200_000;
+		ticks.extend([roomy(t), roomy(t + 60_000), short(t + 61_000)]);
+	}
+	let decisions = run(&ticks);
+	assert!(decisions.last().is_some_and(|d| d.stuck));
+	// The worker gives the job up without finishing it: nothing is in progress.
+	let idle = |now_ms| Signals {
+		batch_in_progress: false,
+		..roomy(now_ms)
+	};
+	ticks.extend([idle(700_000), idle(760_000), idle(820_000)]);
+	let after = run(&ticks);
+	assert!(after[9..].iter().all(|d| d.stops == 0 && !d.stuck));
+	// The next job starts its own count.
+	let next_short = Signals {
+		mem_available_bytes: Some(GB),
+		..roomy(821_000)
+	};
+	ticks.push(next_short);
+	let next = run(&ticks);
+	assert_eq!(next.last().map(|d| (d.stops, d.stuck)), Some((1, false)));
+}
+
+#[test]
+fn la4_an_evacuated_job_stays_in_progress_and_keeps_its_count() {
+	// Stopped for memory, the job is still in progress (not finished, not
+	// given up), so its stops add up across evacuations.
+	let short = |now_ms| Signals {
+		mem_available_bytes: Some(GB),
+		..roomy(now_ms)
+	};
+	let decisions = run(&[roomy(0), roomy(60_000), short(61_000), roomy(62_000), roomy(122_000), short(123_000)]);
+	assert_eq!(decisions.iter().map(|d| d.stops).collect::<Vec<_>>(), [0, 0, 1, 1, 1, 2]);
+}

@@ -18,10 +18,11 @@
 //!   memory ([`Verb::Stop`]) once free memory falls under the floor or
 //!   memory pressure passes its limit, or a signal can no longer be read.
 //! - **LA4.** Each stop for memory or pressure of a batch job in progress is
-//!   counted until a batch job finishes, and from [`Policy::stuck_after`] in
-//!   a row the decision says it is stuck, so a job that never fits is
-//!   reported, never retried silently. A stop with no job in progress is
-//!   never counted, so an idle lane is never called stuck.
+//!   counted until that job finishes or is given up, and from
+//!   [`Policy::stuck_after`] in a row the decision says it is stuck, so a job
+//!   that never fits is reported, never retried silently. With no job in
+//!   progress the count is zero, so an idle lane, or the job after one given
+//!   up, is never called stuck for another job's stops.
 
 use std::num::NonZeroU32;
 
@@ -37,10 +38,15 @@ pub struct Signals {
 	pub memory_pressure_pct: Option<f64>,
 	/// Interactive work is waiting or running (a voice note, a Rust round).
 	pub interactive_waiting: bool,
-	/// A batch job is in progress, running or paused.
+	/// A batch job has been started and has neither finished nor been given
+	/// up. Its being stopped (evacuated) or paused does not end it: it stays
+	/// in progress until it finishes or the worker gives it up, so the stops
+	/// LA4 counts are its own.
 	pub batch_in_progress: bool,
-	/// The most a batch job is expected to take, as measured on earlier runs;
-	/// `None` when it is not known, which is never room (LA2).
+	/// The most a batch job may take: its peak as measured on earlier runs,
+	/// or, before any run has been measured, the ceiling the caller declares
+	/// for it (its containers' memory caps). `None` only when the caller has
+	/// neither, which is never room (LA2).
 	pub batch_peak_bytes: Option<u64>,
 	/// How many batch jobs have finished so far; a change resets the stops
 	/// counted for LA4.
@@ -84,7 +90,7 @@ pub enum Why {
 	Memory,
 	/// Memory pressure is past its limit.
 	Pressure,
-	/// A signal could not be read.
+	/// A signal could not be read, or the batch peak is not known.
 	Unknown,
 	/// Room has come back, and is being held for the hold-down.
 	Settling,
@@ -167,7 +173,11 @@ fn shortage(signals: &Signals, policy: &Policy) -> Option<Why> {
 /// The lane's decision this tick, and what it remembers for the next.
 #[must_use]
 pub fn step(state: State, signals: &Signals, policy: &Policy) -> (State, Decision) {
-	let mut stops = if signals.batch_finished == state.finished_seen { state.stops } else { 0 };
+	let mut stops = if signals.batch_in_progress && signals.batch_finished == state.finished_seen {
+		state.stops
+	} else {
+		0
+	};
 	let (verb, why, room_since_ms) = match state.verb {
 		Verb::Run | Verb::Pause => match shortage(signals, policy) {
 			Some(why) => {
