@@ -52,9 +52,9 @@ pub enum FileHostError {
 	SignupClosed,
 
 	// A voice note sent again after the owner deleted it for good from My
-	// data (`handlers::voice::put_note`). A 409, as before, with a code of its
-	// own: a phone that still held the note lets its copy go on this answer,
-	// and must not mistake it for another recording under the same name.
+	// data (`handlers::voice::put_note`). A 409 with a code of its own: a
+	// phone that still held the note lets its copy go on this answer, and
+	// must not mistake it for another recording under the same name.
 	#[error("this voice note was deleted for good, so it is not kept again")]
 	DeletedForGood,
 

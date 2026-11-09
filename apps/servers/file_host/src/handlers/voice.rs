@@ -131,8 +131,9 @@ fn refusal(err: VoiceError) -> FileHostError {
 /// refused field (`id`, `of`, `ref`, `at`, `contentType`, `body`, and a
 /// bite's fields: missing or wrong for a game note, said at all for any
 /// other), 409 for
-/// another note under a held id, 413 for a body past the server's limit, and
-/// 500 for a storage failure.
+/// another note under a held id (`conflict`) or a note deleted for good
+/// (`deleted_for_good`), 413 for a body past the server's limit, and 500 for
+/// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_note_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_note(
