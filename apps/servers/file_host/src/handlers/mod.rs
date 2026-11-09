@@ -27,6 +27,7 @@ pub mod readiness;
 pub mod renders;
 pub mod routine;
 pub mod rust_rounds;
+pub mod rust_week_record;
 pub mod shelf;
 pub mod signals;
 pub mod studio_log;

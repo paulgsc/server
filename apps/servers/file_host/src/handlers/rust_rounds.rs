@@ -109,12 +109,12 @@ pub struct RunKept {
 	pub rustc: Box<RawValue>,
 }
 
-fn now() -> String {
+pub(crate) fn now() -> String {
 	// Fixed width, as `handlers::voice`'.
 	Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn unreadable() -> FileHostError {
+pub(crate) fn unreadable() -> FileHostError {
 	FileHostError::OperationError(String::from("a stored round or week does not read back"))
 }
 
@@ -188,7 +188,7 @@ async fn runs_of(conn: &mut sqlx::SqliteConnection, source: &str) -> Result<(Str
 
 /// A JSON body with its `ETag`, the hash of the body, or `304` when
 /// `If-None-Match` names it.
-fn tagged(headers: &HeaderMap, body: Vec<u8>) -> Result<Response, FileHostError> {
+pub(crate) fn tagged(headers: &HeaderMap, body: Vec<u8>) -> Result<Response, FileHostError> {
 	let etag = etag_value(&content_hash(&body))?;
 	if if_none_match_hits(headers, &etag) {
 		return Ok(not_modified(etag));
@@ -273,7 +273,7 @@ pub async fn list_weeks(paired: Paired, State(db): State<SqlitePool>) -> Result<
 /// week's name that is not one is kept as any `brief` file is, and its
 /// programs were never queued (`mailbox::pass::keep`), so it is no week.
 /// Said by kind, never by body: what the routine put is the routine's.
-fn reads_as_named(id: &str, body: &[u8]) -> Option<rust_round_repo::week::Week> {
+pub(crate) fn reads_as_named(id: &str, body: &[u8]) -> Option<rust_round_repo::week::Week> {
 	match rust_round_repo::week::read(body) {
 		Ok(week) if week.id == id => Some(week),
 		read => {
@@ -328,7 +328,7 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 	tagged(&headers, body)
 }
 
-fn mailbox_failure(err: mailbox_repo::MailboxError) -> FileHostError {
+pub(crate) fn mailbox_failure(err: mailbox_repo::MailboxError) -> FileHostError {
 	match err {
 		mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
 		mailbox_repo::MailboxError::Rewritten => unreadable(),
@@ -497,7 +497,7 @@ mod tests {
 		let state = state().await;
 		let browser = session(&state, A, Carrier::Cookie).await;
 		let app = module().into_table_router().with_state(state);
-		assert_eq!(module().descriptors().count(), 5);
+		assert_eq!(module().descriptors().count(), 11);
 		let body = round("indexing-01", "fn main() {}\n");
 		for (method, path) in [
 			(Method::GET, "/rust-rounds"),
@@ -505,6 +505,12 @@ mod tests {
 			(Method::PUT, ROUND),
 			(Method::GET, "/rust-weeks"),
 			(Method::GET, WEEK),
+			(Method::PUT, "/rust-weeks/2026-w46/sent"),
+			(Method::PUT, "/rust-weeks/2026-w46/pastes/2026-11-10T08:00:00.000Z"),
+			(Method::GET, "/rust-weeks/2026-w46/record"),
+			(Method::PUT, "/rust-round-log/sessions/s1"),
+			(Method::GET, "/rust-round-log/sessions"),
+			(Method::GET, "/rust-round-log/sessions/s1"),
 		] {
 			assert_eq!(call(&app, method.clone(), path, None, None, &body).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 			assert_eq!(
@@ -782,5 +788,174 @@ mod tests {
 		assert_eq!(runs, 3, "the runs, which are nobody's, stay");
 		let (_, _, got) = call(&app, Method::GET, ROUND, Some(&theirs), None, b"").await;
 		assert_eq!(got["programs"][1]["runs"][0]["ended"], "recorded", "the shared run still reads for the other subject");
+	}
+
+	/// A week with its window, as the routine writes one: tickets `QM-1`,
+	/// `QM-2` and `QM-3`.
+	async fn hold_dated_week(pool: &SqlitePool, subject: &str, seq: i64, id: &str, opens: &str, due: &str) {
+		let ticket = |key: &str| json!({ "id": key, "program": "fn main() {}\n" });
+		let week = json!({
+			"schema": "some-ui.rust-week/1", "id": id, "opens": opens, "due": due,
+			"tickets": [ticket("QM-1"), ticket("QM-2"), ticket("QM-3")],
+		});
+		let body = week.to_string();
+		hold_file(pool, subject, seq, &rust_round_repo::week::mailbox_name(id), &body).await;
+		let read = rust_round_repo::week::read(body.as_bytes()).unwrap();
+		rust_round_repo::queue_week(&mut pool.acquire().await.unwrap(), &read, "2026-09-28T08:00:00.000Z")
+			.await
+			.unwrap();
+	}
+
+	/// One of the phone's ticket opens: `week-ticket` left at `place`.
+	async fn opened(pool: &SqlitePool, subject: &str, id: &str, at: &str, place: &str) {
+		let event = json!({
+			"family": "engagement", "id": id, "at": at, "build": null, "kind": "left",
+			"pipeline": "rust-rounds", "affordance": "week-ticket", "surface": "apk",
+			"startedAt": at, "place": place,
+		});
+		app_event_repo::put_event(&mut pool.acquire().await.unwrap(), subject, id, event.to_string().as_bytes(), at)
+			.await
+			.unwrap();
+	}
+
+	fn sent(at: &str) -> Vec<u8> {
+		json!({
+			"week": "2026-w40", "at": at,
+			"answers": [{ "ticket": "QM-1", "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z" }],
+			"passed": ["QM-2", "QM-3"],
+		})
+		.to_string()
+		.into_bytes()
+	}
+
+	/// A week's Send is kept once and refused after the deadline; the record
+	/// names each ticket answered or not, how often it was opened in the
+	/// week, and the pastes; silence is a record too, and another subject's
+	/// week is a `404`.
+	#[tokio::test]
+	async fn a_weeks_record_says_each_ticket_answered_or_not_and_how_often_opened() {
+		const SENT: &str = "/rust-weeks/2026-w40/sent";
+		const RECORD: &str = "/rust-weeks/2026-w40/record";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let theirs = session(&state, B, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		hold_dated_week(&pool, A, 1, "2026-w40", "2026-09-28T00:00:00-07:00", "2026-10-04T23:59:00-07:00").await;
+		hold_dated_week(&pool, A, 2, "2026-w41", "2026-10-05T00:00:00-07:00", "2026-10-11T23:59:00-07:00").await;
+		hold_dated_week(&pool, A, 3, "2026-w53", "2026-10-12T00:00:00-07:00", "2099-12-31T23:59:00-08:00").await;
+
+		let late = sent("2026-10-05T07:00:00.000Z");
+		let (status, _, refused) = call(&app, Method::PUT, SENT, Some(&phone), None, &late).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "after 23:59 Pacific doesn't count");
+		assert!(refused["error"]["details"]["at"].is_array(), "{refused}");
+		let on_time = sent("2026-10-05T06:58:00.000Z");
+		let (status, _, put) = call(&app, Method::PUT, SENT, Some(&phone), None, &on_time).await;
+		assert_eq!((status, put["change"].as_str()), (StatusCode::CREATED, Some("added")));
+		assert_eq!(put["sent"], serde_json::from_slice::<Value>(&on_time).unwrap());
+		let (status, _, put) = call(&app, Method::PUT, SENT, Some(&phone), None, &on_time).await;
+		assert_eq!((status, put["change"].as_str()), (StatusCode::OK, Some("unchanged")));
+		let other = sent("2026-10-05T06:57:00.000Z");
+		assert_eq!(
+			call(&app, Method::PUT, SENT, Some(&phone), None, &other).await.0,
+			StatusCode::CONFLICT,
+			"a week is sent once"
+		);
+		assert_eq!(
+			call(&app, Method::PUT, SENT, Some(&theirs), None, &on_time).await.0,
+			StatusCode::NOT_FOUND,
+			"B holds no such week"
+		);
+
+		let paste = json!({ "at": "2026-10-02T09:00:00.000Z", "text": "error[E0502]: cannot borrow", "note": null }).to_string();
+		let path = "/rust-weeks/2026-w40/pastes/2026-10-02T09%3A00%3A00.000Z";
+		let (status, _, put) = call(&app, Method::PUT, path, Some(&phone), None, paste.as_bytes()).await;
+		assert_eq!(
+			(status, &put),
+			(StatusCode::CREATED, &json!({ "change": "added", "paste": serde_json::from_str::<Value>(&paste).unwrap() }))
+		);
+		assert_eq!(call(&app, Method::PUT, path, Some(&phone), None, paste.as_bytes()).await.0, StatusCode::OK);
+
+		opened(&pool, A, "o1", "2026-09-29T09:00:00.000Z", "ticket-1").await;
+		opened(&pool, A, "o2", "2026-10-01T09:00:00.000Z", "ticket-1").await;
+		opened(&pool, A, "o3", "2026-10-01T09:05:00.000Z", "ticket-3").await;
+		opened(&pool, A, "o4", "2026-10-06T09:00:00.000Z", "ticket-2").await;
+		opened(&pool, B, "o5", "2026-10-01T09:00:00.000Z", "ticket-2").await;
+
+		let (status, _, record) = call(&app, Method::GET, RECORD, Some(&phone), None, b"").await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(
+			record,
+			json!({
+				"week": "2026-w40", "opens": "2026-09-28T00:00:00-07:00", "due": "2026-10-04T23:59:00-07:00",
+				"closed": true,
+				"sent": { "at": "2026-10-05T06:58:00.000Z", "receivedAt": record["sent"]["receivedAt"] },
+				"tickets": [
+					{ "ticket": "QM-1", "answered": true, "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z", "opens": 2 },
+					{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "opens": 0 },
+					{ "ticket": "QM-3", "answered": false, "take": null, "recordedAt": null, "opens": 1 },
+				],
+				"unanswered": ["QM-2", "QM-3"],
+				"pastes": [{ "at": "2026-10-02T09:00:00.000Z", "text": "error[E0502]: cannot borrow", "note": null, "receivedAt": record["pastes"][0]["receivedAt"] }],
+			}),
+			"the open after the deadline and B's are not counted"
+		);
+
+		let (_, _, silent) = call(&app, Method::GET, "/rust-weeks/2026-w41/record", Some(&phone), None, b"").await;
+		assert_eq!((silent["closed"].as_bool(), &silent["sent"]), (Some(true), &Value::Null));
+		assert_eq!(silent["unanswered"], json!(["QM-1", "QM-2", "QM-3"]), "nothing sent: every ticket a silence");
+		let (_, _, open) = call(&app, Method::GET, "/rust-weeks/2026-w53/record", Some(&phone), None, b"").await;
+		assert_eq!(open["closed"], json!(false));
+		assert_eq!(call(&app, Method::GET, RECORD, Some(&theirs), None, b"").await.0, StatusCode::NOT_FOUND);
+		assert_eq!(
+			call(&app, Method::GET, "/rust-weeks/2026-w44/record", Some(&phone), None, b"").await.0,
+			StatusCode::NOT_FOUND
+		);
+	}
+
+	/// A card-era session is kept as sent and read back byte for byte; it
+	/// grows by revisions, and one that rewrites it is a `409`.
+	#[tokio::test]
+	async fn the_card_era_log_is_kept_as_sent_and_grows_by_revisions() {
+		const PATH: &str = "/rust-round-log/sessions/s1";
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let theirs = session(&state, B, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		let session_body = |cards: usize| {
+			let card = |n: usize| {
+				json!({ "round": "indexing-01", "card": String::from("c") + &n.to_string(), "at": "2026-10-30T08:00:00.000Z",
+					"picked": null, "note": null, "refines": null, "skipped": true, "rustc": null })
+			};
+			let session = json!({
+				"schema": "some-ui.rust-round-log/1", "id": "s1", "startedAt": "2026-10-30T07:59:00.000Z",
+				"cards": (0..cards).map(card).collect::<Vec<_>>(), "pinned": [], "fromMyDesk": [], "tutorGuessedWrong": [],
+			});
+			session.to_string().replace(",\"", ", \"").into_bytes()
+		};
+		let (status, _, put) = call(&app, Method::PUT, PATH, Some(&phone), None, &session_body(1)).await;
+		assert_eq!((status, &put), (StatusCode::CREATED, &json!({ "change": "added", "id": "s1", "revision": 1 })));
+		let (status, _, put) = call(&app, Method::PUT, PATH, Some(&phone), None, &session_body(2)).await;
+		assert_eq!((status, &put), (StatusCode::CREATED, &json!({ "change": "extended", "id": "s1", "revision": 2 })));
+		assert_eq!(call(&app, Method::PUT, PATH, Some(&phone), None, &session_body(2)).await.0, StatusCode::OK);
+		assert_eq!(call(&app, Method::PUT, PATH, Some(&phone), None, &session_body(1)).await.0, StatusCode::CONFLICT);
+		assert_eq!(
+			call(&app, Method::PUT, "/rust-round-log/sessions/s2", Some(&phone), None, &session_body(1)).await.0,
+			StatusCode::UNPROCESSABLE_ENTITY,
+			"the path names another session"
+		);
+
+		let request = Request::builder().uri(PATH).header(phone.0.clone(), phone.1.clone()).body(Body::empty()).unwrap();
+		let response = app.clone().oneshot(request).await.unwrap();
+		assert_eq!(response.status(), StatusCode::OK);
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		assert_eq!(bytes.as_ref(), session_body(2).as_slice(), "read back byte for byte");
+		let (_, _, list) = call(&app, Method::GET, "/rust-round-log/sessions", Some(&phone), None, b"").await;
+		assert_eq!(list["sessions"].as_array().unwrap().len(), 1);
+		assert_eq!(list["sessions"][0]["revision"], json!(2));
+		assert_eq!(list["sessions"][0]["sha256"], json!(rust_round_repo::content_hash(&session_body(2))));
+		let (_, _, other) = call(&app, Method::GET, "/rust-round-log/sessions", Some(&theirs), None, b"").await;
+		assert_eq!(other["sessions"], json!([]));
+		assert_eq!(call(&app, Method::GET, PATH, Some(&theirs), None, b"").await.0, StatusCode::NOT_FOUND);
 	}
 }

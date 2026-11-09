@@ -18,7 +18,30 @@
 //! PUT /rust-rounds/:id   → { change, id, contentHash }: the body is the round's JSON;
 //!                          201 added, 200 the same bytes again, 409 another body, 422 why,
 //!                          413 past `ROUND_CEILING` + 1 bytes, refused before it is read whole
+//!
+//! PUT /rust-weeks/:id/sent        → { change, sent }: the body is the phone's `WeekSent`;
+//!                                   201 added, 200 the same again, 409 another, 422 why
+//!                                   (an `at` after the week's deadline among them), 404 no week
+//! PUT /rust-weeks/:id/pastes/:at  → { change, paste: { at, text, note } }: the body is a paste, `{ at, text, note }`;
+//!                                   201, 200, 409, 422 or 404 as above
+//! GET /rust-weeks/:id/record      → { week, opens, due, closed, sent: { at, receivedAt } | null,
+//!                                   tickets: [{ ticket, answered, take, recordedAt, opens }],
+//!                                   unanswered, pastes }, or a JSON 404
+//! PUT /rust-round-log/sessions/:id → { change, id, revision }: the body is one session of the
+//!                                   card-era log; 201 added or extended, 200 the same again,
+//!                                   409 one that drops or changes what home holds, 422 why,
+//!                                   413 past `SESSION_CEILING` + 1 bytes
+//! GET /rust-round-log/sessions    → { sessions: [{ id, startedAt, revision, sha256, writtenAt }] }
+//! GET /rust-round-log/sessions/:id → the session's last revision as sent, with an ETag, or a 404
 //! ```
+//!
+//! **A week's record, silence included** (paulgsc/some-ui#2689, RR14): what
+//! the owner sent of a week is kept once, and a Send after the deadline is
+//! refused, since a take not sent by then doesn't count. The record is read
+//! from the week, the Send, the pastes and the phone's engagement events
+//! (each ticket's opens), and names every ticket no take answered. The
+//! card-era log's sessions are kept as the phone sent them, growing by
+//! revisions. See `handlers::rust_week_record`.
 //!
 //! **Trust model:** a paired phone's routes. Every handler takes a
 //! `Paired`, so a request without a session is `401`, a write from an
@@ -39,6 +62,7 @@
 
 use crate::auth::AuthContext;
 use crate::handlers::rust_rounds as handlers;
+use crate::handlers::rust_week_record as record;
 use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
 use crate::Config;
@@ -50,6 +74,7 @@ use axum::{
 		Method,
 	},
 };
+use rust_round_repo::log::SESSION_CEILING;
 use rust_round_repo::round::ROUND_CEILING;
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
@@ -69,7 +94,14 @@ where
 		// well inside the server-wide `RequestBodyLimitLayer`.
 		.put("/rust-rounds/:id", handlers::put_round.layer(DefaultBodyLimit::max(ROUND_CEILING + 1)))
 		.get("/rust-weeks", handlers::list_weeks)
-		.get("/rust-weeks/:id", handlers::get_week);
+		.get("/rust-weeks/:id", handlers::get_week)
+		.put("/rust-weeks/:id/sent", record::put_sent)
+		.put("/rust-weeks/:id/pastes/:at", record::put_paste)
+		.get("/rust-weeks/:id/record", record::get_record)
+		// One past the ceiling, as a round's: the 422 names it, longer is a 413.
+		.put("/rust-round-log/sessions/:id", record::put_session.layer(DefaultBodyLimit::max(SESSION_CEILING + 1)))
+		.get("/rust-round-log/sessions", record::list_sessions)
+		.get("/rust-round-log/sessions/:id", record::get_session);
 
 	Module::versioned("rust_rounds", table).with_cors(cors)
 }

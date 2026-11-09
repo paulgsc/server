@@ -373,6 +373,48 @@ async fn engagement(conn: &mut SqliteConnection, subject: &str, since: &str) -> 
 	)
 }
 
+/// How many times one affordance was left at one of its places.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaceLeft {
+	pub place: String,
+	pub left: i64,
+}
+
+/// `subject`'s `left` engagement events of `pipeline`'s `affordance`
+/// between `from` and `to` (both included, ISO-8601 UTC to the
+/// millisecond, as `at` is stored), counted per place, in place order.
+///
+/// It is how Rust Rounds' week record says how often each ticket was opened
+/// (paulgsc/some-ui#2689, RR14) without a counter of its own: the phone's
+/// `week-ticket` affordance is left at the ticket's place (`ticket-1` …)
+/// each time its card is swiped away or the screen goes. One range read of
+/// the subject's engagement events in the window, by
+/// `app_event_by_family`; no body leaves but the place's name.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn left_by_place(conn: &mut SqliteConnection, subject: &str, pipeline: &str, affordance: &str, from: &str, to: &str) -> Result<Vec<PlaceLeft>, EventError> {
+	Ok(
+		sqlx::query_as!(
+			PlaceLeft,
+			r#"SELECT place AS "place!: String", COUNT(*) AS "left!: i64"
+		FROM (SELECT json_extract(body, '$.place') AS place FROM app_event
+			WHERE subject_id = ?1 AND family = 'engagement' AND at >= ?2 AND at <= ?3
+			  AND json_extract(body, '$.kind') = 'left'
+			  AND json_extract(body, '$.pipeline') = ?4 AND json_extract(body, '$.affordance') = ?5)
+		WHERE place IS NOT NULL
+		GROUP BY place ORDER BY place"#,
+			subject,
+			from,
+			to,
+			pipeline,
+			affordance
+		)
+		.fetch_all(&mut *conn)
+		.await?,
+	)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{put_event, summary, Change, EventError, Last, Timing};
@@ -566,6 +608,44 @@ mod tests {
 			]),
 			"the lens was last taken before the window, and B's drama is B's"
 		);
+	}
+
+	/// A ticket's opens are its place's `left` events in the window, the
+	/// subject's own, of that pipeline and affordance only.
+	#[tokio::test]
+	async fn left_events_are_counted_per_place_in_the_window() {
+		let pool = pool().await;
+		let left = |id: &str, at: &str, affordance: &str, place: &str| {
+			let mut event = engaged(id, at, affordance, "left");
+			event["pipeline"] = json!("rust-rounds");
+			event["place"] = json!(place);
+			event
+		};
+		for event in [
+			left("o1", "2026-11-10T09:00:00.000Z", "week-ticket", "ticket-1"),
+			left("o2", "2026-11-11T09:00:00.000Z", "week-ticket", "ticket-1"),
+			left("o3", "2026-11-11T09:05:00.000Z", "week-ticket", "ticket-3"),
+			left("o4", "2026-11-16T09:00:00.000Z", "week-ticket", "ticket-2"),
+			left("o5", "2026-11-11T09:00:00.000Z", "card", "ticket-2"),
+			engaged("o6", "2026-11-11T09:00:00.000Z", "week-ticket", "taken"),
+		] {
+			put(&pool, A, &event).await.unwrap();
+		}
+		put(&pool, B, &left("o7", "2026-11-11T09:00:00.000Z", "week-ticket", "ticket-2")).await.unwrap();
+		let counted: Vec<(String, i64)> = super::left_by_place(
+			&mut pool.acquire().await.unwrap(),
+			A,
+			"rust-rounds",
+			"week-ticket",
+			"2026-11-09T08:00:00.000Z",
+			"2026-11-16T07:59:00.000Z",
+		)
+		.await
+		.unwrap()
+		.into_iter()
+		.map(|place| (place.place, place.left))
+		.collect();
+		assert_eq!(counted, [(String::from("ticket-1"), 2), (String::from("ticket-3"), 1)]);
 	}
 
 	#[tokio::test]

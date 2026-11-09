@@ -10,7 +10,10 @@
 //! - its size ([`WEEK_CEILING`]), its encoding and that it is one JSON object;
 //! - its `schema` tag;
 //! - its `id`, the ISO week it opens (`2026-w46`), which names it for good;
-//! - its tickets' ids and every ticket's `program`, the bytes it records.
+//! - its tickets' ids and every ticket's `program`, the bytes it records;
+//! - its `opens` and `due`, when they are RFC 3339 instants, for the week's
+//!   record (RR14, paulgsc/some-ui#2689). A week without them is still kept
+//!   and recorded, and has no record.
 //!
 //! Anything else (the company, the story, the speak-to points, the tutor's
 //! guess) is kept as it came and never read here.
@@ -42,6 +45,18 @@ pub struct TicketProgram {
 pub struct Week {
 	pub id: String,
 	pub programs: Vec<TicketProgram>,
+	/// When the week opens and its deadline, when both are RFC 3339
+	/// instants and the deadline comes after the opening; `None` otherwise.
+	pub window: Option<Window>,
+}
+
+/// When a week opens and when its deadline passes, as the week writes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Window {
+	/// Monday 00:00, the owner's time.
+	pub opens: String,
+	/// Sunday 23:59, the owner's time. A take not sent by then doesn't count.
+	pub due: String,
 }
 
 /// What a week's name in the mailbox starts with.
@@ -109,8 +124,23 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 		}
 		_ => problems.push((String::from("tickets"), "must hold at least one ticket")),
 	}
+	let instant = |field: &str| {
+		week
+			.get(field)
+			.and_then(Value::as_str)
+			.filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok())
+			.map(str::to_owned)
+	};
+	let window = match (instant("opens"), instant("due")) {
+		(Some(opens), Some(due)) if crate::instant_order(&opens, &due) == Some(std::cmp::Ordering::Less) => Some(Window { opens, due }),
+		_ => None,
+	};
 	match id {
-		Some(id) if problems.is_empty() => Ok(Week { id: id.to_owned(), programs }),
+		Some(id) if problems.is_empty() => Ok(Week {
+			id: id.to_owned(),
+			programs,
+			window,
+		}),
 		_ => Err(problems),
 	}
 }
