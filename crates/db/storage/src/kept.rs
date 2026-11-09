@@ -65,7 +65,8 @@ pub enum Record {
 	/// `received_at`.
 	RustWeeks,
 	/// `rust_round_log`: each card-era Rust Rounds session, however many
-	/// revisions; since the earliest `started_at`.
+	/// revisions; since the earliest `started_at` (stored in UTC, so the
+	/// text minimum is the earliest in time).
 	RustRoundLog,
 }
 

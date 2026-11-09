@@ -72,7 +72,10 @@ CREATE TABLE rust_week_paste (
 --   revision    -- 1 for the session as first sent, one more each time it
 --                  arrives grown: every list it holds starts with what the
 --                  revision before held.
---   started_at  -- when the session started, as the phone said it.
+--   started_at  -- when the session started: the phone's `startedAt` as
+--                  UTC to the millisecond when it is an RFC 3339 instant
+--                  (so text order is time order, for MIN and ORDER BY),
+--                  else as the phone wrote it. The body keeps its text.
 --   body        -- the session, byte for byte as the phone sent it (JSON
 --                  whitespace around it trimmed): the cards played, what was
 --                  picked, which notes were said on them (by id), what rustc

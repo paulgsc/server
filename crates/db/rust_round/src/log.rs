@@ -47,6 +47,8 @@ const PASTE_KEYS: [&str; 3] = ["at", "pasted", "note"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
 	pub id: String,
+	/// When it started: UTC to the millisecond when the phone's `startedAt`
+	/// is an RFC 3339 instant, else as written.
 	pub started_at: String,
 	/// The body, byte for byte as sent (JSON whitespace around it trimmed).
 	pub text: String,
@@ -178,9 +180,16 @@ pub fn read_session(body: &[u8], id: &str) -> Result<Session, Vec<Problem>> {
 	let field = |key: &str| session.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
 	Ok(Session {
 		id: field("id"),
-		started_at: field("startedAt"),
+		started_at: stored_instant(&field("startedAt")),
 		text: text.to_owned(),
 	})
+}
+
+/// `at` as UTC to the millisecond when it is an RFC 3339 instant, so that
+/// text order is time order whatever offset the phone wrote; otherwise as
+/// written. The body keeps the phone's own text either way.
+fn stored_instant(at: &str) -> String {
+	chrono::DateTime::parse_from_rfc3339(at).map_or_else(|_| at.to_owned(), |at| at.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 /// Whether `grown` holds everything `held` does, each list starting with
@@ -362,6 +371,14 @@ mod tests {
 		}
 		let order: Vec<String> = sessions(&mut conn, B).await.unwrap().into_iter().map(|each| each.id).collect();
 		assert_eq!(order, ["a-east", "z-utc"], "in time, whatever the offset");
+		let earliest: String = sqlx::query_scalar("SELECT MIN(started_at) FROM rust_round_log WHERE subject_id = ?1")
+			.bind(B)
+			.fetch_one(&mut *conn)
+			.await
+			.unwrap();
+		assert_eq!(earliest, "2026-10-31T08:00:00.000Z", "stored in UTC, so MIN is the earliest in time");
+		let held: Value = serde_json::from_str(&session(&mut conn, B, "a-east").await.unwrap().unwrap()).unwrap();
+		assert_eq!(held["startedAt"], json!("2026-10-31T10:00:00+02:00"), "the body keeps the phone's text");
 		assert!(session(&mut conn, B, ID).await.unwrap().is_none());
 	}
 
