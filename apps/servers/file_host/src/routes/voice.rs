@@ -82,8 +82,9 @@
 //!
 //! **Append-only, and kept unless deleted from My data.** A `PUT` adds a
 //! note or changes nothing, and other bytes or another description under a
-//! held id, or a note deleted for good, are a `409`; setting a note aside
-//! deletes nothing. The one `DELETE` is My
+//! held id are a `409` (`conflict`), and so is a note deleted for good, with
+//! its own code (`deleted_for_good`) so the phone lets its copy go; setting a
+//! note aside deletes nothing. The one `DELETE` is My
 //! data's, for a kind the owner switched on, with a receipt
 //! (`voice_repo::delete`): Studio takes and idea answers.
 //! See `handlers::voice` and `voice_repo`.
