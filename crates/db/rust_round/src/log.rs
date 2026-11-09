@@ -239,6 +239,9 @@ pub async fn put_session(conn: &mut SqliteConnection, subject: &str, session: &S
 /// Every session `subject` holds, each by its last revision, in the order
 /// they started.
 ///
+/// That is by the instant `startedAt` names, whatever its offset (one that
+/// is not an instant after the rest), so sorted here, not by the text.
+///
 /// Unbounded on purpose: the card era is over once RR20 retires the screens
 /// that write the log, so its sessions are a finite set, and the phone reads
 /// them all back to know each is kept.
@@ -253,11 +256,15 @@ pub async fn sessions(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<
 		   FROM rust_round_log AS log
 		   WHERE subject_id = ?1
 		     AND revision = (SELECT MAX(revision) FROM rust_round_log WHERE subject_id = ?1 AND session_id = log.session_id)
-		   ORDER BY started_at, session_id"#,
+		   ORDER BY session_id"#,
 		subject
 	)
 	.fetch_all(&mut *conn)
 	.await
+	.map(|mut sessions| {
+		sessions.sort_by(|a, b| (crate::time_order_key(&a.started_at), &a.id).cmp(&(crate::time_order_key(&b.started_at), &b.id)));
+		sessions
+	})
 }
 
 /// `subject`'s session `id`, its last revision's bytes, if home holds it.
@@ -347,6 +354,14 @@ mod tests {
 		assert_eq!(held.len(), 1);
 		assert_eq!(held[0].revision, 2);
 		assert!(sessions(&mut conn, B).await.unwrap().is_empty(), "another subject's log is not there");
+		for (id, started) in [("z-utc", "2026-10-31T09:00:00Z"), ("a-east", "2026-10-31T10:00:00+02:00")] {
+			let mut later = body(&[]);
+			later["id"] = json!(id);
+			later["startedAt"] = json!(started);
+			put_session(&mut conn, B, &read_session(later.to_string().as_bytes(), id).unwrap(), NOW).await.unwrap();
+		}
+		let order: Vec<String> = sessions(&mut conn, B).await.unwrap().into_iter().map(|each| each.id).collect();
+		assert_eq!(order, ["a-east", "z-utc"], "in time, whatever the offset");
 		assert!(session(&mut conn, B, ID).await.unwrap().is_none());
 	}
 

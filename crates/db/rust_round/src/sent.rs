@@ -324,19 +324,23 @@ pub async fn put_paste(conn: &mut SqliteConnection, subject: &str, week: &str, p
 	}
 }
 
-/// `subject`'s pastes in `week`, in the order they were made.
+/// `subject`'s pastes in `week`, in the order they were made: by the instant
+/// each `at` names, whatever its offset, so read and sorted here rather than
+/// by the stored text. A week's pastes are a handful.
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn pastes(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<Vec<StoredPaste>, sqlx::Error> {
-	sqlx::query_as!(
+	let mut pastes = sqlx::query_as!(
 		StoredPaste,
-		"SELECT at, text, note_id AS note, received_at FROM rust_week_paste WHERE subject_id = ?1 AND week_id = ?2 ORDER BY at, received_at",
+		"SELECT at, text, note_id AS note, received_at FROM rust_week_paste WHERE subject_id = ?1 AND week_id = ?2",
 		subject,
 		week
 	)
 	.fetch_all(&mut *conn)
-	.await
+	.await?;
+	pastes.sort_by(|a, b| (crate::time_order_key(&a.at), &a.at).cmp(&(crate::time_order_key(&b.at), &b.at)));
+	Ok(pastes)
 }
 
 #[cfg(test)]
@@ -489,6 +493,13 @@ mod tests {
 		assert!(matches!(put_paste(&mut conn, A, "2026-w46", &changed, NOW).await, Err(RoundError::Rewritten)));
 		let held: Vec<String> = pastes(&mut conn, A, "2026-w46").await.unwrap().into_iter().map(|paste| paste.text).collect();
 		assert_eq!(held, ["error[E0499]", "error[E0502]"]);
+		// 10:00 at +02:00 is 08:00 UTC: before 09:00Z, though its text sorts after.
+		let offset = read_paste(body("2026-11-11T10:00:00+02:00", "east").as_bytes(), "2026-11-11T10:00:00+02:00", NOW).unwrap();
+		let utc = read_paste(body("2026-11-11T09:00:00Z", "utc").as_bytes(), "2026-11-11T09:00:00Z", NOW).unwrap();
+		put_paste(&mut conn, B, "2026-w47", &utc, NOW).await.unwrap();
+		put_paste(&mut conn, B, "2026-w47", &offset, NOW).await.unwrap();
+		let held: Vec<String> = pastes(&mut conn, B, "2026-w47").await.unwrap().into_iter().map(|paste| paste.text).collect();
+		assert_eq!(held, ["east", "utc"], "in time, not by text");
 		assert!(pastes(&mut conn, B, "2026-w46").await.unwrap().is_empty());
 	}
 

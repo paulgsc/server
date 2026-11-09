@@ -63,6 +63,16 @@ pub fn instant_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
 	Some(a.cmp(&b))
 }
 
+/// A key that sorts RFC 3339 instants in time, whatever their offsets.
+///
+/// Anything that is not an instant sorts after them. Strings alone misorder
+/// `2026-11-10T10:00:00+02:00` (08:00 UTC) after `2026-11-10T09:00:00Z`.
+#[must_use]
+pub fn time_order_key(at: &str) -> (bool, Option<chrono::DateTime<chrono::FixedOffset>>) {
+	let at = chrono::DateTime::parse_from_rfc3339(at).ok();
+	(at.is_none(), at)
+}
+
 /// The hex SHA-256 of `bytes`.
 #[must_use]
 pub fn content_hash(bytes: &[u8]) -> String {
