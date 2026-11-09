@@ -61,11 +61,17 @@ pub enum Record {
 	/// `studio_video_queued`: each video queued on home, however many
 	/// revisions; since the earliest `queued_at`.
 	QueuedVideos,
+	/// `rust_week_sent`: each week of Rust Rounds sent; since the earliest
+	/// `received_at`.
+	RustWeeks,
+	/// `rust_round_log`: each card-era Rust Rounds session, however many
+	/// revisions; since the earliest `started_at`.
+	RustRoundLog,
 }
 
 impl Record {
 	/// Every kind, in the page's order.
-	pub const ALL: [Self; 12] = [
+	pub const ALL: [Self; 14] = [
 		Self::Sessions,
 		Self::Reflections,
 		Self::Ideas,
@@ -78,6 +84,8 @@ impl Record {
 		Self::SceneAsks,
 		Self::StudioLog,
 		Self::QueuedVideos,
+		Self::RustWeeks,
+		Self::RustRoundLog,
 	];
 
 	/// The name the answer gives the kind.
@@ -96,6 +104,8 @@ impl Record {
 			Self::SceneAsks => "scene-asks",
 			Self::StudioLog => "studio-log",
 			Self::QueuedVideos => "queued-videos",
+			Self::RustWeeks => "rust-weeks",
+			Self::RustRoundLog => "rust-round-log",
 		}
 	}
 
@@ -149,7 +159,11 @@ pub async fn kept(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Held
 		   UNION ALL
 		   SELECT 'studio-log', COUNT(DISTINCT sitting_id), MIN(at) FROM studio_sitting_event WHERE subject_id = ?1
 		   UNION ALL
-		   SELECT 'queued-videos', COUNT(DISTINCT video_id), MIN(queued_at) FROM studio_video_queued WHERE subject_id = ?1"#,
+		   SELECT 'queued-videos', COUNT(DISTINCT video_id), MIN(queued_at) FROM studio_video_queued WHERE subject_id = ?1
+		   UNION ALL
+		   SELECT 'rust-weeks', COUNT(*), MIN(received_at) FROM rust_week_sent WHERE subject_id = ?1
+		   UNION ALL
+		   SELECT 'rust-round-log', COUNT(DISTINCT session_id), MIN(started_at) FROM rust_round_log WHERE subject_id = ?1"#,
 		subject
 	)
 	.fetch_all(&mut *conn)
@@ -356,6 +370,30 @@ mod tests {
 			.await
 			.unwrap();
 		}
+		seed_rust_weeks(pool).await;
+	}
+
+	/// A week of Rust Rounds sent, and two card-era sessions, one in two revisions.
+	async fn seed_rust_weeks(pool: &SqlitePool) {
+		sqlx::query("INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w39', 'x', '{}', '2026-09-20T10:00:00.000Z')")
+			.bind(A)
+			.execute(pool)
+			.await
+			.unwrap();
+		for (session, revision, started) in [
+			("s1", 1, "2026-09-21T10:00:00.000Z"),
+			("s1", 2, "2026-09-21T10:00:00.000Z"),
+			("s2", 1, "2026-09-22T10:00:00.000Z"),
+		] {
+			sqlx::query("INSERT INTO rust_round_log (subject_id, session_id, revision, started_at, body, sha256, written_at) VALUES (?1, ?2, ?3, ?4, '{}', 'h', ?4)")
+				.bind(A)
+				.bind(session)
+				.bind(revision)
+				.bind(started)
+				.execute(pool)
+				.await
+				.unwrap();
+		}
 	}
 
 	fn held(record: Record, count: i64, since: &str) -> Held {
@@ -387,6 +425,8 @@ mod tests {
 				held(Record::SceneAsks, 1, "2026-09-16T07:15:03.120Z"),
 				held(Record::StudioLog, 1, "2026-09-17T10:00:00.000Z"),
 				held(Record::QueuedVideos, 1, "2026-09-18T10:00:00.000Z"),
+				held(Record::RustWeeks, 1, "2026-09-20T10:00:00.000Z"),
+				held(Record::RustRoundLog, 2, "2026-09-21T10:00:00.000Z"),
 			],
 			"every kind, revisions and events counted as their records, B's in none"
 		);

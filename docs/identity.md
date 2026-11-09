@@ -213,7 +213,7 @@ above the button that deletes (invariant 22):
 | Notes on the feeds' episodes | `episode_note` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
-| Rust Rounds' rounds | `rust_round` |
+| Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_paste`, `rust_round_log` |
 | How each recording ended | `app_event` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -1633,7 +1633,35 @@ nowhere is marked as such and belongs to review.
     transaction that keeps it, and are as nobody's as a round's. What those
     three tables keep past an account's deletion, their times included, is
     under "What deleting an account erases", "What stays of Rust Rounds".
+    What the owner did with a week (RR14, paulgsc/some-ui#2689) is theirs:
+    `rust_week_sent` keeps each week's Send as the phone kept it (each ticket
+    answered, its take named by voice-note id and when it was recorded, the
+    tickets passed over, when Send was pressed and when it reached home),
+    once per week (`PUT /rust-weeks/:id/sent`; another body is a `409`), and
+    refuses a Send whose moment is after the week's deadline, since a take
+    not sent by then doesn't count (owner, 2026-11-07). `rust_week_paste`
+    keeps each error pasted from the owner's own code in a week, as pasted,
+    once per moment (`PUT /rust-weeks/:id/pastes/:at`). `rust_round_log` keeps
+    each session of the card-era log (`some-ui.rust-round-log/1`) byte for
+    byte as the phone sent it (`PUT /rust-round-log/sessions/:id`); a
+    session that grew is kept as a new revision beside the last, and one
+    that drops or changes anything held is a `409`. None of the three holds
+    audio: a take or a note is named by id (invariant 23). All three are read
+    only by their own subject (`GET /rust-weeks/:id/record`,
+    `GET /rust-round-log/sessions[/:id]`; another subject's week is a `404`),
+    counted by `GET /subjects/me/kept` (invariant 33), never updated, and
+    deleted only with the account, by the triggers and the sweep. A week's
+    record is read, never stored whole: the week, its Send, its pastes, and
+    how often each ticket was opened, which is the phone's engagement events
+    (`left` at the ticket's place, invariant 34) counted in the week's window,
+    so there is no second counter. A ticket no take answered is listed as
+    unanswered whether or not anything was sent.
     *Enforced by* `rust_round_repo`'s `each_subject_reads_only_its_own_rounds`,
+    `a_week_is_sent_once_and_never_replaced`,
+    `a_week_is_sent_between_its_opening_and_its_deadline`,
+    `a_session_grows_by_revisions_and_is_never_rewritten`,
+    `the_record_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
+    `the_log_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
     `an_account_takes_its_rounds_and_leaves_the_runs` and
     `every_table_refuses_an_update_and_a_delete`, `handlers::rust_rounds`'s
     `each_subject_sees_only_its_own_rounds_and_an_account_takes_its_own`
@@ -1861,8 +1889,10 @@ nowhere is marked as such and belongs to review.
     (distinct entries; `written_at`), `leetype_session_event` (distinct
     sessions; `at`), `rust_round` (rows; `received_at`), `drama_prompt`
     (rows; the earliest stamp, as the moment it names),
-    `studio_sitting_event` (distinct sittings; `at`) and
-    `studio_video_queued` (distinct videos; `queued_at`). Each part filters on
+    `studio_sitting_event` (distinct sittings; `at`),
+    `studio_video_queued` (distinct videos; `queued_at`), `rust_week_sent`
+    (rows; `received_at`) and `rust_round_log` (distinct sessions;
+    `started_at`). Each part filters on
     `subject_id` and reads by a key or index that starts with it, so the
     read is a range read of that subject's rows, and its answer is at most
     one row per kind. It reads no body, text, title, key or id out of any

@@ -36,8 +36,14 @@
 //!   `rust_round_drop` hold a program's bytes and what rustc did with it, no
 //!   subject (`privacy.rs`'s `NOT_SUBJECT_SCOPED`), and are shared by every
 //!   round that holds the same program, whoever put it.
+//! - **What the owner did with a week, and the card-era log** (RR14,
+//!   paulgsc/some-ui#2689): [`sent`] keeps each week's Send and the errors
+//!   pasted in it, [`log`] each card-era session, all append-only and the
+//!   subject's (`migrations/20261109000100_create_rust_week_record.up.sql`).
 
+pub mod log;
 pub mod round;
+pub mod sent;
 pub mod week;
 
 use crate::round::Round;
@@ -47,6 +53,15 @@ use sqlx::SqliteConnection;
 
 /// The most rounds [`rounds`] lists: the newest.
 pub const LIST_LIMIT: i64 = 500;
+
+/// How two RFC 3339 instants are ordered in time, whatever their offsets;
+/// `None` when either is not one.
+#[must_use]
+pub fn instant_order(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+	let a = chrono::DateTime::parse_from_rfc3339(a).ok()?;
+	let b = chrono::DateTime::parse_from_rfc3339(b).ok()?;
+	Some(a.cmp(&b))
+}
 
 /// The hex SHA-256 of `bytes`.
 #[must_use]
