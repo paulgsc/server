@@ -35,12 +35,6 @@ workspace = true
 [lib]
 doctest = false
 
-# Runs itself again as the service in a PID namespace of its own, so it has
-# a `main` of its own.
-[[test]]
-name = "peer_namespace"
-harness = false
-
 [[bin]]
 name = "rust-runner"
 path = "src/bin/rust_runner.rs"
