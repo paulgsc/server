@@ -155,9 +155,10 @@ pub struct Withdrawn {
 	pub deleted_at: String,
 }
 
-/// Withdraws `week` for the deleted take `note`: both steps' receipts, in
-/// the caller's transaction, whatever was let go of it before. Whether it
-/// wrote them; a week already let go or withdrawn keeps what it has.
+/// Withdraws `week` for the deleted take `note`; whether it did.
+///
+/// Both steps' receipts, in the caller's transaction. A week already let go
+/// or withdrawn keeps what it has.
 ///
 /// # Errors
 /// A storage failure.

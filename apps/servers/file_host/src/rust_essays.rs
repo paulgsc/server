@@ -194,9 +194,11 @@ async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) -> Result<Tidied, 
 }
 
 /// Gives the render worker each essay `subject` holds that it has not been
-/// given, once its week is final and the essay is that final's, with the
-/// takes it plays (`<week>/takes/<ticket>.<webm|ogg|m4a>` and, when home
-/// heard its words, `<ticket>.words.json`).
+/// given, once its week is final and the essay is that final's.
+///
+/// Beside the essay go the takes it plays
+/// (`<week>/takes/<ticket>.<webm|ogg|m4a>` and, when home heard its words,
+/// `<ticket>.words.json`).
 ///
 /// An essay refused is kept as `<week>.refused.log` in the status folder,
 /// its fields and why one a line, and that file is removed once the essay
