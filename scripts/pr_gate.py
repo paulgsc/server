@@ -23,9 +23,12 @@ write what they see, pending or decided:
   a failed one decides it again with no re-run of the gate.
 
 Both share one concurrency group per head commit, so their writes land in the
-order they read. If the base branch has no `gate-verdict.yml` (the pull
-request that adds it), `--open` falls back to waiting in the job as the gate
-did before, up to `--minutes` (60).
+order they read. GitHub runs the base branch's `gate-verdict.yml`, not the
+pull request's, so when that copy does not hear every workflow this pull
+request expects (it has none yet, or the pull request adds or renames a
+workflow), `--open` falls back to waiting in the job as the gate did before,
+up to `--minutes` (60): otherwise one it cannot hear could finish last and
+leave the gate pending with nothing to judge it again.
 
 1. **What should run.** It reads every `.github/workflows/*.y(a)ml` the pull
    request's merge commit holds (the ones GitHub runs for it) and, for each
@@ -74,7 +77,8 @@ not a failure.
 
 **Not itself.** Runs of `gate.yml` are never awaited, and that workflow must
 hold only the gate: any other job in it would be awaited by nothing, so the
-gate fails if its run has more than one job. `gate-verdict.yml` runs on
+gate fails if its latest run on the head has more than one job, whichever
+job is judging. `gate-verdict.yml` runs on
 `workflow_run`/`check_run`, events this gate never awaits, from the default
 branch's copy: a pull request that edits it is judged by `main`'s.
 
@@ -530,15 +534,6 @@ class Api:
 				break
 		return out
 
-	def exists(self, path: str) -> bool:
-		try:
-			self.get(path)
-			return True
-		except urllib.error.HTTPError as err:
-			if err.code == 404:
-				return False
-			raise
-
 
 def remote_workflows(api: Api, ref: str) -> dict[str, str]:
 	"""{workflow path: text} at `ref`, read as data through the API (gate-verdict.yml runs main's checkout)."""
@@ -580,7 +575,8 @@ def look(
 ) -> Look:
 	head_sha, base_ref, pr = pull["head"]["sha"], pull["base"]["ref"], pull["number"]
 	expected, not_expected = expected_workflows(texts, base_ref, files)
-	runs = latest_runs(api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5), head_sha, self_run_id, pr)
+	listed = api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5)
+	runs = latest_runs(listed, head_sha, self_run_id, pr)
 	for run in runs.values():
 		key = (run["id"], run.get("run_attempt", 1))
 		if run.get("status") == "completed" and key not in jobs:
@@ -590,6 +586,9 @@ def look(
 	others = [c for c in checks if ((c.get("app") or {}).get("slug")) != "github-actions"]
 	verdict = judge(expected, not_expected, runs, by_run, others, elapsed, len(files), event=event)
 	verdict.errors += unheard(texts, expected)
+	problem = opener_problem(api, listed, head_sha, pr)
+	if problem:
+		verdict.errors.append(problem)
 	return Look(head_sha, verdict, len(runs), len(others), len(files))
 
 
@@ -671,13 +670,29 @@ def announce(pull: dict[str, Any], files: list[str], texts: dict[str, str]) -> N
 		print(f"  not expected {path}: {why}")
 
 
-def own_jobs_problem(api: Api, self_run_id: int) -> str | None:
-	if not self_run_id:
+def opener_problem(api: Api, listed: list[dict[str, Any]], head_sha: str, pr: int) -> str | None:
+	"""gate.yml's runs are never awaited, so it may hold only the gate: any other job in it would be waited on
+	by nothing. Read from its latest run on this head, so --open and --event both hold it."""
+	mine = [r for r in listed if r.get("path") == OPENER and r.get("head_sha") == head_sha and for_this_pr(r, pr)]
+	if not mine:
 		return None
-	own = api.get(f"actions/runs/{self_run_id}/jobs")["jobs"]
-	if len(own) > 1:
-		return f"{OPENER} has {len(own)} jobs; it may hold only the gate, since no check waits on the others"
+	latest = max(mine, key=lambda r: r["id"])
+	count = len(api.pages(f"actions/runs/{latest['id']}/attempts/{latest.get('run_attempt', 1)}/jobs", "jobs", limit=2))
+	if count > 1:
+		return f"{OPENER} has {count} jobs; it may hold only the gate, since no check waits on the others"
 	return None
+
+
+def base_listens(api: Api, base_ref: str) -> tuple[str, ...] | None:
+	"""The workflow names the base branch's gate-verdict.yml hears finish (the copy GitHub runs), or None
+	when the base has none."""
+	try:
+		body = api.get(f"contents/{VERDICT}?ref={urllib.parse.quote(base_ref)}")
+	except urllib.error.HTTPError as err:
+		if err.code == 404:
+			return None
+		raise
+	return verdict_listens(base64.b64decode(body["content"]).decode("utf-8"))
 
 
 def judge_once(api: Api, pull: dict[str, Any], texts: dict[str, str], self_run_id: int, write_it: bool) -> int:
@@ -738,13 +753,16 @@ def open_gate(api: Api, pr: int, minutes: float) -> int:
 	pull = api.get(f"pulls/{pr}")
 	texts = local_workflows(REPO_ROOT)
 	self_run_id = int(os.environ.get("GITHUB_RUN_ID") or 0)
-	problem = own_jobs_problem(api, self_run_id)
-	if problem:
-		print(f"::error title=PR gate::{problem}")
-		write(api, pull["head"]["sha"], "failure", [f"- failed: {problem}"])
-		return 1
-	if not api.exists(f"contents/{VERDICT}?ref={urllib.parse.quote(pull['base']['ref'])}"):
-		print(f"{VERDICT} is not on {pull['base']['ref']}: waiting in this job instead")
+	base_ref = pull["base"]["ref"]
+	# GitHub runs the base branch's gate-verdict.yml, not this pull request's: a workflow it does not hear
+	# (one this pull request adds or renames, or every one when the base has none) could finish last and
+	# leave the gate pending with nothing to judge it again, so then this job waits instead.
+	listens = base_listens(api, base_ref)
+	expected, _ = expected_workflows(texts, base_ref, changed_files(api, pr))
+	deaf = sorted(path for path in expected if listens is None or workflow_name(path, texts[path]) not in listens)
+	if deaf:
+		why = f"{VERDICT} is not on {base_ref}" if listens is None else f"{base_ref}'s {VERDICT} does not hear {', '.join(deaf)}"
+		print(f"{why}: waiting in this job instead")
 		return wait(api, pull, texts, self_run_id, minutes)
 	return judge_once(api, pull, texts, self_run_id, write_it=True)
 

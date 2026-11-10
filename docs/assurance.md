@@ -127,7 +127,7 @@ pull-request job that skips for any other reason would pass the gate while skipp
 reviewer reading one should ask what skips it.
 
 **Not itself.** The gate never waits on `gate.yml`, and that file holds only the gate: the script
-fails if its run has a second job, which nothing would wait on. `gate-verdict.yml` runs on events
+fails if its latest run has a second job, which nothing would wait on, whichever job judges. `gate-verdict.yml` runs on events
 the gate never awaits.
 
 **Every workflow is heard.** `gate-verdict.yml` hears a workflow finish only if its
@@ -140,8 +140,10 @@ leaves out, and the script's self-test fails a name listed there that no workflo
   script, so a pull request that edits the verdict is judged by `main`'s. `gate.yml` still runs the
   pull request's own copy, as the gate always did, so a pull request that edits its own gate can
   still get through (GC5's exception).
-- On the pull request that first adds `gate-verdict.yml`, `main` has none, so `gate.yml` waits in
-  the job as before (up to 60 minutes). So does any pull request into a base without it.
+- GitHub runs the base branch's `gate-verdict.yml`, so a workflow this pull request adds or
+  renames is one it cannot hear yet (and none, on the pull request that first adds it). Then
+  `gate.yml` waits in the job as before (up to 60 minutes), since a workflow nothing hears could
+  finish last and leave the gate pending.
 - A fork's pull request gets a read-only token on `pull_request`, so `PR gate (open)` cannot write;
   `PR gate (verdict)` finds the pull request by its head branch and writes the verdict.
 - If the last check to finish is one neither event reports, the gate stays pending, never green:
