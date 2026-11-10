@@ -365,10 +365,11 @@ It runs `scripts/deploy.py`:
    failed migration ends the process, so no build serves on a schema half
    applied. The same happens on every start: a reboot, a restart, `make up`,
    `make dev`.
-5. **It waits up to 300 s** for `file-host`'s healthcheck to say `healthy`
+5. **It waits up to 360 s** for `file-host`'s healthcheck to say `healthy`
    (`file_host --health-check`: `/ready` ready or degraded). A container
-   that exits or restarts fails at once; one that hangs reads `unhealthy`
-   about 190 s in. The bound leaves room for the backup of a large database.
+   that exits or restarts fails at once. The healthcheck's `start_period`
+   is 300 s, so the backup and migrations of a large database can finish
+   before any failed probe counts, and the wait outlasts it.
 6. **A new image that does not come up is rolled back**: the previous image
    is tagged back as `pgathondu/server:latest`, `file-host` alone is
    recreated from it, it waits the same bound, and the failed image's id is

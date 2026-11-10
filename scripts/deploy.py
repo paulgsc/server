@@ -74,16 +74,16 @@ FILE_HOST = "file-host"
 CONTAINER = "file-host-server"
 IMAGE = "pgathondu/server:latest"
 
-# The bound on becoming ready, in seconds. The healthcheck
-# (infra/compose/file_host.yml) probes every 5 s during its 40 s
-# start_period (start_interval), then every 30 s: a container that never
-# answers ready reads `unhealthy` after its 5 retries, about 190 s in. The
-# bound is above that, and leaves room for a start that migrates: the
-# verified backup copies the whole database before the server listens, and
-# a slow copy must not read as a bad image (which would be rolled back and
-# then skipped). A start that exits or restarts fails at once, whatever the
-# bound, so only an image that hangs costs all of it.
-DEFAULT_READY_TIMEOUT = 300.0
+# The bound on becoming ready, in seconds. file_host copies the database
+# and applies its migrations before it listens, so the healthcheck's
+# start_period (infra/compose/file_host.yml, 300 s) covers that work: no
+# failed probe counts during it, and the first that passes reads healthy.
+# The bound is above start_period, so a slow migrating start is never taken
+# for a bad image (which would be rolled back and then skipped). A start
+# that exits or restarts fails at once, whatever the bound, so only an image
+# that hangs costs all of it. `test_the_bound_outlasts_the_start_period`
+# holds the two together.
+DEFAULT_READY_TIMEOUT = 360.0
 POLL_SECONDS = 2.0
 
 EXIT_DEPLOYED = 0
@@ -443,7 +443,8 @@ def ready_after(seconds: float) -> Behaviour:
 
 
 def never_ready() -> Behaviour:
-    return lambda t: ("running", "unhealthy" if t >= 190 else "starting", 0)
+    # start_period 300 s, then 5 failed probes 30 s apart.
+    return lambda t: ("running", "unhealthy" if t >= 450 else "starting", 0)
 
 
 def crashes_after(seconds: float) -> Behaviour:
@@ -681,6 +682,13 @@ class Tests(unittest.TestCase):
         self.assertEqual(host.tags[FH_REF], "sha256:old")
         self.assertEqual(host.failed, ["sha256:new"], "the image up was asked to start")
         self.assertTrue(any("ROLLED BACK" in line for line in said))
+
+    def test_the_bound_outlasts_the_start_period(self) -> None:
+        text = (REPO_ROOT / "infra" / "compose" / "file_host.yml").read_text()
+        found = re.search(r"^      start_period: (\d+)s$", text, re.MULTILINE)
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertGreater(DEFAULT_READY_TIMEOUT, float(found.group(1)))
 
     def test_the_service_is_the_compose_files(self) -> None:
         text = (REPO_ROOT / "infra" / "compose" / "file_host.yml").read_text()

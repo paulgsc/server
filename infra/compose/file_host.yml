@@ -96,15 +96,19 @@ services:
           memory: 1G
     # Fails only when /ready says unavailable (a critical dependency down),
     # not when it says degraded: see apps/servers/file_host/src/health.rs.
-    # start_interval probes every 5 s while it starts, so a ready container
-    # reads healthy within seconds rather than at the first 30 s interval:
-    # home's deploy (`make home-deploy`, scripts/deploy.py, AS18 #564) waits on this to decide
-    # whether to roll the image back (Docker Engine 25+). The start includes
-    # the migrations file_host applies before it listens (AS16, #563).
+    # The start includes the migrations file_host applies before it listens,
+    # after copying the whole database (AS16, #563), so start_period is
+    # long enough for a large one: no failed probe counts until it ends, and
+    # the first one that passes reads healthy at once. start_interval probes
+    # every 5 s meanwhile (Docker Engine 25+), so a ready container reads
+    # healthy within seconds. Home's deploy (`make home-deploy`,
+    # scripts/deploy.py, AS18 #564) waits on this to decide whether to roll
+    # the image back, and its bound (DEFAULT_READY_TIMEOUT) is above
+    # start_period, so a slow migrating start is not taken for a bad image.
     healthcheck:
       test: ['CMD', '/usr/local/bin/file_host', '--health-check']
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 40s
+      start_period: 300s
       start_interval: 5s
