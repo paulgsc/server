@@ -73,6 +73,9 @@ pub const VIDEO: &str = "essay.mp4";
 /// The essay's file in its folder under [`ESSAYS_FOLDER`].
 pub const ESSAY_FILE: &str = "essay.json";
 
+/// Which revision of the week's essay its folder holds (C72), beside it.
+pub const REVISION_FILE: &str = "revision";
+
 /// How often home looks for an essay to give: one comes a week, after its
 /// week's deadline.
 pub const INTERVAL: Duration = Duration::from_secs(600);
@@ -202,7 +205,16 @@ async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) -> Result<Tidied, 
 ///
 /// An essay refused is kept as `<week>.refused.log` in the status folder,
 /// its fields and why one a line, and that file is removed once the essay
-/// is given. An essay of a week let go is never given again; one whose take
+/// is given.
+///
+/// **Revisions** (C72): a week's essay may be corrected under a new name,
+/// `rust-essay-<week>-r<N>.json`, never a replacement; the highest revision
+/// a week holds is its essay. It replaces a lower one given to the worker
+/// only while that week has no video: a video made is not made again (a
+/// re-render is the owner's to ask for, RR17). The revision given is kept
+/// beside the essay as `<week>/revision`.
+///
+/// An essay of a week let go is never given again; one whose take
 /// was deleted from My data is withdrawn for good
 /// (`rust_round_repo::essay_video::withdraw`); one whose take has not
 /// reached home yet waits.
@@ -221,15 +233,16 @@ pub async fn export(db: &SqlitePool, subject: &str, folders: &Folders, now: &str
 			rust_round_repo::essay_video::let_go(&mut conn, subject).await?,
 		)
 	};
-	for held in held {
-		if let_go.contains(&held.id) || folders.essays.join(&held.id).exists() {
+	for (week, revision, held) in newest(held) {
+		let input = folders.essays.join(&week);
+		if let_go.contains(&week) || folders.renders.join(&week).join(VIDEO).exists() || given_revision(&input).await.is_some_and(|given| given >= revision) {
 			continue;
 		}
-		match given(db, subject, &held, now).await? {
+		match given(db, subject, &week, &held, now).await? {
 			Given::Waiting => done.waiting += 1,
 			Given::Refused(problems) => {
 				done.refused += 1;
-				if keep_refusal(&folders.status, &held.id, &problems).await.is_err() {
+				if keep_refusal(&folders.status, &week, &problems).await.is_err() {
 					done.failed += 1;
 				}
 			}
@@ -237,15 +250,15 @@ pub async fn export(db: &SqlitePool, subject: &str, folders: &Folders, now: &str
 				Takes::Waiting => done.waiting += 1,
 				Takes::Deleted(note) => {
 					let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-					rust_round_repo::essay_video::withdraw(&mut tx, subject, &held.id, &note, 0, now).await?;
+					rust_round_repo::essay_video::withdraw(&mut tx, subject, &week, &note, 0, now).await?;
 					tx.commit().await?;
 					done.withdrawn += 1;
 				}
 				Takes::Ready(files) => {
-					let partial = folders.essays.join(String::from(".") + &held.id + ".partial");
-					if write_whole(&partial, &folders.essays.join(&held.id), &held.body, &files).await.is_ok() {
+					let partial = folders.essays.join(String::from(".") + &week + ".partial");
+					if write_whole(&partial, &input, &held.body, revision, &files).await.is_ok() {
 						done.written += 1;
-						let _ = tokio::fs::remove_file(folders.status.join(String::from(&held.id) + ".refused.log")).await;
+						let _ = tokio::fs::remove_file(folders.status.join(week.clone() + ".refused.log")).await;
 					} else {
 						done.failed += 1;
 					}
@@ -266,9 +279,28 @@ enum Given {
 	Final(Vec<Played>),
 }
 
-async fn given(db: &SqlitePool, subject: &str, held: &mailbox_repo::HeldWeek, now: &str) -> Result<Given, sqlx::Error> {
+/// Each week's newest revision, oldest week first; a name that is not an
+/// essay's is never read.
+fn newest(held: Vec<mailbox_repo::HeldEssay>) -> Vec<(String, u32, mailbox_repo::HeldEssay)> {
+	let mut weeks: std::collections::BTreeMap<String, (u32, mailbox_repo::HeldEssay)> = std::collections::BTreeMap::new();
+	for file in held {
+		let Some((week, revision)) = essay::parse_name(&file.name) else { continue };
+		if weeks.get(&week).is_none_or(|(held, _)| revision > *held) {
+			weeks.insert(week, (revision, file));
+		}
+	}
+	weeks.into_iter().map(|(week, (revision, file))| (week, revision, file)).collect()
+}
+
+/// The revision of the essay given in `input`, if one was.
+async fn given_revision(input: &Path) -> Option<u32> {
+	let text = tokio::fs::read_to_string(input.join(REVISION_FILE)).await.ok()?;
+	text.trim().parse().ok()
+}
+
+async fn given(db: &SqlitePool, subject: &str, week: &str, held: &mailbox_repo::HeldEssay, now: &str) -> Result<Given, sqlx::Error> {
 	let essay = match essay::read(&held.body) {
-		Ok(essay) if essay.week == held.id => essay,
+		Ok(essay) if essay.week == week => essay,
 		Ok(_) => return Ok(Given::Refused(vec![(String::from("week.id"), "is not the week the essay's name gives")])),
 		Err(problems) => return Ok(Given::Refused(problems)),
 	};
@@ -496,8 +528,9 @@ async fn keep_refusal(status: &Path, week: &str, problems: &[Problem]) -> std::i
 	tokio::fs::rename(&partial, status.join(String::from(week) + ".refused.log")).await
 }
 
-/// Writes the essay and its takes into `partial`, then renames it to `into`.
-async fn write_whole(partial: &Path, into: &Path, essay: &[u8], takes: &[(String, Vec<u8>)]) -> std::io::Result<()> {
+/// Writes the essay, its revision and its takes into `partial`, then puts it
+/// in place of `into`: a lower revision given before is replaced whole.
+async fn write_whole(partial: &Path, into: &Path, essay: &[u8], revision: u32, takes: &[(String, Vec<u8>)]) -> std::io::Result<()> {
 	// What a stopped pass left is made again.
 	match tokio::fs::remove_dir_all(partial).await {
 		Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
@@ -505,12 +538,14 @@ async fn write_whole(partial: &Path, into: &Path, essay: &[u8], takes: &[(String
 	}
 	tokio::fs::create_dir_all(partial).await?;
 	tokio::fs::write(partial.join(ESSAY_FILE), essay).await?;
+	tokio::fs::write(partial.join(REVISION_FILE), revision.to_string() + "\n").await?;
 	// The recorder takes exactly these files in takes/, and an essay that
 	// plays none still has the folder it is pointed at.
 	tokio::fs::create_dir_all(partial.join("takes")).await?;
 	for (name, body) in takes {
 		tokio::fs::write(partial.join("takes").join(name), body).await?;
 	}
+	remove(into).await?;
 	tokio::fs::rename(partial, into).await
 }
 
@@ -945,6 +980,44 @@ mod tests {
 		assert!(
 			!folders.essays.join("2026-w46").exists() && !folders.renders.join("2026-w46").exists(),
 			"the account went: so did its essays"
+		);
+	}
+
+	/// C72: a correction is a new name, `-r<N>`; the highest revision is
+	/// the week's essay, and it replaces a lower one given only while the
+	/// week has no video.
+	#[tokio::test]
+	async fn a_corrected_essay_replaces_the_one_given_only_until_its_video_is_made() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		final_week(&pool).await;
+		hold_take(&pool).await;
+		hold(&pool, 3, "rust-essay-2026-w46-r02.json", "not an essay's name").await;
+		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap().written, 1);
+		let week = folders.essays.join("2026-w46");
+		assert_eq!(std::fs::read_to_string(week.join(REVISION_FILE)).unwrap(), "1\n", "a name not a revision's is never read");
+
+		let r2 = essay("2026-w46", ["take", "silence"]).replace("2026-11-09", "2026-11-10");
+		hold(&pool, 4, "rust-essay-2026-w46-r2.json", &r2).await;
+		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap().written, 1, "no video yet: the correction is given");
+		assert_eq!(std::fs::read_to_string(week.join(REVISION_FILE)).unwrap(), "2\n");
+		assert_eq!(std::fs::read(week.join(ESSAY_FILE)).unwrap(), r2.as_bytes());
+		assert!(week.join("takes").join("QM-311.ogg").exists());
+
+		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
+		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
+		hold(&pool, 5, "rust-essay-2026-w46-r3.json", &essay("2026-w46", ["take", "silence"])).await;
+		assert_eq!(
+			export(&pool, ME, &folders, AFTER).await.unwrap(),
+			Exported::default(),
+			"a video made is not made again (RR17)"
+		);
+		assert_eq!(std::fs::read_to_string(week.join(REVISION_FILE)).unwrap(), "2\n");
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			mailbox_repo::rust_essay_weeks(&mut conn, ME).await.unwrap(),
+			["2026-w46"],
+			"one week, however many revisions"
 		);
 	}
 }

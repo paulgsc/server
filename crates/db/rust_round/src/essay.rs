@@ -37,6 +37,32 @@ pub fn mailbox_name(week: &str) -> String {
 	String::from(MAILBOX_PREFIX) + week + ".json"
 }
 
+/// The week and revision a name in the mailbox gives an essay.
+///
+/// `rust-essay-<week>.json` is revision 1, a correction
+/// `rust-essay-<week>-r<N>.json` revision N (2 or more, no leading zero; the
+/// coordinator's C72, paulgsc/some-ui `docs/calls.json`). `None` for any
+/// other name.
+#[must_use]
+pub fn parse_name(name: &str) -> Option<(String, u32)> {
+	let stem = name.strip_prefix(MAILBOX_PREFIX)?.strip_suffix(".json")?;
+	let (week, revision) = match stem.split_once("-r") {
+		Some((week, n)) => {
+			let first = n.bytes().next()?;
+			if first == b'0' || !n.bytes().all(|b| b.is_ascii_digit()) || n.len() > 6 {
+				return None;
+			}
+			let n: u32 = n.parse().ok()?;
+			if n < 2 {
+				return None;
+			}
+			(week, n)
+		}
+		None => (stem, 1),
+	};
+	is_week_id(week).then(|| (week.to_owned(), revision))
+}
+
 /// How a ticket of the essay is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answered {
@@ -161,7 +187,7 @@ pub fn against(essay: &Essay, sent: Option<&Sent>) -> Result<Vec<Played>, Vec<Pr
 
 #[cfg(test)]
 mod tests {
-	use super::{against, mailbox_name, read, Answered, Essay, Played};
+	use super::{against, mailbox_name, parse_name, read, Answered, Essay, Played};
 	use crate::sent::{Answer, Sent};
 	use serde_json::json;
 
@@ -199,6 +225,19 @@ mod tests {
 	#[test]
 	fn an_essay_is_named_and_read_for_its_week_and_each_tickets_answer() {
 		assert_eq!(mailbox_name("2026-w46"), "rust-essay-2026-w46.json");
+		assert_eq!(parse_name("rust-essay-2026-w46.json"), Some((String::from("2026-w46"), 1)));
+		assert_eq!(parse_name("rust-essay-2026-w46-r2.json"), Some((String::from("2026-w46"), 2)));
+		assert_eq!(parse_name("rust-essay-2026-w46-r12.json"), Some((String::from("2026-w46"), 12)));
+		for not in [
+			"rust-essay-2026-w46-r1.json",
+			"rust-essay-2026-w46-r02.json",
+			"rust-essay-2026-w46-r.json",
+			"rust-essay-2026-w46-rx.json",
+			"rust-essay-2026-w99.json",
+			"rust-week-2026-w46.json",
+		] {
+			assert_eq!(parse_name(not), None, "{not}");
+		}
 		assert_eq!(
 			read(&body(&essay())).unwrap(),
 			Essay {
