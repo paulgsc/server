@@ -160,6 +160,9 @@ pub struct Folders {
 	pub renders: PathBuf,
 	/// [`STATUS_FOLDER`]: how it went, and each essay refused.
 	pub status: PathBuf,
+	/// [`WORK_FOLDER`]: a waiting essay's work and step cache, the owner's
+	/// takes and a half-made video among them.
+	pub work: PathBuf,
 }
 
 impl Folders {
@@ -169,6 +172,7 @@ impl Folders {
 			essays: PathBuf::from(ESSAYS_FOLDER),
 			renders: PathBuf::from(RENDERS_FOLDER),
 			status: PathBuf::from(STATUS_FOLDER),
+			work: PathBuf::from(WORK_FOLDER),
 		}
 	}
 }
@@ -235,6 +239,19 @@ pub async fn export(db: &SqlitePool, subject: &str, folders: &Folders, now: &str
 	};
 	for (week, revision, held) in newest(held) {
 		let input = folders.essays.join(&week);
+		if shared(db, &week).await? {
+			// The drive keys an essay by its week alone, so a week two
+			// accounts hold is never given: neither could reach the other's.
+			done.refused += 1;
+			let why = [(
+				String::from("week"),
+				"is held by another account's essay too, so neither is given (the drive keys an essay by its week)",
+			)];
+			if keep_refusal(&folders.status, &week, &why).await.is_err() {
+				done.failed += 1;
+			}
+			continue;
+		}
 		if let_go.contains(&week) || folders.renders.join(&week).join(VIDEO).exists() || given_revision(&input).await.is_some_and(|given| given >= revision) {
 			continue;
 		}
@@ -290,6 +307,12 @@ fn newest(held: Vec<mailbox_repo::HeldEssay>) -> Vec<(String, u32, mailbox_repo:
 		}
 	}
 	weeks.into_iter().map(|(week, (revision, file))| (week, revision, file)).collect()
+}
+
+/// Whether more than one account holds an essay of `week`.
+async fn shared(db: &SqlitePool, week: &str) -> Result<bool, sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	Ok(mailbox_repo::rust_essay_holders(&mut conn, week).await.map_err(storage)? > 1)
 }
 
 /// The revision of the essay given in `input`, if one was.
@@ -415,19 +438,24 @@ pub struct Tidied {
 pub async fn tidy(db: &SqlitePool, subject: Option<&str>, folders: &Folders, now: &str) -> Result<Tidied, sqlx::Error> {
 	let _folders = crate::feeds::FOLDERS.lock().await;
 	let mut done = Tidied::default();
-	let (held, let_go) = match subject {
+	let (held, let_go, withdrawn) = match subject {
 		Some(subject) => {
 			let mut conn = db.acquire().await?;
 			(
 				mailbox_repo::rust_essay_weeks(&mut conn, subject).await.map_err(storage)?,
 				rust_round_repo::essay_video::let_go(&mut conn, subject).await?,
+				rust_round_repo::essay_video::withdrawn(&mut conn, subject)
+					.await?
+					.into_iter()
+					.map(|w| w.week)
+					.collect::<Vec<_>>(),
 			)
 		}
-		None => (Vec::new(), Vec::new()),
+		None => (Vec::new(), Vec::new(), Vec::new()),
 	};
 	let on_drive = {
 		let mut weeks = weeks_in(&folders.essays).await;
-		for week in weeks_in(&folders.renders).await {
+		for week in weeks_in(&folders.renders).await.into_iter().chain(weeks_in(&folders.work).await) {
 			if !weeks.contains(&week) {
 				weeks.push(week);
 			}
@@ -435,10 +463,15 @@ pub async fn tidy(db: &SqlitePool, subject: Option<&str>, folders: &Folders, now
 		weeks
 	};
 	for week in on_drive {
-		let (input, render) = (folders.essays.join(&week), folders.renders.join(&week));
-		if !held.contains(&week) {
+		let (input, render, work) = (folders.essays.join(&week), folders.renders.join(&week), folders.work.join(&week));
+		// Not the subject's, or withdrawn for a deleted take: everything of
+		// it goes, its waiting work included, and is tried again each minute
+		// until it has.
+		if !held.contains(&week) || withdrawn.contains(&week) {
 			done.weeks_removed += 1;
-			done.failed += usize::from(remove(&input).await.is_err()) + usize::from(remove(&render).await.is_err());
+			for dir in [&input, &render, &work] {
+				done.failed += usize::from(remove(dir).await.is_err());
+			}
 			continue;
 		}
 		if let_go.contains(&week) {
@@ -455,7 +488,9 @@ pub async fn tidy(db: &SqlitePool, subject: Option<&str>, folders: &Folders, now
 			rust_round_repo::essay_video::withdraw(&mut tx, subject, &week, &note, size, now).await?;
 			tx.commit().await?;
 			done.withdrawn += 1;
-			done.failed += usize::from(remove(&input).await.is_err()) + usize::from(remove(&render).await.is_err());
+			for dir in [&input, &render, &work] {
+				done.failed += usize::from(remove(dir).await.is_err());
+			}
 			continue;
 		}
 		let takes = input.join("takes");
@@ -684,6 +719,7 @@ mod tests {
 			essays: dir.join("essays"),
 			renders: dir.join("renders"),
 			status: dir.join("status"),
+			work: dir.join("work"),
 		}
 	}
 
@@ -937,6 +973,16 @@ mod tests {
 		let withdrawn = rust_round_repo::essay_video::withdrawn(&mut conn, ME).await.unwrap();
 		assert_eq!((withdrawn[0].week.as_str(), withdrawn[0].note.as_str(), withdrawn[0].size), ("2026-w46", TAKE, 5));
 		drop(conn);
+		// A removal that failed, or a process that stopped between the
+		// receipt and the files: the next minute removes them.
+		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
+		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
+		std::fs::create_dir_all(folders.work.join("2026-w46")).unwrap();
+		assert_eq!(tidy(&pool, Some(ME), &folders, AFTER).await.unwrap().weeks_removed, 1);
+		assert!(
+			!folders.renders.join("2026-w46").exists() && !folders.work.join("2026-w46").exists(),
+			"a withdrawn week's files are removed until gone"
+		);
 		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap(), Exported::default(), "never given again");
 		assert!(!folders.essays.join("2026-w46").exists());
 
@@ -969,6 +1015,8 @@ mod tests {
 		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
 		std::fs::create_dir_all(folders.renders.join("2026-w40")).unwrap();
+		std::fs::create_dir_all(folders.work.join("2026-w46").join("cache")).unwrap();
+		std::fs::write(folders.work.join("2026-w46").join("cache").join("take.wav"), b"the owner's voice").unwrap();
 
 		let tidied = tidy(&pool, Some(ME), &folders, AFTER).await.unwrap();
 		assert_eq!((tidied.weeks_removed, tidied.takes_removed), (1, 1), "a render of a week with no essay goes");
@@ -981,6 +1029,7 @@ mod tests {
 			!folders.essays.join("2026-w46").exists() && !folders.renders.join("2026-w46").exists(),
 			"the account went: so did its essays"
 		);
+		assert!(!folders.work.join("2026-w46").exists(), "and their unfinished work, the owner's takes in it");
 	}
 
 	/// C72: a correction is a new name, `-r<N>`; the highest revision is
@@ -1019,5 +1068,34 @@ mod tests {
 			["2026-w46"],
 			"one week, however many revisions"
 		);
+	}
+
+	/// The drive keys an essay by its week alone, so a week two accounts hold
+	/// an essay of is given to neither, and neither's feed lists it.
+	#[tokio::test]
+	async fn a_week_two_accounts_hold_is_given_to_neither() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		final_week(&pool).await;
+		hold_take(&pool).await;
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('them', 'them')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES ('them', 'brief', 'rust-essay-2026-w46.json', 1, 's', 2, x'7b7d', 'now')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		let done = export(&pool, ME, &folders, AFTER).await.unwrap();
+		assert_eq!((done.written, done.refused), (0, 1));
+		assert!(!folders.essays.join("2026-w46").exists());
+		assert!(std::fs::read_to_string(folders.status.join("2026-w46.refused.log")).unwrap().contains("another account"));
+		let mut conn = pool.acquire().await.unwrap();
+		for subject in [ME, "them"] {
+			assert!(
+				!crate::feeds::Feed::RustEssay.holds(&mut conn, subject, "2026-w46").await.unwrap(),
+				"{subject} can't reach it"
+			);
+		}
 	}
 }

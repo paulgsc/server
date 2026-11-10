@@ -198,12 +198,21 @@ impl Feed {
 }
 
 /// The weeks `subject` holds an essay of, oldest first, less those withdrawn
-/// for a deleted take: those are gone for good, with no video to list.
+/// for a deleted take (gone for good, with no video to list) and those
+/// another account holds an essay of too: the drive keys an essay's files by
+/// its week alone, so a shared week is none of theirs to reach
+/// (`rust_essays::export` never gives one).
 async fn essays_held(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, sqlx::Error> {
-	let withdrawn: Vec<String> = rust_round_repo::essay_video::withdrawn(conn, subject).await?.into_iter().map(|w| w.week).collect();
-	let weeks = mailbox_repo::rust_essay_weeks(conn, subject).await.map_err(|err| match err {
+	let storage = |err| match err {
 		mailbox_repo::MailboxError::Storage(err) => err,
 		mailbox_repo::MailboxError::Rewritten => sqlx::Error::Protocol(String::from("a mailbox file does not read back")),
-	})?;
-	Ok(weeks.into_iter().filter(|week| !withdrawn.contains(week)).collect())
+	};
+	let withdrawn: Vec<String> = rust_round_repo::essay_video::withdrawn(conn, subject).await?.into_iter().map(|w| w.week).collect();
+	let mut held = Vec::new();
+	for week in mailbox_repo::rust_essay_weeks(conn, subject).await.map_err(storage)? {
+		if !withdrawn.contains(&week) && mailbox_repo::rust_essay_holders(conn, &week).await.map_err(storage)? == 1 {
+			held.push(week);
+		}
+	}
+	Ok(held)
 }

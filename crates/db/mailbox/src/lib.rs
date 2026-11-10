@@ -950,6 +950,26 @@ pub async fn rust_essay_weeks(conn: &mut SqliteConnection, subject: &str) -> Res
 	Ok(weeks)
 }
 
+/// How many accounts hold an essay (any revision) of `week`: the drive keys
+/// an essay's files by its week alone, so a week more than one holds is
+/// none of theirs to reach (`file_host`'s `rust_essays`).
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn rust_essay_holders(conn: &mut SqliteConnection, week: &str) -> Result<i64, MailboxError> {
+	let base = String::from("rust-essay-") + week + ".json";
+	let revised = String::from("rust-essay-") + week + "-r[1-9]*.json";
+	let holders = sqlx::query_scalar!(
+		r#"SELECT COUNT(DISTINCT subject_id) AS "n!: i64" FROM mailbox_item
+		   WHERE folder = 'brief' AND (name = ?1 OR name GLOB ?2)"#,
+		base,
+		revised
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(holders)
+}
+
 /// One week home holds, whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeekFile {

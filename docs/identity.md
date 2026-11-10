@@ -1176,7 +1176,9 @@ nowhere is marked as such and belongs to review.
     the account: its rows (`rust_essay_video_link`,
     `rust_essay_video_deletion`) go with the account, and the worker removes
     every essay folder whose essay the subject no longer holds within a
-    minute; (b) the takes are copied into the render's input
+    minute, its unfinished render work included; a week more than one
+    account holds an essay of is given to none and reached by none, since
+    the drive keys an essay's files by its week alone; (b) the takes are copied into the render's input
     (`rust-essays/<week>/takes/`) only while the week waits for its video,
     and removed once the video is made, so after that they are only in the
     video and, always, in `voice_note_audio`; (c) a take a kept essay plays
