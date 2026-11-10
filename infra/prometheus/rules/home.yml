@@ -435,6 +435,34 @@ groups:
           objective: AV2
           says: "Home's database has been behind this build for 5 minutes: /ready names the migrations to run."
 
+  # Home's on-demand deploy (README.md, "Deploying to home"): it runs only
+  # when a client needs a newer server, outside file_host, from a systemd
+  # path unit, so nobody is watching when it fails. file_host reads what it
+  # recorded (${STORAGE}/deploy/state.json) on metrics::periodic's sweep.
+  - name: home-deploy
+    rules:
+      - alert: DeployFailed
+        # AV1: a deploy a client asked for rolled back, or failed before it
+        # could start anything. Either way home still serves the image it had
+        # (or nothing, which FileHostDown says); the client that asked stays
+        # unserved until someone looks. home_deploy_runs only rises (the
+        # deploy's own totals), so increase() over the hour sees each one;
+        # resolved an hour after the last.
+        expr: sum(increase(home_deploy_runs{outcome=~"rolled_back|failed"}[1h])) > 0
+        labels:
+          objective: AV1
+          says: "Home's on-demand deploy rolled back or failed in the last hour: `journalctl -u home-deploy` says why. If it names a missing or refused variable, the image needs a newer checkout on home."
+      - alert: DeployStuck
+        # AV1: a client asked for a newer server and the marker has waited 30
+        # minutes unanswered: the path unit is not running (not installed,
+        # stopped, or hit systemd's start limit) or the deploy hung. A deploy
+        # takes minutes: a pull, a start that may migrate, at most 360 s of
+        # waiting, twice when it rolls back.
+        expr: max(home_deploy_wanted_age_seconds) > 1800
+        labels:
+          objective: AV1
+          says: "A client has needed a newer server for 30 minutes and home's deploy has not answered: check `systemctl status home-deploy.path home-deploy`."
+
   # Home runs out of memory (LN2, #707): every kill the kernel makes for
   # memory reaches the owner, named when it can be and never dropped when it
   # can't. Home has no swap (paulgsc/dotfiles swapDevices = []), so a kill is

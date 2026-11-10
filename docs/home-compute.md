@@ -17,7 +17,7 @@ that adds it.
 | Class | Services | What it means today |
 |---|---|---|
 | **Protected** | `file-host`, `nats`, `redis`, `prometheus`, `grafana`, `node_exporter`, `cadvisor` | Home's state, and the path that tells the owner what happened: Prometheus evaluates the alerts, Grafana delivers them, node_exporter and cAdvisor count the kills. Killed last. |
-| **Interactive** | `rust-runner`, `orchestrator` | Short work someone may be waiting on. The default. The voice-note transcriber is interactive too, but it runs inside `file-host`, so it is protected with it. |
+| **Interactive** | `rust-runner`, `orchestrator`, `home-deploy` | Short work someone may be waiting on. The default. The voice-note transcriber is interactive too, but it runs inside `file-host`, so it is protected with it. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
 | **Batch**, the lowest | `render`, `kokoro`, `call-stage`, `ollama` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
 
@@ -268,7 +268,7 @@ service sets one by its class, in `infra/compose/*.yml`:
 |---|---|
 | Batch | `ollama` 900, `render` 800, `kokoro` 800, `call-stage` 800 |
 | Tooling | 500 |
-| Interactive | 0 |
+| Interactive | 0 (`home-deploy` takes systemd's default, which is 0) |
 | Protected | −500 |
 
 `ollama` goes before the render's services: it is the largest when a model
@@ -294,6 +294,7 @@ order above decides only when the host as a whole runs out.
 | `grafana` | no alert is delivered until Docker restarts it | Docker's restart | `HomeOomKill`, delivered once it is back |
 | `nats`, `redis` | what file_host keeps in them, and its realtime path, until Docker restarts them | Docker's restart | `HomeOomKill` |
 | tooling | nothing owed | Docker's restart | `HomeOomKill` |
+| `home-deploy` | the deploy in flight, before it records anything: a `make up` cut short can leave `file-host` stopped (then `FileHostDown`) | the path unit starts it again while the marker exists, and the run repeats from the pull | `HomeOomKill`; `FileHostDown` if it stopped `file-host`; `DeployStuck` once the marker is 30 minutes old |
 
 ## How a kill is heard
 

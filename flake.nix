@@ -96,6 +96,10 @@
       nixosModules = {
         file-host = import ./nix/modules/file-host.nix;
         orchestrator = import ./nix/modules/orchestrator.nix;
+        # Home's on-demand deploy (no container of its own): a path unit on
+        # the marker file_host writes when a client needs a newer server.
+        # README.md, "Deploying to home".
+        home-deploy = import ./nix/modules/home-deploy.nix;
       };
     };
 }

@@ -147,6 +147,30 @@ jobs:
       - name: A deploy that does not come up ready rolls back
         run: python3 scripts/deploy.py --self-test
 
+  # The contract epoch (apps/servers/file_host/src/contract.rs) only rises,
+  # and rises whenever the route fingerprint changes: a client bundles it,
+  # and home pulls a newer image only for a client that needs a higher one.
+  # The fingerprint itself is held to the routes by contract.rs's own test.
+  # No path gate: stdlib python3 and one file from the base branch.
+  contract_epoch:
+    name: Contract epoch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: The epoch rises with every route change
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_contract_epoch.py --self-test
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            git show FETCH_HEAD:apps/servers/file_host/src/contract.rs > base_contract.rs 2>/dev/null || : > base_contract.rs
+            python3 scripts/check_contract_epoch.py --base-file base_contract.rs
+          else
+            python3 scripts/check_contract_epoch.py
+          fi
+
   rust_lint:
     name: Rust lint
     runs-on: ubuntu-latest

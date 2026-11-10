@@ -345,7 +345,8 @@ It runs `scripts/deploy.py`:
    nothing third-party is pulled. It does not update the checkout either:
    see "Needs a newer checkout", below.
 2. **Skips an image that already failed here**: its id is in
-   `~/.local/state/server-deploy/failed-images.json`, so `:latest` is tagged
+   `~/.local/state/server-deploy/failed-images.json` (the on-demand unit's:
+   `/var/lib/home-deploy/`), so `:latest` is tagged
    back to what serves and nothing restarts until a newer one is published.
 3. Otherwise tags the serving image `pgathondu/server:previous` and runs
    **`make up`**: envctl's preflight on `deploy/<role>/`, then
@@ -405,8 +406,65 @@ the backup that start took.
 
 This is not a zero-downtime deploy: the old container stops before the new
 one proves itself. Two instances behind Caddy is #409 (deferred) and AS20
-(#566). Running it without anyone typing the command is the next step
-(home pulls on demand when a client needs a newer server than it runs).
+(#566).
+
+**On demand, with nobody typing it.** Home stays on the image it runs until
+a client needs a newer one; nothing polls, and with no client newer than
+home, home sends no request anywhere (the owner's ask, 2026-11-10):
+
+1. **The contract epoch.** `apps/servers/file_host/src/contract.rs` holds
+   `CONTRACT_EPOCH`, an ordered number that rises with every route change
+   (its test and Lint's `Contract epoch` job hold it to the route surface),
+   and `OLDEST_SUPPORTED`, raised when a change breaks older clients. The
+   route snapshot carries both (`contract_epoch`, `oldest_supported`; the
+   `.ts` module's `SERVER_CONTRACT_EPOCH`, `SERVER_OLDEST_SUPPORTED`), so
+   paulgsc/some-ui's builds get them through the snapshot sync that already
+   runs; nothing new runs in CI.
+2. **The ask.** A client asks `GET /compat?needs=<its epoch>`, unversioned
+   like `/health`. The answer is `{running: {epoch, oldest_supported,
+   version}, needs, supported, deploy, latest_seen_epoch?, retry_after_s?}`,
+   where `supported` is `oldest_supported <= needs <= epoch` and `deploy` is
+   one of: `none` (served), `client_behind` (the client is older than home
+   serves: it must update; pulling cannot help), `wanted` (a deploy was asked
+   for now), `in_flight`, `cooldown` and `unavailable` (ask again after
+   `retry_after_s`), `refused` (`needs` past the ceiling) or `cannot_request`
+   (no `${STORAGE}/deploy`, as under `make dev`).
+3. **The trigger.** For `wanted`, `file_host` writes `${STORAGE}/deploy/wanted`.
+   A systemd path unit (`nixosModules.home-deploy`) starts
+   `scripts/deploy.py --on-demand ${STORAGE}/deploy`: it pulls
+   `pgathondu/server:latest`, reads the pulled image's epoch
+   (`file_host --contract-epoch`), and deploys it, as above, only when that
+   epoch is above the running one; a newer build of the same contract is not
+   a reason to restart, and `:latest` goes back to what serves. It records
+   what it did in `${STORAGE}/deploy/state.json`, which `file_host` reads for
+   its answers and its metrics, and removes the marker.
+4. **The bounds** (`apps/servers/file_host/src/deploy.rs`): one marker at a
+   time, and one deploy at a time; 10 minutes at least between two pulls; a
+   need the last pull found nothing to serve is answered `unavailable` for 6
+   hours, so a client nothing published can serve costs at most 4 requests
+   to Docker Hub in 6 hours; `needs` more than 1000 above the running epoch
+   is refused, so a forged or mistyped one starts no pull at all; and no
+   epoch at or below the running one is ever a reason to pull.
+5. **Loud.** `DeployFailed` (a deploy rolled back or failed in the last
+   hour) and `DeployStuck` (a marker 30 minutes unanswered) reach the owner
+   like home's other alerts (`infra/prometheus/rules/home.yml`). The STORAGE
+   dashboard's Deploy row draws the pattern's footprint: asks by answer,
+   runs by outcome, pulls per 6 hours against Docker Hub's limit and their
+   projection, bytes pulled, and the backups against the disk.
+
+**Once, to install it (paulgsc/dotfiles).** With this flake as an input
+named `server` (`inputs.server.url = "github:paulgsc/server";`, if
+`dotfiles` does not have it yet), add to home's NixOS configuration:
+
+```nix
+imports = [inputs.server.nixosModules.home-deploy];
+services.home-deploy = { enable = true; user = "<who runs make up>"; checkout = "<the checkout's path>"; storage = "<STORAGE>"; };
+```
+
+then `nixos-rebuild switch`. The unit runs as root (`${STORAGE}` is
+file_host's uid's) and runs `make` as `user` (who holds the sops key);
+`systemctl status home-deploy.path home-deploy` and
+`journalctl -u home-deploy` show it.
 
 ### NixOS modules
 
