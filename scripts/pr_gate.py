@@ -809,8 +809,15 @@ def event_pulls(api: Api, event_name: str, event: dict[str, Any]) -> tuple[str, 
 		source = event["workflow_run"]
 		head_sha = source["head_sha"]
 		numbers = [p["number"] for p in source.get("pull_requests") or []]
+		pull_ref = re.fullmatch(r"refs/pull/(\d+)/(?:head|merge)", source.get("head_branch") or "")
+		if not numbers and pull_ref:
+			# A `dynamic` run (CodeQL's default setup) lists no pull request and names its branch by the
+			# pull request's own ref, which says which one it is (#772's #773: its finish decided nothing).
+			numbers = [int(pull_ref.group(1))]
+		if not numbers:
+			numbers = [p["number"] for p in api.get(f"commits/{head_sha}/pulls") if p.get("state") == "open"]
 		if not numbers and source.get("head_branch") and (source.get("head_repository") or {}).get("owner"):
-			# A fork's run lists no pull request; find it by its head branch.
+			# A fork's run lists no pull request, and its commit is not this repository's; find it by its head branch.
 			head = f"{source['head_repository']['owner']['login']}:{source['head_branch']}"
 			numbers = [p["number"] for p in api.get(f"pulls?state=open&head={urllib.parse.quote(head)}")]
 	elif event_name == "workflow_dispatch":
@@ -1053,6 +1060,14 @@ def self_test() -> int:
 	same("gate-verdict.yml hears every pull-request workflow", unheard(here, every), [])
 	names = {workflow_name(path, here[path]) for path in every} | set(DYNAMIC_WORKFLOWS)
 	same("gate-verdict.yml lists nothing else", sorted(set(verdict_listens(here[VERDICT])) - names), [])
+
+	# A `dynamic` run (CodeQL's default setup) lists no pull request; its branch is the pull request's ref.
+	class NoApi:
+		def get(self, path: str) -> Any:
+			raise AssertionError(f"no API call expected, got {path}")
+
+	dynamic = {"workflow_run": {"head_sha": "a" * 40, "pull_requests": [], "head_branch": "refs/pull/773/head", "head_repository": {"owner": {"login": "o"}}}}
+	same("dynamic run's pull request from its ref", event_pulls(NoApi(), "workflow_run", dynamic), ("a" * 40, [773]))  # type: ignore[arg-type]
 
 	# Who runs on which event (#772): a dispatch with no inputs sweeps; with pr and head_sha it judges that head.
 	verdict_if, sweep_if = job_if(here[VERDICT], "verdict"), job_if(here[VERDICT], "sweep")
