@@ -2,11 +2,13 @@
 //!
 //! These are `routes::rust_rounds`' validate-and-answer half
 //! (paulgsc/some-ui#2689). What a week sent, a paste and a session must be, and the store's
-//! rules (sent once, append-only, a session grows by revisions), are
+//! rules (a draft until the deadline and final at it (RR22), append-only, a session grows by
+//! revisions), are
 //! `rust_round_repo`'s `sent` and `log`.
 //!
 //! **A week's record is read, never stored whole.** It is the week (the
-//! routine's, in the mailbox), what the owner sent of it, the errors pasted
+//! routine's, in the mailbox), what the owner sent of it (the draft before
+//! the deadline, the final after it), the errors pasted
 //! in it, and how often each ticket was opened, read from the phone's
 //! engagement events in `app_event` (CK2, ENG4) rather than a counter of
 //! its own. A ticket no take answered by the deadline is a silence, and the
@@ -32,11 +34,12 @@ use axum::{
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use rust_round_repo::log::{LogChange, SessionEntry, SESSION_REWRITTEN};
+use rust_round_repo::sent::DraftChange;
 use rust_round_repo::sent::{Answer, Paste, Sent, StoredPaste, PASTED_TWICE, SENT_TWICE};
 use rust_round_repo::week::Week;
 use rust_round_repo::{Change, RoundError};
 use serde::Serialize;
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::{Connection, SqliteConnection, SqlitePool};
 use tracing::instrument;
 
 /// The pipeline and affordance the phone's ticket opens are engagement
@@ -54,9 +57,10 @@ fn ticket_place(n: usize) -> String {
 /// `PUT /rust-weeks/:id/sent`.
 #[derive(Debug, Serialize)]
 pub struct SentWritten {
-	/// `added` or `unchanged`.
+	/// `added`, `replaced`, `unchanged` or `superseded`.
 	pub change: &'static str,
-	/// The Send as home keeps it.
+	/// The week's draft as home keeps it after this send: this send, or for
+	/// `superseded` the later one that stands.
 	pub sent: Sent,
 }
 
@@ -79,7 +83,9 @@ pub struct WeekRecord {
 	pub due: String,
 	/// Home's clock is past `due`: nothing sent after it counts.
 	pub closed: bool,
-	/// The owner's Send, or null when home holds none.
+	/// The week's send that stands: its draft before the deadline, its final
+	/// after it, or null when home holds none (after the deadline, nothing
+	/// was sent by it).
 	pub sent: Option<SentAt>,
 	/// Each ticket, in the week's order.
 	pub tickets: Vec<TicketRecord>,
@@ -98,6 +104,9 @@ pub struct SentAt {
 	pub at: String,
 	/// When it reached home.
 	pub received_at: String,
+	/// A draft, which a later send before the deadline replaces; false for
+	/// the week's final.
+	pub draft: bool,
 }
 
 /// One ticket of a week's record.
@@ -163,27 +172,76 @@ fn stored_instant(at: &str) -> Option<String> {
 	Some(at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
-/// `PUT /rust-weeks/:id/sent`, the body being the phone's `WeekSent`: kept
-/// once, in a `BEGIN IMMEDIATE` transaction.
+/// `PUT /rust-weeks/:id/sent`, the body being the phone's `WeekSent`.
+///
+/// The week's draft until its deadline, in a `BEGIN IMMEDIATE` transaction.
+/// A send refused because the week is final makes it final first.
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's or from an untrusted origin,
 /// 404 for a week the caller's subject does not hold, 422 naming each
-/// refused field (`at` after the deadline among them), 409 for another Send
-/// of a week home holds one of, 500 for a storage failure.
+/// refused field (`at` after the deadline, and `week` once home's clock is
+/// past it, among them), 409 for another body at the draft's moment, 500 for
+/// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_week_sent_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_sent(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
-	let now = now();
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	// Read once the write lock is held: a finalization that committed while
+	// this send waited for it did so after the deadline, so this `now` is too,
+	// and the send is refused rather than drafted beside the final.
+	let now = now();
 	let week = held_week(&mut tx, paired.subject.as_str(), &id).await?;
-	let sent = rust_round_repo::sent::read_sent(&body, &week, &now).map_err(FileHostError::unprocessable_entity)?;
-	let change = rust_round_repo::sent::put_sent(&mut tx, paired.subject.as_str(), &sent, &now)
+	if rust_round_repo::sent::is_final(&mut tx, paired.subject.as_str(), &week.id).await? {
+		return Err(FileHostError::unprocessable_entity(vec![(
+			String::from("week"),
+			"is final: its deadline has passed, and what stood then is the record",
+		)]));
+	}
+	let sent = match rust_round_repo::sent::read_sent(&body, &week, &now) {
+		Ok(sent) => sent,
+		Err(problems) => {
+			finalize(&mut tx, paired.subject.as_str(), &week, &now).await?;
+			tx.commit().await?;
+			return Err(FileHostError::unprocessable_entity(problems));
+		}
+	};
+	let (change, sent) = rust_round_repo::sent::put_draft(&mut tx, paired.subject.as_str(), &sent, &now)
 		.await
 		.map_err(|err| refused(err, SENT_TWICE))?;
 	tx.commit().await?;
-	let (status, change) = change_word(change);
-	Ok((status, Json(SentWritten { change, sent })).into_response())
+	let status = if change == DraftChange::Added { StatusCode::CREATED } else { StatusCode::OK };
+	Ok((status, Json(SentWritten { change: change.as_str(), sent })).into_response())
+}
+
+/// Make `week` final for `subject` when home's clock is past its deadline
+/// (`rust_round_repo::sent::finalize`), in the caller's transaction.
+async fn finalize(conn: &mut SqliteConnection, subject: &str, week: &Week, now: &str) -> Result<(), FileHostError> {
+	if let Some(window) = &week.window {
+		rust_round_repo::sent::finalize(conn, subject, &week.id, &window.due, now).await?;
+	}
+	Ok(())
+}
+
+/// Make final every week `subject` holds a draft of whose deadline home's
+/// clock has passed, in one `BEGIN IMMEDIATE` transaction: one row per week
+/// not yet final, read by the draft table's key. A draft whose week home no
+/// longer holds, or cannot read, is left as it is.
+///
+/// # Errors
+/// 500 for a storage failure.
+pub(crate) async fn finalize_due(db: &SqlitePool, subject: &str) -> Result<(), FileHostError> {
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let now = now();
+	for id in rust_round_repo::sent::drafted_weeks(&mut tx, subject).await? {
+		match held_week(&mut tx, subject, &id).await {
+			Ok(week) => finalize(&mut tx, subject, &week, &now).await?,
+			Err(FileHostError::NotFound) => {}
+			Err(err) => return Err(err),
+		}
+	}
+	tx.commit().await?;
+	Ok(())
 }
 
 /// `PUT /rust-weeks/:id/pastes/:at`, the body being the paste as the phone
@@ -220,6 +278,7 @@ pub async fn put_paste(paired: Paired, State(db): State<SqlitePool>, Path((id, a
 #[instrument(name = "rust_week_record", skip_all, fields(otel.kind = "server"))]
 pub async fn get_record(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<WeekRecord>, FileHostError> {
 	let subject = paired.subject.as_str();
+	let now = now();
 	let mut conn = db.acquire().await?;
 	let week = held_week(&mut conn, subject, &id).await?;
 	let Some(window) = week.window.clone() else {
@@ -229,7 +288,13 @@ pub async fn get_record(paired: Paired, State(db): State<SqlitePool>, Path(id): 
 	let (Some(from), Some(to)) = (stored_instant(&window.opens), stored_instant(&window.due)) else {
 		return Err(FileHostError::NotFound);
 	};
-	let sent = rust_round_repo::sent::sent(&mut conn, subject, &week.id).await?;
+	let closed = rust_round_repo::instant_order(&now, &window.due) == Some(std::cmp::Ordering::Greater);
+	if closed {
+		let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
+		finalize(&mut tx, subject, &week, &now).await?;
+		tx.commit().await?;
+	}
+	let sent = rust_round_repo::sent::standing(&mut conn, subject, &week.id).await?;
 	let pastes = rust_round_repo::sent::pastes(&mut conn, subject, &week.id).await?;
 	let opens = app_event_repo::left_by_place(&mut conn, subject, PIPELINE, TICKET_AFFORDANCE, &from, &to)
 		.await
@@ -252,7 +317,6 @@ pub async fn get_record(paired: Paired, State(db): State<SqlitePool>, Path(id): 
 			opens: opened,
 		});
 	}
-	let closed = rust_round_repo::instant_order(&now(), &window.due) == Some(std::cmp::Ordering::Greater);
 	Ok(Json(WeekRecord {
 		week: week.id,
 		opens: window.opens,
@@ -261,6 +325,7 @@ pub async fn get_record(paired: Paired, State(db): State<SqlitePool>, Path(id): 
 		sent: sent.map(|held| SentAt {
 			at: held.sent.at,
 			received_at: held.received_at,
+			draft: held.draft,
 		}),
 		tickets,
 		unanswered,

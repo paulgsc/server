@@ -213,7 +213,7 @@ above the button that deletes (invariant 22):
 | Notes on the feeds' episodes | `episode_note` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
-| Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_paste`, `rust_round_log` |
+| Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | How each recording ended | `app_event` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -1645,30 +1645,43 @@ nowhere is marked as such and belongs to review.
     three tables keep past an account's deletion, their times included, is
     under "What deleting an account erases", "What stays of Rust Rounds".
     What the owner did with a week (RR14, paulgsc/some-ui#2689) is theirs:
-    `rust_week_sent` keeps each week's Send as the phone kept it (each ticket
-    answered, its take named by voice-note id and when it was recorded, the
-    tickets passed over, when Send was pressed and when it reached home),
-    once per week (`PUT /rust-weeks/:id/sent`; another body is a `409`), and
-    refuses a Send whose moment is after the week's deadline, since a take
-    not sent by then doesn't count (owner, 2026-11-07). `rust_week_paste`
+    a week's send is the phone's `WeekSent` (each ticket answered, its take
+    named by voice-note id and when it was recorded, the tickets passed over,
+    when Send was pressed and when it reached home). Until the week's
+    deadline it is a draft (`rust_week_draft`, `PUT /rust-weeks/:id/sent`): a
+    later send replaces it, an earlier one leaves it, and another body at its
+    moment is a `409`; it is not kept for good. Only what stands at the
+    deadline is final (RR22, paulgsc/some-ui#2832; owner, 2026-11-10):
+    `rust_week_final` keeps it once per week, written in one transaction with
+    the draft's deletion at the first read of the week after its deadline,
+    and never updated. A send whose moment is after the deadline, or that
+    reaches home after it, is refused, since a take not sent by then doesn't
+    count (owner, 2026-11-07; no grace, 2026-11-10), so the final is the same
+    whenever it is written. `rust_week_sent` keeps, as they were, the weeks
+    sent while a week was sent once (RR14); each was copied as its week's
+    first draft, and nothing writes it now. `rust_week_paste`
     keeps each error pasted from the owner's own code in a week, as pasted,
     once per moment (`PUT /rust-weeks/:id/pastes/:at`). `rust_round_log` keeps
     each session of the card-era log (`some-ui.rust-round-log/1`) byte for
     byte as the phone sent it (`PUT /rust-round-log/sessions/:id`); a
     session that grew is kept as a new revision beside the last, and one
-    that drops or changes anything held is a `409`. None of the three holds
-    audio: a take or a note is named by id (invariant 23). All three are read
+    that drops or changes anything held is a `409`. None of them holds
+    audio: a take or a note is named by id (invariant 23). All are read
     only by their own subject (`GET /rust-weeks/:id/record`,
     `GET /rust-round-log/sessions[/:id]`; another subject's week is a `404`),
-    counted by `GET /subjects/me/kept` (invariant 33), never updated, and
-    deleted only with the account, by the triggers and the sweep. A week's
-    record is read, never stored whole: the week, its Send, its pastes, and
+    counted by `GET /subjects/me/kept` (invariant 33; a draft is not counted),
+    never updated, and deleted only with the account, by the triggers and
+    the sweep; a draft alone is also replaced, and deleted once its week is
+    final. A week's record is read, never stored whole: the week, its draft
+    before the deadline or its final after it, its pastes, and
     how often each ticket was opened, which is the phone's engagement events
     (`left` at the ticket's place, invariant 34) counted in the week's window,
     so there is no second counter. A ticket no take answered is listed as
     unanswered whether or not anything was sent.
     *Enforced by* `rust_round_repo`'s `each_subject_reads_only_its_own_rounds`,
-    `a_week_is_sent_once_and_never_replaced`,
+    `a_later_send_replaces_the_draft`,
+    `the_draft_standing_at_the_deadline_is_final`,
+    `a_week_rr14_kept_is_its_first_draft_and_stays_as_it_was`,
     `a_week_is_sent_between_its_opening_and_its_deadline`,
     `a_session_grows_by_revisions_and_is_never_rewritten`,
     `the_record_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
@@ -1901,8 +1914,8 @@ nowhere is marked as such and belongs to review.
     sessions; `at`), `rust_round` (rows; `received_at`), `drama_prompt`
     (rows; the earliest stamp, as the moment it names),
     `studio_sitting_event` (distinct sittings; `at`),
-    `studio_video_queued` (distinct videos; `queued_at`), `rust_week_sent`
-    (rows; `received_at`) and `rust_round_log` (distinct sessions;
+    `studio_video_queued` (distinct videos; `queued_at`), `rust_week_final`
+    and `rust_week_sent` (distinct weeks across both; `received_at`) and `rust_round_log` (distinct sessions;
     `started_at`). Each part filters on
     `subject_id` and reads by a key or index that starts with it, so the
     read is a range read of that subject's rows, and its answer is at most

@@ -7,11 +7,21 @@
 //! - **The phone's `WeekSent`, checked against its week** ([`read_sent`]):
 //!   every ticket of the week once, answered with a take or passed over, at
 //!   least one answered, sent no later than the week's `due` and no earlier
-//!   than it `opens`. A take not sent by the deadline doesn't count (owner,
+//!   than it `opens`, and reaching home no later than `due` either. A take not sent by the deadline doesn't count (owner,
 //!   2026-11-07), so a later `at` is refused, not kept as late.
-//! - **Sent once** ([`put_sent`]): the same body again changes nothing;
-//!   another is refused ([`RoundError::Rewritten`]). No row is ever updated
-//!   or, while the account stands, deleted (the migration's triggers).
+//! - **A draft until the deadline, final at it** (RR22,
+//!   paulgsc/some-ui#2832; `migrations/20261110000100_create_rust_week_draft_final.up.sql`):
+//!   before the week's `due`, each send replaces the last as the week's draft
+//!   ([`put_draft`]). A send is named by its `at`, compared as an instant: the
+//!   same value again changes nothing, another body at the draft's moment is
+//!   refused ([`RoundError::Rewritten`]), and an older one leaves the draft
+//!   as it is. Once home's clock is past `due` no send is taken
+//!   ([`read_sent`]), so the draft standing then is final whenever it is
+//!   written: [`finalize`] writes it to `rust_week_final` and drops the
+//!   draft, in one transaction. No final is ever updated or, while the
+//!   account stands, deleted (the migration's triggers).
+//! - **RR14's `rust_week_sent` is an archive**: its rows were copied as their
+//!   weeks' drafts, and nothing writes it now.
 //! - **A take is named by its voice note's id, never held here.** Its
 //!   audio is a voice note (docs/identity.md invariant 23), which may reach
 //!   home before or after the week it answers.
@@ -45,7 +55,33 @@ pub const PASTE_CEILING: usize = PASTE_MAX_CHARS * 4 + 1024;
 const SKEW_MINUTES: i64 = 5;
 
 /// [`RoundError::Rewritten`]'s words for a week sent, for the `409`.
-pub const SENT_TWICE: &str = "home holds another Send of this week; a week is sent once, and what was sent is kept as it was";
+pub const SENT_TWICE: &str = "home holds another send of this week at this moment; a send is named by its moment, and the phone never reuses one";
+
+/// What [`put_draft`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftChange {
+	/// The week's first draft.
+	Added,
+	/// A later send replaced the draft.
+	Replaced,
+	/// The draft is this send already.
+	Unchanged,
+	/// The draft is a later send; nothing was written.
+	Superseded,
+}
+
+impl DraftChange {
+	/// The word the route answers with.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Added => "added",
+			Self::Replaced => "replaced",
+			Self::Unchanged => "unchanged",
+			Self::Superseded => "superseded",
+		}
+	}
+}
 
 /// [`RoundError::Rewritten`]'s words for a paste, for the `409`.
 pub const PASTED_TWICE: &str = "home holds another paste at this moment of this week; a paste is kept as it was";
@@ -77,10 +113,12 @@ pub struct Sent {
 	pub passed: Vec<String>,
 }
 
-/// A week sent, as stored.
+/// A week sent, as stored: its draft or its final.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSent {
 	pub sent: Sent,
+	/// A draft, before the deadline; else the week's final.
+	pub draft: bool,
 	/// The body as stored, re-serialised from [`Sent`].
 	pub text: String,
 	pub received_at: String,
@@ -145,7 +183,7 @@ fn json_object(body: &[u8], ceiling: usize, ceiling_words: &'static str) -> Resu
 /// # Errors
 /// Each [`Problem`]: a body past [`SENT_CEILING`], not one JSON object, or
 /// not the format's shape (an unknown key included); a `week` that is not
-/// `week`'s id; an `at` that is not an instant, is before the week opens,
+/// `week`'s id, or is final (`now` is past its deadline); an `at` that is not an instant, is before the week opens,
 /// after its deadline or ahead of `now`; no answer; a ticket the week
 /// does not name, or named twice, or not named at all; a take that is not
 /// a note id; a `recordedAt` that is not an instant or is after `at`.
@@ -167,6 +205,9 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 		None => problems.push((String::from("week"), "has no deadline home can read")),
 		Some(_) if is_ahead(&sent.at, now) => problems.push((String::from("at"), "is ahead of home's clock")),
 		Some(_) => {}
+	}
+	if week.window.as_ref().is_some_and(|window| instant_order(now, &window.due) == Some(Ordering::Greater)) {
+		problems.push((String::from("week"), "is final: its deadline has passed, and what stood then is the record"));
 	}
 	if sent.answers.is_empty() {
 		problems.push((String::from("answers"), "must hold at least one ticket answered"));
@@ -202,56 +243,162 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 	}
 }
 
-/// Store `sent` for `subject`, or nothing when the same is held.
+/// Keep `sent` as `subject`'s draft of its week, read by [`read_sent`]
+/// with home's clock no later than the week's deadline; say what was done,
+/// and the draft that stands after it.
+///
+/// A send is named by its `at`, compared as an instant: a later one replaces
+/// the draft, an earlier one (a late retry) leaves it, and one at the
+/// draft's moment is the same send only if it is the same value (both read
+/// as a [`Sent`], so key order and spacing are no part of it).
+///
+/// The caller refuses the send instead when [`is_final`] says the week is
+/// final, in the same transaction: a final is never written beside a draft.
 ///
 /// # Errors
-/// [`RoundError::Rewritten`] for another body under the week, which writes
-/// nothing; [`RoundError::Storage`] for any `sqlx` failure.
-pub async fn put_sent(conn: &mut SqliteConnection, subject: &str, sent: &Sent, now: &str) -> Result<Change, RoundError> {
+/// [`RoundError::Rewritten`] for another body at the draft's moment, which
+/// writes nothing; [`RoundError::Storage`] for any `sqlx` failure. Run it in
+/// a `BEGIN IMMEDIATE` transaction, with `now` read once its lock is held.
+pub async fn put_draft(conn: &mut SqliteConnection, subject: &str, sent: &Sent, now: &str) -> Result<(DraftChange, Sent), RoundError> {
 	// Re-serialising a checked value: its own field names and the phone's
 	// strings, nothing more.
 	#[allow(clippy::disallowed_methods)]
 	let text = serde_json::to_string(sent).map_err(|err| RoundError::Storage(sqlx::Error::Decode(Box::new(err))))?;
-	let held = sqlx::query_scalar!("SELECT body FROM rust_week_sent WHERE subject_id = ?1 AND week_id = ?2", subject, sent.week)
-		.fetch_optional(&mut *conn)
-		.await?;
-	match held {
-		Some(held) if held == text => Ok(Change::Unchanged),
-		Some(_) => Err(RoundError::Rewritten),
-		None => {
-			sqlx::query!(
-				"INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-				subject,
-				sent.week,
-				sent.at,
-				text,
-				now
-			)
-			.execute(&mut *conn)
-			.await?;
-			Ok(Change::Added)
-		}
-	}
+	let held = draft(conn, subject, &sent.week).await?;
+	let change = match held {
+		None => DraftChange::Added,
+		Some(held) => match crate::time_order_key(&sent.at).cmp(&crate::time_order_key(&held.sent.at)) {
+			Ordering::Equal if held.sent == *sent => return Ok((DraftChange::Unchanged, held.sent)),
+			Ordering::Equal => return Err(RoundError::Rewritten),
+			Ordering::Less => return Ok((DraftChange::Superseded, held.sent)),
+			Ordering::Greater => DraftChange::Replaced,
+		},
+	};
+	sqlx::query!(
+		"INSERT INTO rust_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, ?2, ?3, ?4, ?5)
+		 ON CONFLICT (subject_id, week_id) DO UPDATE SET sent_at = excluded.sent_at, body = excluded.body, received_at = excluded.received_at",
+		subject,
+		sent.week,
+		sent.at,
+		text,
+		now
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok((change, sent.clone()))
 }
 
-/// `subject`'s Send of `week`, if home holds one.
+fn stored(body: String, received_at: String, draft: bool) -> Result<StoredSent, sqlx::Error> {
+	let sent = serde_json::from_str(&body).map_err(|err| sqlx::Error::Decode(Box::new(err)))?;
+	Ok(StoredSent {
+		sent,
+		draft,
+		text: body,
+		received_at,
+	})
+}
+
+async fn draft(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<Option<StoredSent>, sqlx::Error> {
+	let row = sqlx::query!("SELECT body, received_at FROM rust_week_draft WHERE subject_id = ?1 AND week_id = ?2", subject, week)
+		.fetch_optional(&mut *conn)
+		.await?;
+	row.map(|row| stored(row.body, row.received_at, true)).transpose()
+}
+
+/// Whether `week` is final for `subject`: home holds its final.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn is_final(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<bool, sqlx::Error> {
+	let held = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM rust_week_final WHERE subject_id = ?1 AND week_id = ?2) AS "held!: bool""#,
+		subject,
+		week
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(held)
+}
+
+/// `subject`'s send of `week` that stands: its final once it has one, else
+/// its draft, if home holds either. Run [`finalize`] first once the week's
+/// deadline has passed.
+///
+/// Both are read in one statement, so one snapshot: a finalization between
+/// two reads could otherwise move the send out of the draft after the final
+/// was found missing, and the week would read as never sent.
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored body that no longer reads as one.
-pub async fn sent(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<Option<StoredSent>, sqlx::Error> {
-	let row = sqlx::query!("SELECT body, received_at FROM rust_week_sent WHERE subject_id = ?1 AND week_id = ?2", subject, week)
-		.fetch_optional(&mut *conn)
-		.await?;
-	row
-		.map(|row| {
-			let sent = serde_json::from_str(&row.body).map_err(|err| sqlx::Error::Decode(Box::new(err)))?;
-			Ok(StoredSent {
-				sent,
-				text: row.body,
-				received_at: row.received_at,
-			})
-		})
-		.transpose()
+pub async fn standing(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<Option<StoredSent>, sqlx::Error> {
+	let row = sqlx::query!(
+		r#"SELECT body AS "body!", received_at AS "received_at!", draft AS "draft!: bool" FROM (
+		       SELECT body, received_at, 0 AS draft FROM rust_week_final WHERE subject_id = ?1 AND week_id = ?2
+		       UNION ALL
+		       SELECT body, received_at, 1 AS draft FROM rust_week_draft WHERE subject_id = ?1 AND week_id = ?2)
+		   ORDER BY draft LIMIT 1"#,
+		subject,
+		week
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	row.map(|row| stored(row.body, row.received_at, row.draft)).transpose()
+}
+
+/// The weeks `subject` holds a draft of: one row per week not yet final, by
+/// the key's own range.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn drafted_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, sqlx::Error> {
+	sqlx::query_scalar!("SELECT week_id FROM rust_week_draft WHERE subject_id = ?1", subject)
+		.fetch_all(&mut *conn)
+		.await
+}
+
+/// Make `week`'s standing draft its final once home's clock is past `due`;
+/// whether it wrote one.
+///
+/// It writes the draft to `rust_week_final` as it stands and drops the
+/// draft, in the caller's transaction. Nothing happens before
+/// `due`, nor without a draft. Whenever it runs after `due` it writes the
+/// same final, since no send is taken after it ([`read_sent`]).
+///
+/// # Errors
+/// Any `sqlx` failure. Run it in a `BEGIN IMMEDIATE` transaction.
+pub async fn finalize(conn: &mut SqliteConnection, subject: &str, week: &str, due: &str, now: &str) -> Result<bool, sqlx::Error> {
+	if instant_order(now, due) != Some(Ordering::Greater) {
+		return Ok(false);
+	}
+	let Some(held) = draft(conn, subject, week).await? else {
+		return Ok(false);
+	};
+	let written = if instant_order(&held.sent.at, due) == Some(Ordering::Greater) {
+		false
+	} else {
+		sqlx::query!(
+			"INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, ?2, ?3, ?4, ?5)
+			 ON CONFLICT (subject_id, week_id) DO NOTHING",
+			subject,
+			week,
+			held.sent.at,
+			held.text,
+			held.received_at
+		)
+		.execute(&mut *conn)
+		.await?
+		.rows_affected()
+			== 1
+	};
+	// Dropped only once it is the final: a draft nothing could make final
+	// (one a final already stands beside, or sent after `due`, neither of
+	// which a send can make) is left for a person to read, not lost.
+	if written {
+		sqlx::query!("DELETE FROM rust_week_draft WHERE subject_id = ?1 AND week_id = ?2", subject, week)
+			.execute(&mut *conn)
+			.await?;
+	}
+	Ok(written)
 }
 
 /// Read `body` as a paste made at `at`, the path's moment, with home's
@@ -345,7 +492,7 @@ pub async fn pastes(conn: &mut SqliteConnection, subject: &str, week: &str) -> R
 
 #[cfg(test)]
 mod tests {
-	use super::{pastes, put_paste, put_sent, read_paste, read_sent, sent, Sent};
+	use super::{finalize, is_final, pastes, put_draft, put_paste, read_paste, read_sent, standing, DraftChange, Sent};
 	use crate::week::read;
 	use crate::{Change, RoundError};
 	use serde_json::{json, Value};
@@ -356,6 +503,10 @@ mod tests {
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 	const NOW: &str = "2026-11-16T09:00:00.000Z";
+	/// Home's clock at the week's deadline, 23:59 Pacific: the last moment
+	/// a send is taken.
+	const OPEN: &str = "2026-11-16T07:59:00.000Z";
+	const DUE: &str = "2026-11-15T23:59:00-08:00";
 
 	async fn pool() -> SqlitePool {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
@@ -404,15 +555,20 @@ mod tests {
 	#[test]
 	fn a_week_is_sent_between_its_opening_and_its_deadline() {
 		let week = week();
-		assert!(read_sent(sent_body("2026-11-16T07:58:00.000Z").to_string().as_bytes(), &week, NOW).is_ok(), "23:58 Pacific");
+		assert!(
+			read_sent(sent_body("2026-11-16T07:58:00.000Z").to_string().as_bytes(), &week, OPEN).is_ok(),
+			"23:58 Pacific"
+		);
 		for at in ["2026-11-16T08:00:00.000Z", "2026-11-09T07:59:00.000Z", "2026-11-15T23:59:00-08:01"] {
 			let mut body = sent_body(at);
 			for answer in body["answers"].as_array_mut().unwrap() {
 				answer["recordedAt"] = json!("2026-11-01T00:00:00.000Z");
 			}
-			let refused = read_sent(body.to_string().as_bytes(), &week, NOW).unwrap_err();
+			let refused = read_sent(body.to_string().as_bytes(), &week, OPEN).unwrap_err();
 			assert_eq!(fields(&refused), ["at"], "{at}");
 		}
+		let final_now = read_sent(sent_body("2026-11-15T20:00:00.000Z").to_string().as_bytes(), &week, NOW).unwrap_err();
+		assert_eq!(fields(&final_now), ["week"], "home's clock past the deadline: the week is final, whenever it was pressed");
 		let early_now = "2026-11-12T21:00:00.000Z";
 		let refused = read_sent(sent_body("2026-11-12T21:10:00.000Z").to_string().as_bytes(), &week, early_now).unwrap_err();
 		assert_eq!(fields(&refused), ["at"], "ahead of home's clock");
@@ -428,7 +584,7 @@ mod tests {
 	fn a_week_sent_names_each_ticket_once_and_nothing_else() {
 		let week = week();
 		let at = "2026-11-15T20:00:00.000Z";
-		let refused = |body: Value| fields(&read_sent(body.to_string().as_bytes(), &week, NOW).unwrap_err());
+		let refused = |body: Value| fields(&read_sent(body.to_string().as_bytes(), &week, OPEN).unwrap_err());
 		let mut missing = sent_body(at);
 		missing["passed"] = json!([]);
 		assert_eq!(refused(missing), ["passed"]);
@@ -455,21 +611,123 @@ mod tests {
 		assert_eq!(refused(extra_in_answer), ["body"]);
 	}
 
-	/// A week is sent once: the same Send again changes nothing, another is
-	/// refused and the first stays; each subject holds its own.
+	/// Before the deadline a send replaces the draft when it is later, leaves
+	/// it when it is earlier, and is the same send at the draft's moment only
+	/// as the same value; each subject drafts its own.
 	#[tokio::test]
-	async fn a_week_is_sent_once_and_never_replaced() {
+	async fn a_later_send_replaces_the_draft() {
 		let pool = pool().await;
 		let week = week();
-		let first: Sent = read_sent(sent_body("2026-11-15T20:00:00.000Z").to_string().as_bytes(), &week, NOW).unwrap();
-		let other: Sent = read_sent(sent_body("2026-11-15T20:01:00.000Z").to_string().as_bytes(), &week, NOW).unwrap();
+		let read = |at: &str| -> Sent { read_sent(sent_body(at).to_string().as_bytes(), &week, OPEN).unwrap() };
+		let (first, later) = (read("2026-11-15T20:00:00.000Z"), read("2026-11-15T21:00:00.000Z"));
 		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(put_sent(&mut conn, A, &first, NOW).await.unwrap(), Change::Added);
-		assert_eq!(put_sent(&mut conn, A, &first, NOW).await.unwrap(), Change::Unchanged);
-		assert!(matches!(put_sent(&mut conn, A, &other, NOW).await, Err(RoundError::Rewritten)));
-		assert_eq!(sent(&mut conn, A, "2026-w46").await.unwrap().unwrap().sent, first);
-		assert!(sent(&mut conn, B, "2026-w46").await.unwrap().is_none(), "another subject's Send is not there");
-		assert_eq!(put_sent(&mut conn, B, &other, NOW).await.unwrap(), Change::Added, "nor in the way");
+		assert_eq!(put_draft(&mut conn, A, &first, OPEN).await.unwrap(), (DraftChange::Added, first.clone()));
+		assert_eq!(put_draft(&mut conn, A, &first, OPEN).await.unwrap(), (DraftChange::Unchanged, first.clone()));
+		let reordered = r#"{ "passed": ["QM-312"],
+			"answers": [ { "recordedAt": "2026-11-12T20:00:00.000Z", "take": "take-1", "ticket": "QM-311" },
+			             { "take": "take-3", "ticket": "QM-313", "recordedAt": "2026-11-12T20:05:00.000Z" } ],
+			"at": "2026-11-15T12:00:00.000-08:00", "week": "2026-w46" }"#;
+		let respelled = read_sent(reordered.as_bytes(), &week, OPEN).unwrap();
+		assert!(
+			matches!(put_draft(&mut conn, A, &respelled, OPEN).await, Err(RoundError::Rewritten)),
+			"the same instant written otherwise is another body at the draft's moment"
+		);
+		let reordered = reordered.replace("2026-11-15T12:00:00.000-08:00", "2026-11-15T20:00:00.000Z");
+		let same = read_sent(reordered.as_bytes(), &week, OPEN).unwrap();
+		assert_eq!(
+			put_draft(&mut conn, A, &same, OPEN).await.unwrap().0,
+			DraftChange::Unchanged,
+			"the same value, not the same bytes"
+		);
+		let mut changed = first.clone();
+		changed.answers[0].take = String::from("take-1-redo");
+		assert!(matches!(put_draft(&mut conn, A, &changed, OPEN).await, Err(RoundError::Rewritten)));
+		assert_eq!(put_draft(&mut conn, A, &later, OPEN).await.unwrap(), (DraftChange::Replaced, later.clone()));
+		assert_eq!(
+			put_draft(&mut conn, A, &first, OPEN).await.unwrap(),
+			(DraftChange::Superseded, later.clone()),
+			"a late retry"
+		);
+		let held = standing(&mut conn, A, "2026-w46").await.unwrap().unwrap();
+		assert_eq!((held.sent, held.draft), (later.clone(), true));
+		assert!(standing(&mut conn, B, "2026-w46").await.unwrap().is_none(), "another subject's draft is not there");
+		assert_eq!(put_draft(&mut conn, B, &first, OPEN).await.unwrap().0, DraftChange::Added, "nor in the way");
+	}
+
+	/// The draft standing at the deadline is the final, written once and the
+	/// same whenever home first reads the week after it; before the deadline
+	/// nothing is final, and a week with no draft has no final.
+	#[tokio::test]
+	async fn the_draft_standing_at_the_deadline_is_final() {
+		let pool = pool().await;
+		let week = week();
+		let mut conn = pool.acquire().await.unwrap();
+		let sent = read_sent(sent_body("2026-11-15T21:00:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
+		put_draft(&mut conn, A, &sent, OPEN).await.unwrap();
+		assert!(!finalize(&mut conn, A, "2026-w46", DUE, OPEN).await.unwrap(), "not before the deadline");
+		assert!(!is_final(&mut conn, A, "2026-w46").await.unwrap());
+		assert!(standing(&mut conn, A, "2026-w46").await.unwrap().unwrap().draft);
+		assert!(finalize(&mut conn, A, "2026-w46", DUE, NOW).await.unwrap());
+		let held = standing(&mut conn, A, "2026-w46").await.unwrap().unwrap();
+		assert_eq!((&held.sent, held.draft), (&sent, false));
+		assert!(is_final(&mut conn, A, "2026-w46").await.unwrap());
+		assert!(!is_final(&mut conn, B, "2026-w46").await.unwrap(), "another subject's week is its own");
+		let drafts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_week_draft").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(drafts, 0, "the draft went with the transaction that made it final");
+		// Were a draft ever beside the final, the final is what stands.
+		let other = read_sent(sent_body("2026-11-15T22:00:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
+		put_draft(&mut conn, A, &other, OPEN).await.unwrap();
+		assert_eq!(standing(&mut conn, A, "2026-w46").await.unwrap().unwrap(), held);
+		sqlx::query("DELETE FROM rust_week_draft").execute(&mut *conn).await.unwrap();
+		assert!(!finalize(&mut conn, A, "2026-w46", DUE, "2026-12-01T00:00:00Z").await.unwrap(), "once");
+		assert_eq!(standing(&mut conn, A, "2026-w46").await.unwrap().unwrap(), held);
+		assert!(!finalize(&mut conn, B, "2026-w46", DUE, NOW).await.unwrap(), "nothing sent: no final");
+		assert!(standing(&mut conn, B, "2026-w46").await.unwrap().is_none());
+	}
+
+	/// RR14's rows are left as they were, and each is its week's standing
+	/// draft after the migration: a later send replaces the copy, never the
+	/// row.
+	#[tokio::test]
+	async fn a_week_rr14_kept_is_its_first_draft_and_stays_as_it_was() {
+		const RR22: i64 = 20_261_110_000_100;
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		let ups = || MIGRATOR.iter().filter(|migration| migration.migration_type.is_up_migration());
+		for migration in ups().filter(|migration| migration.version < RR22) {
+			sqlx::raw_sql(&migration.sql).execute(&pool).await.unwrap();
+		}
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?1)")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		// As RR14's put_sent stored it: the struct's own order, no spaces.
+		let held = r#"{"week":"2026-w46","at":"2026-11-15T20:00:00.000Z","answers":[{"ticket":"QM-311","take":"take-1","recordedAt":"2026-11-12T20:00:00.000Z"},{"ticket":"QM-313","take":"take-3","recordedAt":"2026-11-12T20:05:00.000Z"}],"passed":["QM-312"]}"#;
+		sqlx::query(
+			"INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w46', '2026-11-15T20:00:00.000Z', ?2, '2026-11-15T20:00:01.000Z')",
+		)
+		.bind(A)
+		.bind(held)
+		.execute(&pool)
+		.await
+		.unwrap();
+		for migration in ups().filter(|migration| migration.version >= RR22) {
+			sqlx::raw_sql(&migration.sql).execute(&pool).await.unwrap();
+		}
+		let week = week();
+		let mut conn = pool.acquire().await.unwrap();
+		let draft = standing(&mut conn, A, "2026-w46").await.unwrap().unwrap();
+		assert_eq!((draft.text.as_str(), draft.draft, draft.received_at.as_str()), (held, true, "2026-11-15T20:00:01.000Z"));
+		let again = read_sent(serde_json::from_str::<Value>(held).unwrap().to_string().as_bytes(), &week, OPEN).unwrap();
+		assert_eq!(put_draft(&mut conn, A, &again, OPEN).await.unwrap().0, DraftChange::Unchanged, "the phone re-sending it");
+		let later = read_sent(sent_body("2026-11-15T21:00:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
+		assert_eq!(put_draft(&mut conn, A, &later, OPEN).await.unwrap().0, DraftChange::Replaced);
+		let archive: (String, String) = sqlx::query_as("SELECT sent_at, body FROM rust_week_sent WHERE subject_id = ?1")
+			.bind(A)
+			.fetch_one(&mut *conn)
+			.await
+			.unwrap();
+		assert_eq!(archive, (String::from("2026-11-15T20:00:00.000Z"), String::from(held)), "RR14's row as it was");
 	}
 
 	/// A paste is kept once per moment of its week, for any moment; a
@@ -522,20 +780,32 @@ mod tests {
 		let pool = pool().await;
 		let week = week();
 		let mut conn = pool.acquire().await.unwrap();
-		let first = read_sent(sent_body("2026-11-15T20:00:00.000Z").to_string().as_bytes(), &week, NOW).unwrap();
-		put_sent(&mut conn, A, &first, NOW).await.unwrap();
+		let first = read_sent(sent_body("2026-11-15T20:00:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
+		put_draft(&mut conn, A, &first, OPEN).await.unwrap();
+		assert!(finalize(&mut conn, A, "2026-w46", DUE, NOW).await.unwrap());
+		let other = read_sent(sent_body("2026-11-15T20:00:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
+		// A draft beside the final, as no send could make one: a row to see
+		// leave with the account.
+		put_draft(&mut conn, A, &other, OPEN).await.unwrap();
+		sqlx::query("INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w45', 'then', '{}', 'then')")
+			.bind(A)
+			.execute(&mut *conn)
+			.await
+			.unwrap();
 		let paste = read_paste(json!({ "at": NOW, "text": "e", "note": null }).to_string().as_bytes(), NOW, NOW).unwrap();
 		put_paste(&mut conn, A, "2026-w46", &paste, NOW).await.unwrap();
 		for statement in [
 			"UPDATE rust_week_sent SET sent_at = 'x'",
 			"DELETE FROM rust_week_sent",
+			"UPDATE rust_week_final SET sent_at = 'x'",
+			"DELETE FROM rust_week_final",
 			"UPDATE rust_week_paste SET text = 'x'",
 			"DELETE FROM rust_week_paste",
 		] {
 			assert!(sqlx::query(statement).execute(&mut *conn).await.is_err(), "{statement}");
 		}
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
-		for table in ["rust_week_sent", "rust_week_paste"] {
+		for table in ["rust_week_sent", "rust_week_draft", "rust_week_final", "rust_week_paste"] {
 			let left: i64 = sqlx::query_scalar(&(String::from("SELECT COUNT(*) FROM ") + table)).fetch_one(&mut *conn).await.unwrap();
 			assert_eq!(left, 0, "{table}");
 		}
