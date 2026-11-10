@@ -732,7 +732,8 @@ nowhere is marked as such and belongs to review.
     makes, with the same `MAILBOX_TOKEN` in its `Authorization` header and
     never in the URL. On it, home reads only a ring, `{"ring":"<folder>"}`,
     which names a folder and nothing of a file, and sends only `ping`. A
-    ring, each (re)connect, a file home files for the mailbox, and the
+    ring, a (re)connect's catch-up (no sooner than 15 minutes after the last
+    pass), a file home files for the mailbox, and the
     backstop timer (hourly while the bell is held, `mailbox::INTERVAL`, and
     every 15 minutes while it isn't, `mailbox::UNHELD`) each run the same pass, one at a
     time, so what the poller reads and writes is the same whatever woke it.
@@ -2247,7 +2248,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   sees the access pattern: a connection to the bell held open from the home
   connection's address, a ring on it with a folder's name each time the
   routine puts to a folder home reads, home's requests from that address
-  after each ring, each (re)connect and each file home files, and as the
+  after each ring and each file home files, a catch-up after a (re)connect
+  no sooner than 15 minutes after the last pass, and as the
   backstop at least hourly while the bell is held and every 15 minutes while
   it isn't, and the routine putting a file
   each morning. Home's own copy

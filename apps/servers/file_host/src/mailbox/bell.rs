@@ -55,7 +55,8 @@ pub enum Cause {
 	/// asked for an archived file back.
 	Ring = 0,
 	/// Home (re)connected to the bell, so it catches up on whatever was put
-	/// while it wasn't listening.
+	/// while it wasn't listening: in its turn, no sooner than
+	/// `mailbox::UNHELD` after the last pass.
 	Connect = 1,
 	/// Home filed something for the mailbox: a file the phone sent, or a
 	/// voice note the transcriber heard.
@@ -136,12 +137,53 @@ impl Wake {
 		}
 	}
 
+	/// As [`Self::wait`], returning every cause raised.
+	pub async fn wait_causes(&self) -> Causes {
+		loop {
+			let causes = self.take_causes();
+			if causes.first().is_some() {
+				return causes;
+			}
+			self.notify.notified().await;
+		}
+	}
+
 	/// Take every pending cause, or `None` when nothing was raised. The
 	/// stored permit, if any, stays: the next [`Self::wait`] finds no cause
 	/// and waits again.
 	pub fn take(&self) -> Option<Cause> {
-		let bits = self.pending.swap(0, Ordering::SeqCst);
-		Cause::ALL.into_iter().find(|cause| bits & cause.bit() != 0)
+		self.take_causes().first()
+	}
+
+	/// Take every pending cause, as a set.
+	pub fn take_causes(&self) -> Causes {
+		Causes(self.pending.swap(0, Ordering::SeqCst))
+	}
+}
+
+/// A set of causes raised together.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Causes(u8);
+
+impl Causes {
+	/// The cause a pass for these is counted under: the first in
+	/// [`Cause::ALL`]'s order.
+	#[must_use]
+	pub fn first(self) -> Option<Cause> {
+		Cause::ALL.into_iter().find(|cause| self.has(*cause))
+	}
+
+	/// Whether `cause` is among them.
+	#[must_use]
+	pub const fn has(self, cause: Cause) -> bool {
+		self.0 & cause.bit() != 0
+	}
+
+	/// Whether they are a (re)connect and nothing else: a catch-up, which
+	/// waits its turn (`mailbox::run_passes`), unlike a ring or a file filed.
+	#[must_use]
+	pub const fn only_connect(self) -> bool {
+		self.0 == Cause::Connect.bit()
 	}
 }
 
@@ -710,14 +752,15 @@ mod tests {
 			// Dropped at 50, 20 minutes after the last pass: one at once.
 			tokio::time::sleep_until(minute(50)).await;
 			wake.set_held(false);
-			// Then 65. Taken again at 70, with its catch-up pass, then hourly: 130.
+			// Then 65. Taken again at 70: its catch-up pass waits its turn, 15
+			// minutes after the last (80), then hourly: 140.
 			tokio::time::sleep_until(minute(70)).await;
 			wake.set_held(true);
 			wake.raise(Cause::Connect);
-			// Dropped at 135, 5 minutes after the last: 15 minutes after it, 145.
-			tokio::time::sleep_until(minute(135)).await;
+			// Dropped at 145, 5 minutes after the last: 15 minutes after it, 155.
+			tokio::time::sleep_until(minute(145)).await;
 			wake.set_held(false);
-			tokio::time::sleep_until(minute(146)).await;
+			tokio::time::sleep_until(minute(156)).await;
 			cancel.cancel();
 		};
 		tokio::join!(run, script);
@@ -730,26 +773,63 @@ mod tests {
 				(30, timer),
 				(50, timer),
 				(65, timer),
-				(70, Cause::Connect),
-				(130, timer),
-				(145, timer)
+				(80, Cause::Connect),
+				(140, timer),
+				(155, timer)
 			]
 		);
 	}
 
-	/// #500's "done when": with a bell that drops, the reconnect runs a pass.
+	/// A bell that connects and drops every minute for an hour costs no more
+	/// passes than the 15-minute backstop: at most 4 + 1 (C64, MI6).
+	#[tokio::test(start_paused = true)]
+	async fn a_flapping_bell_costs_no_more_passes_than_the_backstop() {
+		let wake = Wake::default();
+		let cancel = CancellationToken::new();
+		let passes = std::cell::Cell::new(0_u32);
+		let run = super::super::run_passes(
+			&wake,
+			super::super::INTERVAL,
+			super::super::UNHELD,
+			&cancel,
+			|_| {
+				passes.set(passes.get() + 1);
+				async { true }
+			},
+			|| async {},
+		);
+		let flap = async {
+			for _ in 0..60 {
+				wake.set_held(true);
+				wake.raise(Cause::Connect);
+				tokio::time::sleep(Duration::from_secs(1)).await;
+				wake.set_held(false);
+				tokio::time::sleep(Duration::from_secs(59)).await;
+			}
+			cancel.cancel();
+		};
+		tokio::join!(run, flap);
+		assert!(passes.get() <= 5, "{} passes in an hour of flapping", passes.get());
+	}
+
+	/// #500's "done when": with a bell that drops, the reconnect runs a
+	/// catch-up pass, in its turn.
 	#[tokio::test]
 	async fn a_bell_that_drops_runs_a_pass_on_reconnect() {
 		let (url, mut saw) = fake_bell(|n| (vec![], n == 0)).await;
 		let wake = Arc::new(Wake::default());
 		let cancel = CancellationToken::new();
-		let (passes_task, mut passes) = recording(&wake, &cancel, Duration::from_millis(1));
+		// The backstop is 300 ms while the bell isn't held, an hour while it is.
+		let (passes_task, mut passes) = recording_failing(&wake, &cancel, Duration::from_millis(1), 0, Duration::from_millis(300));
 		assert_eq!(next_pass(&mut passes).await, Cause::Timer);
+		let first = Instant::now();
 		let bell = tokio::spawn(hold(Arc::new(Bell::at(url, Token::new("t".to_owned()), quick())), Arc::clone(&wake), cancel.clone()));
 		let Some(Seen::Connected(_)) = saw.recv().await else { panic!("no connection") };
-		assert_eq!(next_pass(&mut passes).await, Cause::Connect);
 		let Some(Seen::Connected(_)) = saw.recv().await else { panic!("no reconnect") };
 		assert_eq!(next_pass(&mut passes).await, Cause::Connect, "the reconnect's catch-up pass");
+		assert!(first.elapsed() >= Duration::from_millis(250), "in its turn, not at once");
+		// The second connection holds: hourly from here.
+		assert!(tokio::time::timeout(Duration::from_millis(800), passes.recv()).await.is_err());
 		cancel.cancel();
 		bell.await.unwrap();
 		passes_task.await.unwrap();

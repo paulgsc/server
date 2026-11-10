@@ -19,8 +19,9 @@
 //! that something already decided, not go looking for it. The mailbox cannot
 //! call in, because home makes only outbound connections, so home opens one
 //! and holds it: the mailbox's bell ([`bell`]), which rings when the routine
-//! puts to a folder home reads. A pass runs on a ring, on each (re)connect
-//! (to catch up on what was put while home wasn't listening), as soon as home
+//! puts to a folder home reads. A pass runs on a ring, after a (re)connect
+//! (to catch up on what was put while home wasn't listening, no sooner than
+//! 15 minutes after the last pass, so a flapping bell costs nothing), as soon as home
 //! files something for the mailbox itself ([`Outbox`]), and on the backstop
 //! timer, which follows the bell: every `mailbox::INTERVAL` (an hour) while
 //! the bell is held, since every put rings it, and every [`UNHELD`] (15
@@ -347,12 +348,20 @@ fn spawn(state: &AppState, context: MailboxContext) {
 ///
 /// Passes never overlap: this loop is the only caller of `pass`. Causes
 /// raised while a pass runs fold into at most one more. The backstop timer
-/// counts from the end of the last pass, whatever ran it, so a pass a ring
+/// counts from the start of the last pass, whatever ran it, so a pass a ring
 /// ran is not followed by the timer's a moment later: `held` after a pass
 /// that succeeded (`pass` returns true) while the bell is held, `unheld`
 /// while it isn't or after a pass that failed. When the bell drops, the
 /// timer moves to `unheld` at once, counted from the last pass, so a bell
 /// that dropped 40 minutes after a pass is followed by one now.
+///
+/// A (re)connect's catch-up pass waits its turn the same way (C64): it is
+/// due `unheld` after the last pass started, or at once if that is past. A
+/// ring or a file filed runs a pass at once and carries the catch-up with
+/// it. So no two passes but those a ring or a file asked for come closer
+/// than `unheld`, and an idle day is at most 96 passes however often the
+/// bell reconnects (MI6), while nothing put while the bell was down waits
+/// longer than `unheld` and a pass (MI4).
 /// `mailbox_poll_interval_seconds` says which applies while the loop waits.
 /// While idle the loop stamps that it is alive every [`HEARTBEAT`], and runs
 /// `watch` every [`WATCH`]; during a pass it does neither, so a hung pass
@@ -364,18 +373,25 @@ where
 	W: FnMut() -> WFut,
 	WFut: std::future::Future<Output = ()>,
 {
-	// `None` until the first pass, which runs at once.
+	// When the last pass started and whether it succeeded: `None` until the
+	// first pass, which runs at once.
 	let mut last: Option<(tokio::time::Instant, bool)> = None;
+	// A (re)connect is owed a catch-up pass.
+	let mut catch_up = false;
 	let mut heartbeat = tokio::time::interval(HEARTBEAT);
 	heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	// The first pass stamps the watch; this one starts a period later.
 	let mut watching = tokio::time::interval_at(tokio::time::Instant::now() + WATCH, WATCH);
 	watching.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	loop {
-		let due = last.map(|(ended, succeeded)| {
+		let due = last.map(|(started, succeeded)| {
 			let interval = if succeeded && wake.held() { held } else { unheld };
 			crate::metrics::mailbox::record_current_interval(interval);
-			ended + interval
+			if catch_up {
+				started + interval.min(unheld)
+			} else {
+				started + interval
+			}
 		});
 		let backstop = async {
 			if let Some(due) = due {
@@ -395,13 +411,24 @@ where
 				continue;
 			}
 			// Whatever was raised before the timer fired rides its pass.
-			() = backstop => wake.take().unwrap_or(bell::Cause::Timer),
-			cause = wake.wait() => cause,
+			() = backstop => {
+				let fallback = if catch_up { bell::Cause::Connect } else { bell::Cause::Timer };
+				wake.take_causes().first().unwrap_or(fallback)
+			}
+			causes = wake.wait_causes() => {
+				if causes.only_connect() && last.is_some() {
+					catch_up = true;
+					continue;
+				}
+				causes.first().unwrap_or(bell::Cause::Timer)
+			}
 		};
+		catch_up = false;
 		crate::metrics::mailbox::record_pass_cause(cause);
+		let started = tokio::time::Instant::now();
 		let succeeded = pass(cause).await;
 		crate::metrics::mailbox::record_alive();
-		last = Some((tokio::time::Instant::now(), succeeded));
+		last = Some((started, succeeded));
 	}
 }
 
