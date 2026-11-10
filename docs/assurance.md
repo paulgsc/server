@@ -95,8 +95,14 @@ commit once each, and write what they see, pending or decided:
 - `gate.yml`'s `PR gate (open)`, on the pull request's own events (a push, or a label that re-runs
   `routes.yml`), turns the gate pending at once;
 - `gate-verdict.yml`'s `PR gate (verdict)`, on every completed workflow run it lists
-  (`workflow_run`) and every completed check run from another app (`check_run`), so the last
-  check to finish decides the gate, and a re-run of a failed one decides it again.
+  (`workflow_run`), so the last workflow to finish decides the gate, and a re-run of a failed one
+  decides it again;
+- `gate-verdict.yml`'s `PR gate (sweep)`, every 15 minutes, sends each open pull request whose gate
+  is still unfinished back to `PR gate (verdict)` (`workflow_dispatch`). Other apps' checks (code
+  scanning's `CodeQL`) reach no workflow here, since GitHub fires no `check_run` for a head GitHub
+  Actions runs on, so this is what judges one that finishes after the last workflow, and any event
+  GitHub drops. It judges nothing itself, so every write stays inside the head's concurrency group.
+  It costs 96 runs a day of about 10 s each, plus one ~15 s judging job per gate still unfinished.
 
 They share one concurrency group per head commit, so the writes land in the order they were read.
 A write that changes a finished verdict writes a new check run, which is the one the ruleset reads,
@@ -136,7 +142,7 @@ leaves out, and the script's self-test fails a name listed there that no workflo
 
 **Where it stops.**
 
-- `workflow_run` and `check_run` run the default branch's copy of `gate-verdict.yml` and the
+- `workflow_run`, `schedule` and `workflow_dispatch` run the default branch's copy of `gate-verdict.yml` and the
   script, so a pull request that edits the verdict is judged by `main`'s. `gate.yml` still runs the
   pull request's own copy, as the gate always did, so a pull request that edits its own gate can
   still get through (GC5's exception).
@@ -146,8 +152,8 @@ leaves out, and the script's self-test fails a name listed there that no workflo
   finish last and leave the gate pending.
 - A fork's pull request gets a read-only token on `pull_request`, so `PR gate (open)` cannot write;
   `PR gate (verdict)` finds the pull request by its head branch and writes the verdict.
-- If the last check to finish is one neither event reports, the gate stays pending, never green:
-  re-run `PR gate (open)` to judge again.
+- A check that finishes after the last workflow, and that no event reports, is judged at the next
+  sweep: up to 15 minutes late, and pending, never green, until then.
 - On a pull request of more than 300 files GitHub reads only 300 for a path filter, so an expected
   path-filtered run that never comes is a warning there, not a failure.
 - If GitHub starts a workflow the gate's reading of its filter says it would not, the gate waits

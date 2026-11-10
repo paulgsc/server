@@ -18,9 +18,14 @@ write what they see, pending or decided:
   request's own events, so a push or a label that re-runs `routes.yml` turns
   the gate pending at once;
 - `.github/workflows/gate-verdict.yml` (`PR gate (verdict)`, `--event`) on
-  every completed workflow run it lists and every completed check run from
-  another app, so the last check to finish decides the gate, and a re-run of
-  a failed one decides it again with no re-run of the gate.
+  every completed workflow run it lists, so the last workflow to finish
+  decides the gate, and a re-run of a failed one decides it again with no
+  re-run of the gate. Other apps' checks reach no workflow here (GitHub fires
+  no `check_run` for a head GitHub Actions runs on), so its schedule
+  (`--sweep`, every 15 minutes) sends each open pull request whose gate is
+  still unfinished back to be judged again (`workflow_dispatch`): the
+  backstop for a check still running when the last workflow finished, or an
+  event GitHub dropped.
 
 Both share one concurrency group per head commit, so their writes land in the
 order they read. GitHub runs the base branch's `gate-verdict.yml`, not the
@@ -79,7 +84,7 @@ not a failure.
 hold only the gate: any other job in it would be awaited by nothing, so the
 gate fails if its latest run on the head has more than one job, whichever
 job is judging. `gate-verdict.yml` runs on
-`workflow_run`/`check_run`, events this gate never awaits, from the default
+`workflow_run`/`schedule`/`workflow_dispatch`, events this gate never awaits, from the default
 branch's copy: a pull request that edits it is judged by `main`'s.
 
     python3 scripts/pr_gate.py --open            # gate.yml, from the pull_request event
@@ -641,12 +646,7 @@ def write(api: Api, head_sha: str, state: str, lines: list[str]) -> None:
 		body["status"] = "in_progress"
 	else:
 		body.update(status="completed", conclusion=state)
-	mine = [
-		c
-		for c in api.pages(f"commits/{head_sha}/check-runs?check_name={urllib.parse.quote(CHECK_NAME)}&filter=all", "check_runs", limit=3)
-		if c.get("external_id") == EXTERNAL_ID and ((c.get("app") or {}).get("slug")) == "github-actions"
-	]
-	latest = max(mine, key=lambda c: c["id"], default=None)
+	latest = gate_check(api, head_sha)
 	if latest and (latest.get("status") != "completed" or (state != "pending" and latest.get("conclusion") == state)):
 		api.send("PATCH", f"check-runs/{latest['id']}", body)
 		print(f"PR gate on {head_sha[:12]}: {state} (check run {latest['id']} updated)")
@@ -782,15 +782,52 @@ def event_pulls(api: Api, event_name: str, event: dict[str, Any]) -> tuple[str, 
 			# A fork's run lists no pull request; find it by its head branch.
 			head = f"{source['head_repository']['owner']['login']}:{source['head_branch']}"
 			numbers = [p["number"] for p in api.get(f"pulls?state=open&head={urllib.parse.quote(head)}")]
-	elif event_name == "check_run":
-		source = event["check_run"]
-		head_sha = source["head_sha"]
-		numbers = [p["number"] for p in source.get("pull_requests") or []]
-		if not numbers:
-			numbers = [p["number"] for p in api.get(f"commits/{head_sha}/pulls") if p.get("state") == "open"]
+	elif event_name == "workflow_dispatch":
+		# The sweep's dispatch (--sweep): one pull request and the head it found pending.
+		inputs = event.get("inputs") or {}
+		head_sha = str(inputs.get("head_sha") or "")
+		if not re.fullmatch(r"[0-9a-f]{40}", head_sha) or not str(inputs.get("pr") or "").isdigit():
+			raise SystemExit(f"--event on workflow_dispatch needs inputs pr (a number) and head_sha (a commit), not {inputs!r}")
+		numbers = [int(inputs["pr"])]
 	else:
-		raise SystemExit(f"--event reads a workflow_run or check_run event, not {event_name!r}")
+		raise SystemExit(f"--event reads a workflow_run or workflow_dispatch event, not {event_name!r}")
 	return head_sha, sorted(set(numbers))
+
+
+def gate_check(api: Api, head_sha: str) -> dict[str, Any] | None:
+	"""The newest `PR gate` check run this script wrote on `head_sha`, or None."""
+	mine = [
+		c
+		for c in api.pages(f"commits/{head_sha}/check-runs?check_name={urllib.parse.quote(CHECK_NAME)}&filter=all", "check_runs", limit=3)
+		if c.get("external_id") == EXTERNAL_ID and ((c.get("app") or {}).get("slug")) == "github-actions"
+	]
+	return max(mine, key=lambda c: c["id"], default=None)
+
+
+def sweep(api: Api, ref: str) -> int:
+	"""gate-verdict.yml on its schedule: the backstop for a finish no event reports.
+
+	GitHub fires no `check_run` for a commit whose check suite is GitHub Actions' (every pull request head
+	here), so another app's check (code scanning's `CodeQL`) that finishes after the last workflow would
+	leave the gate pending with nothing to judge it again; so would any event GitHub drops. This judges
+	nothing itself, which would race the head's own writers: for each open pull request whose `PR gate` is
+	unfinished or missing, it dispatches gate-verdict.yml for that head, which judges inside the head's
+	concurrency group like every other writer."""
+	gate_trigger = read_trigger((REPO_ROOT / OPENER).read_text(encoding="utf-8")) or Trigger()
+	pulls = api.pages("pulls?state=open", None, limit=5)
+	sent = 0
+	for pull in pulls:
+		head_sha, pr = pull["head"]["sha"], pull["number"]
+		if branch_miss(gate_trigger, pull["base"]["ref"]):
+			continue
+		check = gate_check(api, head_sha)
+		if check and check.get("status") == "completed":
+			continue
+		api.send("POST", f"actions/workflows/{Path(VERDICT).name}/dispatches", {"ref": ref, "inputs": {"pr": str(pr), "head_sha": head_sha}})
+		print(f"#{pr} at {head_sha[:12]}: PR gate {'is ' + str(check.get('status')) if check else 'has no check run'}, judging it again")
+		sent += 1
+	print(f"{len(pulls)} open pull requests, {sent} sent to be judged again")
+	return 0
 
 
 def event_gate(api: Api, head_sha: str, numbers: list[int]) -> int:
@@ -963,7 +1000,7 @@ def self_test() -> int:
 	same("state success", state_of(all_ok), "success")
 	same("state failure", state_of(failed), "failure")
 
-	listens = "on:\n  workflow_run:\n    workflows:\n      - Lint\n      - \"Detect, Build & Stage\"  # quoted\n    types: [completed]\n  check_run:\n    types: [completed]\n"
+	listens = "on:\n  workflow_run:\n    workflows:\n      - Lint\n      - \"Detect, Build & Stage\"  # quoted\n    types: [completed]\n  schedule:\n    - cron: '7 * * * *'\n"
 	same("verdict list, block", verdict_listens(listens), ("Lint", "Detect, Build & Stage"))
 	same("verdict list, flow", verdict_listens("on:\n  workflow_run:\n    workflows: [Lint, 'CI Workflow']\n"), ("Lint", "CI Workflow"))
 	texts = {VERDICT: listens, "lint.yml": "name: Lint\non: pull_request\n", "new.yml": "name: New\non: pull_request\n"}
@@ -1006,6 +1043,7 @@ def main() -> int:
 	mode.add_argument("--open", action="store_true", help="gate.yml: judge on the pull request's own event")
 	mode.add_argument("--event", action="store_true", help="gate-verdict.yml: judge on a finished workflow run or check run")
 	mode.add_argument("--once", action="store_true", help="judge once and print where every check stands, writing nothing")
+	mode.add_argument("--sweep", action="store_true", help="gate-verdict.yml's schedule: judge again every open pull request whose gate is unfinished")
 	args = parser.parse_args()
 	if args.self_test:
 		return self_test()
@@ -1016,6 +1054,8 @@ def main() -> int:
 	event_path = os.environ.get("GITHUB_EVENT_PATH")
 	event = json.loads(Path(event_path).read_text()) if event_path else {}
 	try:
+		if args.sweep:
+			return sweep(api, os.environ.get("GITHUB_REF_NAME") or "main")
 		if args.event:
 			if args.pr:
 				head_sha = args.head_sha or api.get(f"pulls/{args.pr}")["head"]["sha"]
