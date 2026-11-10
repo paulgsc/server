@@ -16,6 +16,10 @@ name, and checks:
     setuid binary and a toolchain only root can write; every program runs
     as 10101 with no group and no capability; and only the client uid
     (10000) and root are served on the socket;
+  * a client in a second container, as home runs file_host (its own PID
+    namespace, the socket's volume mounted read-only), is served as uid
+    10000 and refused as any other: the runner sees its pid as 0, and only
+    the uid may decide (#766);
   * the toolchain is the pinned rustc 1.97.0, and the worked example
     (paulgsc/some-ui#2231) records the exact text it prints;
   * a program that loops, allocates without bound, forks or spawns threads
@@ -35,7 +39,9 @@ name, and checks:
     the programs' uid is left.
 
 Requests go through `rust-runner ask` exec'd as uid 10000, file_host's, the
-one client uid the runner serves besides root.
+one client uid the runner serves besides root, inside the runner's own
+container; the second-container check asks from a container of its own, the
+only check that does.
 
 Usage:
   python3 scripts/check_rust_runner_sandbox.py           # build, check, tear down
@@ -58,6 +64,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = REPO_ROOT / "infra" / "compose" / "rust_runner.yml"
 PROJECT = "rust-runner-check"
 CONTAINER = "rust-runner"
+IMAGE = "pgathondu/rust-runner:latest"
 CLIENT_UID = "10000"
 OTHER_UID = "10002"
 PROGRAM_ID = "10101"
@@ -240,6 +247,40 @@ def check_sandbox() -> None:
 
 def utf8_round(line: str) -> str:
 	return 'fn main() {\n    let s = String::from("aéz");\n    let r: usize = s.len() - 1;\n    ' + line + "\n}\n"
+
+
+def ask_from_another_container(uid: str) -> dict:
+	"""Ask for the toolchain as `uid` from a container of its own.
+
+	The runner's image is the client here only for its `rust-runner ask`;
+	what matters is the shape home has: another container, so another PID
+	namespace, with the socket's volume mounted read-only as file-host mounts
+	it (infra/compose/file_host.yml), and no network.
+	"""
+	command = [
+		"docker", "run", "--rm", "-i", "--user", uid, "--network", "none", "--read-only", "--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges:true", "-v", f"{PROJECT}_rust_runner_socket:/run/rust-runner:ro",
+		IMAGE, "ask",
+	]
+	result = subprocess.run(command, input='{"ask":"toolchain"}', capture_output=True, text=True, timeout=120, check=False)
+	if result.returncode != 0:
+		raise Failed(f"`{' '.join(command)}` failed ({result.returncode}):\n{result.stdout}{result.stderr}")
+	return json.loads(result.stdout)
+
+
+def check_client_container() -> None:
+	"""A client in another container is served by its uid alone (#766).
+
+	Every other check asks from inside the runner's container, where the
+	client's pid is visible; home's file-host asks from its own, where the
+	kernel reports it as 0. rustix's `socket_peercred` read that as an error,
+	and the runner refused every such client while these checks passed.
+	"""
+	served = ask_from_another_container(CLIENT_UID)
+	expect(served == {"answer": "toolchain", "toolchain": TOOLCHAIN}, f"uid {CLIENT_UID} from another container: {served}")
+	other = ask_from_another_container(OTHER_UID)
+	expect(other.get("answer") == "refused" and other.get("reason") == "peer", f"uid {OTHER_UID} from another container was served: {other}")
+	print(f"ok: from another container, uid {CLIENT_UID} is served and uid {OTHER_UID} refused")
 
 
 def check_worked_example() -> None:
@@ -655,6 +696,7 @@ def main() -> int:
 		wait_ready()
 		check_ids()
 		check_sandbox()
+		check_client_container()
 		check_worked_example()
 		check_hostile()
 		check_compiles()
