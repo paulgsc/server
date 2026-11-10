@@ -35,13 +35,14 @@ groups:
           says: "Home's server has not answered for 2 minutes, so nothing on it is being watched."
 
       - alert: MailboxPollerStale
-        # MI3, two ways. The loop stamps that it is alive every minute while
-        # idle and after each pass, never during one (#500): stale past the
-        # heartbeat, the pass budget (120 s, AS4 #524) and 60 s, 240 s, means
-        # the task died or a pass hangs. Since the backstop is hourly (owner,
-        # 2026-11-10), the pass stamp alone would take 63 minutes to say so,
-        # past MI3's 20. And no pass started within the interval, the budget
-        # and 60 s (3,600 + 120 + 60 = 3,780 s) means the timer itself stopped.
+        # MI3, two ways. No pass started within the interval, the pass budget
+        # (120 s, AS4 #524) and 60 s. The interval follows the bell (#500,
+        # C64): 900 s while home doesn't hold it, so 1,080 s as before the
+        # bell; 3,600 s while it does (owner, 2026-11-10), when every put
+        # rings and an hour without a pass is normal. So the loop also stamps
+        # that it is alive every minute while idle and after each pass, never
+        # during one: stale past the heartbeat, the budget and 60 s (240 s)
+        # means the task died or a pass hangs, in either mode.
         expr: |
           (
             (time() - max(mailbox_poll_alive_timestamp_seconds)) > 60 + 120 + 60
@@ -68,9 +69,9 @@ groups:
         # MI3: passes start but every one fails (a 404, a refused token, a
         # mailbox that changed under home), which the stale rule cannot see:
         # a failing pass still stamps its attempt (#641). Three passes in a
-        # row, so one blip does not page: the backstop is hourly, but a failed
-        # pass is tried again 15 minutes later (`mailbox::RETRY`, #500), so
-        # three failures still take 45 minutes. Any class at all, not
+        # row, so one blip does not page: a failed pass is tried again 15
+        # minutes later (`mailbox::UNHELD`, #500) even while the bell holds
+        # the backstop at an hour, so three failures still take 45 minutes. Any class at all, not
         # one: an outage whose class changes from pass to pass (transport,
         # then http) is still an outage, and a per-class timer would restart
         # with each change (Codex on #643). The dashboard's FAILING panel
@@ -85,9 +86,9 @@ groups:
 
       - alert: MailboxBellDown
         # #500: home has held no connection to the mailbox's bell for 30
-        # minutes. Nothing is lost, since the hourly backstop still reads
-        # every file, but nothing reaches home in seconds either, so it is
-        # said. 30 minutes rides over a Worker deploy or a reconnect's
+        # minutes. Nothing is lost, since the backstop is back to every 15
+        # minutes while the bell is down (C64), but nothing reaches home in
+        # seconds either, so it is said. 30 minutes rides over a Worker deploy or a reconnect's
         # backoff (5 minutes at most). The MAILBOX dashboard's bell row says
         # why (mailbox_bell_failures_total{why}).
         expr: |
@@ -96,7 +97,7 @@ groups:
         for: 30m
         labels:
           objective: MI3
-          says: "Home has not held its connection to the mailbox's bell for 30 minutes, so files reach it only on the hourly backstop; the MAILBOX dashboard's bell row says why."
+          says: "Home has not held its connection to the mailbox's bell for 30 minutes, so files reach it only on the 15-minute backstop, not in seconds; the MAILBOX dashboard's bell row says why."
 
       - alert: NudgeWakerStale
         # NW2: no pass started within the waker's interval, its pass deadline
@@ -179,10 +180,10 @@ groups:
         # than an hour before it, so a run that starts a little early is not
         # missing. `crate::routine_watch` sets both gauges, after each mailbox
         # pass and every 5 minutes between them (`mailbox::WATCH`, #500, since
-        # the backstop pass is hourly). A record arrives when its run ends:
-        # its put rings the bell and a pass keeps it within seconds, or the
-        # hourly backstop does if the bell is down. RR2's 30 minutes is the
-        # owner's bound (#525).
+        # the backstop pass is hourly while the bell is held). A record
+        # arrives when its run ends: its put rings the bell and a pass keeps
+        # it within seconds, or the 15-minute backstop does while the bell is
+        # down. RR2's 30 minutes is the owner's bound (#525).
         expr: |
           (time() - routine_due_timestamp_seconds > 1800)
           and on(routine) (routine_last_run_timestamp_seconds + 3600 < routine_due_timestamp_seconds)

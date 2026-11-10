@@ -68,7 +68,7 @@ pub fn record_enabled(enabled: bool, archiving: bool) {
 /// Publish the configured interval as soon as the task is spawned, and start
 /// every failure class and refusal at 0.
 pub fn record_interval(interval: Duration) {
-	metrics::gauge!("mailbox_poll_interval_seconds").set(interval.as_secs_f64());
+	record_current_interval(interval);
 	set_failing(&[]);
 	for why in REFUSALS {
 		metrics::counter!("mailbox_poll_items_refused_total", "why" => why).increment(0);
@@ -176,4 +176,11 @@ pub fn record_pass_cause(cause: crate::mailbox::bell::Cause) {
 pub fn record_alive() {
 	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |elapsed| elapsed.as_secs_f64());
 	metrics::gauge!("mailbox_poll_alive_timestamp_seconds").set(timestamp);
+}
+
+/// The backstop interval that applies now: an hour while the bell is held,
+/// 15 minutes while it isn't (`mailbox::UNHELD`), so `MailboxPollerStale`'s
+/// no-pass check follows it.
+pub fn record_current_interval(interval: Duration) {
+	metrics::gauge!("mailbox_poll_interval_seconds").set(interval.as_secs_f64());
 }

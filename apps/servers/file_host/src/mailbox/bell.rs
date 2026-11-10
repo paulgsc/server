@@ -35,7 +35,7 @@
 
 use mailbox_kit::Token;
 use serde::Deserialize;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -93,9 +93,30 @@ impl Cause {
 pub struct Wake {
 	notify: Notify,
 	pending: AtomicU8,
+	/// Whether home holds the bell, which sets the backstop's pace.
+	held: AtomicBool,
+	changed: Notify,
 }
 
 impl Wake {
+	/// Say whether home holds the bell now.
+	pub fn set_held(&self, held: bool) {
+		if self.held.swap(held, Ordering::SeqCst) != held {
+			self.changed.notify_one();
+		}
+	}
+
+	/// Whether home holds the bell.
+	pub fn held(&self) -> bool {
+		self.held.load(Ordering::SeqCst)
+	}
+
+	/// Wait until the bell is taken or lost. Cancel-safe: a change while
+	/// nobody waits is kept for the next call.
+	pub async fn held_changed(&self) {
+		self.changed.notified().await;
+	}
+
 	/// Ask for a pass, for `cause`.
 	pub fn raise(&self, cause: Cause) {
 		self.pending.fetch_or(cause.bit(), Ordering::SeqCst);
@@ -245,6 +266,7 @@ pub async fn hold(bell: Arc<Bell>, wake: Arc<Wake>, cancel: CancellationToken) {
 	let mut last_said: Option<&'static str> = None;
 	loop {
 		let ended = connect_once(&bell, &wake, &cancel).await;
+		wake.set_held(false);
 		crate::metrics::mailbox::record_bell_connected(false);
 		let delay = match ended {
 			Ended::Cancelled => return,
@@ -342,6 +364,7 @@ async fn connect_once(bell: &Bell, wake: &Wake, cancel: &CancellationToken) -> E
 	let since = Instant::now();
 	crate::metrics::mailbox::record_bell_connected(true);
 	info!("the mailbox's bell is connected");
+	wake.set_held(true);
 	wake.raise(Cause::Connect);
 
 	let mut ping = tokio::time::interval_at(since + timings.ping, timings.ping);
@@ -546,13 +569,21 @@ mod tests {
 	}
 
 	/// The pass loop with a recording pass: each pass's cause, in order.
+	/// No timer pass happens within a test's few seconds.
 	fn recording(wake: &Arc<Wake>, cancel: &CancellationToken, takes: Duration) -> (tokio::task::JoinHandle<()>, mpsc::UnboundedReceiver<Cause>) {
-		recording_failing(wake, cancel, takes, 0)
+		recording_failing(wake, cancel, takes, 0, Duration::from_secs(3600))
 	}
 
-	/// As [`recording`], with the first `failing` passes failing, and a
-	/// 300 ms retry after a failed pass (the backstop stays an hour).
-	fn recording_failing(wake: &Arc<Wake>, cancel: &CancellationToken, takes: Duration, failing: usize) -> (tokio::task::JoinHandle<()>, mpsc::UnboundedReceiver<Cause>) {
+	/// As [`recording`], with the first `failing` passes failing, and the
+	/// timer `unheld` after a failed pass or while the bell isn't held (an
+	/// hour while it is).
+	fn recording_failing(
+		wake: &Arc<Wake>,
+		cancel: &CancellationToken,
+		takes: Duration,
+		failing: usize,
+		unheld: Duration,
+	) -> (tokio::task::JoinHandle<()>, mpsc::UnboundedReceiver<Cause>) {
 		let ran_so_far = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 		let (ran, passes) = mpsc::unbounded_channel();
 		let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -561,7 +592,7 @@ mod tests {
 			super::super::run_passes(
 				&wake,
 				Duration::from_secs(3600),
-				Duration::from_millis(300),
+				unheld,
 				&cancel,
 				|cause| {
 					let (ran, busy) = (ran.clone(), Arc::clone(&busy));
@@ -607,8 +638,9 @@ mod tests {
 	#[tokio::test]
 	async fn a_failed_pass_is_retried_soon_and_a_good_one_waits_the_backstop() {
 		let wake = Arc::new(Wake::default());
+		wake.set_held(true);
 		let cancel = CancellationToken::new();
-		let (task, mut passes) = recording_failing(&wake, &cancel, Duration::from_millis(1), 1);
+		let (task, mut passes) = recording_failing(&wake, &cancel, Duration::from_millis(1), 1, Duration::from_millis(300));
 		assert_eq!(next_pass(&mut passes).await, Cause::Timer);
 		let started = Instant::now();
 		assert_eq!(next_pass(&mut passes).await, Cause::Timer, "the retry");
@@ -618,17 +650,19 @@ mod tests {
 		task.await.unwrap();
 	}
 
-	/// With nothing ringing, the loop passes once an hour and stamps the
-	/// routine watch every 5 minutes between, so RR2's due time moves on time.
+	/// With the bell held and nothing ringing, the loop passes once an hour
+	/// and stamps the routine watch every 5 minutes between, so RR2's due
+	/// time moves on time.
 	#[tokio::test(start_paused = true)]
 	async fn an_idle_loop_passes_hourly_and_watches_every_five_minutes() {
 		let wake = Wake::default();
+		wake.set_held(true);
 		let cancel = CancellationToken::new();
 		let (passes, watches) = (std::cell::Cell::new(0_u32), std::cell::Cell::new(0_u32));
 		let run = super::super::run_passes(
 			&wake,
 			super::super::INTERVAL,
-			super::super::RETRY,
+			super::super::UNHELD,
 			&cancel,
 			|_| {
 				passes.set(passes.get() + 1);
@@ -646,6 +680,61 @@ mod tests {
 		tokio::join!(run, stop);
 		assert_eq!(passes.get(), 2, "at once, then an hour later");
 		assert_eq!(watches.get(), 12, "every 5 minutes for 61 minutes");
+	}
+
+	/// The backstop follows the bell (C64): every 15 minutes while it isn't
+	/// held; when it drops, 15 minutes from the last pass, at once if that is
+	/// past; and back to hourly after a reconnect's catch-up pass.
+	#[tokio::test(start_paused = true)]
+	async fn the_backstop_is_hourly_while_the_bell_is_held_and_15_minutes_while_it_is_not() {
+		let wake = Wake::default();
+		let cancel = CancellationToken::new();
+		let start = tokio::time::Instant::now();
+		let passes = std::cell::RefCell::new(Vec::new());
+		let minute = |m: u64| start + Duration::from_secs(m * 60);
+		let run = super::super::run_passes(
+			&wake,
+			super::super::INTERVAL,
+			super::super::UNHELD,
+			&cancel,
+			|cause| {
+				passes.borrow_mut().push((start.elapsed().as_secs() / 60, cause));
+				async { true }
+			},
+			|| async {},
+		);
+		let script = async {
+			// Not held: 0, 15, 30. Held at 31: the next is an hour after 30.
+			tokio::time::sleep_until(minute(31)).await;
+			wake.set_held(true);
+			// Dropped at 50, 20 minutes after the last pass: one at once.
+			tokio::time::sleep_until(minute(50)).await;
+			wake.set_held(false);
+			// Then 65. Taken again at 70, with its catch-up pass, then hourly: 130.
+			tokio::time::sleep_until(minute(70)).await;
+			wake.set_held(true);
+			wake.raise(Cause::Connect);
+			// Dropped at 135, 5 minutes after the last: 15 minutes after it, 145.
+			tokio::time::sleep_until(minute(135)).await;
+			wake.set_held(false);
+			tokio::time::sleep_until(minute(146)).await;
+			cancel.cancel();
+		};
+		tokio::join!(run, script);
+		let timer = Cause::Timer;
+		assert_eq!(
+			passes.into_inner(),
+			[
+				(0, timer),
+				(15, timer),
+				(30, timer),
+				(50, timer),
+				(65, timer),
+				(70, Cause::Connect),
+				(130, timer),
+				(145, timer)
+			]
+		);
 	}
 
 	/// #500's "done when": with a bell that drops, the reconnect runs a pass.

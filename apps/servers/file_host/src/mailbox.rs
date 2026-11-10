@@ -22,9 +22,11 @@
 //! puts to a folder home reads. A pass runs on a ring, on each (re)connect
 //! (to catch up on what was put while home wasn't listening), as soon as home
 //! files something for the mailbox itself ([`Outbox`]), and on the backstop
-//! timer, every `mailbox::INTERVAL` (an hour; 15 minutes after a pass that
-//! failed, [`RETRY`]), which keeps every file arriving while the bell is
-//! down. One loop runs every
+//! timer, which follows the bell: every `mailbox::INTERVAL` (an hour) while
+//! the bell is held, since every put rings it, and every [`UNHELD`] (15
+//! minutes, the old poll) while it isn't, or after a pass that failed, so a
+//! file still reaches home within MI4's 20 minutes whenever the bell can't
+//! carry it (C64). One loop runs every
 //! pass, so two never overlap, and causes raised during a pass fold into at
 //! most one more. A pass is idempotent (cursor plus SHA-256), so an extra one
 //! costs a few listings and nothing else.
@@ -81,20 +83,21 @@ use tracing::{error, info, warn};
 /// The shortest interval a pass may run at.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
 
-/// The backstop: an hour.
+/// The backstop while the bell is held: an hour.
 ///
-/// Home reads the mailbox at least this often, whatever the bell does. A
-/// source constant (#617). It was 15 minutes while the timer was the only
-/// way a pass ran; the owner chose an hour once the bell landed (2026-11-10,
-/// #500), which keeps MI6's idle bound at 24 passes a day plus one per
-/// reconnect.
+/// Every put rings the bell, so this is only a safety net. A source constant
+/// (#617). The owner chose an hour once the bell landed (2026-11-10, #500):
+/// idle is then 24 passes a day plus one per reconnect, inside MI6.
 pub const INTERVAL: Duration = Duration::from_secs(3600);
 
-/// How soon the timer runs again after a pass that failed.
+/// The backstop while the bell isn't held, and after a pass that failed.
 ///
-/// 15 minutes, the old interval, so `MailboxPollerFailing`'s 45 minutes is still three failed
-/// passes in a row rather than one failure held for an hour.
-pub const RETRY: Duration = Duration::from_secs(900);
+/// 15 minutes, the poll as it was before the bell: with no connection, a
+/// 404, a backoff or a dead bell, a file still reaches home within MI4's 20
+/// minutes and MI3's stale check keeps its 1,080 s (C64). After a failure it
+/// keeps `MailboxPollerFailing`'s 45 minutes at three failed passes in a row.
+/// A bell down all day is 96 passes, MI6's 2,400 requests.
+pub const UNHELD: Duration = Duration::from_secs(900);
 
 /// How long a `LeetType` session waits before a pass files its log.
 ///
@@ -115,7 +118,7 @@ pub const HEARTBEAT: Duration = Duration::from_secs(60);
 pub const WATCH: Duration = Duration::from_secs(300);
 
 const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs());
-const _: () = assert!(RETRY.as_secs() >= MIN_INTERVAL.as_secs() && RETRY.as_secs() <= INTERVAL.as_secs());
+const _: () = assert!(UNHELD.as_secs() >= MIN_INTERVAL.as_secs() && UNHELD.as_secs() <= INTERVAL.as_secs());
 
 /// The fewest days `MAILBOX_ARCHIVE_DAYS` may set: the mailbox's own floor
 /// (`ARCHIVE_MIN_AGE_DAYS` in paulgsc/some-ui `apps/mailbox/src/core.ts`),
@@ -233,7 +236,7 @@ impl MailboxContext {
 			anyhow::bail!("MAILBOX_ARCHIVE_DAYS must be from 30 to 36500");
 		}
 		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-		let bell = bell::Bell::new(&url, Token::new(token.clone()), bell::Timings::new(INTERVAL)).map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;
+		let bell = bell::Bell::new(&url, Token::new(token.clone()), bell::Timings::new(UNHELD)).map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;
 		let mailbox = Mailbox::new(&url, Token::new(token), ReqwestTransport::new(client.clone())).map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;
 		let archive = archive_token
 			.map(|token| Mailbox::new(&url, Token::new(token), ReqwestTransport::new(client.clone())).map(Arc::new))
@@ -328,13 +331,14 @@ pub(crate) fn log_pass(result: &Result<pass::Outcome, pass::PassError>, cause: b
 fn spawn(state: &AppState, context: MailboxContext) {
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
-	crate::metrics::mailbox::record_interval(context.interval);
+	// The bell is not held yet: the backstop starts at the unheld pace.
+	crate::metrics::mailbox::record_interval(UNHELD);
 
 	tokio::spawn(bell::hold(Arc::clone(&context.bell), Arc::clone(&context.wake), cancel.clone()));
 	tokio::spawn(async move {
 		info!(interval_secs = context.interval.as_secs(), "Jobs mailbox poller started");
 		let wake = Arc::clone(&context.wake);
-		run_passes(&wake, context.interval, RETRY, &cancel, |cause| tick(&db, &context, cause), || watch(&db, &context)).await;
+		run_passes(&wake, context.interval, UNHELD, &cancel, |cause| tick(&db, &context, cause), || watch(&db, &context)).await;
 		info!("Jobs mailbox poller cancelled");
 	});
 }
@@ -342,30 +346,46 @@ fn spawn(state: &AppState, context: MailboxContext) {
 /// The one pass loop: a pass at once, then one per cause, until `cancel`.
 ///
 /// Passes never overlap: this loop is the only caller of `pass`. Causes
-/// raised while a pass runs fold into at most one more. Each pass restarts
-/// the backstop timer, so a pass a ring ran is not followed by the timer's a
-/// moment later: `interval` after a pass that succeeded (`pass` returns
-/// true), `retry` after one that failed. While idle the loop stamps that it
-/// is alive every [`HEARTBEAT`], and runs `watch` every [`WATCH`]; during a
-/// pass it does neither, so a hung pass reads as stale, and `watch` never
-/// races a pass's own stamp.
-async fn run_passes<F, Fut, W, WFut>(wake: &bell::Wake, interval: Duration, retry: Duration, cancel: &tokio_util::sync::CancellationToken, mut pass: F, mut watch: W)
+/// raised while a pass runs fold into at most one more. The backstop timer
+/// counts from the end of the last pass, whatever ran it, so a pass a ring
+/// ran is not followed by the timer's a moment later: `held` after a pass
+/// that succeeded (`pass` returns true) while the bell is held, `unheld`
+/// while it isn't or after a pass that failed. When the bell drops, the
+/// timer moves to `unheld` at once, counted from the last pass, so a bell
+/// that dropped 40 minutes after a pass is followed by one now.
+/// `mailbox_poll_interval_seconds` says which applies while the loop waits.
+/// While idle the loop stamps that it is alive every [`HEARTBEAT`], and runs
+/// `watch` every [`WATCH`]; during a pass it does neither, so a hung pass
+/// reads as stale, and `watch` never races a pass's own stamp.
+async fn run_passes<F, Fut, W, WFut>(wake: &bell::Wake, held: Duration, unheld: Duration, cancel: &tokio_util::sync::CancellationToken, mut pass: F, mut watch: W)
 where
 	F: FnMut(bell::Cause) -> Fut,
 	Fut: std::future::Future<Output = bool>,
 	W: FnMut() -> WFut,
 	WFut: std::future::Future<Output = ()>,
 {
-	let mut ticker = tokio::time::interval(interval);
-	ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+	// `None` until the first pass, which runs at once.
+	let mut last: Option<(tokio::time::Instant, bool)> = None;
 	let mut heartbeat = tokio::time::interval(HEARTBEAT);
 	heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	// The first pass stamps the watch; this one starts a period later.
 	let mut watching = tokio::time::interval_at(tokio::time::Instant::now() + WATCH, WATCH);
 	watching.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	loop {
+		let due = last.map(|(ended, succeeded)| {
+			let interval = if succeeded && wake.held() { held } else { unheld };
+			crate::metrics::mailbox::record_current_interval(interval);
+			ended + interval
+		});
+		let backstop = async {
+			if let Some(due) = due {
+				tokio::time::sleep_until(due).await;
+			}
+		};
 		let cause = tokio::select! {
 			() = cancel.cancelled() => return,
+			// The bell came or went: work out when the timer is due again.
+			() = wake.held_changed() => continue,
 			_ = heartbeat.tick() => {
 				crate::metrics::mailbox::record_alive();
 				continue;
@@ -375,17 +395,13 @@ where
 				continue;
 			}
 			// Whatever was raised before the timer fired rides its pass.
-			_ = ticker.tick() => wake.take().unwrap_or(bell::Cause::Timer),
+			() = backstop => wake.take().unwrap_or(bell::Cause::Timer),
 			cause = wake.wait() => cause,
 		};
 		crate::metrics::mailbox::record_pass_cause(cause);
 		let succeeded = pass(cause).await;
 		crate::metrics::mailbox::record_alive();
-		if succeeded {
-			ticker.reset();
-		} else {
-			ticker.reset_after(retry);
-		}
+		last = Some((tokio::time::Instant::now(), succeeded));
 	}
 }
 

@@ -733,7 +733,8 @@ nowhere is marked as such and belongs to review.
     never in the URL. On it, home reads only a ring, `{"ring":"<folder>"}`,
     which names a folder and nothing of a file, and sends only `ping`. A
     ring, each (re)connect, a file home files for the mailbox, and the
-    backstop timer (`mailbox::INTERVAL`) each run the same pass, one at a
+    backstop timer (hourly while the bell is held, `mailbox::INTERVAL`, and
+    every 15 minutes while it isn't, `mailbox::UNHELD`) each run the same pass, one at a
     time, so what the poller reads and writes is the same whatever woke it.
     Nothing here listens on a port.
     - `mailbox_item`, written only by the poller: each file it kept from
@@ -2246,8 +2247,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   sees the access pattern: a connection to the bell held open from the home
   connection's address, a ring on it with a folder's name each time the
   routine puts to a folder home reads, home's requests from that address
-  after each ring, each (re)connect and each file home files, and at least
-  every `mailbox::INTERVAL` as the backstop, and the routine putting a file
+  after each ring, each (re)connect and each file home files, and as the
+  backstop at least hourly while the bell is held and every 15 minutes while
+  it isn't, and the routine putting a file
   each morning. Home's own copy
   (`mailbox_item`, invariant 19) says when home read each one. Deleting the
   account removes home's copy and its archive; the mailbox's live files and
