@@ -11,6 +11,7 @@
       modules = [
         ./file-host.nix
         ./orchestrator.nix
+        ./home-deploy.nix
         {
           boot.isContainer = true;
           system.stateVersion = "24.05";
@@ -63,6 +64,18 @@
       };
     };
   });
+  # Home's on-demand deploy: bare, it names what only home knows; set, a
+  # path unit on the marker starts the deploy as root, `make` as the user.
+  bareDeploy = failed (eval {services.home-deploy.enable = true;});
+  deploy = eval {
+    services.home-deploy = {
+      enable = true;
+      user = "dev";
+      checkout = "/home/dev/server";
+      storage = "/mnt/storage/hopium";
+    };
+  };
+  deployUnit = deploy.config.systemd.services.home-deploy;
 in
   lib.all (x: x) [
     (expect "a bare file-host names its required settings and secrets" (lib.all (gap: builtins.any (lib.hasInfix gap) bare) [
@@ -90,4 +103,17 @@ in
     (expect "orchestrator publishes no port" (complete.config.virtualisation.oci-containers.containers.orchestrator.ports == []))
     (expect "the mailbox's own requirements are named while it is on" (builtins.any (lib.hasInfix "MAILBOX_URL is required while MAILBOX_ENABLED is true") mailbox
         && builtins.any (lib.hasInfix "MAILBOX_TOKEN is required while MAILBOX_ENABLED is true (a secret") mailbox))
+    (expect "a bare home-deploy names its user, checkout and storage" (lib.all (gap: builtins.any (lib.hasInfix gap) bareDeploy) [
+      "services.home-deploy.user is required"
+      "services.home-deploy.checkout is required"
+      "services.home-deploy.storage is required"
+    ]))
+    (expect "an off home-deploy declares no unit" (!(off.config.systemd.services ? home-deploy) && !(off.config.systemd.paths ? home-deploy)))
+    (expect "the marker starts the deploy" (failed deploy == []
+        && deploy.config.systemd.paths.home-deploy.pathConfig.PathExists == "/mnt/storage/hopium/deploy/wanted"
+        && deploy.config.systemd.paths.home-deploy.pathConfig.Unit == "home-deploy.service"))
+    (expect "the deploy runs on demand, as root, with make as the user" (!(deployUnit.serviceConfig ? User)
+        && deployUnit.serviceConfig.WorkingDirectory == "/home/dev/server"
+        && lib.hasInfix "/home/dev/server/scripts/deploy.py --on-demand /mnt/storage/hopium/deploy --as-user dev" deployUnit.serviceConfig.ExecStart))
+    (expect "nothing runs on a timer" (!(deploy.config.systemd.timers ? home-deploy)))
   ]

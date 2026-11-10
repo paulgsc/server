@@ -34,6 +34,10 @@ use tracing::{debug, info};
 pub fn spawn(state: AppState, rate_limiter: Arc<HttpLimiter>, freshness: Duration, interval: Duration) {
 	let cancel = state.core.cancel_token.clone();
 
+	// `/compat`'s results at 0 and this build's epochs, before the first
+	// sweep reads the deploy's state (`metrics::deploy`).
+	crate::metrics::deploy::register_all();
+
 	tokio::spawn(async move {
 		info!(interval_secs = interval.as_secs(), "operational gauge refresh started");
 		let mut tick = tokio::time::interval(interval);
@@ -51,6 +55,16 @@ pub fn spawn(state: AppState, rate_limiter: Arc<HttpLimiter>, freshness: Duratio
 					crate::metrics::pool::record(&state.core.shared_db);
 					crate::storage::refresh_footprint(&state.core.shared_db).await;
 					crate::handlers::readiness::refresh_gauges(&state).await;
+					// Home's on-demand deploy and the migration backups
+					// (`metrics::deploy`): two small files and one directory.
+					let folder = std::path::Path::new(crate::deploy::FOLDER);
+					let backups = crate::migrate::backups_held(&state.core.config.database_url);
+					crate::metrics::deploy::record_state(
+						&crate::deploy::read_recorded(folder),
+						crate::deploy::marker_since(folder),
+						chrono::Utc::now().timestamp(),
+						backups,
+					);
 
 					// Both only read the limiter's state (eviction drops only
 					// clients whose bucket is full, which decide the same either

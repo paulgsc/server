@@ -267,6 +267,33 @@ async fn migrate(pool: &SqlitePool, path: &Path, existed: bool, options: &Option
 	})
 }
 
+/// How many of its own backups `database_url`'s backup directory holds,
+/// and their bytes: what `metrics::deploy` exports. `(0, 0)` when there is
+/// none or it cannot be read.
+#[must_use]
+pub fn backups_held(database_url: &str) -> (u64, u64) {
+	let Ok(connect) = SqliteConnectOptions::from_str(database_url) else {
+		return (0, 0);
+	};
+	let path = connect.get_filename();
+	let dir = path.parent().unwrap_or_else(|| Path::new(".")).join(BACKUP_DIR);
+	let stem = path.file_stem().map_or_else(|| String::from("database"), |stem| stem.to_string_lossy().into_owned());
+	let Ok(entries) = std::fs::read_dir(dir) else {
+		return (0, 0);
+	};
+	let mut held = (0, 0);
+	for entry in entries.flatten() {
+		let mine = entry.file_name().to_str().is_some_and(|name| is_backup_of(name, &stem));
+		if let (true, Ok(meta)) = (mine, entry.metadata()) {
+			if meta.is_file() {
+				held.0 += 1;
+				held.1 += meta.len();
+			}
+		}
+	}
+	held
+}
+
 /// The file name a backup taken at `now`, before `first_pending`, gets.
 /// Fixed-width, so names sort as the times they were taken.
 fn backup_name(stem: &str, first_pending: &str, now: DateTime<Utc>) -> String {
@@ -615,6 +642,20 @@ mod tests {
 			panic!("nothing was pending");
 		};
 		assert_eq!(pruned, [backup_dir.join("hopium-20261031T120003Z-before-1.db")]);
+	}
+
+	/// What the metrics sweep reads: only this module's backups count.
+	#[test]
+	fn backups_held_counts_only_its_own() {
+		let dir = tempfile::tempdir().unwrap();
+		let options = options(dir.path());
+		assert_eq!(backups_held(&options.database_url), (0, 0));
+		let backup_dir = dir.path().join(BACKUP_DIR);
+		std::fs::create_dir(&backup_dir).unwrap();
+		std::fs::write(backup_dir.join(backup_name("hopium", "1", at(1))), "four").unwrap();
+		std::fs::write(backup_dir.join(backup_name("hopium", "2", at(2))), "sixsix").unwrap();
+		std::fs::write(backup_dir.join("hopium-by-hand.db"), "the owner's").unwrap();
+		assert_eq!(backups_held(&options.database_url), (2, 10));
 	}
 
 	#[test]

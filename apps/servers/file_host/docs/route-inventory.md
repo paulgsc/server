@@ -74,6 +74,24 @@ The `.ts` module exports:
 - `ServerRoute` — a union of every versioned route's full path.
 - `UnversionedRoute` — the same for `/health`, `/ready`, `/ws`, and anything
   else this file marks `versioned: false`.
+- `SERVER_CONTRACT_EPOCH` and `SERVER_OLDEST_SUPPORTED` — the JSON's
+  `contract_epoch` and `oldest_supported` (`src/contract.rs`). A client
+  build bundles the epoch and asks home `GET /compat?needs=<epoch>`; home
+  pulls a newer image only for a client whose epoch is above its own
+  (`src/deploy.rs`). Adding these two fields is not a shape change either:
+  every field the client read before is unchanged.
+
+## The contract epoch
+
+`src/contract.rs` holds `CONTRACT_EPOCH`, `OLDEST_SUPPORTED` and
+`ROUTE_FINGERPRINT`, a hash of every route's method and full path. Its test
+fails when the routes change until the fingerprint is updated, and Lint's
+`Contract epoch` job (`scripts/check_contract_epoch.py`) fails a PR whose
+fingerprint differs from the base branch's unless the epoch rose. So every
+route change raises the epoch, and the epoch never falls. A payload change
+a client depends on, which this snapshot cannot see, raises it by hand. A
+route removed or renamed (`client-breaking-route`) also raises
+`OLDEST_SUPPORTED` to the new epoch.
 
 Parameter names (`:id`, `:tab_id`, ...) are not extracted into a separate
 shape; the client derives them from the literal union with a

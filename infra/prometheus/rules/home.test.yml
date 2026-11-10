@@ -600,6 +600,66 @@ tests:
         alertname: DatabaseBehindBuild
         exp_alerts: []
 
+  - name: a deploy that rolled back is DeployFailed for the hour after
+    interval: 1m
+    input_series:
+      - series: 'home_deploy_runs{job="file_host",outcome="rolled_back"}'
+        values: '0x10 1x80'
+      - series: 'home_deploy_runs{job="file_host",outcome="deployed"}'
+        values: '3x90'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DeployFailed
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DeployFailed
+        exp_alerts:
+          - exp_labels:
+              objective: AV1
+              says: "Home's on-demand deploy rolled back or failed in the last hour: `journalctl -u home-deploy` says why. If it names a missing or refused variable, the image needs a newer checkout on home."
+      - eval_time: 80m
+        alertname: DeployFailed
+        exp_alerts: []
+
+  - name: deploys that only succeed are not DeployFailed
+    interval: 1m
+    input_series:
+      - series: 'home_deploy_runs{job="file_host",outcome="deployed"}'
+        values: '0x10 1x10 2x40'
+      - series: 'home_deploy_runs{job="file_host",outcome="failed"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DeployFailed
+        exp_alerts: []
+
+  - name: a deploy-wanted marker unanswered for 30 minutes is DeployStuck
+    interval: 1m
+    input_series:
+      # A marker written at 0, never acted on: its age grows.
+      - series: 'home_deploy_wanted_age_seconds{job="file_host"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: DeployStuck
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: DeployStuck
+        exp_alerts:
+          - exp_labels:
+              objective: AV1
+              says: "A client has needed a newer server for 30 minutes and home's deploy has not answered: check `systemctl status home-deploy.path home-deploy`."
+
+  - name: a marker the deploy answers in minutes is not DeployStuck
+    interval: 1m
+    input_series:
+      - series: 'home_deploy_wanted_age_seconds{job="file_host"}'
+        values: '0 60 120 180 0x36'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: DeployStuck
+        exp_alerts: []
+
   - name: the call weeks worker that stopped stamping is stale past 2 hours (CW2)
     interval: 1m
     input_series:

@@ -39,7 +39,7 @@
 
 use super::table::Module;
 use super::{
-	admin_settings, aph, app_events, auth, db, episode_notes, feed_videos, health, ideas, jobs, korean, leetype_files, leetype_log, outcomes, presence, previews, push,
+	admin_settings, aph, app_events, auth, compat, db, episode_notes, feed_videos, health, ideas, jobs, korean, leetype_files, leetype_log, outcomes, presence, previews, push,
 	readiness, renders, routine, rust_rounds, shelf, signals, studio_log, studio_videos, study_notes, subjects, sync, tab_metadata, utterance, voice,
 };
 use crate::{auth::AuthContext, websocket, AppState, Config, API_V1_BASE_PATH};
@@ -119,6 +119,7 @@ where
 		// when the API version bumps. See the doc comment on `API_V1_BASE_PATH`.
 		health::get_health(),
 		readiness::get_readiness(),
+		compat::get_compat(),
 		websocket::routes(),
 		// ── versioned ───────────────────────────────────────────────────────
 		auth::auth(),
@@ -225,6 +226,11 @@ pub struct RouteInventory {
 	pub api_base_path: String,
 	/// Server crate version, so a snapshot can be traced back to a build.
 	pub server_version: String,
+	/// The contract epoch this surface is (`crate::contract`): what a client
+	/// built against this snapshot bundles and asks `/compat` with.
+	pub contract_epoch: u32,
+	/// The lowest epoch this surface still serves.
+	pub oldest_supported: u32,
 	pub routes: Vec<RouteEntry>,
 }
 
@@ -249,6 +255,8 @@ pub fn snapshot() -> RouteInventory {
 		schema_version: INVENTORY_SCHEMA_VERSION,
 		api_base_path: API_V1_BASE_PATH.to_owned(),
 		server_version: env!("CARGO_PKG_VERSION").to_owned(),
+		contract_epoch: crate::contract::CONTRACT_EPOCH,
+		oldest_supported: crate::contract::OLDEST_SUPPORTED,
 		routes,
 	}
 }

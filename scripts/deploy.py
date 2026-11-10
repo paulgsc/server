@@ -246,6 +246,9 @@ class Host(Protocol):
 @dataclass
 class Options:
     pull: bool = True
+    # The image compose starts file-host from (infra/compose/file_host.yml);
+    # another only for a rehearsal against a local registry.
+    image: str = IMAGE
     ready_timeout: float = DEFAULT_READY_TIMEOUT
     poll: float = POLL_SECONDS
 
@@ -265,16 +268,16 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
     old = before.image if before.container else None
     say(f"deploy: {FILE_HOST} serves {host.describe(old)}" if old else f"deploy: no {FILE_HOST} container serves now")
 
-    if options.pull and not host.pull(IMAGE):
-        say(f"deploy: pulling {IMAGE} failed; nothing was replaced")
+    if options.pull and not host.pull(options.image):
+        say(f"deploy: pulling {options.image} failed; nothing was replaced")
         return EXIT_NOT_DEPLOYED
 
-    candidate = host.image_id(IMAGE)
+    candidate = host.image_id(options.image)
     if candidate is not None and candidate != old and old is not None and candidate in set(host.failed_images()):
         # Back to what serves, so a reboot or a `make up` by hand does not
         # start the image that failed either.
-        host.tag(old, IMAGE)
-        say(f"deploy: {IMAGE} is {candidate}, which failed here before; staying on {old} until a newer one is published")
+        host.tag(old, options.image)
+        say(f"deploy: {options.image} is {candidate}, which failed here before; staying on {old} until a newer one is published")
         candidate = old
     if candidate is not None and candidate == old:
         # Nothing to deploy only when what has that image is ready: a
@@ -288,7 +291,7 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
         say(f"deploy: the image is the container's, but it is not ready ({state.reason or before.health or before.status}); bringing it up")
 
     if old and candidate and candidate != old:
-        kept = previous_ref(IMAGE)
+        kept = previous_ref(options.image)
         if host.tag(old, kept):
             say(f"deploy: kept the serving {FILE_HOST} image as {kept}")
         else:
@@ -337,7 +340,7 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
     if failed_image is not None and failed_image != old:
         host.remember_failed(failed_image)
     say(f"deploy: ROLLING BACK to {host.describe(old)}")
-    if not host.tag(old, IMAGE) or not host.recreate_file_host():
+    if not host.tag(old, options.image) or not host.recreate_file_host():
         say(f"deploy: the rollback could not restart {old}")
         say(DATABASE_NOTE)
         say(stuck_note(backup))
@@ -354,6 +357,99 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
     return EXIT_NOTHING_READY
 
 
+# ── On demand: a client needed a newer server ─────────────────────────────
+#
+# file_host writes ${STORAGE}/deploy/wanted when a client asks `/compat` for a
+# contract epoch above its own (apps/servers/file_host/src/deploy.rs, which
+# holds the bounds: one marker at a time, a gap between pulls, a ceiling, a
+# need no published image met waits six hours). A systemd path unit
+# (nix/modules/home-deploy.nix) runs `deploy.py --on-demand` when it appears.
+# This pass pulls, reads the pulled image's epoch, deploys it only when that
+# is above the running one, records what it did in state.json beside the
+# marker (which file_host reads for its answers and metrics), and removes the
+# marker. Nothing else ever pulls: with no client newer than home, home sends
+# no request anywhere.
+
+# The shortest time between two pulls: deploy.rs's PULL_GAP, checked here
+# again so a marker written by hand cannot make home pull twice in a row.
+PULL_GAP_SECONDS = 600
+
+
+class Demand(Protocol):
+    def read_marker(self) -> dict[str, object] | None: ...
+    def clear_marker(self) -> None: ...
+    def read_state(self) -> dict[str, object]: ...
+    def write_state(self, state: dict[str, object]) -> None: ...
+    def image_epoch(self, image_id: str) -> int | None: ...
+    def image_bytes(self, image_id: str) -> int: ...
+
+
+# What each exit of `deploy` is counted as in state.json's `counts`.
+OUTCOME_OF_EXIT = {EXIT_DEPLOYED: "deployed", EXIT_ROLLED_BACK: "rolled_back", EXIT_NOT_DEPLOYED: "failed", EXIT_NOTHING_READY: "failed"}
+
+
+def as_int(value: object, default: int = 0) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def on_demand(host: Host, demand: Demand, options: Options, wall: Callable[[], float], now: Callable[[], float], sleep: Callable[[float], None], say: Callable[[str], None]) -> int:
+    marker = demand.read_marker()
+    if marker is None:
+        say("deploy: no deploy is wanted; nothing to do")
+        return EXIT_DEPLOYED
+    needs = as_int(marker.get("needs"))
+    running = as_int(marker.get("running"))
+    say(f"deploy: a client needs contract epoch {needs}; home runs {running}")
+
+    state = demand.read_state()
+    raw_counts = state.get("counts")
+    counts: dict[str, int] = {key: as_int(value) for key, value in raw_counts.items()} if isinstance(raw_counts, dict) else {}
+
+    def finish(code: int, outcome: str, **fields: object) -> int:
+        counts[outcome] = counts.get(outcome, 0) + 1
+        state.update(fields)
+        state["counts"] = counts
+        state["last_run"] = {"at": int(wall()), "exit": code, "outcome": outcome, "needs": needs}
+        demand.write_state(state)
+        demand.clear_marker()
+        return code
+
+    last_pull = state.get("last_pull_at")
+    if isinstance(last_pull, int) and wall() - last_pull < PULL_GAP_SECONDS:
+        say(f"deploy: the last pull was {int(wall() - last_pull)} s ago, under the {PULL_GAP_SECONDS} s gap; not pulling")
+        return finish(EXIT_DEPLOYED, "deferred")
+
+    before = host.reading(CONTAINER)
+    serving = before.image if before.container else None
+    previous_id = host.image_id(options.image)
+    pulled = host.pull(options.image)
+    counts["pulls"] = counts.get("pulls", 0) + 1
+    state["last_pull_at"] = int(wall())
+    if not pulled:
+        say(f"deploy: pulling {options.image} failed; nothing was replaced")
+        return finish(EXIT_NOT_DEPLOYED, "failed")
+    candidate = host.image_id(options.image)
+    if candidate is not None and candidate != previous_id:
+        counts["pulled_bytes"] = counts.get("pulled_bytes", 0) + demand.image_bytes(candidate)
+    epoch = demand.image_epoch(candidate) if candidate else None
+    state["latest_seen_epoch"] = epoch
+    if epoch is None or epoch <= running:
+        # Lazily on the previous image (the owner, 2026-11-10): a newer build
+        # of the same contract is not a reason to restart. :latest goes back
+        # to what serves, so a reboot does not start it either.
+        if serving is not None and candidate is not None and candidate != serving:
+            host.tag(serving, options.image)
+        seen = "an epoch it could not read" if epoch is None else f"epoch {epoch}"
+        say(f"deploy: the newest image has {seen}, not above home's {running}; staying on the running one")
+        if epoch is not None and epoch < needs:
+            say(f"deploy: nothing published serves epoch {needs} yet; home answers `unavailable` to it for six hours")
+        return finish(EXIT_DEPLOYED, "no_newer_image")
+
+    say(f"deploy: the newest image has epoch {epoch}; deploying it")
+    code = deploy(host, Options(pull=False, image=options.image, ready_timeout=options.ready_timeout, poll=options.poll), now, sleep, say)
+    return finish(code, OUTCOME_OF_EXIT.get(code, "failed"))
+
+
 # ── The real host ───────────────────────────────────────────────────────────
 
 
@@ -363,9 +459,12 @@ def default_state_dir() -> Path:
 
 
 class RealHost:
-    def __init__(self, repo: Path, state_dir: Path) -> None:
+    def __init__(self, repo: Path, state_dir: Path, as_user: list[str] | None = None) -> None:
         self.repo = repo
         self.state = state_dir / "failed-images.json"
+        # `make` (envctl, sops, cargo) runs as the checkout's owner when the
+        # on-demand unit runs this as root: `runuser -u <user> -- env HOME=…`.
+        self.as_user = as_user or []
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(list(args), cwd=self.repo, capture_output=True, text=True, check=False)
@@ -400,12 +499,12 @@ class RealHost:
         return self._run("docker", "pull", "-q", ref).returncode == 0
 
     def up(self) -> bool:
-        return self._stream("make", "-s", "up") == 0
+        return self._stream(*self.as_user, "make", "-s", "up") == 0
 
     def recreate_file_host(self) -> bool:
         # --no-deps: nothing else is the image that failed. --pull never: the
         # tag just moved back to the old image; a pull would undo that.
-        return self._stream("make", "-s", "compose", f"ARGS=up -d --no-deps --pull never {FILE_HOST}") == 0
+        return self._stream(*self.as_user, "make", "-s", "compose", f"ARGS=up -d --no-deps --pull never {FILE_HOST}") == 0
 
     def logs(self, container: str) -> list[str]:
         done = self._run("docker", "logs", "--tail", "200", container)
@@ -425,6 +524,71 @@ class RealHost:
             self.state.write_text(json.dumps(kept))
         except OSError as err:
             print(f"deploy: could not record {image_id} as failed in {self.state}: {err}", flush=True)
+
+
+class RealDemand:
+    """${STORAGE}/deploy on the host: the marker and state.json."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.marker = folder / "wanted"
+        self.state = folder / "state.json"
+
+    def read_marker(self) -> dict[str, object] | None:
+        try:
+            value = json.loads(self.marker.read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def clear_marker(self) -> None:
+        self.marker.unlink(missing_ok=True)
+
+    def read_state(self) -> dict[str, object]:
+        try:
+            value = json.loads(self.state.read_text())
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def write_state(self, state: dict[str, object]) -> None:
+        # Whole or not at all: file_host reads it every 10 s.
+        temp = self.folder / ".state.json.tmp"
+        temp.write_text(json.dumps(state, sort_keys=True) + "\n")
+        temp.chmod(0o644)
+        temp.replace(self.state)
+
+    def image_epoch(self, image_id: str) -> int | None:
+        # An image from before the epoch existed refuses the flag: None.
+        done = subprocess.run(
+            ["docker", "run", "--rm", "--network", "none", "--entrypoint", "/usr/local/bin/file_host", image_id, "--contract-epoch"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        text = done.stdout.strip()
+        return int(text) if done.returncode == 0 and text.isdigit() else None
+
+    def image_bytes(self, image_id: str) -> int:
+        done = subprocess.run(["docker", "image", "inspect", "--format", "{{.Size}}", image_id], capture_output=True, text=True, check=False)
+        text = done.stdout.strip()
+        return int(text) if done.returncode == 0 and text.isdigit() else 0
+
+
+def runuser_prefix(user: str, runtime_dir: Path | None) -> list[str]:
+    """`make` as `user`, with its home (sops' key) and, when given, a tmpfs
+    runtime directory it owns (envctl's decrypted files)."""
+    import pwd
+
+    entry = pwd.getpwnam(user)
+    env = [f"HOME={entry.pw_dir}"]
+    if runtime_dir is not None:
+        runtime_dir.mkdir(mode=0o700, exist_ok=True)
+        os.chown(runtime_dir, entry.pw_uid, entry.pw_gid)
+        env.append(f"XDG_RUNTIME_DIR={runtime_dir}")
+    return ["runuser", "-u", user, "--", "env", *env]
 
 
 # ── Self-test: a simulated host and clock ───────────────────────────────────
@@ -536,6 +700,33 @@ class FakeHost:
 
     def remember_failed(self, image_id: str) -> None:
         self.failed.append(image_id)
+
+
+@dataclass
+class FakeDemand:
+    marker: dict[str, object] | None
+    state: dict[str, object] = field(default_factory=dict)
+    epochs: dict[str, int | None] = field(default_factory=dict)
+    cleared: bool = False
+
+    def read_marker(self) -> dict[str, object] | None:
+        return self.marker
+
+    def clear_marker(self) -> None:
+        self.marker = None
+        self.cleared = True
+
+    def read_state(self) -> dict[str, object]:
+        return json.loads(json.dumps(self.state))
+
+    def write_state(self, state: dict[str, object]) -> None:
+        self.state = json.loads(json.dumps(state))
+
+    def image_epoch(self, image_id: str) -> int | None:
+        return self.epochs.get(image_id)
+
+    def image_bytes(self, image_id: str) -> int:
+        return 1000
 
 
 class Tests(unittest.TestCase):
@@ -708,6 +899,77 @@ class Tests(unittest.TestCase):
         self.assertEqual(host.failed, ["sha256:new"], "the image up was asked to start")
         self.assertTrue(any("ROLLED BACK" in line for line in said))
 
+    # On demand
+    WALL = 1_800_000_000.0
+
+    def run_on_demand(self, host: FakeHost, demand: FakeDemand) -> tuple[int, list[str]]:
+        said: list[str] = []
+        code = on_demand(host, demand, Options(), lambda: self.WALL, host.clock.now, host.clock.sleep, said.append)
+        return code, said
+
+    def test_no_marker_no_pull(self) -> None:
+        host = self.world(ready_after(0), ready_after(0))
+        demand = FakeDemand(None)
+        self.assertEqual(self.run_on_demand(host, demand)[0], EXIT_DEPLOYED)
+        self.assertEqual(host.calls, [])
+        self.assertEqual(demand.state, {})
+
+    def test_a_newer_epoch_is_deployed_and_recorded(self) -> None:
+        host = self.world(ready_after(0), ready_after(5))
+        demand = FakeDemand({"needs": 2, "running": 1}, epochs={"sha256:new": 2})
+        code, _ = self.run_on_demand(host, demand)
+        self.assertEqual(code, EXIT_DEPLOYED)
+        self.assertEqual(host.serving, "sha256:new")
+        self.assertTrue(demand.cleared)
+        self.assertEqual(demand.state["latest_seen_epoch"], 2)
+        self.assertEqual(demand.state["counts"], {"pulls": 1, "pulled_bytes": 1000, "deployed": 1})
+        self.assertEqual(demand.state["last_run"], {"at": int(self.WALL), "exit": 0, "outcome": "deployed", "needs": 2})
+        self.assertNotIn(f"pull {IMAGE}", host.calls[1:], "pulled once, not again by deploy")
+
+    def test_the_same_epoch_republished_is_not_deployed(self) -> None:
+        # Lazily on the previous image: a newer build of the same contract.
+        host = self.world(ready_after(0), ready_after(0))
+        demand = FakeDemand({"needs": 2, "running": 1}, epochs={"sha256:new": 1})
+        code, said = self.run_on_demand(host, demand)
+        self.assertEqual(code, EXIT_DEPLOYED)
+        self.assertNotIn("up", host.calls)
+        self.assertEqual(host.tags[FH_REF], "sha256:old", "a reboot does not start it")
+        self.assertEqual(demand.state["counts"]["no_newer_image"], 1)
+        self.assertEqual(demand.state["latest_seen_epoch"], 1)
+        self.assertTrue(any("unavailable" in line for line in said))
+
+    def test_an_image_whose_epoch_cannot_be_read_is_not_deployed(self) -> None:
+        host = self.world(ready_after(0), ready_after(0))
+        demand = FakeDemand({"needs": 2, "running": 1}, epochs={"sha256:new": None})
+        self.assertEqual(self.run_on_demand(host, demand)[0], EXIT_DEPLOYED)
+        self.assertNotIn("up", host.calls)
+        self.assertIsNone(demand.state["latest_seen_epoch"])
+
+    def test_a_pull_within_the_gap_is_deferred(self) -> None:
+        host = self.world(ready_after(0), ready_after(0))
+        demand = FakeDemand({"needs": 2, "running": 1}, state={"last_pull_at": int(self.WALL) - 60})
+        self.assertEqual(self.run_on_demand(host, demand)[0], EXIT_DEPLOYED)
+        self.assertEqual(host.calls, [])
+        self.assertEqual(demand.state["counts"], {"deferred": 1})
+        self.assertTrue(demand.cleared)
+
+    def test_a_newer_epoch_that_fails_is_rolled_back_and_counted(self) -> None:
+        host = self.world(ready_after(0), crashes_after(3))
+        demand = FakeDemand({"needs": 2, "running": 1}, state={"counts": {"pulls": 4, "deployed": 3}}, epochs={"sha256:new": 2})
+        code, _ = self.run_on_demand(host, demand)
+        self.assertEqual(code, EXIT_ROLLED_BACK)
+        self.assertEqual(host.serving, "sha256:old")
+        self.assertEqual(demand.state["counts"], {"pulls": 5, "pulled_bytes": 1000, "deployed": 3, "rolled_back": 1})
+        self.assertEqual(demand.state["last_run"]["exit"], EXIT_ROLLED_BACK)
+
+    def test_a_failed_pull_is_counted_and_clears_the_marker(self) -> None:
+        host = self.world(ready_after(0), ready_after(0), pull_ok=False)
+        demand = FakeDemand({"needs": 2, "running": 1})
+        self.assertEqual(self.run_on_demand(host, demand)[0], EXIT_NOT_DEPLOYED)
+        self.assertEqual(demand.state["counts"], {"pulls": 1, "failed": 1})
+        self.assertTrue(demand.cleared)
+        self.assertEqual(demand.state["last_pull_at"], int(self.WALL), "a failed pull keeps the gap too")
+
     def test_the_bound_outlasts_the_start_period(self) -> None:
         text = (REPO_ROOT / "infra" / "compose" / "file_host.yml").read_text()
         found = re.search(r"^      start_period: (\d+)s$", text, re.MULTILINE)
@@ -735,6 +997,10 @@ def main() -> int:
     parser.add_argument("--no-pull", dest="pull", action="store_false", help="use the images already here")
     parser.add_argument("--ready-timeout", type=float, default=DEFAULT_READY_TIMEOUT, help="seconds to wait for each start to be ready (default %(default)s)")
     parser.add_argument("--state-dir", type=Path, default=None, help="where the failed images are remembered (default $XDG_STATE_HOME/server-deploy)")
+    parser.add_argument("--image", default=IMAGE, help="the image file-host runs (default %(default)s, as infra/compose/file_host.yml names it)")
+    parser.add_argument("--on-demand", type=Path, metavar="DEPLOY_DIR", help="run only if DEPLOY_DIR/wanted asks (${STORAGE}/deploy; nix/modules/home-deploy.nix)")
+    parser.add_argument("--as-user", help="run make as this user (the on-demand unit runs as root)")
+    parser.add_argument("--runtime-dir", type=Path, help="with --as-user: a tmpfs directory for envctl, chowned to the user")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
@@ -744,8 +1010,25 @@ def main() -> int:
     def say(line: str) -> None:
         print(line, flush=True)
 
-    host = RealHost(REPO_ROOT, args.state_dir or default_state_dir())
-    return deploy(host, Options(pull=args.pull, ready_timeout=args.ready_timeout), time.monotonic, time.sleep, say)
+    as_user = runuser_prefix(args.as_user, args.runtime_dir) if args.as_user else None
+    host = RealHost(REPO_ROOT, args.state_dir or default_state_dir(), as_user)
+    options = Options(pull=args.pull, image=args.image, ready_timeout=args.ready_timeout)
+    if args.on_demand is not None:
+        demand = RealDemand(args.on_demand)
+        try:
+            return on_demand(host, demand, options, time.time, time.monotonic, time.sleep, say)
+        except Exception:
+            # Never leave the marker behind a crash: the path unit would start
+            # this again at once. The failure is recorded for the alert, and
+            # the traceback goes to the journal.
+            state = demand.read_state()
+            counts = state.get("counts") if isinstance(state.get("counts"), dict) else {}
+            state["counts"] = {**counts, "failed": as_int(counts.get("failed")) + 1}
+            state["last_run"] = {"at": int(time.time()), "exit": 1, "outcome": "failed"}
+            demand.write_state(state)
+            demand.clear_marker()
+            raise
+    return deploy(host, options, time.monotonic, time.sleep, say)
 
 
 if __name__ == "__main__":

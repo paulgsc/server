@@ -88,6 +88,19 @@ async fn migrate_on_start(config: &Config) -> Result<()> {
 	Ok(())
 }
 
+/// `file_host --contract-epoch`: print the contract epoch this build serves,
+/// and exit. Home's deploy reads a pulled image's with `docker run …
+/// file_host --contract-epoch` before it starts it (scripts/deploy.py), with
+/// no configuration at all, so this answers before `Config` is parsed
+/// (`file_host::contract`), and exits before anything has started.
+fn exit_if_asked_for_contract_epoch() {
+	use std::io::Write as _;
+	if std::env::args().skip(1).eq(["--contract-epoch"]) {
+		let _ = writeln!(std::io::stdout(), "{}", file_host::contract::CONTRACT_EPOCH);
+		std::process::exit(0);
+	}
+}
+
 // Worker threads are a source constant (#617), not tokio's own
 // TOKIO_WORKER_THREADS: compose gave this 2-CPU container 4, so 4 it is,
 // and nothing about how it runs changes.
@@ -96,6 +109,7 @@ async fn main() -> Result<()> {
 	// Its whole environment is what it was started with: compose's env_file
 	// for the container, or `make dev`'s decrypted deploy/dev/ file. No
 	// `.env` is read (#614): every value lives encrypted (#613).
+	exit_if_asked_for_contract_epoch();
 	let (config, held): (Config, _) = app_config::schema::parse_then_hold(&file_host::RULES);
 
 	// Before the rules: a health check is a separate process, run by the

@@ -5,6 +5,7 @@
 // paulgsc/server#542; docs/storage.md). Panel layer:
 // lib/storage-panels.libsonnet.
 local panels = import 'lib/storage-panels.libsonnet';
+local deploy = import 'lib/deploy-panels.libsonnet';
 local panelDefaults = import 'lib/panel-defaults.libsonnet';
 
 local row(title, y, id) = {
@@ -32,7 +33,7 @@ local at(x, y, w, h) = { gridPos: { x: x, y: y, w: w, h: h } };
       },
     ],
   },
-  description: "What home's database keeps, by table, and how fast it grows.",
+  description: "What home's database keeps, by table, and how fast it grows; and home's on-demand deploy, with its footprint.",
   editable: true,
   fiscalYearStartMonth: 0,
   graphTooltip: 1,
@@ -56,6 +57,22 @@ local at(x, y, w, h) = { gridPos: { x: x, y: y, w: w, h: h } };
     panels.largest + at(12, 13, 12, 10) + { id: 14 },
     panels.passCost + at(0, 23, 18, 6) + { id: 15 },
     panelDefaults.livenessPanel('FILE_HOST SCRAPE', ['file_host'], 16, { x: 18, y: 23, w: 6, h: 6 }),
+    // Home's on-demand deploy and what the pattern costs (README.md,
+    // "Deploying to home"): lib/deploy-panels.libsonnet.
+    row('Deploy — on demand, and its footprint', 29, 17),
+    deploy.epoch + at(0, 30, 3, 4) + { id: 18 },
+    deploy.oldest + at(3, 30, 3, 4) + { id: 30 },
+    deploy.latestSeen + at(6, 30, 3, 4) + { id: 19 },
+    deploy.lastExit + at(9, 30, 3, 4) + { id: 20 },
+    deploy.sinceRun + at(12, 30, 3, 4) + { id: 21 },
+    deploy.waiting + at(15, 30, 3, 4) + { id: 22 },
+    deploy.backups + at(18, 30, 3, 4) + { id: 23 },
+    deploy.backupBytes + at(21, 30, 3, 4) + { id: 24 },
+    deploy.asks + at(0, 34, 12, 8) + { id: 25 },
+    deploy.runs + at(12, 34, 12, 8) + { id: 26 },
+    deploy.pulls + at(0, 42, 8, 8) + { id: 27 },
+    deploy.pulledBytes + at(8, 42, 8, 8) + { id: 28 },
+    deploy.backupFootprint + at(16, 42, 8, 8) + { id: 29 },
   ]),
   refresh: '1m',
   revision: 1,

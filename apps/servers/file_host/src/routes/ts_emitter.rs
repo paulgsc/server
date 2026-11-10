@@ -59,6 +59,12 @@ pub fn render_ts(inventory: &RouteInventory) -> String {
 	// `format!` (eager allocation), and `write!` avoids the double allocation
 	// anyway. Infallible for a `String` target, so the `Result` is discarded.
 	let _ = writeln!(out, "export const API_BASE_PATH = \"{}\";\n", inventory.api_base_path);
+	// The contract epoch a build bundles and asks `/compat` with
+	// (`crate::contract`): the server it was built against.
+	let _ = writeln!(out, "/** The server contract epoch this snapshot is (file_host's `contract::CONTRACT_EPOCH`). */");
+	let _ = writeln!(out, "export const SERVER_CONTRACT_EPOCH = {};", inventory.contract_epoch);
+	let _ = writeln!(out, "/** The lowest epoch that server still serves (`contract::OLDEST_SUPPORTED`). */");
+	let _ = writeln!(out, "export const SERVER_OLDEST_SUPPORTED = {};\n", inventory.oldest_supported);
 	out.push_str(&render_union("ServerRoute", None, &versioned));
 	out.push('\n');
 	out.push_str(&render_union("UnversionedRoute", Some("/** Routes NOT nested under API_BASE_PATH. */"), &unversioned));
