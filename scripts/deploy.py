@@ -275,7 +275,7 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
         # start the image that failed either.
         host.tag(old, IMAGE)
         say(f"deploy: {IMAGE} is {candidate}, which failed here before; staying on {old} until a newer one is published")
-        return EXIT_DEPLOYED
+        candidate = old
     if candidate is not None and candidate == old:
         # Nothing to deploy only when what has that image is ready: a
         # container that exited, is restarting or reads unhealthy is not
@@ -607,6 +607,15 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(code, EXIT_DEPLOYED)
         self.assertFalse(any("nothing restarted" in line for line in said))
         self.assertNotIn("recreate", host.calls, "no previous image to roll back to")
+
+    def test_skipping_a_failed_image_still_brings_a_stopped_container_up(self) -> None:
+        host = self.world(ready_after(0), ready_after(0), failed=["sha256:new"])
+        host.behaviours["sha256:old"] = lambda t: ("exited", None, 0)
+        code, said = self.run_deploy(host)
+        self.assertTrue(any("failed here before" in line for line in said))
+        self.assertEqual(host.tags[FH_REF], "sha256:old")
+        self.assertIn("up", host.calls)
+        self.assertNotEqual(code, EXIT_DEPLOYED)
 
     def test_only_file_hosts_image_is_pulled(self) -> None:
         host = self.world(ready_after(0), ready_after(0), publish=False)
