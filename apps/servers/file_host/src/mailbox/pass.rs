@@ -251,6 +251,11 @@ pub struct Outcome {
 	pub restored: Vec<&'static str>,
 	/// The subject has no account: the pass stopped and wrote nothing more.
 	pub no_account: bool,
+	/// A phase that moves files between home and the mailbox (reading,
+	/// filing, handing over) stopped at [`ITEMS_PER_PASS`] with work left, so
+	/// the next pass should not wait the held bell's hour (MBP2). Archiving
+	/// is not counted: its files are a month old and wait for the backstop.
+	pub more: bool,
 }
 
 /// Why a pass ended early, and what it had done by then.
@@ -388,8 +393,8 @@ fn before(now: &str, back: std::time::Duration) -> Option<String> {
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
 /// reports every phase that failed. `settle` is how long a `LeetType`
-/// session's newest event must have been home before its log is filed: the
-/// poll interval, so a send still in flight is never filed in part.
+/// session's newest event must have been home before its log is filed
+/// (`mailbox::SETTLE`), so a send still in flight is never filed in part.
 ///
 /// # Errors
 /// A [`PassError`] when the mailbox cannot be reached or read (anything but
@@ -485,6 +490,7 @@ async fn read_folder<T: MailboxTransport>(
 				continue;
 			}
 			if fetched == ITEMS_PER_PASS {
+				outcome.more = true;
 				return Ok(());
 			}
 			fetched += 1;
@@ -493,9 +499,11 @@ async fn read_folder<T: MailboxTransport>(
 			}
 		}
 		if !full {
-			break;
+			return Ok(());
 		}
 	}
+	// Every page this pass may read was full: there may be more behind them.
+	outcome.more = true;
 	Ok(())
 }
 
@@ -564,6 +572,7 @@ async fn hand_over<T: MailboxTransport>(
 		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
 		mailbox_repo::pending_outgoing(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
 	};
+	outcome.more |= pending.len() >= ITEMS_PER_PASS as usize;
 	for file in pending {
 		let folder = match file.folder.as_str() {
 			"decisions" => Folder::Decisions,
@@ -605,6 +614,7 @@ async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
 		mailbox_repo::unfiled_transcripts(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
 	};
+	outcome.more |= heard.len() >= ITEMS_PER_PASS as usize;
 	for transcript in &heard {
 		match file_transcript(db, deletion, subject, transcript, &now()).await.map_err(storage)? {
 			// Set aside since it was read above: filed for no routine.
@@ -690,6 +700,7 @@ async fn file_leetype_logs(
 		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
 		mailbox_repo::unfiled_leetype_logs(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
 	};
+	outcome.more |= due.len() >= ITEMS_PER_PASS as usize;
 	for due in &due {
 		if due.last_written >= settled {
 			break;
@@ -1440,8 +1451,10 @@ mod tests {
 			let (name, body) = digest(&day);
 			fake.add(i64::from(n), &name, &body);
 		}
-		assert_eq!(pass(&pool, &fake).await.unwrap().kept, ITEMS_PER_PASS as usize);
-		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 5, "the rest on the next pass");
+		let first = pass(&pool, &fake).await.unwrap();
+		assert_eq!((first.kept, first.more), (ITEMS_PER_PASS as usize, true), "work left: the next pass is not an hour away");
+		let second = pass(&pool, &fake).await.unwrap();
+		assert_eq!((second.kept, second.more), (5, false), "the rest on the next pass, and nothing owed after it");
 		assert_eq!(held(&pool).await.len(), 25);
 	}
 
@@ -1591,7 +1604,7 @@ mod tests {
 		let context = on(&all).unwrap().unwrap();
 		assert_eq!(
 			(context.subject.as_deref(), context.interval.as_secs()),
-			(None, 900),
+			(None, 3600),
 			"no MAILBOX_SUBJECT: the owner's account, per pass"
 		);
 		assert!(context.archive.is_none(), "no archive token, nothing archived");
@@ -1869,10 +1882,10 @@ mod tests {
 		let (captured, _guard) = crate::privacy::capture();
 		let (pool, fake) = (pool().await, Fake::default());
 		heard(&pool, "n1", "ggml-small-q5_1.bin", "비밀스러운 문장").await;
-		crate::mailbox::log_pass(&pass(&pool, &fake).await);
+		crate::mailbox::log_pass(&pass(&pool, &fake).await, crate::mailbox::bell::Cause::Ring);
 		*fake.puts_fail.lock().unwrap() = true;
 		heard(&pool, "n2", "ggml-small-q5_1.bin", "비밀스러운 문장").await;
-		crate::mailbox::log_pass(&pass(&pool, &fake).await);
+		crate::mailbox::log_pass(&pass(&pool, &fake).await, crate::mailbox::bell::Cause::Ring);
 		let lines = captured.lines();
 		assert!(lines.iter().any(|line| line.contains("filed")), "sanity check: the pass was logged: {lines:?}");
 		assert!(lines.iter().any(|line| line.contains("failed")), "sanity check: the failure was logged: {lines:?}");

@@ -394,7 +394,13 @@ impl<'de> serde::de::Visitor<'de> for UniqueMembers {
 /// filed name, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "jobs_file_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, Path(name): Path<String>, body: Bytes) -> Result<Json<FileFiled>, FileHostError> {
+pub async fn put_file(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	State(outbox): State<crate::mailbox::Outbox>,
+	Path(name): Path<String>,
+	body: Bytes,
+) -> Result<Json<FileFiled>, FileHostError> {
 	let Some((folder, schema)) = folder_of(&name) else {
 		return Err(FileHostError::unprocessable_entity([("name", "not a decisions or scouts file name")]));
 	};
@@ -426,6 +432,9 @@ pub async fn put_file(subject: SubjectId, State(db): State<SqlitePool>, Path(nam
 		mailbox_repo::Change::NoAccount => return Err(FileHostError::OperationError("the account is gone".to_owned())),
 	};
 	tx.commit().await?;
+	if change == "added" {
+		outbox.filed();
+	}
 	Ok(Json(FileFiled { change }))
 }
 
@@ -460,11 +469,18 @@ mod tests {
 	struct TestState {
 		pool: SqlitePool,
 		auth: AuthContext,
+		wake: std::sync::Arc<crate::mailbox::bell::Wake>,
 	}
 
 	impl FromRef<TestState> for SqlitePool {
 		fn from_ref(state: &TestState) -> Self {
 			state.pool.clone()
+		}
+	}
+
+	impl FromRef<TestState> for crate::mailbox::Outbox {
+		fn from_ref(state: &TestState) -> Self {
+			Self::waking(std::sync::Arc::clone(&state.wake))
 		}
 	}
 
@@ -484,6 +500,7 @@ mod tests {
 		TestState {
 			auth: AuthContext::for_tests(pool.clone(), 100),
 			pool,
+			wake: std::sync::Arc::default(),
 		}
 	}
 
@@ -887,10 +904,14 @@ mod tests {
 			call(&app, Method::PUT, path, Some(&phone), &decisions("2026-10-23", &[])).await,
 			(StatusCode::OK, json!({ "change": "added" }))
 		);
+		// A file filed wakes the mailbox's pass at once (MBP2); the same file
+		// again files nothing, so wakes nothing.
+		assert_eq!(state.wake.take(), Some(crate::mailbox::bell::Cause::Local));
 		assert_eq!(
 			call(&app, Method::PUT, path, Some(&phone), &decisions("2026-10-23", &[])).await.1,
 			json!({ "change": "unchanged" })
 		);
+		assert_eq!(state.wake.take(), None);
 		let (status, answer) = call(&app, Method::PUT, path, Some(&phone), &decisions("2026-10-22", &[])).await;
 		assert_eq!((status, &answer["error"]["code"]), (StatusCode::CONFLICT, &json!("conflict")), "{answer}");
 		let scouts = json!({ "schema": "some-ui.job-scouts/1", "sharedAt": "2026-10-23T22:00:00.000Z", "scouts": [{ "voice": [] }] });
