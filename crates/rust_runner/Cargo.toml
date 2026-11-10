@@ -16,9 +16,12 @@ edition.workspace = true
 clap = { workspace = true }
 # `kill(-pgid)` as a system call, so killing a program's process group never
 # needs a process of its own; `getuid`, the not-dumpable and (`thread`)
-# no-new-privileges flags; and (`net`) `SO_PEERCRED`, so the service serves
-# only its clients' uids.
-rustix = { version = "1.1.5", features = ["process", "net", "thread"] }
+# no-new-privileges flags.
+rustix = { version = "1.1.5", features = ["process", "thread"] }
+# `SO_PEERCRED` read as plain integers (#766): rustix's `socket_peercred`
+# holds the pid as a `NonZeroI32`, and a peer in another PID namespace (a
+# client in its own container) is reported with pid 0, so it never read one.
+libc = "0.2"
 # The protocol and what a recording holds, which a client links alone.
 rust_rounds_wire = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
