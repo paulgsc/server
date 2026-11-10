@@ -80,7 +80,7 @@ fn ask_across(socket: &Path, client: u32) -> Response {
 	}
 	let mut service = Command::new("unshare")
 		.args(namespaces)
-		.arg(std::env::current_exe().unwrap())
+		.arg(std::env::current_exe().unwrap_or_else(|err| panic!("no path to this test binary: {err}")))
 		.args(["--exact", "the_service_side", "--ignored", "--nocapture"])
 		.env(SOCKET, socket)
 		.env(CLIENT, client.to_string())
@@ -91,13 +91,13 @@ fn ask_across(socket: &Path, client: u32) -> Response {
 	let started = Instant::now();
 	let answered = loop {
 		match exchange(socket, &Request::Toolchain {}, CLIENT_TIMEOUT) {
-			Err(AskError::Unreachable(_)) if started.elapsed() < Duration::from_secs(60) && service.try_wait().unwrap().is_none() => {
+			Err(AskError::Unreachable(_)) if started.elapsed() < Duration::from_secs(60) && service.try_wait().is_ok_and(|status| status.is_none()) => {
 				std::thread::sleep(Duration::from_millis(50));
 			}
 			answered => break answered,
 		}
 	};
-	let output = service.wait_with_output().unwrap();
+	let output = service.wait_with_output().unwrap_or_else(|err| panic!("the service was lost: {err}"));
 	assert!(
 		output.status.success(),
 		"the service in its own PID namespace failed ({}); can this sandbox make one?\n{}{}",
@@ -111,7 +111,7 @@ fn ask_across(socket: &Path, client: u32) -> Response {
 /// The peer's pid as the kernel reports it here, read as a plain integer.
 fn peer_pid(stream: &UnixStream) -> libc::pid_t {
 	let mut cred = libc::ucred { pid: -1, uid: 0, gid: 0 };
-	let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).unwrap();
+	let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).unwrap_or_else(|err| panic!("{err}"));
 	// SAFETY: `cred` and `len` are live, writable and sized as SO_PEERCRED
 	// writes them; the descriptor is `stream`'s, open for this call.
 	let read = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut cred).cast(), &raw mut len) };
