@@ -64,6 +64,28 @@ pub async fn run_once<H: Hear>(
 	cancel: &CancellationToken,
 	now: &(dyn Fn() -> String + Sync),
 ) -> Result<Pass, VoiceError> {
+	run_once_telling(db, hear, meaning, deletion, per_note, cancel, now, &|| {}).await
+}
+
+/// [`run_once`], calling `heard` as soon as each note heard is kept.
+///
+/// A transcript is then committed and on its way to the
+/// mailbox, so its pass need not wait for the rest of the batch, or for a
+/// later note's storage failure to end the pass (MBP2).
+///
+/// # Errors
+/// As [`run_once`].
+#[allow(clippy::too_many_arguments)] // run_once's, and whom to tell of each note heard
+pub async fn run_once_telling<H: Hear>(
+	db: &SqlitePool,
+	hear: &Arc<H>,
+	meaning: Option<&dyn Embed>,
+	deletion: &DeletionLock,
+	per_note: Duration,
+	cancel: &CancellationToken,
+	now: &(dyn Fn() -> String + Sync),
+	heard: &(dyn Fn() + Sync),
+) -> Result<Pass, VoiceError> {
 	let mut pass = Pass::default();
 	if let Some(embed) = meaning {
 		pass.indexed += catch_up(db, embed, deletion).await?;
@@ -84,13 +106,13 @@ pub async fn run_once<H: Hear>(
 		// Gone since the list was read: it went with its account.
 		let Some(audio) = audio else { continue };
 		let started = Instant::now();
-		let heard = {
+		let attempt = {
 			let (hear, cancel) = (Arc::clone(hear), cancel.clone());
 			let deadline = started + per_note;
 			tokio::task::spawn_blocking(move || hear.hear(&audio, deadline, &cancel)).await
 		};
-		let heard = match heard {
-			Ok(Ok(heard)) => heard,
+		let attempted = match attempt {
+			Ok(Ok(done)) => done,
 			Ok(Err(Cancelled)) => {
 				pass.cancelled = true;
 				break;
@@ -102,18 +124,21 @@ pub async fn run_once<H: Hear>(
 			},
 		};
 		let took = started.elapsed();
-		let kind = heard.outcome.kind();
+		let kind = attempted.outcome.kind();
 		let attempt = Attempt {
 			model: hear.model(),
 			engine: hear.engine(),
-			outcome: heard.outcome,
-			duration_ms: heard.duration_ms,
+			outcome: attempted.outcome,
+			duration_ms: attempted.duration_ms,
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
 		let (kept, indexed) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &now()).await?;
 		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(kind, took);
 			pass.kept.push(kind);
+			if kind == "heard" {
+				heard();
+			}
 		}
 		if indexed == Indexed::Kept {
 			pass.indexed += 1;
@@ -281,6 +306,35 @@ mod tests {
 			.fetch_all(pool)
 			.await
 			.unwrap()
+	}
+
+	/// Each note heard is told as soon as it is kept, once, and a note that
+	/// was silent or unreadable is not: the mailbox's pass wakes per
+	/// transcript, not when the batch ends (MBP2).
+	#[tokio::test]
+	async fn each_note_heard_is_told_as_it_is_kept() {
+		let pool = pool().await;
+		note(&pool, A, "spoken", "2026-10-25T03:00:00.000Z", b"words").await;
+		note(&pool, B, "quiet", "2026-10-25T02:00:00.000Z", b"silence").await;
+		note(&pool, A, "broken", "2026-10-25T01:00:00.000Z", b"noise").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let told = std::sync::Mutex::new(Vec::new());
+		let done = super::run_once_telling(
+			&pool,
+			&fake,
+			None,
+			&DeletionLock::default(),
+			Duration::from_secs(60),
+			&cancel,
+			&|| String::from("2026-10-25T16:00:00.000Z"),
+			// What was kept when it was told: the transcript is already there.
+			&|| told.lock().unwrap().push(fake.heard().len()),
+		)
+		.await
+		.unwrap();
+		assert_eq!(done.kept, ["unreadable", "silent", "heard"]);
+		assert_eq!(*told.lock().unwrap(), [3], "told once, for the one heard, after it was heard");
 	}
 
 	/// Every stored note gets a transcript or a failure, oldest first; a

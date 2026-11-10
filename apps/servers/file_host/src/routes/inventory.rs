@@ -111,6 +111,7 @@ where
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
+	crate::mailbox::Outbox: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -171,6 +172,7 @@ where
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
+	crate::mailbox::Outbox: FromRef<S>,
 {
 	split(|module| {
 		if module.is_versioned() {
@@ -188,6 +190,7 @@ where
 	AuthContext: FromRef<S>,
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
+	crate::mailbox::Outbox: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

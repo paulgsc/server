@@ -672,7 +672,7 @@ nowhere is marked as such and belongs to review.
     `apps/www/src/lib/home-link/send.ts`, `logGoing`, which sends only
     `finishedSessions`), so home applies no rule of its own beyond waiting
     out a send in flight. The poller files a session's log once its newest
-    event has been home for a poll interval (`mailbox::INTERVAL`), and again,
+    event has been home for 15 minutes (`mailbox::SETTLE`), and again,
     as `.r<n>`, only once an event of it arrives after that copy. A session
     it cannot file is recorded as refused, and is decided again the same way;
     its events stay here, whatever the mailbox copy came to. Which
@@ -727,6 +727,17 @@ nowhere is marked as such and belongs to review.
     `prompt` (each drama prompt home keeps, as the routine's minimum,
     invariant 31; paulgsc/some-ui#2179) and `feedback` (each note on a
     feed's episode home keeps, invariant 38; paulgsc/some-ui#2745).
+    The poller also holds one connection open to the mailbox's bell
+    (`mailbox::bell`, paulgsc/server#500), outbound like every request it
+    makes, with the same `MAILBOX_TOKEN` in its `Authorization` header and
+    never in the URL. On it, home reads only a ring, `{"ring":"<folder>"}`,
+    which names a folder and nothing of a file, and sends only `ping`. A
+    ring, a (re)connect's catch-up (no sooner than 15 minutes after the last
+    pass), a file home files for the mailbox, and the
+    backstop timer (hourly while the bell is held, `mailbox::INTERVAL`, and
+    every 15 minutes while it isn't, `mailbox::UNHELD`) each run the same pass, one at a
+    time, so what the poller reads and writes is the same whatever woke it.
+    Nothing here listens on a port.
     - `mailbox_item`, written only by the poller: each file it kept from
       those five folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
@@ -2247,8 +2258,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   database before home reads them, and stay there until home archives them
   (invariant 21): then their bytes are home's alone, and the mailbox keeps
   each one's name, size, hash and dates. Cloudflare holds them at rest and
-  sees the access pattern: home asking every `mailbox::INTERVAL` from the home
-  connection's address, and the routine putting a file each morning. Home's own copy
+  sees the access pattern: a connection to the bell held open from the home
+  connection's address, a ring on it with a folder's name each time the
+  routine puts to a folder home reads, home's requests from that address
+  after each ring and each file home files, a catch-up after a (re)connect
+  no sooner than 15 minutes after the last pass, and as the
+  backstop at least hourly while the bell is held and every 15 minutes while
+  it isn't, and the routine putting a file
+  each morning. Home's own copy
   (`mailbox_item`, invariant 19) says when home read each one. Deleting the
   account removes home's copy and its archive; the mailbox's live files and
   archived rows are the owner's to delete.

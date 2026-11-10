@@ -248,7 +248,8 @@ running, the call's or Playoff Delta's, which the worker marks with a
 by an attempt that was killed counts until that key's next attempt ends,
 when that key's next attempt ends).
 The polls (mailbox, call weeks,
-game feed, the nudge waker), requests and scrapes keep running at rest:
+game feed, the nudge waker), the mailbox's held bell connection (a `ping`
+every 30 seconds), requests and scrapes keep running at rest:
 they are part of what keeping home up costs, and are counted.
 
 WHO DUNNIT's AT REST row keeps each series only at those moments and

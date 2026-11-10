@@ -1812,6 +1812,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokenizers",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "tower 0.4.13",
  "tower-http 0.5.2",
@@ -5703,7 +5704,9 @@ checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
 dependencies = [
  "futures-util",
  "log",
+ "native-tls",
  "tokio",
+ "tokio-native-tls",
  "tungstenite",
 ]
 
@@ -6021,6 +6024,7 @@ dependencies = [
  "http 1.5.0",
  "httparse",
  "log",
+ "native-tls",
  "rand 0.8.8",
  "sha1",
  "thiserror 1.0.69",
