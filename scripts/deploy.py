@@ -398,7 +398,17 @@ def on_demand(host: Host, demand: Demand, options: Options, wall: Callable[[], f
         say("deploy: no deploy is wanted; nothing to do")
         return EXIT_DEPLOYED
     needs = as_int(marker.get("needs"))
-    running = as_int(marker.get("running"))
+    running = as_int(marker.get("running"), -1)
+    if running < 0:
+        # A marker without what home ran (unreadable, or written by hand):
+        # ask the serving image itself, never assume 0, which would make any
+        # pulled image look newer.
+        serving_now = host.reading(CONTAINER)
+        running = (demand.image_epoch(serving_now.image) if serving_now.container and serving_now.image else None) or -1
+    if running < 0:
+        say("deploy: the marker does not say which epoch home runs, and the serving image cannot either; not deploying")
+        demand.clear_marker()
+        return EXIT_NOT_DEPLOYED
     say(f"deploy: a client needs contract epoch {needs}; home runs {running}")
 
     state = demand.read_state()
@@ -944,6 +954,19 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.run_on_demand(host, demand)[0], EXIT_DEPLOYED)
         self.assertNotIn("up", host.calls)
         self.assertIsNone(demand.state["latest_seen_epoch"])
+
+    def test_a_malformed_marker_never_reads_as_epoch_zero(self) -> None:
+        host = self.world(ready_after(0), ready_after(0))
+        # The serving image says 2; the published one is 2 as well: nothing newer.
+        demand = FakeDemand({}, epochs={"sha256:old": 2, "sha256:new": 2})
+        self.assertEqual(self.run_on_demand(host, demand)[0], EXIT_DEPLOYED)
+        self.assertNotIn("up", host.calls)
+        # And when nothing can say what runs, nothing is deployed.
+        host = self.world(ready_after(0), ready_after(0))
+        demand = FakeDemand({}, epochs={"sha256:new": 9})
+        self.assertEqual(self.run_on_demand(host, demand)[0], EXIT_NOT_DEPLOYED)
+        self.assertNotIn("up", host.calls)
+        self.assertTrue(demand.cleared)
 
     def test_a_pull_within_the_gap_is_deferred(self) -> None:
         host = self.world(ready_after(0), ready_after(0))

@@ -33,6 +33,7 @@ use crate::contract::{CONTRACT_EPOCH, OLDEST_SUPPORTED};
 use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// `${STORAGE}/deploy` on the host: the marker `file_host` writes and the
@@ -213,16 +214,18 @@ struct Marker {
 ///
 /// The folder cannot be made, or the file written.
 pub fn request(folder: &Path, needs: u32, now: i64) -> std::io::Result<bool> {
+	// Each ask its own temporary file, made exclusively: two asks in the
+	// same second must never share one, or the second could truncate what
+	// the first had already linked as the marker.
+	static NEXT: AtomicU64 = AtomicU64::new(0);
 	std::fs::create_dir_all(folder)?;
 	let mut temp_name = String::from(".wanted-");
 	temp_name.push_str(&std::process::id().to_string());
 	temp_name.push('-');
-	temp_name.push_str(&now.to_string());
-	temp_name.push('-');
-	temp_name.push_str(&needs.to_string());
+	temp_name.push_str(&NEXT.fetch_add(1, Ordering::Relaxed).to_string());
 	let temp = folder.join(temp_name);
 	{
-		let mut file = std::fs::File::create(&temp)?;
+		let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
 		serde_json::to_writer(
 			&mut file,
 			&Marker {
@@ -331,6 +334,22 @@ mod tests {
 		assert!(marker_since(&folder).is_some());
 		let names: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name()).collect();
 		assert_eq!(names, [std::ffi::OsString::from(WANTED)], "no temporary file is left");
+	}
+
+	/// Two asks in the same second each write their own temporary file:
+	/// the marker one of them linked keeps its whole contents.
+	#[test]
+	fn asks_in_the_same_second_never_share_a_file() {
+		let dir = tempfile::tempdir().unwrap();
+		let folder = dir.path().join("deploy");
+		let wrote = std::thread::scope(|scope| {
+			let asks: [_; 8] = std::array::from_fn(|_| scope.spawn(|| request(&folder, CONTRACT_EPOCH + 1, NOW).unwrap()));
+			asks.into_iter().map(|ask| usize::from(ask.join().unwrap())).sum::<usize>()
+		});
+		assert_eq!(wrote, 1, "exactly one ask writes the marker");
+		let written: serde_json::Value = serde_json::from_slice(&std::fs::read(folder.join(WANTED)).unwrap()).unwrap();
+		assert_eq!(written["running"], CONTRACT_EPOCH);
+		assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "no temporary file is left");
 	}
 
 	#[test]
