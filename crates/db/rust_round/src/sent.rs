@@ -252,10 +252,13 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 /// draft's moment is the same send only if it is the same value (both read
 /// as a [`Sent`], so key order and spacing are no part of it).
 ///
+/// The caller refuses the send instead when [`is_final`] says the week is
+/// final, in the same transaction: a final is never written beside a draft.
+///
 /// # Errors
 /// [`RoundError::Rewritten`] for another body at the draft's moment, which
 /// writes nothing; [`RoundError::Storage`] for any `sqlx` failure. Run it in
-/// a `BEGIN IMMEDIATE` transaction.
+/// a `BEGIN IMMEDIATE` transaction, with `now` read once its lock is held.
 pub async fn put_draft(conn: &mut SqliteConnection, subject: &str, sent: &Sent, now: &str) -> Result<(DraftChange, Sent), RoundError> {
 	// Re-serialising a checked value: its own field names and the phone's
 	// strings, nothing more.
@@ -302,20 +305,44 @@ async fn draft(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result
 	row.map(|row| stored(row.body, row.received_at, true)).transpose()
 }
 
+/// Whether `week` is final for `subject`: home holds its final.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn is_final(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<bool, sqlx::Error> {
+	let held = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM rust_week_final WHERE subject_id = ?1 AND week_id = ?2) AS "held!: bool""#,
+		subject,
+		week
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(held)
+}
+
 /// `subject`'s send of `week` that stands: its final once it has one, else
 /// its draft, if home holds either. Run [`finalize`] first once the week's
 /// deadline has passed.
 ///
+/// Both are read in one statement, so one snapshot: a finalization between
+/// two reads could otherwise move the send out of the draft after the final
+/// was found missing, and the week would read as never sent.
+///
 /// # Errors
 /// Any `sqlx` failure, or a stored body that no longer reads as one.
 pub async fn standing(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<Option<StoredSent>, sqlx::Error> {
-	let row = sqlx::query!("SELECT body, received_at FROM rust_week_final WHERE subject_id = ?1 AND week_id = ?2", subject, week)
-		.fetch_optional(&mut *conn)
-		.await?;
-	match row {
-		Some(row) => stored(row.body, row.received_at, false).map(Some),
-		None => draft(conn, subject, week).await,
-	}
+	let row = sqlx::query!(
+		r#"SELECT body AS "body!", received_at AS "received_at!", draft AS "draft!: bool" FROM (
+		       SELECT body, received_at, 0 AS draft FROM rust_week_final WHERE subject_id = ?1 AND week_id = ?2
+		       UNION ALL
+		       SELECT body, received_at, 1 AS draft FROM rust_week_draft WHERE subject_id = ?1 AND week_id = ?2)
+		   ORDER BY draft LIMIT 1"#,
+		subject,
+		week
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	row.map(|row| stored(row.body, row.received_at, row.draft)).transpose()
 }
 
 /// The weeks `subject` holds a draft of: one row per week not yet final, by
@@ -465,7 +492,7 @@ pub async fn pastes(conn: &mut SqliteConnection, subject: &str, week: &str) -> R
 
 #[cfg(test)]
 mod tests {
-	use super::{finalize, pastes, put_draft, put_paste, read_paste, read_sent, standing, DraftChange, Sent};
+	use super::{finalize, is_final, pastes, put_draft, put_paste, read_paste, read_sent, standing, DraftChange, Sent};
 	use crate::week::read;
 	use crate::{Change, RoundError};
 	use serde_json::{json, Value};
@@ -638,12 +665,20 @@ mod tests {
 		let sent = read_sent(sent_body("2026-11-15T21:00:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
 		put_draft(&mut conn, A, &sent, OPEN).await.unwrap();
 		assert!(!finalize(&mut conn, A, "2026-w46", DUE, OPEN).await.unwrap(), "not before the deadline");
+		assert!(!is_final(&mut conn, A, "2026-w46").await.unwrap());
 		assert!(standing(&mut conn, A, "2026-w46").await.unwrap().unwrap().draft);
 		assert!(finalize(&mut conn, A, "2026-w46", DUE, NOW).await.unwrap());
 		let held = standing(&mut conn, A, "2026-w46").await.unwrap().unwrap();
 		assert_eq!((&held.sent, held.draft), (&sent, false));
+		assert!(is_final(&mut conn, A, "2026-w46").await.unwrap());
+		assert!(!is_final(&mut conn, B, "2026-w46").await.unwrap(), "another subject's week is its own");
 		let drafts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_week_draft").fetch_one(&mut *conn).await.unwrap();
 		assert_eq!(drafts, 0, "the draft went with the transaction that made it final");
+		// Were a draft ever beside the final, the final is what stands.
+		let other = read_sent(sent_body("2026-11-15T22:00:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
+		put_draft(&mut conn, A, &other, OPEN).await.unwrap();
+		assert_eq!(standing(&mut conn, A, "2026-w46").await.unwrap().unwrap(), held);
+		sqlx::query("DELETE FROM rust_week_draft").execute(&mut *conn).await.unwrap();
 		assert!(!finalize(&mut conn, A, "2026-w46", DUE, "2026-12-01T00:00:00Z").await.unwrap(), "once");
 		assert_eq!(standing(&mut conn, A, "2026-w46").await.unwrap().unwrap(), held);
 		assert!(!finalize(&mut conn, B, "2026-w46", DUE, NOW).await.unwrap(), "nothing sent: no final");

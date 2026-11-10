@@ -186,9 +186,18 @@ fn stored_instant(at: &str) -> Option<String> {
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_week_sent_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_sent(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
-	let now = now();
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	// Read once the write lock is held: a finalization that committed while
+	// this send waited for it did so after the deadline, so this `now` is too,
+	// and the send is refused rather than drafted beside the final.
+	let now = now();
 	let week = held_week(&mut tx, paired.subject.as_str(), &id).await?;
+	if rust_round_repo::sent::is_final(&mut tx, paired.subject.as_str(), &week.id).await? {
+		return Err(FileHostError::unprocessable_entity(vec![(
+			String::from("week"),
+			"is final: its deadline has passed, and what stood then is the record",
+		)]));
+	}
 	let sent = match rust_round_repo::sent::read_sent(&body, &week, &now) {
 		Ok(sent) => sent,
 		Err(problems) => {
@@ -222,8 +231,8 @@ async fn finalize(conn: &mut SqliteConnection, subject: &str, week: &Week, now: 
 /// # Errors
 /// 500 for a storage failure.
 pub(crate) async fn finalize_due(db: &SqlitePool, subject: &str) -> Result<(), FileHostError> {
-	let now = now();
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let now = now();
 	for id in rust_round_repo::sent::drafted_weeks(&mut tx, subject).await? {
 		match held_week(&mut tx, subject, &id).await {
 			Ok(week) => finalize(&mut tx, subject, &week, &now).await?,

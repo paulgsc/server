@@ -971,6 +971,21 @@ mod tests {
 			(&json!("2026-10-21T09:00:00.000Z"), &json!(true), &json!(false))
 		);
 		assert_eq!(open["unanswered"], json!(["QM-2", "QM-3"]), "read from the draft");
+
+		// A send that waited out a finalization finds the week final, never a
+		// draft written beside it.
+		sqlx::query("INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w53', '2026-10-21T09:00:00.000Z', ?2, 'then')")
+			.bind(A)
+			.bind(held.to_string())
+			.execute(&pool)
+			.await
+			.unwrap();
+		let newest = sent_of("2026-w53", "2026-10-22T09:00:00.000Z");
+		let (status, _, refused) = call(&app, Method::PUT, OPEN_SENT, Some(&phone), None, &newest).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		assert!(refused["error"]["details"]["week"].is_array(), "{refused}");
+		let (_, _, record) = call(&app, Method::GET, "/rust-weeks/2026-w53/record", Some(&phone), None, b"").await;
+		assert_eq!(record["sent"]["draft"], json!(false), "the final stands");
 	}
 
 	/// A card-era session is kept as sent and read back byte for byte; it
