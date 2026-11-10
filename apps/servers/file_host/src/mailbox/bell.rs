@@ -547,19 +547,35 @@ mod tests {
 
 	/// The pass loop with a recording pass: each pass's cause, in order.
 	fn recording(wake: &Arc<Wake>, cancel: &CancellationToken, takes: Duration) -> (tokio::task::JoinHandle<()>, mpsc::UnboundedReceiver<Cause>) {
+		recording_failing(wake, cancel, takes, 0)
+	}
+
+	/// As [`recording`], with the first `failing` passes failing, and a
+	/// 300 ms retry after a failed pass (the backstop stays an hour).
+	fn recording_failing(wake: &Arc<Wake>, cancel: &CancellationToken, takes: Duration, failing: usize) -> (tokio::task::JoinHandle<()>, mpsc::UnboundedReceiver<Cause>) {
+		let ran_so_far = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 		let (ran, passes) = mpsc::unbounded_channel();
 		let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
 		let (wake, cancel) = (Arc::clone(wake), cancel.clone());
 		let task = tokio::spawn(async move {
-			super::super::run_passes(&wake, Duration::from_secs(3600), &cancel, |cause| {
-				let (ran, busy) = (ran.clone(), Arc::clone(&busy));
-				async move {
-					assert!(!busy.swap(true, Ordering::SeqCst), "two passes at once");
-					let _ = ran.send(cause);
-					tokio::time::sleep(takes).await;
-					busy.store(false, Ordering::SeqCst);
-				}
-			})
+			super::super::run_passes(
+				&wake,
+				Duration::from_secs(3600),
+				Duration::from_millis(300),
+				&cancel,
+				|cause| {
+					let (ran, busy) = (ran.clone(), Arc::clone(&busy));
+					let nth = ran_so_far.fetch_add(1, Ordering::SeqCst);
+					async move {
+						assert!(!busy.swap(true, Ordering::SeqCst), "two passes at once");
+						let _ = ran.send(cause);
+						tokio::time::sleep(takes).await;
+						busy.store(false, Ordering::SeqCst);
+						nth >= failing
+					}
+				},
+				|| async {},
+			)
 			.await;
 		});
 		(task, passes)
@@ -583,6 +599,53 @@ mod tests {
 		assert!(tokio::time::timeout(Duration::from_millis(500), passes.recv()).await.is_err(), "and no third");
 		cancel.cancel();
 		task.await.unwrap();
+	}
+
+	/// A failed pass is tried again by the timer after the retry, not after
+	/// the hour-long backstop, so three failures in a row take 45 minutes on
+	/// home, as `MailboxPollerFailing` counts them.
+	#[tokio::test]
+	async fn a_failed_pass_is_retried_soon_and_a_good_one_waits_the_backstop() {
+		let wake = Arc::new(Wake::default());
+		let cancel = CancellationToken::new();
+		let (task, mut passes) = recording_failing(&wake, &cancel, Duration::from_millis(1), 1);
+		assert_eq!(next_pass(&mut passes).await, Cause::Timer);
+		let started = Instant::now();
+		assert_eq!(next_pass(&mut passes).await, Cause::Timer, "the retry");
+		assert!(started.elapsed() >= Duration::from_millis(250), "after the retry's delay");
+		assert!(tokio::time::timeout(Duration::from_millis(800), passes.recv()).await.is_err(), "a good pass waits the hour");
+		cancel.cancel();
+		task.await.unwrap();
+	}
+
+	/// With nothing ringing, the loop passes once an hour and stamps the
+	/// routine watch every 5 minutes between, so RR2's due time moves on time.
+	#[tokio::test(start_paused = true)]
+	async fn an_idle_loop_passes_hourly_and_watches_every_five_minutes() {
+		let wake = Wake::default();
+		let cancel = CancellationToken::new();
+		let (passes, watches) = (std::cell::Cell::new(0_u32), std::cell::Cell::new(0_u32));
+		let run = super::super::run_passes(
+			&wake,
+			super::super::INTERVAL,
+			super::super::RETRY,
+			&cancel,
+			|_| {
+				passes.set(passes.get() + 1);
+				async { true }
+			},
+			|| {
+				watches.set(watches.get() + 1);
+				async {}
+			},
+		);
+		let stop = async {
+			tokio::time::sleep(Duration::from_secs(61 * 60)).await;
+			cancel.cancel();
+		};
+		tokio::join!(run, stop);
+		assert_eq!(passes.get(), 2, "at once, then an hour later");
+		assert_eq!(watches.get(), 12, "every 5 minutes for 61 minutes");
 	}
 
 	/// #500's "done when": with a bell that drops, the reconnect runs a pass.

@@ -32,6 +32,92 @@ tests:
         alertname: MailboxPollerMetricsMissing
         exp_alerts: []
 
+  - name: an hourly backstop whose loop is alive is quiet between passes, and stale past interval + budget + 60 s (#500)
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '1x70'
+      - series: 'mailbox_poll_interval_seconds{job="file_host"}'
+        values: '3600x70'
+      - series: 'mailbox_poll_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x70'
+      - series: 'mailbox_poll_alive_timestamp_seconds{job="file_host"}'
+        values: '0+60x70'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: MailboxPollerStale
+        exp_alerts: []
+      - eval_time: 64m
+        alertname: MailboxPollerStale
+        exp_alerts:
+          - exp_labels:
+              objective: MI3
+              says: "The Jobs mailbox poller has not started a pass within its interval, its budget and a minute."
+
+  - name: a pass loop that stops saying it is alive is stale within minutes, not an hour (#500)
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '1x20'
+      - series: 'mailbox_poll_interval_seconds{job="file_host"}'
+        values: '3600x20'
+      - series: 'mailbox_poll_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x20'
+      - series: 'mailbox_poll_alive_timestamp_seconds{job="file_host"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: MailboxPollerStale
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: MailboxPollerStale
+        exp_alerts:
+          - exp_labels:
+              objective: MI3
+              says: "The Jobs mailbox poller has not started a pass within its interval, its budget and a minute."
+
+  - name: a bell home has not held for 30 minutes is said, and a held or switched-off one is not (#500)
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '1x40'
+      - series: 'mailbox_bell_connected{job="file_host"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: MailboxBellDown
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: MailboxBellDown
+        exp_alerts:
+          - exp_labels:
+              objective: MI3
+              says: "Home has not held its connection to the mailbox's bell for 30 minutes, so files reach it only on the hourly backstop; the MAILBOX dashboard's bell row says why."
+
+  - name: a held bell is quiet
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '1x40'
+      - series: 'mailbox_bell_connected{job="file_host"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: MailboxBellDown
+        exp_alerts: []
+
+  - name: a dead bell on a switched-off mailbox is quiet
+    interval: 1m
+    input_series:
+      - series: 'mailbox_poll_enabled{job="file_host"}'
+        values: '0x40'
+      - series: 'mailbox_bell_connected{job="file_host"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: MailboxBellDown
+        exp_alerts: []
+
   - name: a mailbox poller whose every pass fails alerts after three passes, naming why (#641)
     interval: 1m
     input_series:

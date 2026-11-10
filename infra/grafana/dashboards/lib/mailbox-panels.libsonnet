@@ -135,7 +135,7 @@ local series(title, description, targets, unit) = {
   // deployed) or the connection keeps failing; the panel beside it says why.
   bell: stat(
     'BELL',
-    'Whether home holds its connection to the mailbox\'s bell. UP: a routine\'s put reaches home in seconds. DOWN: home reads the mailbox on the backstop timer only (every 15 minutes) until the bell answers again.',
+    'Whether home holds its connection to the mailbox\'s bell. UP: a routine\'s put reaches home in seconds. DOWN: home reads the mailbox on the backstop timer only (every hour) until the bell answers again; MailboxBellDown tells Slack after 30 minutes.',
     { expr: 'mailbox_bell_connected' },
     'none',
     [{ color: 'green', value: null }],
@@ -144,7 +144,7 @@ local series(title, description, targets, unit) = {
 
   passesByCause: series(
     'Why passes ran, rings, and bell failures',
-    'Per hour. Passes by cause: ring (the mailbox rang), connect (a catch-up on each connect to the bell), local (home filed something for the mailbox), timer (the backstop). Rings by folder. Bell failures by kind: not_found means the mailbox has no bell yet; unauthorized, a wrong MAILBOX_TOKEN; closed, silent or dropped, a held connection that ended.',
+    'Per hour. Passes by cause: ring (the mailbox rang), connect (a catch-up on each connect to the bell), local (home filed something for the mailbox), timer (the backstop: hourly, or 15 minutes after a failed pass). Rings by folder. Bell failures by kind: not_found means the mailbox has no bell yet; unauthorized, a wrong MAILBOX_TOKEN; closed, silent or dropped, a held connection that ended.',
     [
       { expr: 'sum by (cause) (increase(mailbox_passes_total[1h]))', legendFormat: 'pass: {{cause}}', refId: 'A' },
       { expr: 'sum by (folder) (increase(mailbox_bell_rings_total[1h]))', legendFormat: 'ring: {{folder}}', refId: 'B' },

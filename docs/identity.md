@@ -672,7 +672,7 @@ nowhere is marked as such and belongs to review.
     `apps/www/src/lib/home-link/send.ts`, `logGoing`, which sends only
     `finishedSessions`), so home applies no rule of its own beyond waiting
     out a send in flight. The poller files a session's log once its newest
-    event has been home for a poll interval (`mailbox::INTERVAL`), and again,
+    event has been home for 15 minutes (`mailbox::SETTLE`), and again,
     as `.r<n>`, only once an event of it arrives after that copy. A session
     it cannot file is recorded as refused, and is decided again the same way;
     its events stay here, whatever the mailbox copy came to. Which

@@ -167,3 +167,13 @@ pub fn record_ring(folder: &str) {
 pub fn record_pass_cause(cause: crate::mailbox::bell::Cause) {
 	metrics::counter!("mailbox_passes_total", "cause" => cause.name()).increment(1);
 }
+
+/// The pass loop is alive.
+///
+/// Stamped every `mailbox::HEARTBEAT` while idle and
+/// after each pass, never during one, so a dead task or a hung pass reads as
+/// stale in minutes though the backstop runs hourly (`MailboxPollerStale`).
+pub fn record_alive() {
+	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |elapsed| elapsed.as_secs_f64());
+	metrics::gauge!("mailbox_poll_alive_timestamp_seconds").set(timestamp);
+}

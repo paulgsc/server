@@ -388,8 +388,8 @@ fn before(now: &str, back: std::time::Duration) -> Option<String> {
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
 /// reports every phase that failed. `settle` is how long a `LeetType`
-/// session's newest event must have been home before its log is filed: the
-/// poll interval, so a send still in flight is never filed in part.
+/// session's newest event must have been home before its log is filed
+/// (`mailbox::SETTLE`), so a send still in flight is never filed in part.
 ///
 /// # Errors
 /// A [`PassError`] when the mailbox cannot be reached or read (anything but
@@ -1591,7 +1591,7 @@ mod tests {
 		let context = on(&all).unwrap().unwrap();
 		assert_eq!(
 			(context.subject.as_deref(), context.interval.as_secs()),
-			(None, 900),
+			(None, 3600),
 			"no MAILBOX_SUBJECT: the owner's account, per pass"
 		);
 		assert!(context.archive.is_none(), "no archive token, nothing archived");

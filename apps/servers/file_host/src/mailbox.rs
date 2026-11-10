@@ -22,8 +22,9 @@
 //! puts to a folder home reads. A pass runs on a ring, on each (re)connect
 //! (to catch up on what was put while home wasn't listening), as soon as home
 //! files something for the mailbox itself ([`Outbox`]), and on the backstop
-//! timer, every `mailbox::INTERVAL` (900 seconds), which keeps every file
-//! arriving while the bell is down or not yet deployed. One loop runs every
+//! timer, every `mailbox::INTERVAL` (an hour; 15 minutes after a pass that
+//! failed, [`RETRY`]), which keeps every file arriving while the bell is
+//! down. One loop runs every
 //! pass, so two never overlap, and causes raised during a pass fold into at
 //! most one more. A pass is idempotent (cursor plus SHA-256), so an extra one
 //! costs a few listings and nothing else.
@@ -80,14 +81,41 @@ use tracing::{error, info, warn};
 /// The shortest interval a pass may run at.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
 
-/// The backstop: 15 minutes.
+/// The backstop: an hour.
 ///
 /// Home reads the mailbox at least this often, whatever the bell does. A
-/// source constant (#617), as `MAILBOX_SECONDS` was by default. Raising it
-/// once the bell is proven is the owner's call (#499).
-pub const INTERVAL: Duration = Duration::from_secs(900);
+/// source constant (#617). It was 15 minutes while the timer was the only
+/// way a pass ran; the owner chose an hour once the bell landed (2026-11-10,
+/// #500), which keeps MI6's idle bound at 24 passes a day plus one per
+/// reconnect.
+pub const INTERVAL: Duration = Duration::from_secs(3600);
+
+/// How soon the timer runs again after a pass that failed.
+///
+/// 15 minutes, the old interval, so `MailboxPollerFailing`'s 45 minutes is still three failed
+/// passes in a row rather than one failure held for an hour.
+pub const RETRY: Duration = Duration::from_secs(900);
+
+/// How long a `LeetType` session waits before a pass files its log.
+///
+/// Its newest event must have been home 15 minutes, so a send still in flight is never filed
+/// in part. It was the poll interval, and stays what that was.
+pub const SETTLE: Duration = Duration::from_secs(900);
+
+/// How often the idle pass loop says it is alive
+/// (`mailbox_poll_alive_timestamp_seconds`), so a dead or hung loop is heard
+/// in minutes, not after an hour-long interval (MI3).
+pub const HEARTBEAT: Duration = Duration::from_secs(60);
+
+/// How often the idle pass loop stamps the routine watch.
+///
+/// [`crate::routine_watch::stamp`] runs between passes. Each pass stamps it too,
+/// but passes are hourly when nothing rings, and RR2 promises a missing
+/// run is told 30 minutes after it was due: the due time must move by then.
+pub const WATCH: Duration = Duration::from_secs(300);
 
 const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs());
+const _: () = assert!(RETRY.as_secs() >= MIN_INTERVAL.as_secs() && RETRY.as_secs() <= INTERVAL.as_secs());
 
 /// The fewest days `MAILBOX_ARCHIVE_DAYS` may set: the mailbox's own floor
 /// (`ARCHIVE_MIN_AGE_DAYS` in paulgsc/some-ui `apps/mailbox/src/core.ts`),
@@ -306,7 +334,7 @@ fn spawn(state: &AppState, context: MailboxContext) {
 	tokio::spawn(async move {
 		info!(interval_secs = context.interval.as_secs(), "Jobs mailbox poller started");
 		let wake = Arc::clone(&context.wake);
-		run_passes(&wake, context.interval, &cancel, |cause| tick(&db, &context, cause)).await;
+		run_passes(&wake, context.interval, RETRY, &cancel, |cause| tick(&db, &context, cause), || watch(&db, &context)).await;
 		info!("Jobs mailbox poller cancelled");
 	});
 }
@@ -316,30 +344,69 @@ fn spawn(state: &AppState, context: MailboxContext) {
 /// Passes never overlap: this loop is the only caller of `pass`. Causes
 /// raised while a pass runs fold into at most one more. Each pass restarts
 /// the backstop timer, so a pass a ring ran is not followed by the timer's a
-/// moment later.
-async fn run_passes<F, Fut>(wake: &bell::Wake, interval: Duration, cancel: &tokio_util::sync::CancellationToken, mut pass: F)
+/// moment later: `interval` after a pass that succeeded (`pass` returns
+/// true), `retry` after one that failed. While idle the loop stamps that it
+/// is alive every [`HEARTBEAT`], and runs `watch` every [`WATCH`]; during a
+/// pass it does neither, so a hung pass reads as stale, and `watch` never
+/// races a pass's own stamp.
+async fn run_passes<F, Fut, W, WFut>(wake: &bell::Wake, interval: Duration, retry: Duration, cancel: &tokio_util::sync::CancellationToken, mut pass: F, mut watch: W)
 where
 	F: FnMut(bell::Cause) -> Fut,
-	Fut: std::future::Future<Output = ()>,
+	Fut: std::future::Future<Output = bool>,
+	W: FnMut() -> WFut,
+	WFut: std::future::Future<Output = ()>,
 {
 	let mut ticker = tokio::time::interval(interval);
 	ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+	let mut heartbeat = tokio::time::interval(HEARTBEAT);
+	heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+	// The first pass stamps the watch; this one starts a period later.
+	let mut watching = tokio::time::interval_at(tokio::time::Instant::now() + WATCH, WATCH);
+	watching.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	loop {
 		let cause = tokio::select! {
 			() = cancel.cancelled() => return,
+			_ = heartbeat.tick() => {
+				crate::metrics::mailbox::record_alive();
+				continue;
+			}
+			_ = watching.tick() => {
+				watch().await;
+				continue;
+			}
 			// Whatever was raised before the timer fired rides its pass.
 			_ = ticker.tick() => wake.take().unwrap_or(bell::Cause::Timer),
 			cause = wake.wait() => cause,
 		};
 		crate::metrics::mailbox::record_pass_cause(cause);
-		pass(cause).await;
-		ticker.reset();
+		let succeeded = pass(cause).await;
+		crate::metrics::mailbox::record_alive();
+		if succeeded {
+			ticker.reset();
+		} else {
+			ticker.reset_after(retry);
+		}
+	}
+}
+
+/// Between passes: stamp the routine watch for the pass's subject, so a
+/// routine that was due moves its gauge without waiting for the hourly pass.
+/// Reads home's own tables only; no request to the mailbox.
+async fn watch(db: &SqlitePool, context: &MailboxContext) {
+	if context.schedules.is_empty() {
+		return;
+	}
+	match pass_subject(db, context.subject.as_deref()).await {
+		Ok(Owner::Subject(subject)) => crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await,
+		Ok(Owner::NoAccount | Owner::Several) => {}
+		Err(err) => error!(error = %err, "could not read whose routines to watch"),
 	}
 }
 
 /// One pass of the poller: find whose copy to keep, run a pass for it, then
-/// stamp the routine watch and tell the phones.
-async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) {
+/// stamp the routine watch and tell the phones. True when it succeeded: no
+/// phase failed, and there was an account to keep the files for.
+async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> bool {
 	crate::metrics::mailbox::record_pass_started();
 	let started = tokio::time::Instant::now();
 	let subject = match pass_subject(db, context.subject.as_deref()).await {
@@ -358,7 +425,7 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) {
 			crate::metrics::mailbox::record_pass_duration(started.elapsed());
 			crate::metrics::mailbox::record_pass(&outcome, &["storage"]);
 			error!(error = %err, phase = "subject", class = "storage", "Jobs mailbox pass failed");
-			return;
+			return false;
 		}
 	};
 	let result = match &subject {
@@ -373,7 +440,7 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) {
 				archiving.as_ref(),
 				subject,
 				&context.deletion,
-				context.interval,
+				SETTLE,
 				&context.last_index,
 				&pass::now,
 			)
@@ -390,8 +457,9 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) {
 		Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, &err.classes()),
 	}
 	log_pass(&result, cause);
+	let succeeded = result.as_ref().is_ok_and(|outcome| !outcome.no_account);
 	let Some(subject) = subject else {
-		return;
+		return succeeded;
 	};
 	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
 	if let Some(sender) = context.notice.as_deref() {
@@ -407,4 +475,5 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) {
 			Err(err) => error!(error = %err, "Jobs arrival notice pass failed"),
 		}
 	}
+	succeeded
 }
