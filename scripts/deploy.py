@@ -322,8 +322,13 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
         say(stuck_note(backup))
         return EXIT_NOTHING_READY
 
-    assert old is not None and new is not None
-    host.remember_failed(new)
+    assert old is not None
+    # The image that failed: the container's, or, when `up` left no
+    # container at all, the one it was asked to start. Recorded only when
+    # known, and never the serving one.
+    failed_image = new or candidate
+    if failed_image is not None and failed_image != old:
+        host.remember_failed(failed_image)
     say(f"deploy: ROLLING BACK to {host.describe(old)}")
     if not host.tag(old, IMAGE) or not host.recreate_file_host():
         say(f"deploy: the rollback could not restart {old}")
@@ -332,7 +337,7 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
         return EXIT_NOTHING_READY
     verdict, took_back = wait_ready(read, now, sleep, options.ready_timeout, options.poll)
     if verdict.kind == "ready":
-        say(f"deploy: ROLLED BACK: the previous image is ready after {took_back:.0f} s. The image that failed is {new}, and is skipped until a newer one is published.")
+        say(f"deploy: ROLLED BACK: the previous image is ready after {took_back:.0f} s. The image that failed is {failed_image or 'unknown'}, and is skipped until a newer one is published.")
         say(f"deploy: {CHECKOUT_HINT}")
         say(DATABASE_NOTE)
         return EXIT_ROLLED_BACK
@@ -463,6 +468,7 @@ class FakeHost:
     registry: dict[str, str] = field(default_factory=dict)  # what a pull fetches
     pull_ok: bool = True
     up_ok: bool = True
+    up_removes: bool = False  # `up` removed the old container and created none
     log: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
@@ -499,13 +505,19 @@ class FakeHost:
 
     def up(self) -> bool:
         self.calls.append("up")
+        if self.up_removes:
+            self.serving = None
+            return False
         if self.up_ok:
             self._start()
         return self.up_ok
 
     def recreate_file_host(self) -> bool:
         self.calls.append("recreate")
-        self._start()
+        image = self.tags[FH_REF]
+        if image != self.serving:
+            self.serving = image
+            self.started_at = self.clock.now()
         return True
 
     def logs(self, container: str) -> list[str]:
@@ -660,6 +672,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(host.failed, [])
         self.assertTrue(any("still serves" in line for line in said))
         self.assertTrue(any("needs a newer checkout on home" in line for line in said))
+
+    def test_an_up_that_leaves_no_container_still_rolls_back(self) -> None:
+        host = self.world(ready_after(0), ready_after(0), up_removes=True)
+        code, said = self.run_deploy(host)
+        self.assertEqual(code, EXIT_ROLLED_BACK)
+        self.assertEqual(host.serving, "sha256:old")
+        self.assertEqual(host.tags[FH_REF], "sha256:old")
+        self.assertEqual(host.failed, ["sha256:new"], "the image up was asked to start")
+        self.assertTrue(any("ROLLED BACK" in line for line in said))
 
     def test_the_service_is_the_compose_files(self) -> None:
         text = (REPO_ROOT / "infra" / "compose" / "file_host.yml").read_text()
