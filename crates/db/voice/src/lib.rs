@@ -828,10 +828,11 @@ pub struct AudioHead {
 /// and for one said for anything else. It reads no audio: [`audio_body`]
 /// does, under the same filter, only when the bytes are wanted.
 ///
-/// Reads only. With [`audio_body`], its one caller is `file_host`'s
+/// Reads only. With [`audio_body`], its callers are `file_host`'s
 /// `handlers::voice` (`GET /api/v1/voice-notes/:id/audio`), which serves the
-/// kinds in [`PLAYED_BACK`] only, to a paired phone (docs/identity.md
-/// invariant 23).
+/// kinds in [`PLAYED_BACK`] only, to a paired phone, and `rust_essays`, which copies a final week's `rust-round` takes into its
+/// essay's render input on home's drive (docs/identity.md invariant 23's one
+/// named exception).
 ///
 /// # Errors
 /// [`VoiceError::Unreadable`] for a held container this crate would not have

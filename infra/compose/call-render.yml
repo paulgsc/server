@@ -6,8 +6,9 @@
 #   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
 # - `call-stage`, the stage: the published home-network app image, pinned by
 #   digest (the owner's choice on paulgsc/some-ui#2639), serving `/call` and
-#   `/playoff-delta`. Bump the pin when either stage changes.
-# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with three jobs
+#   `/playoff-delta` (and, once a release carries it, `/essay`). Bump the
+#   pin when any stage changes.
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with four jobs
 #   (infra/render/render-calls.sh): for each week `file_host` writes to
 #   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
 #   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
@@ -20,7 +21,10 @@
 #   paulgsc/some-ui#2757): each request file_host writes to
 #   ${STORAGE}/preview-requests (`previews::REQUESTS_FOLDER`) is made from the
 #   template's sample into ${STORAGE}/renders/preview/<id>/, which file_host
-#   removes a day later (`previews::prune`).
+#   removes a day later (`previews::prune`). Its fourth is a week's Rust
+#   Rounds essay (RR16, paulgsc/some-ui#2691): each essay file_host writes to
+#   ${STORAGE}/rust-essays/<week>/ (`rust_essays::ESSAYS_FOLDER`), once the
+#   week is final, is made into ${STORAGE}/renders/rust-essay/<week>/.
 #
 #   make compose ARGS="up -d --build kokoro call-stage render"
 #   curl -s http://127.0.0.1:8880/health
@@ -114,10 +118,10 @@ services:
       call-stage:
         condition: service_started
       # file_host makes ${STORAGE}/call-weeks,
-      # ${STORAGE}/playoff-delta-episodes and ${STORAGE}/preview-requests
-      # before it answers its health check (call_weeks::start,
-      # pd_fills::start, previews::start), so each is its own, never
-      # Docker's.
+      # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests and
+      # ${STORAGE}/rust-essays before it answers its health check
+      # (call_weeks::start, pd_fills::start, previews::start,
+      # rust_essays::start), so each is its own, never Docker's.
       file-host:
         condition: service_healthy
     networks:
@@ -146,6 +150,15 @@ services:
       - type: volume
         source: preview_request_files
         target: /previews
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`rust_essays::ESSAYS_FOLDER`), read here only,
+      # through `rust_essay_files` (below): one folder per week whose essay
+      # is the week's final record's (RR16, paulgsc/some-ui#2691).
+      - type: volume
+        source: rust_essay_files
+        target: /essays
         read_only: true
         volume:
           nocopy: true
@@ -217,6 +230,15 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/preview-requests
+  # ${STORAGE}/rust-essays, where file_host writes each Rust Rounds essay it
+  # gives the worker; bound as call_week_files is, for the same reason
+  # (rust_essays::start makes it).
+  rust_essay_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/rust-essays
 
 networks:
   # Internal: none of the three reaches the internet or the rest of the stack.

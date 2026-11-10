@@ -78,12 +78,12 @@ pub struct LinkKept {
 /// 404 for an episode home doesn't hold, 409 for one with no link, no video,
 /// or the rest before the video, and 500 for a storage failure or a file the
 /// drive would not remove.
-async fn let_go_answer(db: &SqlitePool, feed: Feed, key: &str, step: Step) -> Result<Receipt, FileHostError> {
+async fn let_go_answer(db: &SqlitePool, feed: Feed, subject: &str, key: &str, step: Step) -> Result<Receipt, FileHostError> {
 	let folders = Folders {
 		renders: feed.renders(),
 		input: feed.input(),
 	};
-	match videos::let_go(db, feed, folders, key, step, &now()).await {
+	match videos::let_go(db, feed, subject, folders, key, step, &now()).await {
 		Ok(LetGo::Gone(receipt)) => Ok(receipt),
 		Ok(LetGo::NoEpisode) => Err(FileHostError::NotFound),
 		Ok(LetGo::NoLink) => Err(FileHostError::Conflict(NO_LINK)),
@@ -174,9 +174,9 @@ pub struct Episodes {
 /// render, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "feed_videos_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_episodes(_paired: Paired, State(db): State<SqlitePool>, Path(feed): Path<String>) -> Result<Json<Episodes>, FileHostError> {
+pub async fn get_episodes(paired: Paired, State(db): State<SqlitePool>, Path(feed): Path<String>) -> Result<Json<Episodes>, FileHostError> {
 	let feed = feed_of(&feed)?;
-	let episodes = videos::list(&db, feed, feed.renders()).await?;
+	let episodes = videos::list(&db, feed, paired.subject.as_str(), feed.renders()).await?;
 	Ok(Json(Episodes {
 		episodes: episodes.into_iter().map(EpisodeView::from).collect(),
 	}))
@@ -191,9 +191,9 @@ pub async fn get_episodes(_paired: Paired, State(db): State<SqlitePool>, Path(fe
 /// for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "feed_videos_video", skip_all, fields(otel.kind = "server"))]
-pub async fn get_video(_paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>, request: Request) -> Result<Response, FileHostError> {
+pub async fn get_video(paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>, request: Request) -> Result<Response, FileHostError> {
 	let feed = feed_of(&feed)?;
-	let Some(file) = videos::video_file(&db, feed, feed.renders(), &key).await? else {
+	let Some(file) = videos::video_file(&db, feed, paired.subject.as_str(), feed.renders(), &key).await? else {
 		return Err(FileHostError::NotFound);
 	};
 	let served = match ServeFile::new(file).oneshot(request).await {
@@ -224,9 +224,9 @@ pub async fn get_video(_paired: Paired, State(db): State<SqlitePool>, Path((feed
 /// writes.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "feed_videos_description", skip_all, fields(otel.kind = "server"))]
-pub async fn get_description(_paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Response, FileHostError> {
+pub async fn get_description(paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Response, FileHostError> {
 	let feed = feed_of(&feed)?;
-	described(videos::description(&db, feed, feed.renders(), &key).await)
+	described(videos::description(&db, feed, paired.subject.as_str(), feed.renders(), &key).await)
 }
 
 /// The answer to what [`videos::description`] found: the text as
@@ -259,13 +259,13 @@ fn described(found: Result<Description, DescriptionError>) -> Result<Response, F
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "feed_videos_link_put", skip_all, fields(otel.kind = "server"))]
 pub async fn put_link(
-	_paired: Paired,
+	paired: Paired,
 	State(db): State<SqlitePool>,
 	Path((feed, key)): Path<(String, String)>,
 	Json(body): Json<LinkBody>,
 ) -> Result<Json<LinkKept>, FileHostError> {
 	let feed = feed_of(&feed)?;
-	match videos::record_link(&db, feed, &key, &body.link, &now()).await? {
+	match videos::record_link(&db, feed, paired.subject.as_str(), &key, &body.link, &now()).await? {
 		LinkRecorded::Kept(id) => Ok(Json(LinkKept { url: link_of(&id) })),
 		LinkRecorded::NotAVideo => Err(FileHostError::unprocessable_entity([("link", "names no YouTube video")])),
 		LinkRecorded::NoEpisode => Err(FileHostError::NotFound),
@@ -289,8 +289,8 @@ pub struct LetGoAnswer {
 /// for a storage failure or a file the drive would not remove.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "feed_videos_let_go_video", skip_all, fields(otel.kind = "server"))]
-pub async fn delete_video(_paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Json<LetGoAnswer>, FileHostError> {
-	let receipt = let_go_answer(&db, feed_of(&feed)?, &key, Step::Video).await?;
+pub async fn delete_video(paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Json<LetGoAnswer>, FileHostError> {
+	let receipt = let_go_answer(&db, feed_of(&feed)?, paired.subject.as_str(), &key, Step::Video).await?;
 	Ok(Json(LetGoAnswer { receipt: receipt.into() }))
 }
 
@@ -304,8 +304,8 @@ pub async fn delete_video(_paired: Paired, State(db): State<SqlitePool>, Path((f
 /// failure or a folder the drive would not remove.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "feed_videos_let_go_rest", skip_all, fields(otel.kind = "server"))]
-pub async fn delete_rest(_paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Json<LetGoAnswer>, FileHostError> {
-	let receipt = let_go_answer(&db, feed_of(&feed)?, &key, Step::Rest).await?;
+pub async fn delete_rest(paired: Paired, State(db): State<SqlitePool>, Path((feed, key)): Path<(String, String)>) -> Result<Json<LetGoAnswer>, FileHostError> {
+	let receipt = let_go_answer(&db, feed_of(&feed)?, paired.subject.as_str(), &key, Step::Rest).await?;
 	Ok(Json(LetGoAnswer { receipt: receipt.into() }))
 }
 

@@ -189,6 +189,40 @@ if [ "$1" = tests/record/preview.ts ]; then
   touch -d '2 days ago' "$out/preview.mp4"
   exit 0
 fi
+# An essay (RR16): `tsx tests/record/essay.ts … --essay-file <f> --takes <d>
+# --out <w>` writes essay.mp4 and a cache into <w>/<week>, the week being
+# the essay file's folder's name, or fails as the real one does for a take
+# its folder lacks while $FAKE/no-take exists. Each run is counted in
+# $FAKE/essay-runs as `<essay file> <takes> <out>`.
+if [ "$1" = tests/record/essay.ts ]; then
+  essay= takes= out=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --essay-file) essay=$2; shift ;;
+      --takes) takes=$2; shift ;;
+      --out) out=$2; shift ;;
+      --week | --week-file) echo "essay.ts takes no $1"; exit 2 ;;
+    esac
+    shift
+  done
+  echo "$essay $takes $out" >> "$fake/essay-runs"
+  if [ -e "$fake/correct-mid-render" ]; then
+    rm -f "$fake/correct-mid-render"
+    echo '{"r":2}' > "$essay"
+    echo 2 > "$(dirname "$essay")/revision"
+  fi
+  if [ -e "$fake/no-take" ]; then
+    echo "QM-311 is answered with a take, and $takes has none for it" >&2
+    exit 1
+  fi
+  week=$(basename "$(dirname "$essay")")
+  mkdir -p "$out/$week/cache"
+  echo intermediate > "$out/$week/cache/frame"
+  cp "$essay" "$out/$week/essay.json"
+  echo "essay of $week" > "$out/$week/essay.mp4"
+  too_large "$out/$week/essay.mp4"
+  exit 0
+fi
 [ "$1" = tests/record/call.ts ] || { echo "not the call's recorder: $1"; exit 2; }
 week_file= out=
 while [ $# -gt 0 ]; do
@@ -282,7 +316,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" \
+    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
@@ -694,6 +728,9 @@ check "its job is over" test ! -e "$ROOT/renders/call-worker/job"
 run_job preview > "$SCRATCH/pass.out" 2>&1
 check "a ready preview is not made again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
 check "its video's time is when it was moved into place" test "$(( $(date +%s) - $(stat -c %Y "$ROOT/renders/preview/$ID/preview.mp4") ))" -lt 60
+echo '{}' > "$ROOT/previews/rust-essay-20261110T050000Z.json"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "the essay's template is previewed too (RR16)" test -e "$ROOT/renders/preview/rust-essay-20261110T050000Z/preview.mp4"
 
 # A preview that fails stays failed, RETRY_AFTER or not: the owner asks for
 # another, under a new id.
@@ -707,6 +744,45 @@ check "a failed preview's output is its failed.log" grep -q "has no sample fill 
 check "and it leaves no folder in renders/preview" test ! -e "$ROOT/renders/preview/$ID"
 run_job preview > "$SCRATCH/pass.out" 2>&1
 check "a failed preview is never tried again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+
+# A Rust Rounds essay (RR16): each week file_host gave with its essay.json is
+# recorded from it and its takes, kept whole in renders/rust-essay without
+# its cache; a folder of another shape, or without its essay, is never read.
+fresh essay
+mkdir -p "$ROOT/essays/2026-w46/takes" "$ROOT/essays/2026-w47" "$ROOT/essays/not-a-week"
+echo '{}' > "$ROOT/essays/2026-w46/essay.json"
+echo '{}' > "$ROOT/essays/not-a-week/essay.json"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay is recorded from its file and its takes, into its job's work folder" \
+  test "$(cat "$FAKE/essay-runs")" = "$ROOT/essays/2026-w46/essay.json $ROOT/essays/2026-w46/takes $ROOT/renders/rust-essay-work"
+check "and kept whole in renders/rust-essay" test -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4" -a -e "$ROOT/renders/rust-essay/2026-w46/essay.json"
+check "without its cache, and its work gone" test ! -e "$ROOT/renders/rust-essay/2026-w46/cache" -a ! -e "$ROOT/renders/rust-essay-work/2026-w46"
+check "with the speaker and the caps every job has" grep -qx -- --max-video-mb "$FAKE/args-essay"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a rendered essay is not made again, and no other folder is read" test "$(wc -l < "$FAKE/essay-runs")" -eq 1
+
+# An essay corrected while it renders (C72): what was made of the old
+# revision is never kept, and it runs again over the new one.
+fresh essay-corrected
+mkdir -p "$ROOT/essays/2026-w46/takes"
+echo '{"r":1}' > "$ROOT/essays/2026-w46/essay.json"
+echo 1 > "$ROOT/essays/2026-w46/revision"
+# The fake recorder's first run finds the correction given meanwhile.
+touch "$FAKE/correct-mid-render"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a render of a superseded revision is run again" test "$(wc -l < "$FAKE/essay-runs")" -eq 2
+check "and the kept essay is the newer revision's" grep -q '"r":2' "$ROOT/renders/rust-essay/2026-w46/essay.json"
+check "and that is said" grep -q "corrected while it rendered" "$SCRATCH/pass.out"
+
+# An essay that fails keeps its output for the owner and is tried again.
+fresh essay-failed
+mkdir -p "$ROOT/essays/2026-w46/takes"
+echo '{}' > "$ROOT/essays/2026-w46/essay.json"
+touch "$FAKE/no-take"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a failed essay's output is its failed.log" grep -q "has none for it" "$ROOT/renders/rust-essay-worker/2026-w46.failed.log"
+check "and it leaves no folder in renders/rust-essay" test ! -e "$ROOT/renders/rust-essay/2026-w46"
+check "and the job is over" test ! -e "$ROOT/renders/call-worker/job"
 
 # A preview a restart left runs first, as any job does.
 fresh preview-left

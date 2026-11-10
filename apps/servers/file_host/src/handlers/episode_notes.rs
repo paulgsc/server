@@ -26,7 +26,9 @@ use sqlx::SqlitePool;
 use tracing::instrument;
 
 fn feed(name: &str) -> Result<Feed, FileHostError> {
-	Feed::parse(name).ok_or(FileHostError::NotFound)
+	// Notes are on the call's and Playoff Delta's episodes only
+	// (`episode_note`'s CHECK): an essay's feed has none.
+	Feed::parse(name).filter(|feed| *feed != Feed::RustEssay).ok_or(FileHostError::NotFound)
 }
 
 /// `GET /feeds/:feed/notes`

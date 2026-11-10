@@ -273,6 +273,93 @@ local count(title, description, expr, steps) =
     options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
   },
 
+  // ---- Rust Rounds essays, the fourth job (RR16, some-ui#2691) ----
+  // file_host's rust_essays worker (metrics/rust_essays.rs): it gives the
+  // render worker each week's essay once the week is final.
+
+  essayDeadline: count(
+    'WAITING FOR THE DEADLINE',
+    "Essays home holds whose week's deadline has not passed, or whose week home does not hold yet: none is rendered from a draft.",
+    'rust_essays_waiting_for_deadline',
+    [{ color: 'green', value: null }],
+  ),
+
+  essayRefused: count(
+    'REFUSED',
+    "Essays home will not render: misnamed, unreadable, or playing takes other than the week's final record names. renders/rust-essay-worker/<week>.refused.log says why; RustEssayRefused fires.",
+    'rust_essays_refused',
+    [{ color: 'green', value: null }, { color: 'red', value: 1 }],
+  ),
+
+  essayGiven: count(
+    'GIVEN',
+    'Essays given to the render worker, in rust-essays/<week>/ on the database drive.',
+    'rust_essay_render_given',
+    [{ color: 'green', value: null }],
+  ),
+
+  essayWaiting: count(
+    'WAITING FOR A VIDEO',
+    'Essays given with no video yet in renders/rust-essay/<week>/.',
+    'rust_essay_render_waiting',
+    [{ color: 'green', value: null }, { color: 'orange', value: 1 }],
+  ),
+
+  essayFailed: count(
+    'FAILED',
+    "Of those, essays whose last attempt failed. Its whole output is renders/rust-essay-worker/<week>.failed.log on home's database drive, until it renders; RustEssayRenderFailed fires.",
+    'rust_essay_render_failed',
+    [{ color: 'green', value: null }, { color: 'red', value: 1 }],
+  ),
+
+  essaySinceWorker: stat(
+    "SINCE THE ESSAY JOB'S PASS",
+    "Time since the render worker last started a pass of the essay job (renders/rust-essay-worker/last-pass). It passes every minute it is not rendering.",
+    'time() - rust_essay_render_worker_last_pass_timestamp_seconds',
+    's',
+    [{ color: 'green', value: null }, { color: 'orange', value: 14400 }],
+  ),
+
+  essayFailing: stat(
+    'GIVING FAILING',
+    "Whether home's last pass giving essays failed, on storage or on an essay it could not write for the worker: 0 is healthy.",
+    'rust_essays_pass_failing',
+    'none',
+    [{ color: 'green', value: null }, { color: 'red', value: 1 }],
+  ),
+
+  essayOldest: stat(
+    'LONGEST WAIT',
+    'How long the oldest essay given has waited for its video. Past 3 hours with no failed attempt, RustEssayRenderOverdue fires.',
+    '(time() - rust_essay_render_oldest_waiting_taken_timestamp_seconds) and rust_essay_render_waiting > 0',
+    's',
+    [{ color: 'green', value: null }, { color: 'orange', value: 10800 }],
+  ),
+
+  essays: {
+    title: 'Essays waiting for the deadline, refused, given, waiting for a video and failed',
+    description: "Over time: an essay waits for its week's deadline, is given to the render worker from the week's final record (or refused), and leaves waiting once its video is kept.",
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      { expr: 'rust_essays_waiting_for_deadline', legendFormat: 'waiting for the deadline', refId: 'A' },
+      { expr: 'rust_essays_refused', legendFormat: 'refused', refId: 'B' },
+      { expr: 'rust_essay_render_given', legendFormat: 'given', refId: 'C' },
+      { expr: 'rust_essay_render_waiting', legendFormat: 'waiting for a video', refId: 'D' },
+      { expr: 'rust_essay_render_failed', legendFormat: 'failed', refId: 'E' },
+      { expr: 'time() - rust_essay_render_worker_last_pass_timestamp_seconds', legendFormat: 'seconds since the job passed', refId: 'F', hide: true },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 'none',
+        decimals: 0,
+        custom: { drawStyle: 'line', lineInterpolation: 'stepAfter', lineWidth: 1, fillOpacity: 10, spanNulls: false },
+      },
+      overrides: [],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
   // ---- LANE: when the render may run (L4b, server#708) ----
   // Every series here is file_host's batch lane (metrics/lane.rs,
   // call_weeks::lane), which decides every 5 s from /proc and home's own

@@ -43,6 +43,8 @@
 //!   the subject's (`migrations/20261109000100_create_rust_week_record.up.sql`,
 //!   `migrations/20261110000100_create_rust_week_draft_final.up.sql`).
 
+pub mod essay;
+pub mod essay_video;
 pub mod log;
 pub mod round;
 pub mod sent;

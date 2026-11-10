@@ -117,6 +117,11 @@ KNOWN_UNPLACED: dict[str, str] = {
 		"covers it: some-ui's ledger needs a placement the owner chooses (a family whose paths include "
 		"`server:apps/servers/file_host/src/metrics/periodic.rs`)"
 	),
+	"apps/servers/file_host/src/rust_essays.rs": (
+		"the Rust Rounds essays worker (RR16, some-ui#2691), which gives each week's essay to the render worker "
+		"once the week is final. Its family names this file, so some-ui's ledger places it right after this "
+		"file reaches server's main, as pd-kept followed #687: then this entry goes"
+	),
 }
 
 PROOF = re.compile(r"^server:([^#\s]+)#(.{3,})$")

@@ -409,7 +409,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 		feeds: vec![(Feed::Call, renders, status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
 		lane: status,
 	};
-	let read = read(&db, &folders, NOW).await.unwrap();
+	let read = read(&db, &folders, "", NOW).await.unwrap();
 	let now = read.now.unwrap();
 	assert_eq!((now.key.as_str(), now.state, now.held_by), ("2026-11-06", Phase::Paused, Some(HeldBy::Busy)));
 	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9);
