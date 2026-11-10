@@ -368,6 +368,9 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 			let taken = DateTime::<Utc>::from_timestamp(newest_taken, 0)?.with_timezone(&HOME_ZONE).date_naive();
 			Some(on_or_after((taken + Duration::days(1)).max(today), Weekday::Tue))
 		}
+		// Written by a routine that does not run yet (RR18): no day is
+		// promised.
+		Feed::RustEssay => None,
 	}
 }
 
@@ -476,6 +479,11 @@ impl Folders {
 					PathBuf::from(crate::pd_fills::render::RENDERS_FOLDER),
 					PathBuf::from(crate::pd_fills::render::STATUS_FOLDER),
 				),
+				(
+					Feed::RustEssay,
+					PathBuf::from(crate::rust_essays::RENDERS_FOLDER),
+					PathBuf::from(crate::rust_essays::STATUS_FOLDER),
+				),
 			],
 			lane: PathBuf::from(crate::call_weeks::render::STATUS_FOLDER),
 		}
@@ -487,7 +495,10 @@ impl Folders {
 /// # Errors
 /// A storage failure reading the feeds' episodes. A file that cannot be read
 /// counts as missing.
-pub async fn read(db: &SqlitePool, folders: &Folders, now: i64) -> Result<Board, sqlx::Error> {
+///
+/// The call's and Playoff Delta's episodes are no one's; the essays are the
+/// caller's own (`subject`), given to the worker in [`Feed::input`].
+pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -> Result<Board, sqlx::Error> {
 	let mut feeds = Vec::with_capacity(folders.feeds.len());
 	for (feed, renders, status) in &folders.feeds {
 		let (held, let_go) = match feed {
@@ -496,6 +507,7 @@ pub async fn read(db: &SqlitePool, folders: &Folders, now: i64) -> Result<Board,
 				let (_, voiced, let_go) = crate::pd_fills::render::voiced(db).await?;
 				(voiced, let_go)
 			}
+			Feed::RustEssay => crate::rust_essays::held(db, subject, Feed::RustEssay.input()).await?,
 		};
 		feeds.push((*feed, seen(*feed, &held, &let_go, renders, status).await));
 	}

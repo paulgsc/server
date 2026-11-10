@@ -79,7 +79,8 @@ fn an_id_is_a_known_template_and_a_utc_second() {
 	] {
 		assert_eq!(template_of(not), None, "{not}");
 	}
-	assert_eq!(TEMPLATES.len(), 3, "some-ui's TEMPLATE_IDS, and the worker's PREVIEW_ID");
+	assert_eq!(template_of("rust-essay-20261110T050000Z"), Some("rust-essay"), "the essay's template (RR16)");
+	assert_eq!(TEMPLATES.len(), 4, "some-ui's TEMPLATE_IDS, and the worker's PREVIEW_ID");
 }
 
 #[tokio::test]

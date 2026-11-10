@@ -723,6 +723,9 @@ check "its job is over" test ! -e "$ROOT/renders/call-worker/job"
 run_job preview > "$SCRATCH/pass.out" 2>&1
 check "a ready preview is not made again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
 check "its video's time is when it was moved into place" test "$(( $(date +%s) - $(stat -c %Y "$ROOT/renders/preview/$ID/preview.mp4") ))" -lt 60
+echo '{}' > "$ROOT/previews/rust-essay-20261110T050000Z.json"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "the essay's template is previewed too (RR16)" test -e "$ROOT/renders/preview/rust-essay-20261110T050000Z/preview.mp4"
 
 # A preview that fails stays failed, RETRY_AFTER or not: the owner asks for
 # another, under a new id.

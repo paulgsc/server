@@ -67,12 +67,12 @@ pub struct EpisodeVideo {
 ///
 /// # Errors
 /// A storage failure.
-pub async fn list(db: &SqlitePool, feed: Feed, renders: &Path) -> Result<Vec<EpisodeVideo>, sqlx::Error> {
+pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) -> Result<Vec<EpisodeVideo>, sqlx::Error> {
 	let (held, links, receipts) = {
 		let mut tx = db.begin().await?;
-		let held = feed.held(&mut tx).await?;
-		let links = feed.links(&mut tx).await?;
-		let receipts = feed.receipts(&mut tx).await?;
+		let held = feed.held(&mut tx, subject).await?;
+		let links = feed.links(&mut tx, subject).await?;
+		let receipts = feed.receipts(&mut tx, subject).await?;
 		tx.commit().await?;
 		(held, links, receipts)
 	};
@@ -105,10 +105,10 @@ pub async fn list(db: &SqlitePool, feed: Feed, renders: &Path) -> Result<Vec<Epi
 ///
 /// # Errors
 /// A storage failure.
-pub async fn video_file(db: &SqlitePool, feed: Feed, renders: &Path, key: &str) -> Result<Option<PathBuf>, sqlx::Error> {
+pub async fn video_file(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path, key: &str) -> Result<Option<PathBuf>, sqlx::Error> {
 	let holds = {
 		let mut conn = db.acquire().await?;
-		feed.holds(&mut conn, key).await?
+		feed.holds(&mut conn, subject, key).await?
 	};
 	if !holds {
 		return Ok(None);
@@ -148,10 +148,10 @@ pub enum Description {
 ///
 /// # Errors
 /// A storage failure, or the drive refusing a read of a file that is there.
-pub async fn description(db: &SqlitePool, feed: Feed, renders: &Path, key: &str) -> Result<Description, DescriptionError> {
+pub async fn description(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path, key: &str) -> Result<Description, DescriptionError> {
 	let holds = {
 		let mut conn = db.acquire().await?;
-		feed.holds(&mut conn, key).await?
+		feed.holds(&mut conn, subject, key).await?
 	};
 	if !holds {
 		return Ok(Description::Absent);
@@ -211,12 +211,12 @@ pub enum LinkRecorded {
 ///
 /// # Errors
 /// A storage failure.
-pub async fn record_link(db: &SqlitePool, feed: Feed, key: &str, pasted: &str, now: &str) -> Result<LinkRecorded, sqlx::Error> {
+pub async fn record_link(db: &SqlitePool, feed: Feed, subject: &str, key: &str, pasted: &str, now: &str) -> Result<LinkRecorded, sqlx::Error> {
 	let Some(id) = video::youtube_id(pasted) else {
 		return Ok(LinkRecorded::NotAVideo);
 	};
 	let mut conn = db.acquire().await?;
-	Ok(match feed.record_link(&mut conn, key, &id, now).await? {
+	Ok(match feed.record_link(&mut conn, subject, key, &id, now).await? {
 		Recorded::NoWeek => LinkRecorded::NoEpisode,
 		Recorded::Added | Recorded::Held => LinkRecorded::Kept(id),
 	})
@@ -259,20 +259,20 @@ pub struct Folders<'a> {
 /// # Errors
 /// A storage failure, or a file the drive would not remove. The receipt is
 /// kept then, and asking for the step again finishes it.
-pub async fn let_go(db: &SqlitePool, feed: Feed, folders: Folders<'_>, key: &str, step: Step, now: &str) -> Result<LetGo, LetGoError> {
+pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders<'_>, key: &str, step: Step, now: &str) -> Result<LetGo, LetGoError> {
 	let _folders = super::FOLDERS.lock().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	// A receipt names an episode home holds (its foreign key), so the path
 	// below is one of the feed's renders.
-	if let Some(receipt) = feed.receipt(&mut tx, key, step).await? {
+	if let Some(receipt) = feed.receipt(&mut tx, subject, key, step).await? {
 		tx.commit().await?;
 		finish(feed, folders, key, step).await?;
 		return Ok(LetGo::Gone(receipt));
 	}
-	if !feed.holds(&mut tx, key).await? {
+	if !feed.holds(&mut tx, subject, key).await? {
 		return Ok(LetGo::NoEpisode);
 	}
-	let Some(link) = feed.links(&mut tx).await?.remove(key) else {
+	let Some(link) = feed.links(&mut tx, subject).await?.remove(key) else {
 		return Ok(LetGo::NoLink);
 	};
 	let folder = folders.renders.join(key);
@@ -284,7 +284,7 @@ pub async fn let_go(db: &SqlitePool, feed: Feed, folders: Folders<'_>, key: &str
 			meta.len()
 		}
 		Step::Rest => {
-			if feed.receipt(&mut tx, key, Step::Video).await?.is_none() {
+			if feed.receipt(&mut tx, subject, key, Step::Video).await?.is_none() {
 				return Ok(LetGo::VideoFirst);
 			}
 			bytes_under(&folder).await
@@ -297,7 +297,7 @@ pub async fn let_go(db: &SqlitePool, feed: Feed, folders: Folders<'_>, key: &str
 		size: i64::try_from(size).unwrap_or(i64::MAX),
 		deleted_at: now.to_owned(),
 	};
-	feed.write_receipt(&mut tx, &receipt).await?;
+	feed.write_receipt(&mut tx, subject, &receipt).await?;
 	tx.commit().await?;
 	finish(feed, folders, key, step).await?;
 	Ok(LetGo::Gone(receipt))
@@ -313,7 +313,7 @@ async fn finish(feed: Feed, folders: Folders<'_>, key: &str, step: Step) -> std:
 			let input = feed.input_of(folders.input, key);
 			match feed {
 				Feed::Call => remove_file(&input).await?,
-				Feed::PlayoffDelta => remove_dir(&input).await?,
+				Feed::PlayoffDelta | Feed::RustEssay => remove_dir(&input).await?,
 			}
 			remove_file(&folder.join(feed.video())).await
 		}
@@ -382,7 +382,7 @@ mod tests {
 		hold(&pool, "2026-11-06", "2026-11-12").await;
 		render(&renders, "2026-10-30");
 
-		let listed = list(&pool, Feed::Call, &renders).await.unwrap();
+		let listed = list(&pool, Feed::Call, "", &renders).await.unwrap();
 		assert_eq!(
 			listed.iter().map(|week| week.key.as_str()).collect::<Vec<_>>(),
 			["2026-11-06", "2026-10-30"],
@@ -394,22 +394,22 @@ mod tests {
 
 		let pasted = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1";
 		assert_eq!(
-			record_link(&pool, Feed::Call, "2026-10-30", pasted, NOW).await.unwrap(),
+			record_link(&pool, Feed::Call, "", "2026-10-30", pasted, NOW).await.unwrap(),
 			LinkRecorded::Kept("dQw4w9WgXcQ".to_owned())
 		);
 		assert_eq!(
-			record_link(&pool, Feed::Call, "2026-10-30", "https://youtube.com/@me", NOW).await.unwrap(),
+			record_link(&pool, Feed::Call, "", "2026-10-30", "https://youtube.com/@me", NOW).await.unwrap(),
 			LinkRecorded::NotAVideo
 		);
-		assert_eq!(record_link(&pool, Feed::Call, "2026-01-02", pasted, NOW).await.unwrap(), LinkRecorded::NoEpisode);
-		let listed = list(&pool, Feed::Call, &renders).await.unwrap();
+		assert_eq!(record_link(&pool, Feed::Call, "", "2026-01-02", pasted, NOW).await.unwrap(), LinkRecorded::NoEpisode);
+		let listed = list(&pool, Feed::Call, "", &renders).await.unwrap();
 		assert_eq!(listed[1].link.as_ref().map(|link| link.youtube_id.as_str()), Some("dQw4w9WgXcQ"));
 		assert_eq!(
-			video_file(&pool, Feed::Call, &renders, "2026-10-30").await.unwrap(),
+			video_file(&pool, Feed::Call, "", &renders, "2026-10-30").await.unwrap(),
 			Some(renders.join("2026-10-30").join(Feed::Call.video()))
 		);
-		assert_eq!(video_file(&pool, Feed::Call, &renders, "2026-11-06").await.unwrap(), None, "not rendered");
-		assert_eq!(video_file(&pool, Feed::Call, &renders, "2026-01-02").await.unwrap(), None, "not held");
+		assert_eq!(video_file(&pool, Feed::Call, "", &renders, "2026-11-06").await.unwrap(), None, "not rendered");
+		assert_eq!(video_file(&pool, Feed::Call, "", &renders, "2026-01-02").await.unwrap(), None, "not held");
 	}
 
 	#[tokio::test]
@@ -424,7 +424,7 @@ mod tests {
 		std::fs::write(renders.join("2026-10-30").join(DESCRIPTION), chapters).unwrap();
 		let read = |key: &'static str| {
 			let (pool, renders) = (&pool, &renders);
-			async move { description(pool, Feed::Call, renders, key).await.unwrap() }
+			async move { description(pool, Feed::Call, "", renders, key).await.unwrap() }
 		};
 		assert_eq!(read("2026-10-30").await, Description::Text(chapters.as_bytes().to_vec()));
 		assert_eq!(read("2026-11-06").await, Description::Absent, "fewer than three chapters, or rendered before");
@@ -459,13 +459,13 @@ mod tests {
 
 		let go = |from: &'static str, step| {
 			let (pool, renders, weeks) = (pool.clone(), renders.clone(), weeks.clone());
-			async move { let_go(&pool, Feed::Call, Folders { renders: &renders, input: &weeks }, from, step, NOW).await.unwrap() }
+			async move { let_go(&pool, Feed::Call, "", Folders { renders: &renders, input: &weeks }, from, step, NOW).await.unwrap() }
 		};
 		assert_eq!(go("2026-01-02", Step::Video).await, LetGo::NoEpisode);
 		assert_eq!(go("2026-10-30", Step::Video).await, LetGo::NoLink, "no link, nothing goes");
 		assert!(renders.join("2026-10-30").join(Feed::Call.video()).exists());
-		record_link(&pool, Feed::Call, "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap();
-		record_link(&pool, Feed::Call, "2026-11-06", "https://youtu.be/aaaaaaaaaaa", NOW).await.unwrap();
+		record_link(&pool, Feed::Call, "", "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap();
+		record_link(&pool, Feed::Call, "", "2026-11-06", "https://youtu.be/aaaaaaaaaaa", NOW).await.unwrap();
 		assert_eq!(go("2026-11-06", Step::Video).await, LetGo::NotRendered);
 		assert_eq!(go("2026-10-30", Step::Rest).await, LetGo::VideoFirst);
 		assert!(renders.join("2026-10-30").join("cuts.json").exists());
@@ -484,7 +484,7 @@ mod tests {
 		};
 		assert_eq!(rest.size, 5);
 		assert!(!renders.join("2026-10-30").exists());
-		let listed = list(&pool, Feed::Call, &renders).await.unwrap();
+		let listed = list(&pool, Feed::Call, "", &renders).await.unwrap();
 		assert_eq!(listed[1].receipts, [video, rest]);
 		assert_eq!((listed[1].video_bytes, listed[1].rest_bytes), (None, None));
 	}
@@ -494,7 +494,7 @@ mod tests {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let (renders, weeks) = (dir.path().join("call"), dir.path().join("call-weeks"));
 		hold(&pool, "2026-10-30", "2026-11-05").await;
-		record_link(&pool, Feed::Call, "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap();
+		record_link(&pool, Feed::Call, "", "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap();
 		// A folder where the week's file would be: removing it as a file fails,
 		// as a drive that refuses would.
 		let blocked = weeks.join("2026-10-30.json");
@@ -502,7 +502,7 @@ mod tests {
 		render(&renders, "2026-10-30");
 
 		assert!(
-			let_go(&pool, Feed::Call, Folders { renders: &renders, input: &weeks }, "2026-10-30", Step::Video, NOW)
+			let_go(&pool, Feed::Call, "", Folders { renders: &renders, input: &weeks }, "2026-10-30", Step::Video, NOW)
 				.await
 				.is_err(),
 			"not answered as done"
@@ -515,7 +515,7 @@ mod tests {
 		std::fs::remove_dir_all(&blocked).unwrap();
 		let later = "2026-11-07T13:00:00.000Z";
 		assert_eq!(
-			let_go(&pool, Feed::Call, Folders { renders: &renders, input: &weeks }, "2026-10-30", Step::Video, later)
+			let_go(&pool, Feed::Call, "", Folders { renders: &renders, input: &weeks }, "2026-10-30", Step::Video, later)
 				.await
 				.unwrap(),
 			LetGo::Gone(kept)
@@ -548,24 +548,24 @@ mod tests {
 		std::fs::create_dir_all(episodes.join("2026-SF-09")).unwrap();
 		std::fs::write(episodes.join("2026-SF-09").join("fill.json"), b"{}").unwrap();
 
-		let listed = list(&pool, Feed::PlayoffDelta, &renders).await.unwrap();
+		let listed = list(&pool, Feed::PlayoffDelta, "", &renders).await.unwrap();
 		assert_eq!(
 			listed.iter().map(|e| (e.key.as_str(), e.video_bytes, e.rest_bytes)).collect::<Vec<_>>(),
 			[("2026-SF-09", Some(10), Some(2))]
 		);
-		assert!(list(&pool, Feed::Call, &renders).await.unwrap().is_empty(), "each feed lists its own");
+		assert!(list(&pool, Feed::Call, "", &renders).await.unwrap().is_empty(), "each feed lists its own");
 		let folders = Folders {
 			renders: &renders,
 			input: &episodes,
 		};
-		let go = |step| let_go(&pool, Feed::PlayoffDelta, folders, "2026-SF-09", step, NOW);
+		let go = |step| let_go(&pool, Feed::PlayoffDelta, "", folders, "2026-SF-09", step, NOW);
 		assert_eq!(go(Step::Video).await.unwrap(), LetGo::NoLink);
 		assert_eq!(
-			record_link(&pool, Feed::PlayoffDelta, "2026-SF-09", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			record_link(&pool, Feed::PlayoffDelta, "", "2026-SF-09", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
 			LinkRecorded::Kept("dQw4w9WgXcQ".to_owned())
 		);
 		assert_eq!(
-			record_link(&pool, Feed::PlayoffDelta, "2026-SF-10", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			record_link(&pool, Feed::PlayoffDelta, "", "2026-SF-10", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
 			LinkRecorded::NoEpisode
 		);
 		let LetGo::Gone(video) = go(Step::Video).await.unwrap() else { panic!("the video goes") };
@@ -574,6 +574,63 @@ mod tests {
 		assert!(folder.join("cuts.json").exists(), "the rest stays");
 		let LetGo::Gone(rest) = go(Step::Rest).await.unwrap() else { panic!("the rest goes") };
 		assert_eq!((rest.size, folder.exists()), (2, false));
-		assert_eq!(list(&pool, Feed::PlayoffDelta, &renders).await.unwrap()[0].receipts, [video, rest]);
+		assert_eq!(list(&pool, Feed::PlayoffDelta, "", &renders).await.unwrap()[0].receipts, [video, rest]);
+	}
+
+	/// An essay's video is its subject's: listed, brought, linked and let go
+	/// only by them, and its input goes with its video, as every feed's.
+	#[tokio::test]
+	async fn an_essay_is_its_subjects_alone_and_goes_video_first_as_every_feeds() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (renders, essays) = (dir.path().join("rust-essay"), dir.path().join("essays"));
+		for subject in ["me", "them"] {
+			sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?1)")
+				.bind(subject)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		sqlx::query(
+			"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES ('me', 'brief', 'rust-essay-2026-w46.json', 1, 's', 2, x'7b7d', 'now')",
+		)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let folder = renders.join("2026-w46");
+		std::fs::create_dir_all(&folder).unwrap();
+		std::fs::write(folder.join(Feed::RustEssay.video()), [0_u8; 10]).unwrap();
+		std::fs::write(folder.join("cut-list.json"), [0_u8; 2]).unwrap();
+		std::fs::create_dir_all(essays.join("2026-w46")).unwrap();
+
+		let listed = list(&pool, Feed::RustEssay, "me", &renders).await.unwrap();
+		assert_eq!(listed.iter().map(|e| (e.key.as_str(), e.video_bytes)).collect::<Vec<_>>(), [("2026-w46", Some(10))]);
+		assert!(list(&pool, Feed::RustEssay, "them", &renders).await.unwrap().is_empty(), "another subject's is not theirs");
+		assert_eq!(video_file(&pool, Feed::RustEssay, "them", &renders, "2026-w46").await.unwrap(), None);
+		assert_eq!(
+			record_link(&pool, Feed::RustEssay, "them", "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			LinkRecorded::NoEpisode
+		);
+		let folders = Folders {
+			renders: &renders,
+			input: &essays,
+		};
+		assert_eq!(
+			let_go(&pool, Feed::RustEssay, "them", folders, "2026-w46", Step::Video, NOW).await.unwrap(),
+			LetGo::NoEpisode
+		);
+		assert_eq!(
+			record_link(&pool, Feed::RustEssay, "me", "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			LinkRecorded::Kept("dQw4w9WgXcQ".to_owned())
+		);
+		let LetGo::Gone(video) = let_go(&pool, Feed::RustEssay, "me", folders, "2026-w46", Step::Video, NOW).await.unwrap() else {
+			panic!("the video goes")
+		};
+		assert_eq!(video.size, 10);
+		assert!(!essays.join("2026-w46").exists(), "the worker is not given it again");
+		let LetGo::Gone(rest) = let_go(&pool, Feed::RustEssay, "me", folders, "2026-w46", Step::Rest, NOW).await.unwrap() else {
+			panic!("the rest goes")
+		};
+		assert_eq!((rest.size, folder.exists()), (2, false));
+		assert_eq!(list(&pool, Feed::RustEssay, "me", &renders).await.unwrap()[0].receipts, [video, rest]);
 	}
 }

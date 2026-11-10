@@ -139,6 +139,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each session of the owner's card-era Rust Rounds log (paulgsc/some-ui#2689, RR14), every revision as the phone sent it: the cards played, what was picked or skipped, which voice notes were said on them (by id), what rustc printed, the pins, the errors pasted from their own code, and the cards the tutor guessed wrong; when it started and reached home. See docs/identity.md invariant 28",
 	),
 	(
+		"rust_essay_video_deletion",
+		"each step of a week's Rust Rounds essay video let go (paulgsc/some-ui#2691, RR16): the week, video or rest, whether the owner let it go or a take it played was deleted (that take's voice-note id), its YouTube id, the bytes that went and when. See docs/identity.md invariant 23",
+	),
+	(
+		"rust_essay_video_link",
+		"each YouTube link the owner recorded for a week's Rust Rounds essay video (paulgsc/some-ui#2691, RR16): the week, the video's id and when. The video plays the owner's own takes. See docs/identity.md invariant 23",
+	),
+	(
 		"rust_week_draft",
 		"the owner's current draft of each week of Rust Rounds not yet final (paulgsc/some-ui#2832, RR22): which tickets they answered, with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home; replaced by each later send before the week's deadline, and gone once the week is final. See docs/identity.md invariant 28",
 	),

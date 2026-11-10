@@ -69,7 +69,7 @@ pub const VIDEO: &str = "preview.mp4";
 /// The templates a preview may be of: paulgsc/some-ui
 /// `packages/video-render/src/templates.ts`, `TEMPLATE_IDS`, and the render
 /// worker's `PREVIEW_ID`. Any other is `404`.
-pub const TEMPLATES: [&str; 3] = ["conference-call", "playoff-delta-legend", "playoff-delta-week"];
+pub const TEMPLATES: [&str; 4] = ["conference-call", "playoff-delta-legend", "playoff-delta-week", "rust-essay"];
 
 /// How long a preview lives after it is made, and a failed one after it
 /// failed.

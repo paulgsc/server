@@ -10,7 +10,8 @@
 //! DELETE /feeds/:feed/videos/:key/rest        → { receipt }: lets the rest of its folder go, once the video has
 //! ```
 //!
-//! `:feed` is `call` or `playoff-delta` (`feeds::Feed`); any other is `404`.
+//! `:feed` is `call`, `playoff-delta` or `rust-essay` (`feeds::Feed`; an
+//! essay is the caller's own, keyed by its week); any other is `404`.
 //!
 //! **Trust model:** a paired phone's only, as `routes::voice`'s delete. Every
 //! handler takes a `Paired`, so a request without a session is `401` and a

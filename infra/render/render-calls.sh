@@ -150,7 +150,7 @@ JOBS=(call playoff-delta preview rust-essay)
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
 # `previews::TEMPLATES`).
-PREVIEW_ID='^(conference-call|playoff-delta-legend|playoff-delta-week)-[0-9]{8}T[0-9]{6}Z$'
+PREVIEW_ID='^(conference-call|playoff-delta-legend|playoff-delta-week|rust-essay)-[0-9]{8}T[0-9]{6}Z$'
 
 # The job's folders and video's name, as globals: INPUT, RENDERS, STATUS,
 # WORK, VIDEO. The work folder is on the same drive as the videos, not the

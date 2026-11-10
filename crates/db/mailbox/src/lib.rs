@@ -920,6 +920,24 @@ pub async fn rust_essays(conn: &mut SqliteConnection, subject: &str) -> Result<V
 	Ok(essays)
 }
 
+/// The weeks of every Rust Rounds essay `subject` holds, by name alone
+/// ([`rust_essays`] reads them whole), oldest first.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn rust_essay_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, MailboxError> {
+	let weeks = sqlx::query_scalar!(
+		r#"SELECT substr(name, 12, 8) AS "id!: String"
+		   FROM mailbox_item
+		   WHERE subject_id = ?1 AND folder = 'brief' AND name GLOB 'rust-essay-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json'
+		   ORDER BY name"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(weeks)
+}
+
 /// One week home holds, whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeekFile {

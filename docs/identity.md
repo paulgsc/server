@@ -214,6 +214,7 @@ above the button that deletes (invariant 22):
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
+| Rust Rounds' essay videos: their links and what was let go | `rust_essay_video_link`, `rust_essay_video_deletion` (and, on the drive, `rust-essays/` and `renders/rust-essay/`: invariant 23) |
 | How each recording ended | `app_event` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -1167,7 +1168,29 @@ nowhere is marked as such and belongs to review.
     filed for the mailbox like a Studio take's (invariant 19). `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
-    (invariant 19). A note
+    (invariant 19), **with one named exception: a Rust Rounds essay's
+    render** (owner, 2026-11-10, via the Nov 10 coordinator run; recorded on
+    paulgsc/some-ui#2691, RR16). Each week's essay video plays the owner's
+    takes whole, so home's render of it holds them, under four rules:
+    (a) it is the mailbox subject's only (`rust_essays`), and leaves with
+    the account: its rows (`rust_essay_video_link`,
+    `rust_essay_video_deletion`) go with the account, and the worker removes
+    every essay folder whose essay the subject no longer holds within a
+    minute; (b) the takes are copied into the render's input
+    (`rust-essays/<week>/takes/`) only while the week waits for its video,
+    and removed once the video is made, so after that they are only in the
+    video and, always, in `voice_note_audio`; (c) a take a kept essay plays
+    that is deleted from My data takes that week's essay video and folder
+    with it (`rust_round_repo::essay_video::withdraw`, cause `take-deleted`,
+    naming the note beside the note's own receipt), and the week is never
+    rendered again, while its script stays in the mailbox; (d) My data says
+    the essay video holds the owner's voice (the phone's). Rust Rounds takes
+    are not a kind `DELETE /voice-notes/:id` can delete today, so (c) is a
+    guard: it holds the day the owner switches that kind on. *Enforced by*
+    `rust_essays`' `a_kept_essay_copies_its_takes_only_until_its_video_is_made`,
+    `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go` and
+    `an_essay_the_subject_no_longer_holds_leaves_the_drive`, and
+    `rust_round_repo::essay_video`'s tests. A note
     is never updated (each table's trigger aborts an `UPDATE`) or replaced
     (other bytes or another description under a held id is a `409`), and
     never deleted but with the account, after it is transcribed as before
@@ -1215,7 +1238,9 @@ nowhere is marked as such and belongs to review.
     home does not hold and a note said for any other kind are each a `404`,
     so no other kind's audio leaves home. It reads only, its span skips every
     argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
-    no other caller; a `304` is decided from the head, so it reads no audio.
+    one other caller, `rust_essays`, which copies a final week's `rust-round`
+    takes into its essay's render input on home's own drive (the exception
+    above), never off home; a `304` is decided from the head, so it reads no audio.
     The routes that
     read its row,
     `GET /voice-notes/:id/heard` and `PUT /voice-notes/:id/set-aside`

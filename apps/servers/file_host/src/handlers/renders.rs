@@ -21,9 +21,9 @@ use tracing::instrument;
 /// failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "renders_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_renders(_paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Board>, FileHostError> {
+pub async fn get_renders(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Board>, FileHostError> {
 	let now = chrono::Utc::now().timestamp();
-	Ok(Json(renders::read(&db, &Folders::server(), now).await?))
+	Ok(Json(renders::read(&db, &Folders::server(), paired.subject.as_str(), now).await?))
 }
 
 #[cfg(test)]
