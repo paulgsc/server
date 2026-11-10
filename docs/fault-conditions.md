@@ -35,10 +35,24 @@ bounded timeout and exports
 
 `schema` is the one that isn't a connection: the database is reachable but
 hasn't applied every migration this binary embeds (`crate::schema`) —
-typically a local SQLite file nobody ran `sqlx migrate run` on after pulling.
+before AS16, typically a local SQLite file nobody ran `sqlx migrate run` on after pulling.
 `cargo check` and CI can't see it, because both check queries against a
 database they just migrated themselves. `/ready`'s body names the pending
 migrations; DEPS renders it as `schema down`.
+
+`file_host` applies them itself as it starts (AS16, #563;
+`file_host::migrate`), before it opens its pool: it backs the database up
+first (`VACUUM INTO` `<database dir>/backups/`, verified with
+`PRAGMA integrity_check`, newest 5 kept), then applies the pending
+migrations with the embedded `MIGRATOR`. On any failure it exits non-zero
+with the reason as its last log line, so it never serves a schema half
+applied; on home the deploy then puts the previous image back
+(`scripts/deploy.py`, AS18 #564; README.md, "Deploying to home"), and a
+database ahead of its binary is one that binary serves. It refuses, rather
+than migrates, a database file that is missing or never migrated, since
+that is what an unmounted volume looks like; a new host passes
+`--init-database` once. So a running `file_host` with `schema` down means
+the database changed under it (a restore by hand, say).
 
 `/ready` answers in three levels, not one bit: its `status` is `ready`,
 `degraded` (only a non-critical dependency is down; today that is `schema`

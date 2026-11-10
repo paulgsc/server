@@ -484,7 +484,11 @@ nowhere is marked as such and belongs to review.
 
    In the owner's deployment the only account is the owner's ("The owner's
    account"), so this deletion is of the owner's whole record, and home keeps
-   no copy. Whether it should first make a durable copy, or stay as it is on
+   no copy beyond its migration backups: each start of `file_host` that
+   applies a migration first copies the whole database to `backups/` beside
+   it, and the newest 5 are kept (`file_host::migrate`, AS16 #563; the
+   owner's count, 2026-11-10). A deleted account's rows stay in those copies
+   until five later migrating starts have pruned them. Whether it should first make a durable copy, or stay as it is on
    the owner's explicit call, waits on the owner (#510; paulgsc/some-ui's
    "Never lose the record"). Until then the claim stands as written, and the
    code does what it says.
@@ -2382,7 +2386,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
 - **What deleting an account does not reach.** The subject's rows in the
   subject-scoped tables are deleted in one transaction. Not reached: copies in
   Redis, log lines and exported spans that carry the id, ceremonies held in
-  memory (an open pairing code is closed), backups, and SQLite's free pages
+  memory (an open pairing code is closed), backups (the migration backups,
+  invariant 9, among them), and SQLite's free pages
   and write-ahead log, which keep deleted rows until they are overwritten or
   checkpointed. Nor does it reach what home never held: a paired phone keeps
   its own copy of what it sent, and the owner's Drive keeps its copies. And it

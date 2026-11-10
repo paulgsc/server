@@ -65,6 +65,29 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 	response
 }
 
+/// `file_host::migrate::bring_current` on this start's database, each line
+/// of what it did said on stdout as `migrate: …` (the deploy's log reads
+/// them), and a refusal returned as the process's error.
+async fn migrate_on_start(config: &Config) -> Result<()> {
+	use file_host::migrate::{bring_current, Options, DEFAULT_KEEP_BACKUPS};
+	use std::io::Write as _;
+
+	let options = Options {
+		database_url: config.database_url.clone(),
+		backup_dir: None,
+		keep: usize::from(DEFAULT_KEEP_BACKUPS),
+		init: config.init_database,
+	};
+	let outcome = bring_current(&options, &file_host::schema::MIGRATOR)
+		.await
+		.map_err(|refused| anyhow::anyhow!("migrate: {refused}"))?;
+	let mut out = std::io::stdout().lock();
+	for line in outcome.lines() {
+		let _ = writeln!(out, "migrate: {line}");
+	}
+	Ok(())
+}
+
 // Worker threads are a source constant (#617), not tokio's own
 // TOKIO_WORKER_THREADS: compose gave this 2-CPU container 4, so 4 it is,
 // and nothing about how it runs changes.
@@ -107,6 +130,15 @@ async fn main() -> Result<()> {
 	// measured against, stamped once for the same reason build info is —
 	// fixed for the process's life, so no reason to recompute it every tick.
 	file_host::websocket::connection::instrument::set_guard_capacity(ws_conn_manager::MAX_GLOBAL);
+
+	// Its migrations, after a verified backup, before anything opens the
+	// database (AS16, #563; `file_host::migrate`). On every start, so no
+	// deploy, restart or reboot can serve a schema behind its build. A
+	// refusal or a failed migration ends the process: the deploy sees the
+	// container fail and puts the previous image back (scripts/deploy.py).
+	// Said on stdout/stderr, not through tracing: the subscriber is not
+	// installed until `AppState::build`, below.
+	migrate_on_start(&config).await?;
 
 	let config = Arc::new(config);
 	let connection_options = file_host::db::connect_options(&config.database_url)?.create_if_missing(true);

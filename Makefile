@@ -168,7 +168,7 @@ IN_RUST_SHELL := $(if $(shell command -v cargo 2>/dev/null),,nix develop $(CURDI
 ENVCTL ?= $(TARGET_DIR)/debug/envctl
 ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 
-.PHONY: envctl dev env-schema env preflight up compose import prune tool deploy-check promo
+.PHONY: envctl dev env-schema env preflight up compose import prune tool deploy-check promo home-deploy
 
 # Cargo's own progress on stderr: the first build takes a minute, and a cargo
 # blocked on another one's lock (rust-analyzer, say) says so instead of
@@ -196,6 +196,13 @@ preflight: envctl ## Decrypt deploy/$(ROLE)/ into memory and name every missing 
 
 up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/, decrypted to tmpfs only
 	@$(ENVCTL_RUN) up --role $(ROLE)
+
+# Home's deploy of file_host (AS18, #564): pull pgathondu/server:latest and,
+# only when it changed, `make up` (file_host migrates as it starts, AS16
+# #563), a wait for it to be ready, and the previous image put back when it
+# is not (scripts/deploy.py; README.md, "Deploying to home").
+home-deploy: ## Pull file_host's image and, if it changed, up, wait for it to be ready, and roll it back if it is not
+	@python3 scripts/deploy.py
 
 compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose ARGS="ps"
 	@$(ENVCTL_RUN) compose --role $(ROLE) -- $(ARGS)
