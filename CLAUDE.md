@@ -109,8 +109,8 @@ added doesn't have them, so check `[ -n "$CLOUDFLARE_API_TOKEN" ]` (never print 
 task file_host spawns that no family covers, or a table the migrations leave standing that the
 ledger's `stores` does not list (so a new table needs its store there first);
 `docs/assurance.md` says which side to fix. `PR gate`
-(`gate.yml`) waits on every other check of the head commit: after re-running a failed check,
-re-run it too, since nothing starts it again.
+(`gate.yml` opens it, `gate-verdict.yml` decides it) is judged again each time another check of
+the head commit finishes, so a re-run of a failed check updates it by itself (#762).
 
 ## Workflow storage
 

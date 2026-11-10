@@ -9,7 +9,8 @@ here hold the rest (#526):
 
 - **`Assurance ledger`** (`.github/workflows/assurance.yml`, `scripts/check_assurance_ledger.py`):
   what the ledger says about this repository is still true here (objective GC4).
-- **`PR gate`** (`.github/workflows/gate.yml`, `scripts/pr_gate.py`): one check that passes only
+- **`PR gate`** (`.github/workflows/gate.yml`, `.github/workflows/gate-verdict.yml`,
+  `scripts/pr_gate.py`): one check that passes only
   when every other check a pull request runs here passed, for `main`'s ruleset to require
   (objective GC5).
 
@@ -85,7 +86,21 @@ mean something this reader does not know.
 
 `main`'s ruleset can require checks only by name, and this repository's checks live in several
 workflows, some filtered by path. A job cannot `needs` a job in another workflow, so the gate
-waits on the head commit through the API:
+reads the head commit through the API and writes its verdict as a check run named `PR gate`.
+
+**No runner waits (#762).** The gate used to be one job that polled the other checks for up to an
+hour, holding a runner from the pool both repositories share. Now two short jobs judge the head
+commit once each, and write what they see, pending or decided:
+
+- `gate.yml`'s `PR gate (open)`, on the pull request's own events (a push, or a label that re-runs
+  `routes.yml`), turns the gate pending at once;
+- `gate-verdict.yml`'s `PR gate (verdict)`, on every completed workflow run it lists
+  (`workflow_run`) and every completed check run from another app (`check_run`), so the last
+  check to finish decides the gate, and a re-run of a failed one decides it again.
+
+They share one concurrency group per head commit, so the writes land in the order they were read.
+A write that changes a finished verdict writes a new check run, which is the one the ruleset reads,
+as a re-run job's is.
 
 1. **What should run.** It reads every workflow file the pull request's merge commit holds and,
    for each with a `pull_request` trigger, applies that trigger's `branches` and `paths` filters
@@ -97,25 +112,40 @@ waits on the head commit through the API:
    expected or not, except the gate's own workflow.
 3. **The verdict.** It passes once every expected workflow has a run and every awaited run and
    check run concluded `success`, `skipped` or `neutral`. It fails as soon as one concludes
-   otherwise, naming the failed jobs, and fails what is still unfinished after 60 minutes. A run
+   otherwise, naming the failed jobs, and fails a run that took over 60 minutes (what the waiting
+   gate failed as unfinished after 60). A run
    is judged by its own conclusion, so a job its workflow lets fail (`continue-on-error`:
    `deny.yml`'s advisories) is a warning, as that workflow's author chose.
 
 **A skipped check passes only where its paths did not change.** A workflow its `paths` filter
 skips has no run at all: the gate reads the same filter, so a run it expects and never sees fails
-it (after ten minutes; GitHub creates an event's runs before any job starts), and one it does not
-expect is not waited on. A job skipped inside a run passes, which is right because every `if:` on
+it once nothing else is unfinished (GitHub creates an event's runs before any job starts), and one
+it does not expect is not waited on. A job skipped inside a run passes, which is right because every `if:` on
 a pull-request job here reads a path diff (`determine_jobs`) or the event (`sync`, `stage`, which
 are not pull-request jobs). That is an assumption, not a check: **a new job-level `if:` on a
 pull-request job that skips for any other reason would pass the gate while skipped**, so a
 reviewer reading one should ask what skips it.
 
-**Not itself.** The gate never waits on its own workflow file, and that file holds only the gate:
-the script fails if its own run has a second job, which nothing would wait on.
+**Not itself.** The gate never waits on `gate.yml`, and that file holds only the gate: the script
+fails if its run has a second job, which nothing would wait on. `gate-verdict.yml` runs on events
+the gate never awaits.
+
+**Every workflow is heard.** `gate-verdict.yml` hears a workflow finish only if its
+`workflow_run` names it, so the gate fails a pull request whose workflows include one that list
+leaves out, and the script's self-test fails a name listed there that no workflow has.
 
 **Where it stops.**
 
-- After "Re-run failed jobs" on another workflow, re-run `PR gate` too; nothing starts it again.
+- `workflow_run` and `check_run` run the default branch's copy of `gate-verdict.yml` and the
+  script, so a pull request that edits the verdict is judged by `main`'s. `gate.yml` still runs the
+  pull request's own copy, as the gate always did, so a pull request that edits its own gate can
+  still get through (GC5's exception).
+- On the pull request that first adds `gate-verdict.yml`, `main` has none, so `gate.yml` waits in
+  the job as before (up to 60 minutes). So does any pull request into a base without it.
+- A fork's pull request gets a read-only token on `pull_request`, so `PR gate (open)` cannot write;
+  `PR gate (verdict)` finds the pull request by its head branch and writes the verdict.
+- If the last check to finish is one neither event reports, the gate stays pending, never green:
+  re-run `PR gate (open)` to judge again.
 - On a pull request of more than 300 files GitHub reads only 300 for a path filter, so an expected
   path-filtered run that never comes is a warning there, not a failure.
 - If GitHub starts a workflow the gate's reading of its filter says it would not, the gate waits

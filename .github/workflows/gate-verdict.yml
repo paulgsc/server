@@ -1,0 +1,65 @@
+# Decides the `PR gate` check that gate.yml opens (#762): each time a check
+# on a pull request's head commit finishes, judge that commit once and write
+# the verdict (scripts/pr_gate.py --event), so no runner waits on the others.
+#
+# `workflow_run` names every workflow a pull request here can start, by its
+# `name:`, plus CodeQL's default setup (a `dynamic` workflow with no file
+# here). pr_gate.py fails the gate of a pull request whose workflows include
+# one this list leaves out, and its self-test fails a name listed here that
+# no workflow has. `check_run` covers checks other apps report (code
+# scanning's `CodeQL` check run); the job skips GitHub Actions' own, which
+# `workflow_run` already covers.
+#
+# Both events run the default branch's copy of this file and of the script,
+# so a pull request that edits either is judged by main's. The pull request's
+# own workflow files are read through the API as data, never run.
+#
+# The job succeeds when it has written the verdict, whatever the verdict is:
+# GitHub files these runs under main's head commit, not the pull request's.
+name: PR gate verdict
+
+on:
+  workflow_run:
+    workflows:
+      - Assurance
+      - CI Deny Checks
+      - Detect, Build & Stage
+      - Lint
+      - Lines of code
+      - Routes
+      - Rust runner
+      - CI Workflow
+      - CodeQL
+    types: [completed]
+  check_run:
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  verdict:
+    name: PR gate (verdict)
+    if: github.event_name == 'workflow_run' || github.event.check_run.app.slug != 'github-actions'
+    runs-on: ubuntu-latest
+    # Shared with gate.yml (see there). At job level, so a skipped job holds
+    # no place in the queue and cannot push out one that judges.
+    concurrency:
+      group: pr-gate-${{ github.event.workflow_run.head_sha || github.event.check_run.head_sha }}
+      cancel-in-progress: false
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github
+
+      - name: Judge the head commit and write PR gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/pr_gate.py --event
