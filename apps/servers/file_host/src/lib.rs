@@ -33,6 +33,7 @@ pub mod rate_limiter;
 pub mod redacted;
 pub mod routes;
 pub mod routine_watch;
+pub mod rust_essays;
 pub mod rust_rounds;
 pub mod schema;
 pub mod settings;
@@ -290,7 +291,9 @@ impl AppState {
 ///   always on, its metrics (`metrics::call_weeks`) also saying what the
 ///   render worker has made of each week;
 /// - Playoff Delta's fills (`pd_fills`), read hourly from `paulgsc/testing`;
-///   always on.
+///   always on;
+/// - Rust Rounds' essays (`rust_essays`), given to the render worker from
+///   the mailbox once their week is final; on with the mailbox.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
@@ -299,6 +302,7 @@ pub fn start_polls(state: &AppState) {
 	call_weeks::start(state);
 	pd_fills::start(state);
 	previews::start(state);
+	rust_essays::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

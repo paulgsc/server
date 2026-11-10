@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Home's render worker (GWB10, paulgsc/some-ui#2084), with three jobs, one
+# Home's render worker (GWB10, paulgsc/some-ui#2084), with four jobs, one
 # loop: the weekly call's (paulgsc/some-ui#2635, ST36), Playoff Delta's
-# (FEED4, paulgsc/some-ui#2647) and a template's preview (SFEED12,
-# paulgsc/some-ui#2757). infra/compose/call-render.yml runs it.
+# (FEED4, paulgsc/some-ui#2647), a template's preview (SFEED12,
+# paulgsc/some-ui#2757) and a Rust Rounds essay's (RR16, paulgsc/some-ui#2691).
+# infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
 # no video in the job's renders folder, it records the stage (`call-stage`,
@@ -16,6 +17,7 @@
 # | call          | /weeks/<from>.json (call_weeks)        | /renders/call/<from>/       | call.mp4    |
 # | playoff-delta | /episodes/<key>/{fill,season}.json     | /renders/playoff-delta/<key>/ | episode.mp4 |
 # | preview       | /previews/<id>.json (previews)         | /renders/preview/<id>/      | preview.mp4 |
+# | rust-essay    | /essays/<week>/essay.json (rust_essays) | /renders/rust-essay/<week>/ | essay.mp4   |
 #
 # A Playoff Delta key is <season>-<team>-<NN> (2026-SF-08, NN 00 the legend);
 # file_host writes only fills of a voiced version (pd_fills::render), so a
@@ -27,6 +29,12 @@
 # asks for another. file_host removes each preview a day after it is made,
 # and an older one of its template once a newer one is ready (`previews`);
 # nothing here deletes one.
+# A Rust Rounds essay's key is its week (2026-w46). file_host gives the
+# worker an essay only once its week is final, and only one that plays
+# exactly the takes the week's final record names (`rust_essays`): the
+# worker reads no record and no draft. The tutor's lines are said by home's
+# speaker as every job's; each answer scene is the owner's take, played
+# whole by the recorder.
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -137,7 +145,7 @@ TSX=/opt/some-ui/node_modules/.bin/tsx
 COMMON=(--app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
-JOBS=(call playoff-delta preview)
+JOBS=(call playoff-delta preview rust-essay)
 
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
@@ -160,6 +168,9 @@ use_job() {
     preview)
       INPUT=$ROOT/previews RENDERS=$ROOT/renders/preview STATUS=$ROOT/renders/preview-worker
       WORK=$ROOT/renders/preview-work VIDEO=preview.mp4 ;;
+    rust-essay)
+      INPUT=$ROOT/essays RENDERS=$ROOT/renders/rust-essay STATUS=$ROOT/renders/rust-essay-worker
+      WORK=$ROOT/renders/rust-essay-work VIDEO=essay.mp4 ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -190,6 +201,13 @@ episodes() {
         key=$(basename "$entry" .json)
         [[ "$key" =~ $PREVIEW_ID ]] && echo "$key"
       done ;;
+    rust-essay)
+      for entry in "$INPUT"/*/; do
+        [ -d "$entry" ] || continue
+        key=$(basename "$entry")
+        [[ "$key" =~ ^[0-9]{4}-w[0-9]{2}$ ]] || continue
+        [ -e "$entry/essay.json" ] && echo "$key"
+      done ;;
   esac
 }
 
@@ -200,6 +218,7 @@ holds() {
     call) [ -e "$INPUT/$2.json" ] ;;
     playoff-delta) [ -d "$INPUT/$2" ] ;;
     preview) [ -e "$INPUT/$2.json" ] ;;
+    rust-essay) [ -e "$INPUT/$2/essay.json" ] ;;
   esac
 }
 
@@ -218,16 +237,23 @@ record() {
       # The template is the id less its stamp.
       (cd "$APP_DIR" && "$TSX" tests/record/preview.ts "${COMMON[@]}" \
         --template "${key%-*}" --out "$WORK/$key") ;;
+    rust-essay)
+      # The recorder names the finished folder for the essay's week in
+      # --out. Each take it plays is <ticket>.<webm|ogg|m4a> in --takes.
+      (cd "$APP_DIR" && "$TSX" tests/record/essay.ts "${COMMON[@]}" \
+        --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" --out "$WORK") ;;
   esac
 }
 
 # Where `record` leaves `key`'s finished folder: the call's recorder names it
-# for the week's first day in --out, Playoff Delta's <season>-week-NN in it.
+# for the week's first day in --out, Playoff Delta's <season>-week-NN in it,
+# the essay's for its week in --out.
 finished() {
   case $1 in
     call) echo "$WORK/$2" ;;
     playoff-delta) echo "$WORK/$2/${2%%-*}-week-${2##*-}" ;;
     preview) echo "$WORK/$2" ;;
+    rust-essay) echo "$WORK/$2" ;;
   esac
 }
 
@@ -316,7 +342,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview) return 0 ;;
+    call | playoff-delta | preview | rust-essay) return 0 ;;
     *) return 1 ;;
   esac
 }

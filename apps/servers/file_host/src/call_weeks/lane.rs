@@ -347,6 +347,7 @@ impl Paths {
 				PathBuf::from(super::render::STATUS_FOLDER),
 				PathBuf::from(crate::pd_fills::render::STATUS_FOLDER),
 				PathBuf::from(crate::previews::STATUS_FOLDER),
+				PathBuf::from(crate::rust_essays::STATUS_FOLDER),
 			],
 		}
 	}

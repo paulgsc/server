@@ -895,6 +895,31 @@ pub async fn rust_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Ve
 	Ok(weeks)
 }
 
+/// Every Rust Rounds essay `subject` holds, newest week first.
+///
+/// An essay (paulgsc/some-ui#2691, RR16) is a `brief` file named
+/// `rust-essay-<id>.json`, as `rust_round_repo::essay` names it;
+/// [`HeldWeek::id`] is the week its name gives.
+///
+/// An essay is tens of KiB and comes once a week, so all are read; the
+/// caller keeps the ones that read as the week their name says.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn rust_essays(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<HeldWeek>, MailboxError> {
+	let essays = sqlx::query_as!(
+		HeldWeek,
+		r#"SELECT substr(name, 12, 8) AS "id!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String", body AS "body!: Vec<u8>"
+		   FROM mailbox_item
+		   WHERE subject_id = ?1 AND folder = 'brief' AND name GLOB 'rust-essay-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json'
+		   ORDER BY name DESC"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(essays)
+}
+
 /// One week home holds, whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeekFile {

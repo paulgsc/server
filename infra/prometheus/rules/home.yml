@@ -288,6 +288,52 @@ groups:
           objective: PK5
           says: "A week of Playoff Delta has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
 
+      - alert: RustEssayRenderFailed
+        # RR16 (some-ui#2691): an essay home gave the render worker has no
+        # video and the worker's last attempt at it failed (render-calls.sh's
+        # rust-essay job keeps that attempt's whole output, and removes it
+        # once the essay renders). file_host reads that each minute
+        # (rust_essays::observe). The worker tries again hourly.
+        expr: |
+          max(rust_essay_render_failed) > 0
+        labels:
+          objective: RR16
+          says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+
+      - alert: RustEssayRenderOverdue
+        # RR16: an essay has waited 3 hours since home gave it, with no
+        # failed attempt, as CallRenderOverdue reads the call's weeks.
+        expr: |
+          max(rust_essay_render_waiting) > 0
+          and on() (time() - max(rust_essay_render_oldest_waiting_taken_timestamp_seconds)) > 10800
+          and on() max(rust_essay_render_failed) == 0
+        labels:
+          objective: RR16
+          says: "A week's Rust Rounds essay has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
+
+      - alert: RustEssayRefused
+        # RR16: home holds an essay it will not give the worker, because it
+        # does not read as an essay of the week its name gives, or plays
+        # takes other than the ones the week's final record names
+        # (rust_essays::export). It stays refused: the mailbox keeps a file
+        # once, so the routine puts a corrected essay under a new name only
+        # once the owner says so.
+        expr: |
+          max(rust_essays_refused) > 0
+        labels:
+          objective: RR16
+          says: "A Rust Rounds essay was refused before rendering: renders/rust-essay-worker/<week>.refused.log on home's database drive says which fields and why."
+
+      - alert: RustEssaysFailing
+        # RR16: every pass giving essays for 3 hours failed, on storage or on
+        # an essay it could not write.
+        expr: |
+          max(rust_essays_pass_failing) == 1
+        for: 3h
+        labels:
+          objective: RR16
+          says: "Every pass giving Rust Rounds essays to the render worker has failed for 3 hours; file-host-server's log names what failed."
+
       - alert: CallRenderWorkerStale
         # CW5: the worker stamps each pass it starts, a minute apart, and
         # every minute while a job waits for room or is paused (L4c), never
