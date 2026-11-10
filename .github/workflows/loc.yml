@@ -22,6 +22,14 @@ jobs:
     name: Report the line-count change
     runs-on: ubuntu-latest
     steps:
+      # TEMPORARY (#762's red-then-green proof): an upload with no
+      # retention-days, so Lint's `Artifact retention` fails and PR gate
+      # must go red. Never runs (`if: false`); removed by the next commit.
+      - if: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-red-proof
+          path: nothing
       - uses: actions/checkout@v5
         with:
           # The merge base, not just the head, has to be in the clone.
