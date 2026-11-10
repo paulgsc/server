@@ -748,9 +748,14 @@ def wait(api: Api, pull: dict[str, Any], texts: dict[str, str], self_run_id: int
 	return 0
 
 
-def open_gate(api: Api, pr: int, minutes: float) -> int:
+def open_gate(api: Api, pr: int, minutes: float, event_head: str | None = None) -> int:
 	"""gate.yml, on the pull request's own events."""
 	pull = api.get(f"pulls/{pr}")
+	if event_head and pull["head"]["sha"] != event_head:
+		# This job's checkout and concurrency group are its event's commit's: judging the newer head
+		# from here could race that head's own jobs, and read the wrong workflow files.
+		print(f"#{pr}'s head is now {pull['head']['sha'][:12]}, not this event's {event_head[:12]}: that commit's gate is its own")
+		return 0
 	texts = local_workflows(REPO_ROOT)
 	self_run_id = int(os.environ.get("GITHUB_RUN_ID") or 0)
 	base_ref = pull["base"]["ref"]
@@ -1020,7 +1025,8 @@ def main() -> int:
 		if not pr:
 			parser.error("needs --pr, or a pull_request event")
 		if args.open:
-			return open_gate(api, pr, args.minutes)
+			event_head = ((event.get("pull_request") or {}).get("head") or {}).get("sha")
+			return open_gate(api, pr, args.minutes, event_head)
 		return judge_once(api, api.get(f"pulls/{pr}"), local_workflows(REPO_ROOT), 0, write_it=False)
 	except Unreadable as err:
 		print(f"::error title=PR gate::cannot read a workflow's trigger: {err}. Write it in the shape scripts/pr_gate.py reads, or teach it this one.")
