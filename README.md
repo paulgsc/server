@@ -327,6 +327,86 @@ delete `.env`.
     neither compose nor an image sets one. The NixOS modules below put settings in the
     store, and nothing uses them.
 
+### Deploying to home
+
+A new `file_host` image takes one command and no other step (AS16 #563, AS18
+#564; the owner's ask of 2026-11-10):
+
+```bash
+make home-deploy
+```
+
+It runs `scripts/deploy.py`:
+
+1. **Pulls `pgathondu/server:latest`**, and stops there, having restarted
+   nothing, when it is the image already serving. Only that image:
+   `rust-runner` and `orchestrator` are pulled by hand
+   (`make compose ARGS="pull rust-runner orchestrator"`, then `make up`), and
+   nothing third-party is pulled. It does not update the checkout either:
+   see "Needs a newer checkout", below.
+2. **Skips an image that already failed here**: its id is in
+   `~/.local/state/server-deploy/failed-images.json`, so `:latest` is tagged
+   back to what serves and nothing restarts until a newer one is published.
+3. Otherwise tags the serving image `pgathondu/server:previous` and runs
+   **`make up`**: envctl's preflight on `deploy/<role>/`, then
+   `docker compose up -d`. A preflight that refuses replaces nothing.
+4. **`file_host` migrates as it starts** (`apps/servers/file_host/src/migrate.rs`):
+   with nothing pending it does nothing; otherwise it copies the database
+   (`VACUUM INTO ${STORAGE}/backups/hopium-<UTC>-before-<version>.db`),
+   checks the copy (`PRAGMA integrity_check`, the same applied migrations),
+   applies every pending migration, and keeps its newest 5 backups. So a
+   backup is taken only by a start that has a migration pending, and each is
+   a whole copy of the database less its free pages: the five take up to
+   five times `sqlite_db_bytes - sqlite_freelist_bytes`. Removing the sixth is a discard
+   site: a deleted account's rows live in the copies until then
+   (`docs/identity.md`, invariant 9). It refuses a missing or
+   never-migrated database file, which is what an unmounted volume looks
+   like; a new host starts it once with `--init-database`. Any refusal or
+   failed migration ends the process, so no build serves on a schema half
+   applied. The same happens on every start: a reboot, a restart, `make up`,
+   `make dev`.
+5. **It waits up to 300 s** for `file-host`'s healthcheck to say `healthy`
+   (`file_host --health-check`: `/ready` ready or degraded). A container
+   that exits or restarts fails at once; one that hangs reads `unhealthy`
+   about 190 s in. The bound leaves room for the backup of a large database.
+6. **A new image that does not come up is rolled back**: the previous image
+   is tagged back as `pgathondu/server:latest`, `file-host` alone is
+   recreated from it, it waits the same bound, and the failed image's id is
+   recorded (step 2). It prints the container's last log lines.
+
+It prints each step as `deploy: …` and exits `0` deployed or nothing to do,
+`1` not deployed (the pull, the preflight or `up` failed; the old container
+serves), `2` rolled back, or `3` nothing ready, which needs you: the
+previous image failed too, there was none, or the image did not change (so
+the cause is `deploy/<role>/` or a dependency).
+
+**Needs a newer checkout.** The compose files and `deploy/<role>/` are the
+checkout's, and the deploy does not pull it (the owner's call, 2026-11-10).
+An image that needs a variable or compose change the checkout lacks fails
+its preflight or its start, and is put back; the deploy then says "this
+image needs a newer checkout on home". `git pull` in the checkout and run
+`make home-deploy` again. An image that failed is skipped by later runs
+until a newer one is published, so after a `git pull` that fixes it,
+remove its id from `failed-images.json` (or wait for the next publish).
+
+**The database is never restored automatically** (owner, 2026-11-10). A
+migration that ran stays applied, and the previous image serves the
+database as it left it: a database ahead of its binary is one it serves
+(`apps/servers/file_host/src/schema.rs`). A backup is taken before the new
+`file_host` starts serving, and its writes land after it, so a restore
+would lose them; the deploy cannot show nothing was written since. To
+restore by hand: stop `file-host` (`make compose ARGS="stop file-host"`),
+move the live `${STORAGE}/hopium.db` aside under `${STORAGE}/backups/` with
+a name of its own (never delete it, and never a `-before-` name, which the
+prune would count among its own), copy the backup to
+`${STORAGE}/hopium.db`, and `make up`. When a run ends with exit 3 it names
+the backup that start took.
+
+This is not a zero-downtime deploy: the old container stops before the new
+one proves itself. Two instances behind Caddy is #409 (deferred) and AS20
+(#566). Running it without anyone typing the command is the next step
+(home pulls on demand when a client needs a newer server than it runs).
+
 ### NixOS modules
 
 The flake exports each binary as a NixOS service, `nixosModules.file-host` and
