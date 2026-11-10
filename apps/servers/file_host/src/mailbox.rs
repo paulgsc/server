@@ -302,7 +302,8 @@ pub(crate) fn log_pass(result: &Result<pass::Outcome, pass::PassError>, cause: b
 				|| !outcome.handed.is_empty()
 				|| !outcome.indexed.is_empty()
 				|| !outcome.archived.is_empty()
-				|| !outcome.restored.is_empty();
+				|| !outcome.restored.is_empty()
+				|| outcome.more;
 			if busy || outcome.no_account {
 				info!(
 					kept = outcome.kept,
@@ -313,6 +314,7 @@ pub(crate) fn log_pass(result: &Result<pass::Outcome, pass::PassError>, cause: b
 					archived = ?outcome.archived,
 					restored = ?outcome.restored,
 					no_account = outcome.no_account,
+					more = outcome.more,
 					cause = cause.name(),
 					"Jobs mailbox pass"
 				);
@@ -350,7 +352,8 @@ fn spawn(state: &AppState, context: MailboxContext) {
 /// raised while a pass runs fold into at most one more. The backstop timer
 /// counts from the start of the last pass, whatever ran it, so a pass a ring
 /// ran is not followed by the timer's a moment later: `held` after a pass
-/// that succeeded (`pass` returns true) while the bell is held, `unheld`
+/// that settled (`pass` returns true: it succeeded and left no bounded
+/// phase with work owed) while the bell is held, `unheld`
 /// while it isn't or after a pass that failed. When the bell drops, the
 /// timer moves to `unheld` at once, counted from the last pass, so a bell
 /// that dropped 40 minutes after a pass is followed by one now.
@@ -447,8 +450,10 @@ async fn watch(db: &SqlitePool, context: &MailboxContext) {
 }
 
 /// One pass of the poller: find whose copy to keep, run a pass for it, then
-/// stamp the routine watch and tell the phones. True when it succeeded: no
-/// phase failed, and there was an account to keep the files for.
+/// stamp the routine watch and tell the phones. True when it settled: no
+/// phase failed, there was an account to keep the files for, and no phase
+/// stopped at its budget with files left to move (`Outcome::more`), so the
+/// held bell's hour is the right wait for the next.
 async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> bool {
 	crate::metrics::mailbox::record_pass_started();
 	let started = tokio::time::Instant::now();
@@ -500,9 +505,9 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 		Err(err) => crate::metrics::mailbox::record_pass(&err.outcome, &err.classes()),
 	}
 	log_pass(&result, cause);
-	let succeeded = result.as_ref().is_ok_and(|outcome| !outcome.no_account);
+	let settled = result.as_ref().is_ok_and(|outcome| !outcome.no_account && !outcome.more);
 	let Some(subject) = subject else {
-		return succeeded;
+		return settled;
 	};
 	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
 	if let Some(sender) = context.notice.as_deref() {
@@ -518,5 +523,5 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 			Err(err) => error!(error = %err, "Jobs arrival notice pass failed"),
 		}
 	}
-	succeeded
+	settled
 }

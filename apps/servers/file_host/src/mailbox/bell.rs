@@ -780,6 +780,36 @@ mod tests {
 		);
 	}
 
+	/// A pass that leaves files owed (it stopped at its budget) is followed in
+	/// 15 minutes even with the bell held, not after the held bell's hour.
+	#[tokio::test(start_paused = true)]
+	async fn a_pass_with_work_left_is_followed_soon_while_the_bell_is_held() {
+		let wake = Wake::default();
+		wake.set_held(true);
+		let cancel = CancellationToken::new();
+		let start = tokio::time::Instant::now();
+		let passes = std::cell::RefCell::new(Vec::new());
+		let run = super::super::run_passes(
+			&wake,
+			super::super::INTERVAL,
+			super::super::UNHELD,
+			&cancel,
+			|_| {
+				let nth = passes.borrow().len();
+				passes.borrow_mut().push(start.elapsed().as_secs() / 60);
+				// The first pass leaves work owed; the rest settle.
+				async move { nth != 0 }
+			},
+			|| async {},
+		);
+		let stop = async {
+			tokio::time::sleep(Duration::from_secs(80 * 60)).await;
+			cancel.cancel();
+		};
+		tokio::join!(run, stop);
+		assert_eq!(passes.into_inner(), [0, 15, 75]);
+	}
+
 	/// A bell that connects and drops every minute for an hour costs no more
 	/// passes than the 15-minute backstop: at most 4 + 1 (C64, MI6).
 	#[tokio::test(start_paused = true)]
