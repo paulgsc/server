@@ -44,6 +44,7 @@ pub use rust_rounds_wire::protocol::{
 	SWEEP_ALLOWANCE,
 };
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -69,8 +70,7 @@ pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>)
 		toolchain: recorder.toolchain().to_owned(),
 	};
 	if let Some(clients) = clients {
-		let peer = rustix::net::sockopt::socket_peercred(stream);
-		if !peer.is_ok_and(|peer| clients.contains(&peer.uid.as_raw())) {
+		if !peer_uid(stream).is_ok_and(|uid| clients.contains(&uid)) {
 			let response = refused(Refusal::Peer);
 			send(stream, &response);
 			return Ok(response);
@@ -108,6 +108,35 @@ pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>)
 	};
 	send(stream, &response);
 	Ok(response)
+}
+
+/// The uid the kernel recorded for `stream`'s peer at `connect`
+/// (`SO_PEERCRED`), as this process's user namespace maps it.
+///
+/// Read as plain integers, not with rustix's `socket_peercred` (1.1.5),
+/// whose `UCred` holds the pid as a `NonZeroI32`: a peer in a PID namespace
+/// this process cannot see, as every client in another container is, is
+/// reported with pid 0, and that read as an error, so each was refused
+/// (#766). Only the uid is checked; the pid is ignored, whatever it is.
+fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
+	let mut cred = libc::ucred {
+		pid: 0,
+		uid: u32::MAX,
+		gid: u32::MAX,
+	};
+	let size = std::mem::size_of::<libc::ucred>();
+	let mut len = libc::socklen_t::try_from(size).map_err(std::io::Error::other)?;
+	// SAFETY: `cred` is a live, writable `ucred` and `len` its size, as
+	// SO_PEERCRED writes them; every bit pattern is a valid `ucred` (three
+	// plain integers); and the descriptor is `stream`'s, open for the call.
+	let read = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&raw mut cred).cast(), &raw mut len) };
+	if read != 0 {
+		return Err(std::io::Error::last_os_error());
+	}
+	if usize::try_from(len).ok() != Some(size) {
+		return Err(std::io::Error::other("SO_PEERCRED wrote a ucred of another size"));
+	}
+	Ok(cred.uid)
 }
 
 /// Write `response` as one line, within one [`CLIENT_TIMEOUT`] for the
