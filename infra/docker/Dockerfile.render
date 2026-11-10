@@ -38,7 +38,11 @@ FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f281
 # each stage refuses a template version newer than it knows. Also v3's Mochi
 # Night (SFEED10, #2774), `record:preview` (SFEED12, #2781), and captions
 # (SFEED11, #2707) recorded a scene at a time from `/burn-ins?record`.
-ARG SOME_UI_COMMIT=6acfde69ec26d433e8d453cc1d497d48055468de
+# And at 7de89c3 (www 0.1.65's release, #2827): the Rust Rounds essay
+# (RR16, #2691): `tests/record/essay.ts`, which records `/essay` from the
+# essay file and the owner's takes home gives it (render-calls.sh's
+# rust-essay job), and the `rust-essay` template's preview.
+ARG SOME_UI_COMMIT=7de89c3db0e300fb0c56260584ff54bdff1b7954
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg git \
