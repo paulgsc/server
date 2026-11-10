@@ -19,12 +19,16 @@
 //!                          201 added, 200 the same bytes again, 409 another body, 422 why,
 //!                          413 past `ROUND_CEILING` + 1 bytes, refused before it is read whole
 //!
-//! PUT /rust-weeks/:id/sent        → { change, sent }: the body is the phone's `WeekSent`;
-//!                                   201 added, 200 the same again, 409 another, 422 why
-//!                                   (an `at` after the week's deadline among them), 404 no week
+//! PUT /rust-weeks/:id/sent        → { change, sent }: the body is the phone's `WeekSent`, the
+//!                                   week's draft until its deadline; 201 added, 200 replaced (a
+//!                                   later `at`), unchanged (the same value) or superseded (an
+//!                                   earlier `at`; `sent` is the draft that stands), 409 another
+//!                                   body at the draft's `at`, 422 why (an `at` after the deadline,
+//!                                   or home's clock past it: the week is final), 404 no week
 //! PUT /rust-weeks/:id/pastes/:at  → { change, paste: { at, text, note } }: the body is a paste, `{ at, text, note }`;
-//!                                   201, 200, 409, 422 or 404 as above
-//! GET /rust-weeks/:id/record      → { week, opens, due, closed, sent: { at, receivedAt } | null,
+//!                                   201 added, 200 the same again, 409 another, 422 why, 404
+//! GET /rust-weeks/:id/record      → { week, opens, due, closed,
+//!                                   sent: { at, receivedAt, draft } | null,
 //!                                   tickets: [{ ticket, answered, take, recordedAt, opens }],
 //!                                   unanswered, pastes }, or a JSON 404
 //! PUT /rust-round-log/sessions/:id → { change, id, revision }: the body is one session of the
@@ -36,9 +40,11 @@
 //! ```
 //!
 //! **A week's record, silence included** (paulgsc/some-ui#2689, RR14): what
-//! the owner sent of a week is kept once, and a Send after the deadline is
-//! refused, since a take not sent by then doesn't count. The record is read
-//! from the week, the Send, the pastes and the phone's engagement events
+//! the owner sent of a week is a draft until its deadline, each send
+//! replacing the last, and what stands at the deadline is final (RR22,
+//! paulgsc/some-ui#2832); a send after the deadline is refused, since a take
+//! not sent by then doesn't count. The record is read from the week, its
+//! draft or final, the pastes and the phone's engagement events
 //! (each ticket's opens), and names every ticket no take answered. The
 //! card-era log's sessions are kept as the phone sent them, growing by
 //! revisions. See `handlers::rust_week_record`.

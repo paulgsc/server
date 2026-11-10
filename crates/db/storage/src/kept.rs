@@ -61,8 +61,9 @@ pub enum Record {
 	/// `studio_video_queued`: each video queued on home, however many
 	/// revisions; since the earliest `queued_at`.
 	QueuedVideos,
-	/// `rust_week_sent`: each week of Rust Rounds sent; since the earliest
-	/// `received_at`.
+	/// `rust_week_final` and RR14's `rust_week_sent`: each week of Rust
+	/// Rounds whose send is kept for good, a week in both counted once; since
+	/// the earliest `received_at`. A draft is not kept for good, so not here.
 	RustWeeks,
 	/// `rust_round_log`: each card-era Rust Rounds session, however many
 	/// revisions; since the earliest `started_at` (stored in UTC, so the
@@ -162,7 +163,10 @@ pub async fn kept(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Held
 		   UNION ALL
 		   SELECT 'queued-videos', COUNT(DISTINCT video_id), MIN(queued_at) FROM studio_video_queued WHERE subject_id = ?1
 		   UNION ALL
-		   SELECT 'rust-weeks', COUNT(*), MIN(received_at) FROM rust_week_sent WHERE subject_id = ?1
+		   SELECT 'rust-weeks', COUNT(DISTINCT week_id), MIN(received_at) FROM (
+		       SELECT week_id, received_at FROM rust_week_final WHERE subject_id = ?1
+		       UNION ALL
+		       SELECT week_id, received_at FROM rust_week_sent WHERE subject_id = ?1)
 		   UNION ALL
 		   SELECT 'rust-round-log', COUNT(DISTINCT session_id), MIN(started_at) FROM rust_round_log WHERE subject_id = ?1"#,
 		subject
@@ -374,13 +378,18 @@ mod tests {
 		seed_rust_weeks(pool).await;
 	}
 
-	/// A week of Rust Rounds sent, and two card-era sessions, one in two revisions.
+	/// Two weeks of Rust Rounds kept for good (one RR14 kept and made final
+	/// too, counted once; one only final), a draft that is not kept for good,
+	/// and two card-era sessions, one in two revisions.
 	async fn seed_rust_weeks(pool: &SqlitePool) {
-		sqlx::query("INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w39', 'x', '{}', '2026-09-20T10:00:00.000Z')")
-			.bind(A)
-			.execute(pool)
-			.await
-			.unwrap();
+		for statement in [
+			"INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w39', 'x', '{}', '2026-09-20T10:00:00.000Z')",
+			"INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w39', 'x', '{}', '2026-09-28T08:00:00.000Z')",
+			"INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w40', 'x', '{}', '2026-10-05T08:00:00.000Z')",
+			"INSERT INTO rust_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w41', 'x', '{}', '2026-09-01T00:00:00.000Z')",
+		] {
+			sqlx::query(statement).bind(A).execute(pool).await.unwrap();
+		}
 		for (session, revision, started) in [
 			("s1", 1, "2026-09-21T10:00:00.000Z"),
 			("s1", 2, "2026-09-21T10:00:00.000Z"),
@@ -426,7 +435,7 @@ mod tests {
 				held(Record::SceneAsks, 1, "2026-09-16T07:15:03.120Z"),
 				held(Record::StudioLog, 1, "2026-09-17T10:00:00.000Z"),
 				held(Record::QueuedVideos, 1, "2026-09-18T10:00:00.000Z"),
-				held(Record::RustWeeks, 1, "2026-09-20T10:00:00.000Z"),
+				held(Record::RustWeeks, 2, "2026-09-20T10:00:00.000Z"),
 				held(Record::RustRoundLog, 2, "2026-09-21T10:00:00.000Z"),
 			],
 			"every kind, revisions and events counted as their records, B's in none"

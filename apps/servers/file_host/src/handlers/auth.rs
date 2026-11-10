@@ -1168,6 +1168,8 @@ mod tests {
 		"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",
 		"INSERT INTO rust_round (subject_id, id, body, content_hash, received_at) VALUES (?1, 'r', '{}', 'h', 'now')",
 		"INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w46', 'now', '{}', 'now')",
+		"INSERT INTO rust_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w47', 'now', '{}', 'now')",
+		"INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w46', 'now', '{}', 'now')",
 		"INSERT INTO rust_week_paste (subject_id, week_id, at, text, note_id, received_at) VALUES (?1, '2026-w46', 'now', 'e', NULL, 'now')",
 		"INSERT INTO rust_round_log (subject_id, session_id, revision, started_at, body, sha256, written_at) VALUES (?1, 's', 1, 'now', '{}', 'h', 'now')",
 		"INSERT INTO written_reflection (subject_id, reflection_id, session_id, at, at_ms, text, written_at) VALUES (?1, 'r', 's', 'then', NULL, 't', 'now')",

@@ -37,9 +37,11 @@
 //!   subject (`privacy.rs`'s `NOT_SUBJECT_SCOPED`), and are shared by every
 //!   round that holds the same program, whoever put it.
 //! - **What the owner did with a week, and the card-era log** (RR14,
-//!   paulgsc/some-ui#2689): [`sent`] keeps each week's Send and the errors
-//!   pasted in it, [`log`] each card-era session, all append-only and the
-//!   subject's (`migrations/20261109000100_create_rust_week_record.up.sql`).
+//!   paulgsc/some-ui#2689): [`sent`] keeps each week's draft until its
+//!   deadline and its final at it (RR22), and the errors pasted in it,
+//!   [`log`] each card-era session, all but the draft append-only, and all
+//!   the subject's (`migrations/20261109000100_create_rust_week_record.up.sql`,
+//!   `migrations/20261110000100_create_rust_week_draft_final.up.sql`).
 
 pub mod log;
 pub mod round;
