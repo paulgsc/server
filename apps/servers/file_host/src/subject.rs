@@ -139,12 +139,20 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each session of the owner's card-era Rust Rounds log (paulgsc/some-ui#2689, RR14), every revision as the phone sent it: the cards played, what was picked or skipped, which voice notes were said on them (by id), what rustc printed, the pins, the errors pasted from their own code, and the cards the tutor guessed wrong; when it started and reached home. See docs/identity.md invariant 28",
 	),
 	(
+		"rust_week_draft",
+		"the owner's current draft of each week of Rust Rounds not yet final (paulgsc/some-ui#2832, RR22): which tickets they answered, with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home; replaced by each later send before the week's deadline, and gone once the week is final. See docs/identity.md invariant 28",
+	),
+	(
+		"rust_week_final",
+		"each week of Rust Rounds as it stood at its deadline (paulgsc/some-ui#2832, RR22), the owner's draft then: which tickets they answered, with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home. See docs/identity.md invariant 28",
+	),
+	(
 		"rust_week_paste",
 		"each error the owner pasted from their own code in a week of Rust Rounds (paulgsc/some-ui#2689, RR14), as pasted (at most 20,000 characters), the voice note said on it by id, when it was pasted and reached home. See docs/identity.md invariant 28",
 	),
 	(
 		"rust_week_sent",
-		"each week of Rust Rounds the owner sent (paulgsc/some-ui#2689, RR14): which tickets they answered, with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home. See docs/identity.md invariant 28",
+		"each week of Rust Rounds the owner sent while a week was sent once (paulgsc/some-ui#2689, RR14), kept as it was: which tickets they answered, with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home. See docs/identity.md invariant 28",
 	),
 	("sessions", "study sessions"),
 	(

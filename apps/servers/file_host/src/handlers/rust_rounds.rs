@@ -819,8 +819,12 @@ mod tests {
 	}
 
 	fn sent(at: &str) -> Vec<u8> {
+		sent_of("2026-w40", at)
+	}
+
+	fn sent_of(week: &str, at: &str) -> Vec<u8> {
 		json!({
-			"week": "2026-w40", "at": at,
+			"week": week, "at": at,
 			"answers": [{ "ticket": "QM-1", "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z" }],
 			"passed": ["QM-2", "QM-3"],
 		})
@@ -828,7 +832,8 @@ mod tests {
 		.into_bytes()
 	}
 
-	/// A week's Send is kept once and refused after the deadline; the record
+	/// A week's send is a draft until its deadline and final at it, and none
+	/// is taken once home's clock is past it; the record
 	/// names each ticket answered or not, how often it was opened in the
 	/// week, and the pastes; silence is a record too, and another subject's
 	/// week is a `404`.
@@ -849,18 +854,25 @@ mod tests {
 		let (status, _, refused) = call(&app, Method::PUT, SENT, Some(&phone), None, &late).await;
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "after 23:59 Pacific doesn't count");
 		assert!(refused["error"]["details"]["at"].is_array(), "{refused}");
+		// Sent before the deadline: the week's draft, as a send then left it.
 		let on_time = sent("2026-10-05T06:58:00.000Z");
-		let (status, _, put) = call(&app, Method::PUT, SENT, Some(&phone), None, &on_time).await;
-		assert_eq!((status, put["change"].as_str()), (StatusCode::CREATED, Some("added")));
-		assert_eq!(put["sent"], serde_json::from_slice::<Value>(&on_time).unwrap());
-		let (status, _, put) = call(&app, Method::PUT, SENT, Some(&phone), None, &on_time).await;
-		assert_eq!((status, put["change"].as_str()), (StatusCode::OK, Some("unchanged")));
-		let other = sent("2026-10-05T06:57:00.000Z");
+		sqlx::query(
+			"INSERT INTO rust_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w40', '2026-10-05T06:58:00.000Z', ?2, '2026-10-05T06:58:01.000Z')",
+		)
+		.bind(A)
+		.bind(String::from_utf8(on_time.clone()).unwrap())
+		.execute(&pool)
+		.await
+		.unwrap();
+		let (status, _, refused) = call(&app, Method::PUT, SENT, Some(&phone), None, &sent("2026-10-05T06:59:00.000Z")).await;
 		assert_eq!(
-			call(&app, Method::PUT, SENT, Some(&phone), None, &other).await.0,
-			StatusCode::CONFLICT,
-			"a week is sent once"
+			status,
+			StatusCode::UNPROCESSABLE_ENTITY,
+			"home's clock is past the deadline: no grace, even pressed before it"
 		);
+		assert!(refused["error"]["details"]["week"].is_array(), "{refused}");
+		let finals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_week_final").fetch_one(&pool).await.unwrap();
+		assert_eq!(finals, 1, "the refused send made the week final first");
 		assert_eq!(
 			call(&app, Method::PUT, SENT, Some(&theirs), None, &on_time).await.0,
 			StatusCode::NOT_FOUND,
@@ -889,7 +901,7 @@ mod tests {
 			json!({
 				"week": "2026-w40", "opens": "2026-09-28T00:00:00-07:00", "due": "2026-10-04T23:59:00-07:00",
 				"closed": true,
-				"sent": { "at": "2026-10-05T06:58:00.000Z", "receivedAt": record["sent"]["receivedAt"] },
+				"sent": { "at": "2026-10-05T06:58:00.000Z", "receivedAt": "2026-10-05T06:58:01.000Z", "draft": false },
 				"tickets": [
 					{ "ticket": "QM-1", "answered": true, "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z", "opens": 2 },
 					{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "opens": 0 },
@@ -905,12 +917,60 @@ mod tests {
 		assert_eq!((silent["closed"].as_bool(), &silent["sent"]), (Some(true), &Value::Null));
 		assert_eq!(silent["unanswered"], json!(["QM-1", "QM-2", "QM-3"]), "nothing sent: every ticket a silence");
 		let (_, _, open) = call(&app, Method::GET, "/rust-weeks/2026-w53/record", Some(&phone), None, b"").await;
-		assert_eq!(open["closed"], json!(false));
+		assert_eq!((&open["closed"], &open["sent"]), (&json!(false), &Value::Null));
+
 		assert_eq!(call(&app, Method::GET, RECORD, Some(&theirs), None, b"").await.0, StatusCode::NOT_FOUND);
 		assert_eq!(
 			call(&app, Method::GET, "/rust-weeks/2026-w44/record", Some(&phone), None, b"").await.0,
 			StatusCode::NOT_FOUND
 		);
+	}
+
+	/// Before the deadline every send is a draft: a later one replaces it, an
+	/// earlier one leaves it, the same value again is no change, another body
+	/// at its moment is a `409`, and the record reads the draft as one.
+	#[tokio::test]
+	async fn a_weeks_send_is_a_draft_until_its_deadline() {
+		const OPEN_SENT: &str = "/rust-weeks/2026-w53/sent";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		hold_dated_week(&pool, A, 1, "2026-w53", "2026-10-12T00:00:00-07:00", "2099-12-31T23:59:00-08:00").await;
+
+		let first = sent_of("2026-w53", "2026-10-20T09:00:00.000Z");
+		let later = sent_of("2026-w53", "2026-10-21T09:00:00.000Z");
+		let (status, _, put) = call(&app, Method::PUT, OPEN_SENT, Some(&phone), None, &first).await;
+		assert_eq!(
+			(status, &put),
+			(StatusCode::CREATED, &json!({ "change": "added", "sent": serde_json::from_slice::<Value>(&first).unwrap() }))
+		);
+		let (status, _, put) = call(&app, Method::PUT, OPEN_SENT, Some(&phone), None, &later).await;
+		assert_eq!((status, put["change"].as_str()), (StatusCode::OK, Some("replaced")));
+		let (status, _, put) = call(&app, Method::PUT, OPEN_SENT, Some(&phone), None, &first).await;
+		assert_eq!((status, put["change"].as_str()), (StatusCode::OK, Some("superseded")), "a late retry");
+		assert_eq!(put["sent"], serde_json::from_slice::<Value>(&later).unwrap(), "answered with the draft that stands");
+		let held: Value = serde_json::from_slice(&later).unwrap();
+		let reordered = String::from("{ \"passed\": ")
+			+ &held["passed"].to_string()
+			+ ",\n \"answers\": "
+			+ &held["answers"].to_string()
+			+ ", \"at\": \"2026-10-21T09:00:00.000Z\", \"week\": \"2026-w53\" }";
+		let (status, _, put) = call(&app, Method::PUT, OPEN_SENT, Some(&phone), None, reordered.as_bytes()).await;
+		assert_eq!((status, put["change"].as_str()), (StatusCode::OK, Some("unchanged")), "the same value, keys reordered");
+		let mut changed = held.clone();
+		changed["answers"][0]["take"] = json!("2026-w53:QM-1:redo");
+		assert_eq!(
+			call(&app, Method::PUT, OPEN_SENT, Some(&phone), None, changed.to_string().as_bytes()).await.0,
+			StatusCode::CONFLICT,
+			"another body at the draft's moment"
+		);
+		let (_, _, open) = call(&app, Method::GET, "/rust-weeks/2026-w53/record", Some(&phone), None, b"").await;
+		assert_eq!(
+			(&open["sent"]["at"], &open["sent"]["draft"], &open["closed"]),
+			(&json!("2026-10-21T09:00:00.000Z"), &json!(true), &json!(false))
+		);
+		assert_eq!(open["unanswered"], json!(["QM-2", "QM-3"]), "read from the draft");
 	}
 
 	/// A card-era session is kept as sent and read back byte for byte; it

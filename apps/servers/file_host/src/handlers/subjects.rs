@@ -132,6 +132,9 @@ pub struct KindKept {
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "subject_kept", skip_all, fields(otel.kind = "server"))]
 pub async fn kept(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Kept>, FileHostError> {
+	// A week whose deadline has passed is final whether or not its record
+	// was read; its final is what is kept for good (RR22).
+	crate::handlers::rust_week_record::finalize_due(&db, paired.subject.as_str()).await?;
 	let mut conn = db.acquire().await?;
 	let kinds = storage_repo::kept::kept(&mut conn, paired.subject.as_str())
 		.await?
