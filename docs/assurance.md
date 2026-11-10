@@ -103,6 +103,8 @@ commit once each, and write what they see, pending or decided:
   Actions runs on, so this is what judges one that finishes after the last workflow, and any event
   GitHub drops. It judges nothing itself, so every write stays inside the head's concurrency group.
   It costs 96 runs a day of about 10 s each, plus one ~15 s judging job per gate still unfinished.
+  To sweep now, run `PR gate verdict` by hand (Actions → Run workflow) with its inputs empty; with
+  `pr` and `head_sha` it judges that one head instead (#772).
 
 They share one concurrency group per head commit, so the writes land in the order they were read.
 A write that changes a finished verdict writes a new check run, which is the one the ruleset reads,
