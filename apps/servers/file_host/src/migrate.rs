@@ -35,8 +35,10 @@
 //!    each in its own transaction, then reads the drift back: anything
 //!    still pending is a failure.
 //! 5. **Prunes** its own backups beyond the newest `keep`
-//!    ([`DEFAULT_KEEP_BACKUPS`], five: the owner's, 2026-11-10), only after a
-//!    run that left the database current. A failed run removes nothing.
+//!    ([`DEFAULT_KEEP_BACKUPS`], five: the owner's, 2026-11-10), after every
+//!    run, failed or not: a failing migration is retried by each restart,
+//!    and each attempt takes a backup, so only pruning then too keeps them at
+//!    `keep`. The newest, the one this run took, is never removed.
 //!    **This is a discard site** ([`prune`]): a backup holds every row the
 //!    database held when it was taken, a deleted account's included, and it
 //!    is gone once five newer migrating starts have each taken theirs
@@ -241,12 +243,19 @@ async fn migrate(pool: &SqlitePool, path: &Path, existed: bool, options: &Option
 		None
 	};
 
+	// A run that took a backup prunes whether it succeeds or not: a failing
+	// migration is retried by every restart (`restart: unless-stopped`),
+	// and sqlx records no failed row for it, so each attempt takes a new
+	// backup. Pruning keeps them at `keep`, and the newest, this run's, is
+	// never among those removed. A prune that fails is not the run's error.
 	if let Err(source) = migrator.run(pool).await {
+		let _ = prune(&backup_dir, &stem, options.keep);
 		return Err(Refused::Apply { backup, source });
 	}
 
 	let after = drift(pool, migrator).await.map_err(Refused::Read)?;
 	if !after.is_current() {
+		let _ = prune(&backup_dir, &stem, options.keep);
 		return Err(Refused::StillBehind(after));
 	}
 
@@ -535,6 +544,38 @@ mod tests {
 		assert_eq!(left.pending, ["3 broken"], "the migration before the broken one stays applied");
 		let kept: i64 = sqlx::query_scalar("SELECT id FROM kept").fetch_one(&pool).await.unwrap();
 		assert_eq!(kept, 7);
+	}
+
+	/// A migration that fails is retried by every restart, and each attempt
+	/// backs up again: the backups stay at `keep`, the newest kept.
+	#[tokio::test]
+	async fn a_migration_that_keeps_failing_keeps_its_backups_bounded() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("migrations");
+		std::fs::create_dir(&source).unwrap();
+		std::fs::write(source.join("1_first.sql"), "CREATE TABLE kept (id INTEGER PRIMARY KEY);").unwrap();
+		let first = Migrator::new(source.as_path()).await.unwrap();
+		std::fs::write(source.join("2_broken.sql"), "INSERT INTO nowhere VALUES (1);").unwrap();
+		let all = Migrator::new(source.as_path()).await.unwrap();
+
+		let mut options = options(dir.path());
+		options.keep = 3;
+		let pool = open(&options).await;
+		first.run(&pool).await.unwrap();
+		pool.close().await;
+
+		for second in 0..7 {
+			let refused = bring_current_at(&options, &all, at(second)).await.unwrap_err();
+			assert!(matches!(refused, Refused::Apply { backup: Some(_), .. }), "{refused}");
+		}
+		assert_eq!(
+			backups(dir.path()),
+			[
+				"hopium-20261031T120004Z-before-2.db",
+				"hopium-20261031T120005Z-before-2.db",
+				"hopium-20261031T120006Z-before-2.db",
+			]
+		);
 	}
 
 	/// Only this binary's backups count toward `keep`, newest kept, and a run

@@ -277,10 +277,17 @@ def deploy(host: Host, options: Options, now: Callable[[], float], sleep: Callab
         say(f"deploy: {IMAGE} is {candidate}, which failed here before; staying on {old} until a newer one is published")
         return EXIT_DEPLOYED
     if candidate is not None and candidate == old:
-        say("deploy: the image is the one serving; nothing restarted")
-        return EXIT_DEPLOYED
+        # Nothing to deploy only when what has that image is ready: a
+        # container that exited, is restarting or reads unhealthy is not
+        # serving, and `make up` below is the way to bring it back (with no
+        # previous image to roll back to, since it is the same one).
+        state = judge(before, before.restarts)
+        if state.kind == "ready":
+            say("deploy: the image is the one serving; nothing restarted")
+            return EXIT_DEPLOYED
+        say(f"deploy: the image is the container's, but it is not ready ({state.reason or before.health or before.status}); bringing it up")
 
-    if old and candidate:
+    if old and candidate and candidate != old:
         kept = previous_ref(IMAGE)
         if host.tag(old, kept):
             say(f"deploy: kept the serving {FILE_HOST} image as {kept}")
@@ -591,6 +598,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(code, EXIT_DEPLOYED)
         self.assertNotIn("up", host.calls)
         self.assertIn("nothing restarted", said[-1])
+
+    def test_the_same_image_not_serving_is_brought_up_not_called_deployed(self) -> None:
+        host = self.world(ready_after(0), ready_after(0), publish=False)
+        host.behaviours["sha256:old"] = lambda t: ("exited", None, 0)
+        code, said = self.run_deploy(host)
+        self.assertIn("up", host.calls)
+        self.assertNotEqual(code, EXIT_DEPLOYED)
+        self.assertFalse(any("nothing restarted" in line for line in said))
+        self.assertNotIn("recreate", host.calls, "no previous image to roll back to")
 
     def test_only_file_hosts_image_is_pulled(self) -> None:
         host = self.world(ready_after(0), ready_after(0), publish=False)
