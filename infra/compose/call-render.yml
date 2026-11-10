@@ -78,8 +78,8 @@ services:
       start_period: 60s
 
   call-stage:
-    # Published from paulgsc/some-ui 6acfde6; Dockerfile.render's SOME_UI_COMMIT moves with it.
-    image: pgathondu/www:0.1.63@sha256:792f3a103aff44ae878d23334c16d4401cebc58d612728b5889df500c1bcccd3
+    # Published from paulgsc/some-ui 7de89c3; Dockerfile.render's SOME_UI_COMMIT moves with it.
+    image: pgathondu/www:0.1.65@sha256:4c3de076f03ce88d7b4fb06832538fa6c9f2ed0121dc490554eb821b04f1253c
     container_name: call-stage
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").
