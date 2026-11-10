@@ -22,6 +22,7 @@ pub mod listen;
 pub mod mailbox;
 pub mod meaning;
 pub mod metrics;
+pub mod migrate;
 pub mod models;
 pub mod net;
 pub mod nudge;

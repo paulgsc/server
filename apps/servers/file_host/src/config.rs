@@ -100,6 +100,14 @@ pub struct Config {
 	#[arg(long, help_heading = "Server")]
 	pub port_file: Option<std::path::PathBuf>,
 
+	/// A new host, once: create the database when no file is there, and
+	/// migrate one that has never been migrated. Without it, `file_host`
+	/// refuses both at start (`migrate`, AS16 #563), since both are what a
+	/// volume that is not mounted looks like. A flag, not a variable, as
+	/// `--port-fallback` is: no deployment file can leave it on.
+	#[arg(long, default_value_t = false, help_heading = "Server")]
+	pub init_database: bool,
+
 	/// Rate limit, in requests per minute, per client (`main.rs`'s
 	/// `rate_limit_middleware` partitions by peer IP). See #215/#231: this
 	/// field previously declared the right unit but was unread — the
