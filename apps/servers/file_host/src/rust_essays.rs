@@ -453,6 +453,10 @@ pub async fn tidy(db: &SqlitePool, subject: Option<&str>, folders: &Folders, now
 		}
 		None => (Vec::new(), Vec::new(), Vec::new()),
 	};
+	// A `.<week>.partial` is an export that stopped half way: never one in
+	// progress, since export holds the same lock. It may hold takes, so it
+	// goes, whoever's it was.
+	done.failed += remove_partials(&folders.essays).await;
 	let on_drive = {
 		let mut weeks = weeks_in(&folders.essays).await;
 		for week in weeks_in(&folders.renders).await.into_iter().chain(weeks_in(&folders.work).await) {
@@ -514,6 +518,22 @@ async fn deleted_take(db: &SqlitePool, subject: &str, week: &str) -> Result<Opti
 		}
 	}
 	Ok(None)
+}
+
+/// Removes every `.<name>.partial` directly under `folder`; how many could
+/// not be removed.
+async fn remove_partials(folder: &Path) -> usize {
+	let mut failed = 0;
+	if let Ok(mut entries) = tokio::fs::read_dir(folder).await {
+		while let Ok(Some(entry)) = entries.next_entry().await {
+			let name = entry.file_name();
+			let name = name.to_string_lossy();
+			if name.starts_with('.') && name.ends_with(".partial") {
+				failed += usize::from(remove(&entry.path()).await.is_err());
+			}
+		}
+	}
+	failed
 }
 
 /// The week folders directly under `folder`; none when it can't be read.
@@ -1015,6 +1035,8 @@ mod tests {
 		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
 		std::fs::create_dir_all(folders.renders.join("2026-w40")).unwrap();
+		std::fs::create_dir_all(folders.essays.join(".2026-w47.partial").join("takes")).unwrap();
+		std::fs::write(folders.essays.join(".2026-w47.partial").join("takes").join("QM-311.ogg"), b"OggS").unwrap();
 		std::fs::create_dir_all(folders.work.join("2026-w46").join("cache")).unwrap();
 		std::fs::write(folders.work.join("2026-w46").join("cache").join("take.wav"), b"the owner's voice").unwrap();
 
@@ -1030,6 +1052,7 @@ mod tests {
 			"the account went: so did its essays"
 		);
 		assert!(!folders.work.join("2026-w46").exists(), "and their unfinished work, the owner's takes in it");
+		assert!(!folders.essays.join(".2026-w47.partial").exists(), "and an export that stopped half way");
 	}
 
 	/// C72: a correction is a new name, `-r<N>`; the highest revision is

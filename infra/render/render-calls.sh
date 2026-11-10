@@ -245,6 +245,13 @@ record() {
   esac
 }
 
+# Which revision of `key` the job was given: an essay's `revision` file
+# (file_host's `rust_essays`, C72), empty for every other job.
+revision() {
+  [ "$1" = rust-essay ] || return 0
+  cat "$INPUT/$2/revision" 2> /dev/null
+}
+
 # Where `record` leaves `key`'s finished folder: the call's recorder names it
 # for the week's first day in --out, Playoff Delta's <season>-week-NN in it,
 # the essay's for its week in --out.
@@ -593,7 +600,7 @@ attempt() {
 # the lane says, until it renders (0), fails (1), or is let go (2).
 render_episode() {
   local job=$1 key=$2
-  local log="$STATUS/.$key.log" made asked
+  local log="$STATUS/.$key.log" made asked rev
   : > "$log" || return 1
   if ! mkdir -p "$WORK" 2>> "$log"; then
     echo "the work folder $WORK could not be made" | tee -a "$log"
@@ -618,7 +625,16 @@ render_episode() {
         end_job
         return 2 ;;
     esac
+    rev=$(revision "$job" "$key")
     attempt "$job" "$key" "$log"
+    # An essay corrected while it rendered (file_host gave a newer
+    # revision, C72): what was made is of the old one, so it is never kept.
+    # It runs again over the new essay, its unchanged steps from the cache.
+    if [ "$(revision "$job" "$key")" != "$rev" ] && [ "$ATTEMPT" != yielded ]; then
+      rm -rf "$(finished "$job" "$key")"
+      say "the $job of $key was corrected while it rendered; it runs again over the newer revision" "$log"
+      ATTEMPT=yielded
+    fi
     case $ATTEMPT in
       done) break ;;
       failed)

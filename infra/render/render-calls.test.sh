@@ -206,6 +206,11 @@ if [ "$1" = tests/record/essay.ts ]; then
     shift
   done
   echo "$essay $takes $out" >> "$fake/essay-runs"
+  if [ -e "$fake/correct-mid-render" ]; then
+    rm -f "$fake/correct-mid-render"
+    echo '{"r":2}' > "$essay"
+    echo 2 > "$(dirname "$essay")/revision"
+  fi
   if [ -e "$fake/no-take" ]; then
     echo "QM-311 is answered with a take, and $takes has none for it" >&2
     exit 1
@@ -311,7 +316,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" \
+    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
@@ -755,6 +760,19 @@ check "without its cache, and its work gone" test ! -e "$ROOT/renders/rust-essay
 check "with the speaker and the caps every job has" grep -qx -- --max-video-mb "$FAKE/args-essay"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a rendered essay is not made again, and no other folder is read" test "$(wc -l < "$FAKE/essay-runs")" -eq 1
+
+# An essay corrected while it renders (C72): what was made of the old
+# revision is never kept, and it runs again over the new one.
+fresh essay-corrected
+mkdir -p "$ROOT/essays/2026-w46/takes"
+echo '{"r":1}' > "$ROOT/essays/2026-w46/essay.json"
+echo 1 > "$ROOT/essays/2026-w46/revision"
+# The fake recorder's first run finds the correction given meanwhile.
+touch "$FAKE/correct-mid-render"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a render of a superseded revision is run again" test "$(wc -l < "$FAKE/essay-runs")" -eq 2
+check "and the kept essay is the newer revision's" grep -q '"r":2' "$ROOT/renders/rust-essay/2026-w46/essay.json"
+check "and that is said" grep -q "corrected while it rendered" "$SCRATCH/pass.out"
 
 # An essay that fails keeps its output for the owner and is tried again.
 fresh essay-failed
