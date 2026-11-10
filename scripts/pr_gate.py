@@ -6,21 +6,49 @@ repository runs on a pull request live in several workflows, some of them
 filtered by path (`routes.yml`'s `Emit the route snapshot` and `Check some-ui
 against it`) and some skipped inside a run when their paths did not change
 (`test.yml`'s `rust_ci` and `infra_ci`). A job cannot `needs` a job in
-another workflow, so this script, run as `.github/workflows/gate.yml`'s
-`PR gate` job, waits on them through the API instead:
+another workflow, so this script judges them through the API and writes the
+verdict as a check run named `PR gate` (external id `pr-gate`), the name the
+ruleset requires.
+
+**Who runs it (#762).** No runner waits while the other checks run. Two short
+jobs judge the head commit once each time something may have changed, and
+write what they see, pending or decided:
+
+- `.github/workflows/gate.yml` (`PR gate (open)`, `--open`) on the pull
+  request's own events, so a push or a label that re-runs `routes.yml` turns
+  the gate pending at once;
+- `.github/workflows/gate-verdict.yml` (`PR gate (verdict)`, `--event`) on
+  every completed workflow run it lists, so the last workflow to finish
+  decides the gate, and a re-run of a failed one decides it again with no
+  re-run of the gate. Other apps' checks reach no workflow here (GitHub fires
+  no `check_run` for a head GitHub Actions runs on), so its schedule
+  (`--sweep`, every 15 minutes) sends each open pull request whose gate is
+  still unfinished back to be judged again (`workflow_dispatch`): the
+  backstop for a check still running when the last workflow finished, or an
+  event GitHub dropped.
+
+Both share one concurrency group per head commit, so their writes land in the
+order they read. GitHub runs the base branch's `gate-verdict.yml`, not the
+pull request's, so when that copy does not hear every workflow this pull
+request expects (it has none yet, or the pull request adds or renames a
+workflow), `--open` falls back to waiting in the job as the gate did before,
+up to `--minutes` (60): otherwise one it cannot hear could finish last and
+leave the gate pending with nothing to judge it again.
 
 1. **What should run.** It reads every `.github/workflows/*.y(a)ml` the pull
    request's merge commit holds (the ones GitHub runs for it) and, for each
    with a `pull_request` or `pull_request_target` trigger, decides from that
    trigger's `branches`/`branches-ignore` and `paths`/`paths-ignore` filters,
    against the base branch and the pull request's changed files, whether
-   GitHub starts it. Those runs are **expected**.
+   GitHub starts it. Those runs are **expected**. Each must also be listed by
+   name in `gate-verdict.yml`'s `workflow_run`, or its finishing would decide
+   nothing: one that is not fails the gate.
 2. **What runs.** It lists the workflow runs for the head commit (events
    `pull_request` and `pull_request_target`, and `dynamic`: the runs GitHub
    starts from no file here, as CodeQL's default setup does), the latest per
    workflow file, and the check runs on the head commit that another app
    (code scanning's `CodeQL`, say) reports. Every one of them is awaited,
-   expected or not, except this gate's own run.
+   expected or not, except the gate's own two workflows.
 3. **The verdict.** It passes once every expected workflow has a run, and
    every awaited run and check run has completed with `success`, `skipped`
    or `neutral`. Any other conclusion (`failure`, `cancelled`, `timed_out`,
@@ -28,8 +56,9 @@ another workflow, so this script, run as `.github/workflows/gate.yml`'s
    seen, naming the run's failed jobs: nothing that failed passes without a
    re-run. A run is judged by its own conclusion, so a job its workflow lets
    fail (`continue-on-error`: deny.yml's advisories) is reported as a
-   warning, as its workflow's author chose. Anything still unfinished after
-   `--minutes` (60) fails it too.
+   warning, as its workflow's author chose. A run that took longer than 60
+   minutes fails it too, as one unfinished after 60 minutes did when the
+   gate waited.
 
 **Skipped passes only where its paths did not change.** A whole workflow is
 skipped by its `paths` filter: step 1 reads the same filter, so a run it
@@ -42,42 +71,47 @@ reported through that one. A new `if:` that skips for any other reason is a
 review question, not one this script can answer.
 
 **A check that never appears.** GitHub creates every workflow run for an
-event when it handles the event, before any job starts, so by the time this
-job runs the others exist. An expected run still missing after GRACE fails
-the gate, naming the filter that expected it; it does not wait out the whole
-deadline. One that GitHub started though step 1 did not expect it is awaited
-and warned about, since then this reading of the filter is wrong. GitHub
-evaluates a path filter on at most the first 300 changed files, so on a
-larger pull request a missing path-filtered run is a warning, not a failure.
+event when it handles the event, before any job starts. An expected run that
+is missing keeps the gate pending while anything else is unfinished, and
+fails it once nothing is (when waiting in the job: after GRACE), naming the
+filter that expected it. One that GitHub started though step 1 did not
+expect it is awaited and warned about, since then this reading of the filter
+is wrong. GitHub evaluates a path filter on at most the first 300 changed
+files, so on a larger pull request a missing path-filtered run is a warning,
+not a failure.
 
-**Not itself.** Runs of this gate's own workflow file are never awaited, so
-the gate does not wait on itself, and that workflow must hold only the gate:
-any other job in it would be awaited by nothing, so the gate fails if its
-own run has more than one job.
+**Not itself.** Runs of `gate.yml` are never awaited, and that workflow must
+hold only the gate: any other job in it would be awaited by nothing, so the
+gate fails if its latest run on the head has more than one job, whichever
+job is judging. `gate-verdict.yml` runs on
+`workflow_run`/`schedule`/`workflow_dispatch`, events this gate never awaits, from the default
+branch's copy: a pull request that edits it is judged by `main`'s.
 
-**Re-runs.** After "Re-run failed jobs" on another workflow, re-run this one
-too: it reads the latest attempt of each run, but nothing starts it again.
-
-    python3 scripts/pr_gate.py                   # in Actions, from the event
+    python3 scripts/pr_gate.py --open            # gate.yml, from the pull_request event
+    python3 scripts/pr_gate.py --event           # gate-verdict.yml, from its event
     python3 scripts/pr_gate.py --repo paulgsc/server --pr 555 --once
     python3 scripts/pr_gate.py --self-test
 
-`--once` evaluates once and prints where every check stands, without
-waiting. Needs `GITHUB_TOKEN` with `actions: read`, `checks: read` and
-`pull-requests: read`. Design and boundaries: docs/assurance.md.
+`--once` evaluates once and prints where every check stands, writing
+nothing. Needs `GITHUB_TOKEN` with `actions: read`, `contents: read` and
+`pull-requests: read`, and `checks: write` to write the verdict (`checks:
+read` for `--once`). Design and boundaries: docs/assurance.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +123,14 @@ PASSING = {"success", "skipped", "neutral"}
 GRACE_SECONDS = 10 * 60
 POLL_SECONDS = 30
 PATH_FILTER_LIMIT = 300
+RUN_LIMIT_SECONDS = 60 * 60
+OPENER = ".github/workflows/gate.yml"
+VERDICT = ".github/workflows/gate-verdict.yml"
+GATE_FILES = (OPENER, VERDICT)
+CHECK_NAME = "PR gate"
+EXTERNAL_ID = "pr-gate"
+# Not a workflow file here: CodeQL's default setup runs as a `dynamic` workflow of this name.
+DYNAMIC_WORKFLOWS = ("CodeQL",)
 
 
 class Unreadable(Exception):
@@ -262,12 +304,20 @@ def matches(patterns: tuple[str, ...], value: str) -> bool:
 	return result
 
 
+def branch_miss(trigger: Trigger, base_ref: str) -> str | None:
+	"""Why this trigger's branch filters leave the base branch out, or None when they let it in."""
+	if trigger.branches is not None and not matches(trigger.branches, base_ref):
+		return f"base {base_ref} is not in its branches"
+	if trigger.branches_ignore is not None and matches(trigger.branches_ignore, base_ref):
+		return f"base {base_ref} is in its branches-ignore"
+	return None
+
+
 def runs_for(trigger: Trigger, base_ref: str, files: list[str]) -> tuple[bool, str]:
 	"""Whether GitHub starts this workflow for the pull request, and why."""
-	if trigger.branches is not None and not matches(trigger.branches, base_ref):
-		return (False, f"base {base_ref} is not in its branches")
-	if trigger.branches_ignore is not None and matches(trigger.branches_ignore, base_ref):
-		return (False, f"base {base_ref} is in its branches-ignore")
+	miss = branch_miss(trigger, base_ref)
+	if miss:
+		return (False, miss)
 	if trigger.paths is not None:
 		hit = next((f for f in files if matches(trigger.paths, f)), None)
 		return (True, f"{hit} matches its paths") if hit else (False, "no changed file matches its paths")
@@ -277,16 +327,43 @@ def runs_for(trigger: Trigger, base_ref: str, files: list[str]) -> tuple[bool, s
 	return (True, "it has no path filter")
 
 
-def expected_workflows(root: Path, self_path: str, base_ref: str, files: list[str]) -> tuple[dict[str, str], dict[str, str]]:
-	"""({workflow path: why it runs}, {workflow path: why it does not}), this gate's own file left out."""
+def local_workflows(root: Path) -> dict[str, str]:
+	"""{workflow path: text} of the workflow files in a checkout."""
+	files = sorted([*root.glob(".github/workflows/*.yml"), *root.glob(".github/workflows/*.yaml")])
+	return {str(file.relative_to(root)): file.read_text(encoding="utf-8") for file in files}
+
+
+def workflow_name(path: str, text: str) -> str:
+	"""The workflow's top-level `name:`, which is what `workflow_run` lists it by; GitHub's default is its path."""
+	found = re.search(r"^name:(.*)$", text, re.MULTILINE)
+	return scalar(found.group(1)) if found and scalar(found.group(1)) else path
+
+
+def verdict_listens(text: str) -> tuple[str, ...]:
+	"""The workflow names in gate-verdict.yml's `workflow_run.workflows`. Raises Unreadable."""
+	lines = text.replace("\t", "    ").split("\n")
+	start = next((i for i, line in enumerate(lines) if re.match(r"^\s+workflow_run:\s*(#.*)?$", line)), None)
+	if start is None:
+		raise Unreadable(f"{VERDICT}: no `workflow_run:` trigger")
+	for index, line in block(lines, start, indent_of(lines[start])):
+		key = re.match(r"^\s*workflows:(.*)$", line)
+		if not key:
+			continue
+		if uncomment(key.group(1)):
+			return tuple(flow_list(key.group(1), "workflow_run.workflows"))
+		column = indent_of(line)
+		return tuple(scalar(item.strip()[2:]) for _, item in block(lines, index, column) if item.strip().startswith("- "))
+	raise Unreadable(f"{VERDICT}: `workflow_run:` lists no `workflows:`")
+
+
+def expected_workflows(texts: dict[str, str], base_ref: str, files: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+	"""({workflow path: why it runs}, {workflow path: why it does not}), the gate's own files left out."""
 	expected, not_expected = {}, {}
-	workflows = sorted([*root.glob(".github/workflows/*.yml"), *root.glob(".github/workflows/*.yaml")])
-	for file in workflows:
-		path = str(file.relative_to(root))
-		if path == self_path:
+	for path, text in sorted(texts.items()):
+		if path in GATE_FILES:
 			continue
 		try:
-			trigger = read_trigger(file.read_text(encoding="utf-8"))
+			trigger = read_trigger(text)
 		except Unreadable as err:
 			raise Unreadable(f"{path}: {err}") from err
 		if trigger is None:
@@ -294,6 +371,14 @@ def expected_workflows(root: Path, self_path: str, base_ref: str, files: list[st
 		runs, why = runs_for(trigger, base_ref, files)
 		(expected if runs else not_expected)[path] = why
 	return expected, not_expected
+
+
+def unheard(texts: dict[str, str], expected: dict[str, str]) -> list[str]:
+	"""The expected workflows whose finishing gate-verdict.yml would not hear, by its own list in `texts`."""
+	if VERDICT not in texts:
+		return []
+	listens = set(verdict_listens(texts[VERDICT]))
+	return [f"{path} (name {workflow_name(path, texts[path])!r}) is not in {VERDICT}'s workflow_run list, so its finishing would decide nothing: add it there" for path in sorted(expected) if workflow_name(path, texts[path]) not in listens]
 
 
 # --- the verdict ---------------------------------------------------------------------------------
@@ -318,17 +403,30 @@ def for_this_pr(run: dict[str, Any], pr: int) -> bool:
 	return not numbers or pr in numbers
 
 
-def latest_runs(runs: list[dict[str, Any]], head_sha: str, self_path: str, self_run_id: int, pr: int) -> dict[str, dict[str, Any]]:
+def latest_runs(runs: list[dict[str, Any]], head_sha: str, self_run_id: int, pr: int) -> dict[str, dict[str, Any]]:
 	latest: dict[str, dict[str, Any]] = {}
 	for run in runs:
 		if run.get("head_sha") != head_sha or run.get("event") not in AWAITED_EVENTS:
 			continue
-		if run.get("id") == self_run_id or run.get("path") == self_path or not for_this_pr(run, pr):
+		if run.get("id") == self_run_id or run.get("path") in GATE_FILES or not for_this_pr(run, pr):
 			continue
 		path = run.get("path") or run.get("name") or str(run.get("id"))
 		if path not in latest or run["id"] > latest[path]["id"]:
 			latest[path] = run
 	return latest
+
+
+def seconds(run: dict[str, Any]) -> float:
+	"""How long a completed run's latest attempt took to its last update, from its creation for a first
+	attempt (queueing counts, as it did against the waiting gate's clock) and from its start for a
+	re-run; 0 when unknown."""
+	begin = run.get("created_at") if run.get("run_attempt", 1) == 1 and run.get("created_at") else run.get("run_started_at")
+	try:
+		start = datetime.fromisoformat(str(begin).replace("Z", "+00:00"))
+		end = datetime.fromisoformat(str(run["updated_at"]).replace("Z", "+00:00"))
+	except (KeyError, ValueError):
+		return 0.0
+	return (end - start).total_seconds()
 
 
 def judge(
@@ -339,14 +437,23 @@ def judge(
 	other_checks: list[dict[str, Any]],
 	elapsed: float,
 	files_changed: int,
+	event: bool = False,
 ) -> Verdict:
-	"""Where every awaited check stands. `jobs` holds the jobs of each completed run, by run id."""
+	"""Where every awaited check stands. `jobs` holds the jobs of each completed run, by run id.
+
+	`event`: judged once, by a job that does not wait (--open, --event), so there is no elapsed time:
+	an expected run that is missing stays pending only while something else is unfinished (whose
+	finishing judges again), and a run that took over RUN_LIMIT_SECONDS fails, as a run unfinished
+	that long failed the gate that waited."""
 	v = Verdict(done=True)
+	missing: list[str] = []
 	for path, why in sorted(expected.items()):
 		if path in runs:
 			continue
 		if files_changed > PATH_FILTER_LIMIT and "matches its paths" in why:
 			v.warnings.append(f"{path} has no run, though {why}; GitHub reads only {PATH_FILTER_LIMIT} of the {files_changed} changed files for a path filter")
+		elif event:
+			missing.append(path)
 		elif elapsed >= GRACE_SECONDS:
 			v.errors.append(f"{path} should have run ({why}), and GitHub started no run of it for this commit")
 		else:
@@ -363,6 +470,8 @@ def judge(
 		# The run's conclusion is the verdict, as it is for a required check: a
 		# job its workflow marks `continue-on-error` (deny.yml's advisories)
 		# fails without failing the run, and is reported, not counted.
+		if event and seconds(run) > RUN_LIMIT_SECONDS:
+			v.errors.append(f"{label}: took {seconds(run) / 60:.0f} minutes, over the {RUN_LIMIT_SECONDS // 60} a check may take {run.get('html_url', '')}".rstrip())
 		failed = [j for j in jobs.get(run["id"], []) if j.get("conclusion") not in PASSING]
 		named = [f"job {j.get('name')!r} {j.get('conclusion') or j.get('status')} {j.get('html_url', '')}".rstrip() for j in failed]
 		if run.get("conclusion") in PASSING:
@@ -381,6 +490,11 @@ def judge(
 			v.errors.append(f"{label}: {check.get('conclusion')} {check.get('html_url', '')}".rstrip())
 		else:
 			v.passed.append(f"{label}: {check.get('conclusion')}")
+	if missing and v.pending:
+		v.done = False
+		v.pending += [f"{path}: no run yet ({expected[path]})" for path in missing]
+	else:
+		v.errors += [f"{path} should have run ({expected[path]}), and GitHub started no run of it for this commit" for path in missing]
 	return v
 
 
@@ -391,13 +505,19 @@ class Api:
 	def __init__(self, repo: str, token: str, base: str = "https://api.github.com") -> None:
 		self.repo, self.token, self.base = repo, token, base.rstrip("/")
 
-	def get(self, path: str) -> Any:
+	def send(self, method: str, path: str, body: Any = None) -> Any:
 		url = path if path.startswith("http") else f"{self.base}/repos/{self.repo}/{path}"
-		request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
+		data = None if body is None else json.dumps(body).encode()
+		headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+		if data is not None:
+			headers["Content-Type"] = "application/json"
+		request = urllib.request.Request(url, data=data, method=method, headers=headers)
 		for wait in (2, 4, 8, 16, None):
 			try:
 				with urllib.request.urlopen(request, timeout=30) as response:
-					return json.load(response)
+					# A workflow dispatch answers 204 with no body.
+					raw = response.read()
+					return json.loads(raw) if raw.strip() else None
 			except urllib.error.HTTPError as err:
 				if err.code < 500 and err.code != 429 or wait is None:
 					raise
@@ -406,6 +526,9 @@ class Api:
 					raise
 			time.sleep(wait)
 		raise AssertionError("unreachable")
+
+	def get(self, path: str) -> Any:
+		return self.send("GET", path)
 
 	def pages(self, path: str, key: str | None, limit: int = 30) -> list[Any]:
 		out: list[Any] = []
@@ -419,6 +542,16 @@ class Api:
 		return out
 
 
+def remote_workflows(api: Api, ref: str) -> dict[str, str]:
+	"""{workflow path: text} at `ref`, read as data through the API (gate-verdict.yml runs main's checkout)."""
+	out = {}
+	for entry in api.get(f"contents/.github/workflows?ref={urllib.parse.quote(ref)}"):
+		if entry.get("type") == "file" and re.search(r"\.ya?ml$", entry.get("name", "")):
+			body = api.get(f"contents/{urllib.parse.quote(entry['path'])}?ref={urllib.parse.quote(ref)}")
+			out[entry["path"]] = base64.b64decode(body["content"]).decode("utf-8")
+	return out
+
+
 def summary(lines: list[str]) -> None:
 	where = os.environ.get("GITHUB_STEP_SUMMARY")
 	if where:
@@ -426,74 +559,298 @@ def summary(lines: list[str]) -> None:
 			out.write("\n".join(lines) + "\n")
 
 
-def gate(api: Api, pr: int, self_path: str, self_run_id: int, minutes: float, once: bool) -> int:
-	pull = api.get(f"pulls/{pr}")
-	head_sha, base_ref = pull["head"]["sha"], pull["base"]["ref"]
+@dataclass
+class Look:
+	"""One reading of where a pull request's head commit stands."""
+
+	head_sha: str
+	verdict: Verdict
+	runs: int
+	others: int
+	files: int
+
+
+def look(
+	api: Api,
+	pull: dict[str, Any],
+	texts: dict[str, str],
+	self_run_id: int,
+	jobs: dict[tuple[int, int], list[dict[str, Any]]],
+	elapsed: float,
+	event: bool,
+	files: list[str],
+) -> Look:
+	head_sha, base_ref, pr = pull["head"]["sha"], pull["base"]["ref"], pull["number"]
+	expected, not_expected = expected_workflows(texts, base_ref, files)
+	listed = api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5)
+	runs = latest_runs(listed, head_sha, self_run_id, pr)
+	for run in runs.values():
+		key = (run["id"], run.get("run_attempt", 1))
+		if run.get("status") == "completed" and key not in jobs:
+			jobs[key] = api.pages(f"actions/runs/{run['id']}/attempts/{key[1]}/jobs", "jobs", limit=5)
+	by_run = {run["id"]: jobs.get((run["id"], run.get("run_attempt", 1)), []) for run in runs.values()}
+	checks = api.pages(f"commits/{head_sha}/check-runs?filter=latest", "check_runs", limit=5)
+	others = [c for c in checks if ((c.get("app") or {}).get("slug")) != "github-actions"]
+	verdict = judge(expected, not_expected, runs, by_run, others, elapsed, len(files), event=event)
+	verdict.errors += unheard(texts, expected)
+	problem = opener_problem(api, listed, head_sha, pr)
+	if problem:
+		verdict.errors.append(problem)
+	return Look(head_sha, verdict, len(runs), len(others), len(files))
+
+
+def state_of(verdict: Verdict) -> str:
+	"""`failure` as soon as anything failed, `pending` while anything is unfinished, else `success`."""
+	if verdict.errors:
+		return "failure"
+	return "success" if verdict.done else "pending"
+
+
+def lines_of(seen: Look, pending: bool) -> list[str]:
+	v = seen.verdict
+	return [
+		f"Head `{seen.head_sha[:12]}`, {seen.runs} workflow runs and {seen.others} other check runs awaited, {seen.files} changed files.",
+		*[f"- failed: {line}" for line in v.errors],
+		*[f"- pending: {line}" for line in (v.pending if pending else [])],
+		*[f"- passed: {line}" for line in v.passed],
+		*[f"- warning: {line}" for line in v.warnings],
+	]
+
+
+def print_look(seen: Look) -> None:
+	for line in seen.verdict.passed:
+		print(f"passed: {line}")
+	for line in seen.verdict.pending:
+		print(f"pending: {line}")
+	for line in seen.verdict.warnings:
+		print(f"::warning title=PR gate::{line}")
+	for line in seen.verdict.errors:
+		print(f"::error title=PR gate::{line}")
+
+
+TITLES = {"pending": "Waiting on other checks", "success": "Every check passed", "failure": "A check did not pass"}
+
+
+def write(api: Api, head_sha: str, state: str, lines: list[str]) -> None:
+	"""Set the `PR gate` check run on the head commit to `state`.
+
+	An unfinished one is updated in place. A finished one is updated only to say the same thing again;
+	any change writes a new check run, which is the one the ruleset reads (the newest of the name), as
+	a re-run job's new check run is."""
+	text = "\n".join(["## PR gate", *lines])
+	if len(text) > 60000:
+		text = text[:60000] + "\n… (cut; the job's log has the rest)"
+	body: dict[str, Any] = {"name": CHECK_NAME, "external_id": EXTERNAL_ID, "output": {"title": TITLES[state], "summary": text}}
+	server, run_id = os.environ.get("GITHUB_SERVER_URL"), os.environ.get("GITHUB_RUN_ID")
+	if server and run_id:
+		body["details_url"] = f"{server}/{api.repo}/actions/runs/{run_id}"
+	if state == "pending":
+		body["status"] = "in_progress"
+	else:
+		body.update(status="completed", conclusion=state)
+	latest = gate_check(api, head_sha)
+	if latest and (latest.get("status") != "completed" or (state != "pending" and latest.get("conclusion") == state)):
+		api.send("PATCH", f"check-runs/{latest['id']}", body)
+		print(f"PR gate on {head_sha[:12]}: {state} (check run {latest['id']} updated)")
+	else:
+		made = api.send("POST", "check-runs", {**body, "head_sha": head_sha})
+		print(f"PR gate on {head_sha[:12]}: {state} (check run {made.get('id')} written)")
+
+
+def changed_files(api: Api, pr: int) -> list[str]:
 	# New names only: should GitHub also match a rename's old name, the run it
 	# starts is awaited anyway and warned about, never missed.
-	files = [f["filename"] for f in api.pages(f"pulls/{pr}/files", None)]
-	expected, not_expected = expected_workflows(REPO_ROOT, self_path, base_ref, files)
-	print(f"PR #{pr} at {head_sha[:12]} into {base_ref}, {len(files)} changed files")
+	return [f["filename"] for f in api.pages(f"pulls/{pr}/files", None)]
+
+
+def announce(pull: dict[str, Any], files: list[str], texts: dict[str, str]) -> None:
+	expected, not_expected = expected_workflows(texts, pull["base"]["ref"], files)
+	print(f"PR #{pull['number']} at {pull['head']['sha'][:12]} into {pull['base']['ref']}, {len(files)} changed files")
 	for path, why in sorted(expected.items()):
 		print(f"  expects {path}: {why}")
 	for path, why in sorted(not_expected.items()):
 		print(f"  not expected {path}: {why}")
 
-	if self_run_id:
-		own_jobs = api.get(f"actions/runs/{self_run_id}/jobs")["jobs"]
-		if len(own_jobs) > 1:
-			print(f"::error title=PR gate::{self_path} has {len(own_jobs)} jobs; it may hold only the gate, since no check waits on the others")
-			return 1
 
+def opener_problem(api: Api, listed: list[dict[str, Any]], head_sha: str, pr: int) -> str | None:
+	"""gate.yml's runs are never awaited, so it may hold only the gate: any other job in it would be waited on
+	by nothing. Read from its latest run on this head, so --open and --event both hold it."""
+	mine = [r for r in listed if r.get("path") == OPENER and r.get("head_sha") == head_sha and for_this_pr(r, pr)]
+	if not mine:
+		return None
+	latest = max(mine, key=lambda r: r["id"])
+	count = len(api.pages(f"actions/runs/{latest['id']}/attempts/{latest.get('run_attempt', 1)}/jobs", "jobs", limit=2))
+	if count > 1:
+		return f"{OPENER} has {count} jobs; it may hold only the gate, since no check waits on the others"
+	return None
+
+
+def base_listens(api: Api, base_ref: str) -> tuple[str, ...] | None:
+	"""The workflow names the base branch's gate-verdict.yml hears finish (the copy GitHub runs), or None
+	when the base has none."""
+	try:
+		body = api.get(f"contents/{VERDICT}?ref={urllib.parse.quote(base_ref)}")
+	except urllib.error.HTTPError as err:
+		if err.code == 404:
+			return None
+		raise
+	return verdict_listens(base64.b64decode(body["content"]).decode("utf-8"))
+
+
+def judge_once(api: Api, pull: dict[str, Any], texts: dict[str, str], self_run_id: int, write_it: bool) -> int:
+	"""--open, --event and --once: judge now, write what is seen (pending or decided), and leave."""
+	files = changed_files(api, pull["number"])
+	try:
+		announce(pull, files, texts)
+		seen = look(api, pull, texts, self_run_id, {}, 0.0, True, files)
+	except Unreadable as err:
+		problem = f"cannot read a workflow's trigger: {err}. Write it in the shape scripts/pr_gate.py reads, or teach it this one."
+		print(f"::error title=PR gate::{problem}")
+		if write_it:
+			write(api, pull["head"]["sha"], "failure", [f"- failed: {problem}"])
+		return 1
+	state = state_of(seen.verdict)
+	print_look(seen)
+	lines = lines_of(seen, pending=True)
+	summary(["## PR gate", *lines])
+	if write_it:
+		write(api, seen.head_sha, state, lines)
+	print(f"PR gate for #{pull['number']}: {state}")
+	return 0
+
+
+def wait(api: Api, pull: dict[str, Any], texts: dict[str, str], self_run_id: int, minutes: float) -> int:
+	"""The fallback while the base branch has no gate-verdict.yml: wait in the job, as the gate did before #762."""
+	files = changed_files(api, pull["number"])
+	announce(pull, files, texts)
+	head_sha = pull["head"]["sha"]
+	write(api, head_sha, "pending", [f"{VERDICT} is not on {pull['base']['ref']} yet, so this job waits on every other check, up to {minutes:g} minutes."])
 	started = time.monotonic()
 	jobs: dict[tuple[int, int], list[dict[str, Any]]] = {}
 	while True:
-		runs = latest_runs(api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5), head_sha, self_path, self_run_id, pr)
-		for run in runs.values():
-			key = (run["id"], run.get("run_attempt", 1))
-			if run.get("status") == "completed" and key not in jobs:
-				jobs[key] = api.pages(f"actions/runs/{run['id']}/attempts/{key[1]}/jobs", "jobs", limit=5)
-		by_run = {run["id"]: jobs.get((run["id"], run.get("run_attempt", 1)), []) for run in runs.values()}
-		checks = api.pages(f"commits/{head_sha}/check-runs?filter=latest", "check_runs", limit=5)
-		others = [c for c in checks if ((c.get("app") or {}).get("slug")) != "github-actions"]
 		elapsed = time.monotonic() - started
-		verdict = judge(expected, not_expected, runs, by_run, others, elapsed if not once else GRACE_SECONDS, len(files))
-		if verdict.done or once or elapsed > minutes * 60:
-			break
-		if verdict.errors:
+		seen = look(api, pull, texts, self_run_id, jobs, elapsed, False, files)
+		verdict = seen.verdict
+		if verdict.done or verdict.errors or elapsed > minutes * 60:
 			# Nothing that failed will pass without a re-run, which starts this gate over anyway.
 			break
 		print(f"[{int(elapsed)}s] waiting on {len(verdict.pending)}: " + "; ".join(verdict.pending))
 		time.sleep(POLL_SECONDS)
-
-	for line in verdict.passed:
-		print(f"passed: {line}")
-	for line in verdict.warnings:
-		print(f"::warning title=PR gate::{line}")
-	timed_out = not verdict.done and not verdict.errors and not once
-	if timed_out:
+	if not verdict.done and not verdict.errors:
 		verdict.errors += [f"{p} (not finished within {minutes:g} minutes)" for p in verdict.pending]
-	elif once:
-		for line in verdict.pending:
-			print(f"pending: {line}")
-	for line in verdict.errors:
-		print(f"::error title=PR gate::{line}")
-	summary(
-		[
-			"## PR gate",
-			f"Head `{head_sha[:12]}`, {len(runs)} workflow runs and {len(others)} other check runs awaited.",
-			*[f"- failed: {line}" for line in verdict.errors],
-			*[f"- pending: {line}" for line in (verdict.pending if once else [])],
-			*[f"- passed: {line}" for line in verdict.passed],
-			*[f"- warning: {line}" for line in verdict.warnings],
-		]
-	)
+	print_look(Look(seen.head_sha, Verdict(True, verdict.errors, verdict.warnings, [], verdict.passed), seen.runs, seen.others, seen.files))
+	state = state_of(verdict)
+	lines = lines_of(seen, pending=False)
+	summary(["## PR gate", *lines])
+	write(api, head_sha, state, lines)
 	if verdict.errors:
 		print(f"{len(verdict.errors)} check(s) did not pass; after re-running them, re-run this gate too.")
 		return 1
-	if not verdict.done:
-		return 0 if once else 1
 	print(f"every check on {head_sha[:12]} passed")
+	return 0
+
+
+def open_gate(api: Api, pr: int, minutes: float, event_head: str | None = None) -> int:
+	"""gate.yml, on the pull request's own events."""
+	pull = api.get(f"pulls/{pr}")
+	if event_head and pull["head"]["sha"] != event_head:
+		# This job's checkout and concurrency group are its event's commit's: judging the newer head
+		# from here could race that head's own jobs, and read the wrong workflow files.
+		print(f"#{pr}'s head is now {pull['head']['sha'][:12]}, not this event's {event_head[:12]}: that commit's gate is its own")
+		return 0
+	texts = local_workflows(REPO_ROOT)
+	self_run_id = int(os.environ.get("GITHUB_RUN_ID") or 0)
+	base_ref = pull["base"]["ref"]
+	# GitHub runs the base branch's gate-verdict.yml, not this pull request's: a workflow it does not hear
+	# (one this pull request adds or renames, or every one when the base has none) could finish last and
+	# leave the gate pending with nothing to judge it again, so then this job waits instead.
+	listens = base_listens(api, base_ref)
+	expected, _ = expected_workflows(texts, base_ref, changed_files(api, pr))
+	deaf = sorted(path for path in expected if listens is None or workflow_name(path, texts[path]) not in listens)
+	if deaf:
+		why = f"{VERDICT} is not on {base_ref}" if listens is None else f"{base_ref}'s {VERDICT} does not hear {', '.join(deaf)}"
+		print(f"{why}: waiting in this job instead")
+		return wait(api, pull, texts, self_run_id, minutes)
+	return judge_once(api, pull, texts, self_run_id, write_it=True)
+
+
+def event_pulls(api: Api, event_name: str, event: dict[str, Any]) -> tuple[str, list[int]]:
+	"""The head commit an event is about and the open pull requests it may decide."""
+	if event_name == "workflow_run":
+		source = event["workflow_run"]
+		head_sha = source["head_sha"]
+		numbers = [p["number"] for p in source.get("pull_requests") or []]
+		if not numbers and source.get("head_branch") and (source.get("head_repository") or {}).get("owner"):
+			# A fork's run lists no pull request; find it by its head branch.
+			head = f"{source['head_repository']['owner']['login']}:{source['head_branch']}"
+			numbers = [p["number"] for p in api.get(f"pulls?state=open&head={urllib.parse.quote(head)}")]
+	elif event_name == "workflow_dispatch":
+		# The sweep's dispatch (--sweep): one pull request and the head it found pending.
+		inputs = event.get("inputs") or {}
+		head_sha = str(inputs.get("head_sha") or "")
+		if not re.fullmatch(r"[0-9a-f]{40}", head_sha) or not str(inputs.get("pr") or "").isdigit():
+			raise SystemExit(f"--event on workflow_dispatch needs inputs pr (a number) and head_sha (a commit), not {inputs!r}")
+		numbers = [int(inputs["pr"])]
+	else:
+		raise SystemExit(f"--event reads a workflow_run or workflow_dispatch event, not {event_name!r}")
+	return head_sha, sorted(set(numbers))
+
+
+def gate_check(api: Api, head_sha: str) -> dict[str, Any] | None:
+	"""The newest `PR gate` check run this script wrote on `head_sha`, or None."""
+	mine = [
+		c
+		for c in api.pages(f"commits/{head_sha}/check-runs?check_name={urllib.parse.quote(CHECK_NAME)}&filter=all", "check_runs", limit=3)
+		if c.get("external_id") == EXTERNAL_ID and ((c.get("app") or {}).get("slug")) == "github-actions"
+	]
+	return max(mine, key=lambda c: c["id"], default=None)
+
+
+def sweep(api: Api, ref: str) -> int:
+	"""gate-verdict.yml on its schedule: the backstop for a finish no event reports.
+
+	GitHub fires no `check_run` for a commit whose check suite is GitHub Actions' (every pull request head
+	here), so another app's check (code scanning's `CodeQL`) that finishes after the last workflow would
+	leave the gate pending with nothing to judge it again; so would any event GitHub drops. This judges
+	nothing itself, which would race the head's own writers: for each open pull request whose `PR gate` is
+	unfinished or missing, it dispatches gate-verdict.yml for that head, which judges inside the head's
+	concurrency group like every other writer."""
+	gate_trigger = read_trigger((REPO_ROOT / OPENER).read_text(encoding="utf-8")) or Trigger()
+	pulls = api.pages("pulls?state=open", None, limit=5)
+	sent = 0
+	for pull in pulls:
+		head_sha, pr = pull["head"]["sha"], pull["number"]
+		if branch_miss(gate_trigger, pull["base"]["ref"]):
+			continue
+		check = gate_check(api, head_sha)
+		if check and check.get("status") == "completed":
+			continue
+		api.send("POST", f"actions/workflows/{Path(VERDICT).name}/dispatches", {"ref": ref, "inputs": {"pr": str(pr), "head_sha": head_sha}})
+		print(f"#{pr} at {head_sha[:12]}: PR gate {'is ' + str(check.get('status')) if check else 'has no check run'}, judging it again")
+		sent += 1
+	print(f"{len(pulls)} open pull requests, {sent} sent to be judged again")
+	return 0
+
+
+def event_gate(api: Api, head_sha: str, numbers: list[int]) -> int:
+	"""gate-verdict.yml: something on `head_sha` finished, so judge each pull request it heads, once."""
+	gate_trigger = read_trigger((REPO_ROOT / OPENER).read_text(encoding="utf-8")) or Trigger()
+	if not numbers:
+		print(f"no open pull request has {head_sha[:12]} as its head: nothing to judge")
+	for pr in numbers:
+		pull = api.get(f"pulls/{pr}")
+		if pull.get("state") != "open":
+			print(f"#{pr} is {pull.get('state')}: not judged")
+			continue
+		if pull["head"]["sha"] != head_sha:
+			print(f"#{pr}'s head is now {pull['head']['sha'][:12]}, not {head_sha[:12]}: that commit's gate is its own")
+			continue
+		miss = branch_miss(gate_trigger, pull["base"]["ref"])
+		if miss:
+			print(f"#{pr}: {OPENER} does not run for it ({miss}): not judged")
+			continue
+		ref = pull.get("merge_commit_sha") or head_sha
+		judge_once(api, pull, remote_workflows(api, ref), 0, write_it=True)
 	return 0
 
 
@@ -576,8 +933,8 @@ def self_test() -> int:
 		run(4, "old.yml", head_sha="other"),
 		run(6, "dynamic/github-code-scanning/codeql", event="dynamic"),
 	]
-	same("latest per workflow, not self, not push", {p: r["id"] for p, r in latest_runs(listed, head, "gate.yml", 99, 1).items()}, {"lint.yml": 5, "dynamic/github-code-scanning/codeql": 6})
-	same("own run id left out", list(latest_runs([run(7, "x.yml")], head, "gate.yml", 7, 1)), [])
+	same("latest per workflow, not self, not push", {p: r["id"] for p, r in latest_runs([{**r, "path": ".github/workflows/" + r["path"]} if r["path"] == "gate.yml" else r for r in listed], head, 99, 1).items()}, {"lint.yml": 5, "dynamic/github-code-scanning/codeql": 6})
+	same("own run id left out", list(latest_runs([run(7, "x.yml"), run(8, VERDICT, event="workflow_run")], head, 7, 1)), [])
 	shared = [
 		run(10, "routes.yml", conclusion="failure", pull_requests=[{"number": 1}]),
 		run(11, "routes.yml", pull_requests=[{"number": 2}]),
@@ -585,7 +942,7 @@ def self_test() -> int:
 	]
 	same(
 		"another PR's newer run on the same head does not stand in for this one's",
-		{p: r["id"] for p, r in latest_runs(shared, head, "gate.yml", 99, 1).items()},
+		{p: r["id"] for p, r in latest_runs(shared, head, 99, 1).items()},
 		{"routes.yml": 10, "fork.yml": 12},
 	)
 
@@ -623,12 +980,50 @@ def self_test() -> int:
 	same("other app failing", len(verdict(other_checks=[{**codeql, "conclusion": "failure"}]).errors), 1)
 	same("other app pending", verdict(other_checks=[{**codeql, "status": "queued", "conclusion": None}]).done, False)
 
-	real = expected_workflows(REPO_ROOT, ".github/workflows/gate.yml", "main", ["README.md"])
+	# Judged once (--open, --event): nothing waits, so a missing run is pending only while something else
+	# is unfinished, and a run that took over an hour fails.
+	routes_expected = {**expected, "routes.yml": "apps/x matches its paths"}
+	gone = verdict(runs=ok_runs, expected=routes_expected, event=True)
+	same("event: expected run missing, nothing else running", (gone.done, len(gone.errors), "routes.yml" in " ".join(gone.errors)), (True, 1, True))
+	not_yet = verdict(runs={**ok_runs, "test.yml": run(8, "test.yml", status="in_progress", conclusion=None)}, expected=routes_expected, event=True)
+	same("event: expected run missing while another runs", (not_yet.done, not_yet.errors, len(not_yet.pending)), (False, [], 2))
+	same("event: big pull request still warns", (verdict(runs=ok_runs, expected=routes_expected, event=True, files_changed=301).errors), [])
+	slow = run(8, "test.yml", run_started_at="2026-11-10T00:00:00Z", updated_at="2026-11-10T01:00:01Z")
+	same("event: a run over an hour fails", len(verdict(runs={**ok_runs, "test.yml": slow}, event=True).errors), 1)
+	same("waiting: the hour is the wait's own", verdict(runs={**ok_runs, "test.yml": slow}).errors, [])
+	quick = run(8, "test.yml", run_started_at="2026-11-10T00:00:00Z", updated_at="2026-11-10T00:59:00Z")
+	same("event: a run under an hour passes", verdict(runs={**ok_runs, "test.yml": quick}, event=True).errors, [])
+	queued = run(8, "test.yml", created_at="2026-11-09T23:30:00Z", run_started_at="2026-11-10T00:00:00Z", updated_at="2026-11-10T00:59:00Z")
+	same("event: queueing counts on a first attempt", len(verdict(runs={**ok_runs, "test.yml": queued}, event=True).errors), 1)
+	same("event: a re-run counts from its start", verdict(runs={**ok_runs, "test.yml": {**queued, "run_attempt": 2}}, event=True).errors, [])
+	same("event: all passed", (verdict(event=True).done, verdict(event=True).errors), (True, []))
+	same("event: failure decides while others run", state_of(verdict(runs={**ok_runs, "lint.yml": run(5, "lint.yml", conclusion="failure"), "test.yml": run(8, "test.yml", status="queued", conclusion=None)}, event=True)), "failure")
+	same("state pending", state_of(running), "pending")
+	same("state success", state_of(all_ok), "success")
+	same("state failure", state_of(failed), "failure")
+
+	listens = "on:\n  workflow_run:\n    workflows:\n      - Lint\n      - \"Detect, Build & Stage\"  # quoted\n    types: [completed]\n  schedule:\n    - cron: '7 * * * *'\n"
+	same("verdict list, block", verdict_listens(listens), ("Lint", "Detect, Build & Stage"))
+	same("verdict list, flow", verdict_listens("on:\n  workflow_run:\n    workflows: [Lint, 'CI Workflow']\n"), ("Lint", "CI Workflow"))
+	texts = {VERDICT: listens, "lint.yml": "name: Lint\non: pull_request\n", "new.yml": "name: New\non: pull_request\n"}
+	same("unlisted workflow", [line.split(" ")[0] for line in unheard(texts, {"lint.yml": "x", "new.yml": "x"})], ["new.yml"])
+	same("no verdict file, nothing to check", unheard({"new.yml": texts["new.yml"]}, {"new.yml": "x"}), [])
+	same("workflow name", (workflow_name("a.yml", "name: 'CI Workflow'  # x\n"), workflow_name("b.yml", "on: push\n")), ("CI Workflow", "b.yml"))
+	same("branch filter", (branch_miss(Trigger(branches=("main",)), "main"), bool(branch_miss(Trigger(branches=("main",)), "dev"))), (None, True))
+
+	here = local_workflows(REPO_ROOT)
+	real = expected_workflows(here, "main", ["README.md"])
 	if ".github/workflows/routes.yml" in real[0] or ".github/workflows/lint.yml" not in real[0]:
 		failures.append(f"this repository's workflows read wrongly for a README-only change: {real}")
-	real = expected_workflows(REPO_ROOT, ".github/workflows/gate.yml", "main", ["apps/servers/file_host/src/main.rs"])
-	if ".github/workflows/routes.yml" not in real[0] or ".github/workflows/gate.yml" in real[0] or ".github/workflows/build-image.yml" in real[0]:
+	real = expected_workflows(here, "main", ["apps/servers/file_host/src/main.rs"])
+	if ".github/workflows/routes.yml" not in real[0] or OPENER in real[0] or ".github/workflows/build-image.yml" in real[0]:
 		failures.append(f"this repository's workflows read wrongly for a file_host change: {real}")
+	# Every workflow a pull request can start is one gate-verdict.yml hears finish, and it hears nothing else
+	# but CodeQL's dynamic workflow, so a renamed workflow is not left listed under its old name.
+	every = {path: "x" for path, text in here.items() if path not in GATE_FILES and read_trigger(text) is not None}
+	same("gate-verdict.yml hears every pull-request workflow", unheard(here, every), [])
+	names = {workflow_name(path, here[path]) for path in every} | set(DYNAMIC_WORKFLOWS)
+	same("gate-verdict.yml lists nothing else", sorted(set(verdict_listens(here[VERDICT])) - names), [])
 
 	if failures:
 		print("::error::pr_gate.py's own tests failed:")
@@ -644,21 +1039,37 @@ def main() -> int:
 	parser.add_argument("--self-test", action="store_true")
 	parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"))
 	parser.add_argument("--pr", type=int, help="the pull request; in Actions, read from the event")
-	parser.add_argument("--minutes", type=float, default=60, help="how long to wait for every check")
-	parser.add_argument("--once", action="store_true", help="evaluate once and report, without waiting")
+	parser.add_argument("--head-sha", help="with --event and --pr: the head commit to judge, instead of the event's")
+	parser.add_argument("--minutes", type=float, default=60, help="--open's fallback: how long to wait for every check")
+	mode = parser.add_mutually_exclusive_group()
+	mode.add_argument("--open", action="store_true", help="gate.yml: judge on the pull request's own event")
+	mode.add_argument("--event", action="store_true", help="gate-verdict.yml: judge on a finished workflow run or check run")
+	mode.add_argument("--once", action="store_true", help="judge once and print where every check stands, writing nothing")
+	mode.add_argument("--sweep", action="store_true", help="gate-verdict.yml's schedule: judge again every open pull request whose gate is unfinished")
 	args = parser.parse_args()
 	if args.self_test:
 		return self_test()
-	pr = args.pr
-	if pr is None and os.environ.get("GITHUB_EVENT_PATH"):
-		pr = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())["pull_request"]["number"]
 	token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-	if not (args.repo and pr and token):
-		parser.error("needs --repo (or GITHUB_REPOSITORY), --pr (or a pull_request event) and GITHUB_TOKEN")
-	workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF", "")
-	self_path = re.sub(r"^[^/]+/[^/]+/|@.*$", "", workflow_ref) or ".github/workflows/gate.yml"
+	if not (args.repo and token):
+		parser.error("needs --repo (or GITHUB_REPOSITORY) and GITHUB_TOKEN")
+	api = Api(args.repo, token, os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+	event_path = os.environ.get("GITHUB_EVENT_PATH")
+	event = json.loads(Path(event_path).read_text()) if event_path else {}
 	try:
-		return gate(Api(args.repo, token, os.environ.get("GITHUB_API_URL", "https://api.github.com")), pr, self_path, int(os.environ.get("GITHUB_RUN_ID") or 0), args.minutes, args.once)
+		if args.sweep:
+			return sweep(api, os.environ.get("GITHUB_REF_NAME") or "main")
+		if args.event:
+			if args.pr:
+				head_sha = args.head_sha or api.get(f"pulls/{args.pr}")["head"]["sha"]
+				return event_gate(api, head_sha, [args.pr])
+			return event_gate(api, *event_pulls(api, os.environ.get("GITHUB_EVENT_NAME", ""), event))
+		pr = args.pr or (event.get("pull_request") or {}).get("number")
+		if not pr:
+			parser.error("needs --pr, or a pull_request event")
+		if args.open:
+			event_head = ((event.get("pull_request") or {}).get("head") or {}).get("sha")
+			return open_gate(api, pr, args.minutes, event_head)
+		return judge_once(api, api.get(f"pulls/{pr}"), local_workflows(REPO_ROOT), 0, write_it=False)
 	except Unreadable as err:
 		print(f"::error title=PR gate::cannot read a workflow's trigger: {err}. Write it in the shape scripts/pr_gate.py reads, or teach it this one.")
 		return 1

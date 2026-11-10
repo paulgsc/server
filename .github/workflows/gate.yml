@@ -6,17 +6,22 @@
 # rust_ci and infra_ci), and a job cannot `needs` a job in another workflow.
 # So scripts/pr_gate.py works out which workflows GitHub starts for this pull
 # request (each one's own `pull_request` branch and path filters, against the
-# changed files), then polls the head commit's workflow runs and other apps'
-# check runs until every one has finished, and fails on any failure,
-# cancellation or timeout, or on an expected run that never appears. See the
-# script and docs/assurance.md for the rules and their boundaries.
+# changed files), reads where the head commit's workflow runs and other apps'
+# check runs stand, and writes the verdict as a check run named `PR gate`:
+# pending while anything is unfinished, failed on any failure, cancellation,
+# run over an hour, or expected run that never appears. See the script and
+# docs/assurance.md for the rules and their boundaries.
+#
+# No runner waits on the other checks (#762). This job judges once on the
+# pull request's own events, so a push or a label that re-runs routes.yml
+# turns the gate pending at once, and leaves; gate-verdict.yml judges again
+# each time another check finishes, so the last one to finish decides the
+# gate, and a re-run of a failed check decides it again by itself. The job is
+# named `PR gate (open)` so its own check run is never the required one.
 #
 # This workflow holds the gate and nothing else: the gate never waits on its
 # own workflow, so another job here would be waited on by nothing (the script
 # fails if one is added).
-#
-# After "Re-run failed jobs" on another workflow, re-run this one too: nothing
-# starts it again on its own.
 #
 # `labeled`/`unlabeled` because routes.yml re-runs on them (the
 # `client-breaking-route` label changes its verdict), and the gate must judge
@@ -31,28 +36,33 @@ on:
 
 permissions:
   actions: read
-  checks: read
+  checks: write
   contents: read
   pull-requests: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   gate:
-    name: PR gate
+    name: PR gate (open)
     runs-on: ubuntu-latest
-    # The script gives up at 60 minutes and reports what is unfinished; this
-    # is the backstop if the API itself hangs.
+    # One group per head commit, shared with gate-verdict.yml, so the gate's
+    # writes land in the order they read. Never cancelled: each judges afresh,
+    # and GitHub keeps only the newest of those waiting.
+    concurrency:
+      group: pr-gate-${{ github.event.pull_request.head.sha }}
+      cancel-in-progress: false
+    # Seconds, normally. If the base branch has no gate-verdict.yml yet, the
+    # script waits here as the gate did before #762, giving up at 60 minutes;
+    # this is the backstop if the API itself hangs.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
-      - name: Wait on every other check for this commit
+      - name: Judge the head commit and write PR gate
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 scripts/pr_gate.py --self-test
-          python3 scripts/pr_gate.py --minutes 60
+          python3 -u scripts/pr_gate.py --open --minutes 60
