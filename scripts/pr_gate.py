@@ -356,6 +356,35 @@ def verdict_listens(text: str) -> tuple[str, ...]:
 	raise Unreadable(f"{VERDICT}: `workflow_run:` lists no `workflows:`")
 
 
+def job_if(text: str, job: str) -> str:
+	"""The `if:` expression of `job` in a workflow, read as written. Raises Unreadable."""
+	lines = text.split("\n")
+	start = next((i for i, line in enumerate(lines) if line == f"  {job}:"), None)
+	if start is None:
+		raise Unreadable(f"no job {job!r}")
+	for _, line in block(lines, start, 2):
+		found = re.match(r"^    if:\s*(.+)$", line)
+		if found:
+			return found.group(1).strip()
+	raise Unreadable(f"job {job!r} has no `if:`")
+
+
+def runs_job(expression: str, event_name: str, pr_input: str) -> bool:
+	"""Whether a job `if:` written in the subset gate-verdict.yml uses (`github.event_name`, `inputs.pr`,
+	string literals, ==, !=, &&, ||, parentheses) is true for this event. Raises Unreadable on anything else."""
+	token = re.compile(r"\s*(github\.event_name|inputs\.pr|'[^']*'|==|!=|&&|\|\||\(|\))")
+	position, tokens = 0, []
+	while position < len(expression.rstrip()):
+		found = token.match(expression, position)
+		if not found:
+			raise Unreadable(f"cannot evaluate {expression!r} at {expression[position:]!r}")
+		tokens.append(found.group(1))
+		position = found.end()
+	words = {"&&": "and", "||": "or", "github.event_name": repr(event_name), "inputs.pr": repr(pr_input)}
+	python = " ".join(words.get(t, t) for t in tokens)
+	return bool(eval(python, {"__builtins__": {}}, {}))  # noqa: S307 - the repository's own workflow text, checked above
+
+
 def expected_workflows(texts: dict[str, str], base_ref: str, files: list[str]) -> tuple[dict[str, str], dict[str, str]]:
 	"""({workflow path: why it runs}, {workflow path: why it does not}), the gate's own files left out."""
 	expected, not_expected = {}, {}
@@ -1024,6 +1053,23 @@ def self_test() -> int:
 	same("gate-verdict.yml hears every pull-request workflow", unheard(here, every), [])
 	names = {workflow_name(path, here[path]) for path in every} | set(DYNAMIC_WORKFLOWS)
 	same("gate-verdict.yml lists nothing else", sorted(set(verdict_listens(here[VERDICT])) - names), [])
+
+	# Who runs on which event (#772): a dispatch with no inputs sweeps; with pr and head_sha it judges that head.
+	verdict_if, sweep_if = job_if(here[VERDICT], "verdict"), job_if(here[VERDICT], "sweep")
+	for event_name, pr_input, want in (
+		("workflow_run", "", "verdict"),
+		("schedule", "", "sweep"),
+		("workflow_dispatch", "770", "verdict"),
+		("workflow_dispatch", "", "sweep"),
+	):
+		ran = [job for job, expression in (("verdict", verdict_if), ("sweep", sweep_if)) if runs_job(expression, event_name, pr_input)]
+		same(f"gate-verdict.yml on {event_name} with pr={pr_input!r}", ran, [want])
+	for bad in ("github.event.workflow_run.head_sha != ''", "secrets.X == ''", "contains(github.event_name, 'x')"):
+		try:
+			runs_job(bad, "schedule", "")
+			failures.append(f"runs_job read {bad!r}, should refuse it")
+		except Unreadable:
+			pass
 
 	if failures:
 		print("::error::pr_gate.py's own tests failed:")

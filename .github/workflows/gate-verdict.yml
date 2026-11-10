@@ -6,7 +6,8 @@
 # `name:`, plus CodeQL's default setup (a `dynamic` workflow with no file
 # here). pr_gate.py fails the gate of a pull request whose workflows include
 # one this list leaves out, and its self-test fails a name listed here that
-# no workflow has.
+# no workflow has. A `workflow_dispatch` with no inputs runs the sweep by
+# hand ("sweep now"); with `pr` and `head_sha` it judges that one head.
 #
 # Other apps' checks (code scanning's `CodeQL` check run) have no event that
 # reaches a workflow here: GitHub fires no `check_run` for a commit whose
@@ -47,16 +48,20 @@ on:
   # Off the hour, so it does not queue behind every other schedule.
   schedule:
     - cron: '7,22,37,52 * * * *'
-  # Only the sweep sends these: one pull request and the head it found pending.
+  # With pr and head_sha (what the sweep sends): judge that pull request's
+  # head. With neither (Actions → Run workflow, empty): sweep now, as the
+  # schedule does (#772).
   workflow_dispatch:
     inputs:
       pr:
-        description: Pull request number
-        required: true
+        description: Pull request number (leave empty to sweep every open pull request)
+        required: false
+        default: ''
         type: string
       head_sha:
-        description: The head commit whose gate is unfinished
-        required: true
+        description: The head commit whose gate is unfinished (empty to sweep)
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -68,7 +73,7 @@ permissions:
 jobs:
   verdict:
     name: PR gate (verdict)
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.pr != '')
     runs-on: ubuntu-latest
     # Shared with gate.yml (see there): one group per head commit, never
     # cancelled, so the gate's writes land in the order they read.
@@ -91,7 +96,7 @@ jobs:
 
   sweep:
     name: PR gate (sweep)
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.pr == '')
     runs-on: ubuntu-latest
     permissions:
       actions: write
