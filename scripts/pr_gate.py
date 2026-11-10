@@ -515,7 +515,9 @@ class Api:
 		for wait in (2, 4, 8, 16, None):
 			try:
 				with urllib.request.urlopen(request, timeout=30) as response:
-					return json.load(response)
+					# A workflow dispatch answers 204 with no body.
+					raw = response.read()
+					return json.loads(raw) if raw.strip() else None
 			except urllib.error.HTTPError as err:
 				if err.code < 500 and err.code != 429 or wait is None:
 					raise
