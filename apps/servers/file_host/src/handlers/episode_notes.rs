@@ -88,7 +88,13 @@ fn refusal(err: episode_note_repo::NoteError) -> FileHostError {
 /// different note under a held id, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "episode_notes_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_note(subject: SubjectId, State(db): State<SqlitePool>, Path((name, id)): Path<(String, String)>, body: Bytes) -> Result<Json<NoteKept>, FileHostError> {
+pub async fn put_note(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	State(outbox): State<crate::mailbox::Outbox>,
+	Path((name, id)): Path<(String, String)>,
+	body: Bytes,
+) -> Result<Json<NoteKept>, FileHostError> {
 	let feed = feed(&name)?;
 	let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
@@ -111,6 +117,9 @@ pub async fn put_note(subject: SubjectId, State(db): State<SqlitePool>, Path((na
 		}
 	}
 	tx.commit().await?;
+	if change == episode_note_repo::Change::Added {
+		outbox.filed();
+	}
 	Ok(Json(NoteKept { change: change.as_str(), note }))
 }
 
@@ -143,6 +152,13 @@ mod tests {
 	impl FromRef<TestState> for SqlitePool {
 		fn from_ref(state: &TestState) -> Self {
 			state.pool.clone()
+		}
+	}
+
+	/// No mailbox in these tests: filing wakes nothing.
+	impl FromRef<TestState> for crate::mailbox::Outbox {
+		fn from_ref(_: &TestState) -> Self {
+			Self::default()
 		}
 	}
 

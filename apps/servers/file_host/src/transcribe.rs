@@ -165,6 +165,9 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 		interactive: state.interactive.clone(),
 	});
 	crate::metrics::transcribe::record_started();
+	// A note heard is a transcript on its way to the mailbox: wake its pass
+	// rather than leave it for the backstop (MBP2).
+	let outbox = <crate::mailbox::Outbox as axum::extract::FromRef<AppState>>::from_ref(state);
 
 	tokio::spawn(async move {
 		info!(interval_secs = context.interval.as_secs(), "voice-note transcriber started");
@@ -182,6 +185,9 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 					let result = pass::run_once(&db, &engine, meaning, &context.deletion, context.deadline, &cancel, &crate::mailbox::pass::now).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
+					if result.as_ref().is_ok_and(|done| done.kept.contains(&"heard")) {
+						outbox.filed();
+					}
 				}
 			}
 		}

@@ -51,6 +51,7 @@ where
 	S: Clone + Send + Sync + 'static,
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
+	crate::mailbox::Outbox: FromRef<S>,
 {
 	let table = RouteTable::new()
 		.get("/jobs", handlers::get_record)

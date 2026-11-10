@@ -1869,10 +1869,10 @@ mod tests {
 		let (captured, _guard) = crate::privacy::capture();
 		let (pool, fake) = (pool().await, Fake::default());
 		heard(&pool, "n1", "ggml-small-q5_1.bin", "비밀스러운 문장").await;
-		crate::mailbox::log_pass(&pass(&pool, &fake).await);
+		crate::mailbox::log_pass(&pass(&pool, &fake).await, crate::mailbox::bell::Cause::Ring);
 		*fake.puts_fail.lock().unwrap() = true;
 		heard(&pool, "n2", "ggml-small-q5_1.bin", "비밀스러운 문장").await;
-		crate::mailbox::log_pass(&pass(&pool, &fake).await);
+		crate::mailbox::log_pass(&pass(&pool, &fake).await, crate::mailbox::bell::Cause::Ring);
 		let lines = captured.lines();
 		assert!(lines.iter().any(|line| line.contains("filed")), "sanity check: the pass was logged: {lines:?}");
 		assert!(lines.iter().any(|line| line.contains("failed")), "sanity check: the failure was logged: {lines:?}");

@@ -161,7 +161,12 @@ fn names_a_lesson(key: &str) -> bool {
 /// holds other names, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "routine_opened", skip_all, fields(otel.kind = "server"))]
-pub async fn put_opened(subject: SubjectId, State(db): State<SqlitePool>, Json(body): Json<Opened>) -> Result<Json<Filed>, FileHostError> {
+pub async fn put_opened(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	State(outbox): State<crate::mailbox::Outbox>,
+	Json(body): Json<Opened>,
+) -> Result<Json<Filed>, FileHostError> {
 	if body.opened.len() > OPENED_PER_FILING {
 		return Err(FileHostError::unprocessable_entity([("opened", "over 100 names")]));
 	}
@@ -200,6 +205,9 @@ pub async fn put_opened(subject: SubjectId, State(db): State<SqlitePool>, Json(b
 		mailbox_repo::Change::NoAccount => return Err(FileHostError::OperationError("the account is gone".to_owned())),
 	};
 	tx.commit().await?;
+	if change == "added" {
+		outbox.filed();
+	}
 	Ok(Json(Filed { change }))
 }
 
@@ -236,7 +244,13 @@ fn reflection_refusal(err: reflection_repo::ReflectionError) -> FileHostError {
 /// failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "routine_reflection_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_reflection(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<ReflectionWritten>, FileHostError> {
+pub async fn put_reflection(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	State(outbox): State<crate::mailbox::Outbox>,
+	Path(id): Path<String>,
+	body: Bytes,
+) -> Result<Json<ReflectionWritten>, FileHostError> {
 	let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let (change, reflection) = reflection_repo::put_reflection(&mut tx, subject.as_str(), &id, &body, &now)
@@ -258,6 +272,9 @@ pub async fn put_reflection(subject: SubjectId, State(db): State<SqlitePool>, Pa
 		}
 	}
 	tx.commit().await?;
+	if change == reflection_repo::Change::Added {
+		outbox.filed();
+	}
 	Ok(Json(ReflectionWritten {
 		change: change.as_str(),
 		reflection,
@@ -297,7 +314,13 @@ fn prompt_refusal(err: drama_prompt_repo::PromptError) -> FileHostError {
 /// a held stamp, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "routine_prompt_put", skip_all, fields(otel.kind = "server"))]
-pub async fn put_prompt(subject: SubjectId, State(db): State<SqlitePool>, Path(stamp): Path<String>, body: Bytes) -> Result<Json<PromptKept>, FileHostError> {
+pub async fn put_prompt(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	State(outbox): State<crate::mailbox::Outbox>,
+	Path(stamp): Path<String>,
+	body: Bytes,
+) -> Result<Json<PromptKept>, FileHostError> {
 	let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let (change, prompt) = drama_prompt_repo::put_prompt(&mut tx, subject.as_str(), &stamp, &body, &now)
@@ -319,6 +342,9 @@ pub async fn put_prompt(subject: SubjectId, State(db): State<SqlitePool>, Path(s
 		}
 	}
 	tx.commit().await?;
+	if change == drama_prompt_repo::Change::Added {
+		outbox.filed();
+	}
 	Ok(Json(PromptKept { change: change.as_str(), prompt }))
 }
 
@@ -351,6 +377,13 @@ mod tests {
 	impl FromRef<TestState> for SqlitePool {
 		fn from_ref(state: &TestState) -> Self {
 			state.pool.clone()
+		}
+	}
+
+	/// No mailbox in these tests: filing wakes nothing.
+	impl FromRef<TestState> for crate::mailbox::Outbox {
+		fn from_ref(_: &TestState) -> Self {
+			Self::default()
 		}
 	}
 
