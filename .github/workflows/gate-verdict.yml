@@ -62,4 +62,4 @@ jobs:
       - name: Judge the head commit and write PR gate
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/pr_gate.py --event
+        run: python3 -u scripts/pr_gate.py --event
