@@ -1,0 +1,40 @@
+{
+  "source_sha": "249470f9481783dcc993ad3c8003254e51b629f0",
+  "include": [
+    {
+      "name": "file_host",
+      "dockerfile": "./infra/docker/Dockerfile.server",
+      "repo_suffix": "server",
+      "needs_sqlx": true,
+      "needs_migrations": true
+    },
+    {
+      "name": "maishatu-obs",
+      "dockerfile": "./infra/docker/Dockerfile.obs",
+      "repo_suffix": "obs",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "orchestrator",
+      "dockerfile": "./infra/docker/Dockerfile.orchestrator",
+      "repo_suffix": "orchestrator",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "rust-runner",
+      "dockerfile": "./infra/docker/Dockerfile.rust-runner",
+      "repo_suffix": "rust-runner",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "kokoro",
+      "dockerfile": "./infra/docker/Dockerfile.kokoro",
+      "repo_suffix": "kokoro",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    }
+  ]
+}
