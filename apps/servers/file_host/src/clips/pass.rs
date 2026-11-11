@@ -475,8 +475,14 @@ enum Put {
 }
 
 /// Makes `folder/file` hold `bytes`, never replacing it: written whole
-/// beside it, then hard-linked into place, which fails if the name is
-/// taken, so two passes, or a frame already there, can never be overwritten.
+/// beside it and synced, then hard-linked into place, which fails if the
+/// name is taken, so a frame already there is never overwritten; the folder
+/// is synced before `Placed`, so a row is only ever written for a frame that
+/// is on the disk, name and bytes, through a power loss.
+///
+/// One pass at a time: the clips worker is one task (`clips::start`), and a
+/// second pass running `put` on the same name at once could link the other's
+/// unfinished file.
 async fn put(folder: &Path, file: &str, bytes: &[u8]) -> Put {
 	let target = folder.join(file);
 	let partial = folder.join(String::from(".") + file + ".partial");
@@ -497,14 +503,21 @@ async fn put(folder: &Path, file: &str, bytes: &[u8]) -> Put {
 	}
 	let linked = tokio::fs::hard_link(&partial, &target).await;
 	let _ = tokio::fs::remove_file(&partial).await;
-	match linked {
-		Ok(()) => Put::Placed,
+	let held = match linked {
+		Ok(()) => true,
 		Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => match tokio::fs::read(&target).await {
-			Ok(there) if there == bytes => Put::Placed,
-			Ok(_) => Put::Differs,
-			Err(_) => Put::Failed,
+			Ok(there) if there == bytes => true,
+			Ok(_) => return Put::Differs,
+			Err(_) => false,
 		},
-		Err(_) => Put::Failed,
+		Err(_) => false,
+	};
+	// The name holds these bytes; it is `Placed` only once the folder's
+	// entry is on the disk too.
+	if held && sync_folder(folder).await {
+		Put::Placed
+	} else {
+		Put::Failed
 	}
 }
 
@@ -514,7 +527,16 @@ async fn write_new(path: &Path, bytes: &[u8]) -> bool {
 	let Ok(mut file) = tokio::fs::OpenOptions::new().write(true).create_new(true).open(path).await else {
 		return false;
 	};
-	file.write_all(bytes).await.is_ok() && file.flush().await.is_ok()
+	file.write_all(bytes).await.is_ok() && file.sync_all().await.is_ok()
+}
+
+/// Syncs `folder`'s entries to the disk, so a name linked into it survives a
+/// power loss.
+async fn sync_folder(folder: &Path) -> bool {
+	match tokio::fs::File::open(folder).await {
+		Ok(dir) => dir.sync_all().await.is_ok(),
+		Err(_) => false,
+	}
 }
 
 #[cfg(test)]
