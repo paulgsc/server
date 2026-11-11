@@ -30,14 +30,13 @@
 #   and Node, Chromium, ffmpeg and the fonts frozen with them by the digest.
 #   Bump its pin in deploy/home/release.json to move any of them.
 #
-#   make compose ARGS="pull render" && make compose ARGS="up -d --build kokoro render"
+#   make up   # every image, render and kokoro included, from deploy/home/release.json
 #   curl -s http://127.0.0.1:8880/health
 services:
   kokoro:
+    # Published by server's CI (infra/docker/Dockerfile.kokoro, RELEASE R2b
+    # #805) and pinned by digest in deploy/home/release.json, never built here.
     image: ${IMAGE_KOKORO:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.kokoro
     container_name: kokoro
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").
