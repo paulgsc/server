@@ -149,9 +149,13 @@ ROOT=
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
 TSX=/opt/some-ui/node_modules/.bin/tsx
-# The motion, for a clip's walk: its own tsx, in the image beside the
-# recorders (RENDER-IMAGE, paulgsc/some-ui#2866).
+# The motion, for a clip's walk, with its own tsx: the image's own motion
+# checkout where it pins one apart from the recorders (/opt/some-ui-motion,
+# infra/docker/Dockerfile.render's MOTION_COMMIT, as `make promo` runs it),
+# else the one beside them (some-ui's published render image, #2866, which
+# builds both at one commit).
 MOTION_DIR=/opt/some-ui/packages/video-motion
+[ -d /opt/some-ui-motion/packages/video-motion ] && MOTION_DIR=/opt/some-ui-motion/packages/video-motion
 MOTION_TSX=$MOTION_DIR/node_modules/.bin/tsx
 # What both recorders take. /brand is home's folder of the owner's files a
 # series names (its music bed), read-only (call-render.yml); a series that
