@@ -152,7 +152,7 @@ jobs:
         with:
           toolchain: 1.94.1
       - name: A deploy that does not come up ready rolls back
-        run: cargo test -q -p envctl --bin envctl deploy::
+        run: cargo test -q -p envctl --bin envctl 'deploy::'
       - name: Nothing home runs calls python
         run: cargo test -q -p envctl --test home_runs_no_python
 
