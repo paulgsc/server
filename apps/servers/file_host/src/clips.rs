@@ -25,7 +25,12 @@
 //! append-only: a held frame is never replaced, and other bytes under a held
 //! name are a failure, never written. Each frame is a PNG by its magic bytes,
 //! at most [`pass::MAX_FRAME`], and a walk side has at most
-//! [`pass::MAX_SNIPS`]: well under 50 MB a year.
+//! [`pass::MAX_SNIPS`]. A walk side home kept is on the drive twice (its
+//! frames here, and the render worker's output it was checked from), so it
+//! takes at most 24 MiB. The six legacy frames are 1.15 MB together. What a
+//! rendered walk frame weighs is not measured yet, so how fast this grows is
+//! not known: at the caps, three clips a week with two walk sides each would
+//! be about 7.5 GB a year.
 //!
 //! **The walk's honest limit.** A walk is drawn by the render image's own
 //! pinned some-ui, not at the commit of the change the clip shows: the render
