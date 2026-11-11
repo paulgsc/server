@@ -77,3 +77,15 @@ jobs:
     secrets: inherit
     with:
       matrix: ${{ needs.changesets.outputs.matrix }}
+  # Home's release reconciles with what is now published (RELEASE R2, #789;
+  # release-lock.yml says how). It runs whether or not every image pushed:
+  # it reads what Docker Hub has, so a failed push leaves that image where it
+  # was and moves the rest.
+  release:
+    needs: [changesets, publish]
+    if: always() && needs.changesets.outputs.has_changes == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/release-lock.yml
+    secrets: inherit
