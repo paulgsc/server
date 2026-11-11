@@ -6,11 +6,11 @@
 # infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
-# no video in the job's renders folder, it records the stage (`call-stage`,
-# the pinned home-network app) with each scene said by home's speaker
-# (`kokoro`), renders it, and keeps the result: the video, its takes and
-# stills, its cut list and what it was made from. The same episode gives the
-# same files.
+# no video in the job's renders folder, it records the stage (the slice of
+# the app its image carries at /opt/stage, which the recorder serves itself,
+# #718) with each scene said by home's speaker (`kokoro`), renders it, and
+# keeps the result: the video, its takes and stills, its cut list and what it
+# was made from. The same episode gives the same files.
 #
 # | job           | file_host writes (read-only here)      | kept in                     | video       |
 # |---------------|----------------------------------------|-----------------------------|-------------|
@@ -139,10 +139,11 @@ ROOT=
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
 TSX=/opt/some-ui/node_modules/.bin/tsx
-# What both recorders take. /brand is home's folder of the owner's files a
-# series names (its music bed), read-only (call-render.yml); a series that
-# names none never reads it.
-COMMON=(--app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
+# What both recorders take. /opt/stage is the stage the image carries, built
+# at the recorders' own commit, which each recorder serves to itself (#718).
+# /brand is home's folder of the owner's files a series names (its music
+# bed), read-only (call-render.yml); a series that names none never reads it.
+COMMON=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
 JOBS=(call playoff-delta preview rust-essay)

@@ -174,7 +174,8 @@ async fn a_failed_preview_says_why_in_a_class_never_its_log() {
 #[test]
 fn each_refusal_the_recorder_words_has_its_class() {
 	// The wording is paulgsc/some-ui `packages/video-render/src/policy.ts`'s
-	// and `tests/record/preview.ts`'s at the image's SOME_UI_COMMIT.
+	// and `tests/record/preview.ts`'s at the commit the render's image is
+	// published from (its pin in infra/compose/call-render.yml).
 	for (log, class) in [
 		("playoff-delta-week has no sample fill yet, so it can't be previewed", "no-sample"),
 		("the video would run 16 min, past the policy's 15 min", "too-long"),

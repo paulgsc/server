@@ -19,7 +19,7 @@ that adds it.
 | **Protected** | `file-host`, `nats`, `redis`, `prometheus`, `grafana`, `node_exporter`, `cadvisor` | Home's state, and the path that tells the owner what happened: Prometheus evaluates the alerts, Grafana delivers them, node_exporter and cAdvisor count the kills. Killed last. |
 | **Interactive** | `rust-runner`, `orchestrator`, `home-deploy` | Short work someone may be waiting on. The default. The voice-note transcriber is interactive too, but it runs inside `file-host`, so it is protected with it. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
-| **Batch**, the lowest | `render`, `kokoro`, `call-stage`, `ollama` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
+| **Batch**, the lowest | `render`, `kokoro`, `ollama` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
 
 The lane (below) decides when the batch class may run: a render starts
 only when no interactive work waits and its peak fits, pauses for
@@ -266,7 +266,7 @@ service sets one by its class, in `infra/compose/*.yml`:
 
 | Class | `oom_score_adj` |
 |---|---|
-| Batch | `ollama` 900, `render` 800, `kokoro` 800, `call-stage` 800 |
+| Batch | `ollama` 900, `render` 800, `kokoro` 800 |
 | Tooling | 500 |
 | Interactive | 0 (`home-deploy` takes systemd's default, which is 0) |
 | Protected | −500 |
@@ -284,9 +284,8 @@ order above decides only when the host as a whole runs out.
 
 | Killed | What it costs | What retries it | What says so |
 |---|---|---|---|
-| a process in `render` (ffmpeg, Chromium, the recorder) | the week's attempt fails (one the lane stops is no failure: it resumes, "What the render worker does") | an hour after the failure; every step it finished is in the step cache, so the retry pays only for the step in flight and the stills | `HomeOomKill`, `CallRenderFailed` |
+| a process in `render` (ffmpeg, Chromium, the recorder and the stage it serves itself, #718) | the week's attempt fails (one the lane stops is no failure: it resumes, "What the render worker does") | an hour after the failure; every step it finished is in the step cache, so the retry pays only for the step in flight and the stills | `HomeOomKill`, `CallRenderFailed` |
 | `kokoro` | the line being said; the container restarts, and the render's attempt fails on the dropped connection | as above; takes already said are cached | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
-| `call-stage` | the render's attempt fails | as above | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
 | `ollama` | a request in flight; the container restarts | nothing in this repo calls it | `HomeOomKill` |
 | `file-host` | the API and every poll stop until Docker restarts it. A voice note being heard keeps nothing and is heard again (`transcribe/pass.rs`, "A shutdown keeps nothing") | Docker's restart; each poll's first pass runs at start | `HomeOomKill`, `FileHostDown` |
 | `rust-runner` | the program it was running is kept as a loss (`dropped`), and at the second loss of one program it is kept as `runner-lost` for good under that toolchain (`rust_rounds/pass.rs`, `DROPS`) | Docker's restart; the next pass asks again until `DROPS` | `HomeOomKill`. A program lost to *another* service's memory is blamed on nothing yet: #706 |

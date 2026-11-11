@@ -361,7 +361,7 @@ groups:
         # container, a new series, so it is not counted. The render worker's
         # own alerts say which week it cost.
         expr: |
-          max by (name) (resets(container_cpu_usage_seconds_total{name=~"kokoro|call-stage|render"}[15m])) > 0
+          max by (name) (resets(container_cpu_usage_seconds_total{name=~"kokoro|render"}[15m])) > 0
         labels:
           objective: CW5
           says: "Home's {{ $labels.name }} crashed and restarted: the OOM tile on the system dashboard says if memory ran out, and docker logs {{ $labels.name }} says why."
