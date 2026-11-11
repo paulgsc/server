@@ -317,7 +317,7 @@ async fn walk<F: Fetch>(fetch: &F, at: &Taking<'_>, side: &Side, pass: &mut Pass
 	match tokio::fs::read(made.join(crate::clips::WALK_FILE)).await {
 		Ok(body) => take_walk(at, side, &made, &body, pass).await,
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-			queue_walk(fetch, at.folders, &key, side, pass).await;
+			queue_walk(fetch, at.folders, at.clip, &key, side, pass).await;
 			Ok(())
 		}
 		Err(_) => {
@@ -331,7 +331,7 @@ async fn walk<F: Fetch>(fetch: &F, at: &Taking<'_>, side: &Side, pass: &mut Pass
 /// repository serves it, and its app's name, made whole under a temporary
 /// name and moved into place, so the worker never reads half of one. One
 /// already given is left as it is.
-async fn queue_walk<F: Fetch>(fetch: &F, folders: &Folders, key: &str, side: &Side, pass: &mut Pass) {
+async fn queue_walk<F: Fetch>(fetch: &F, folders: &Folders, clip: &str, key: &str, side: &Side, pass: &mut Pass) {
 	let given = folders.walks.join(key);
 	if tokio::fs::metadata(&given).await.is_ok() {
 		return;
@@ -340,7 +340,9 @@ async fn queue_walk<F: Fetch>(fetch: &F, folders: &Folders, key: &str, side: &Si
 		pass.failures.push("unreadable");
 		return;
 	};
-	let Some(sample) = fetched(fetch, &(String::from(SOURCE) + &walk.sample), pass).await else {
+	// The sample is named from the clip's own folder (`after/sample.json`),
+	// a plain relative path, so it is always under `clips/<clip>/`.
+	let Some(sample) = fetched(fetch, &(String::from(SOURCE) + "clips/" + clip + "/" + &walk.sample), pass).await else {
 		return;
 	};
 	if serde_json::from_slice::<serde_json::Value>(&sample).is_err() {
@@ -556,7 +558,7 @@ mod tests {
 			.collect();
 		String::from(
 			r#"{"schema":"some-ui.clip-index/2","clips":[{"id":"ledger-wake","title":"t","app":"suspender-ledger","change":{"repo":"some-ui","kind":"pr","number":1},"landed":"2026-11-11",
-			"before":null,"after":{"made":"walk","walk":{"app":"suspender-ledger","sample":"clips/ledger-wake/after/sample.json"},"snips":["#,
+			"before":null,"after":{"made":"walk","walk":{"app":"suspender-ledger","sample":"after/sample.json"},"snips":["#,
 		) + &snips.join(",")
 			+ "]}}]}"
 	}
@@ -746,7 +748,7 @@ mod tests {
 		// A walk side with no walk to run (an index of the first schema) is
 		// counted, never given.
 		let no_walk = walk_index(&["Opens"])
-			.replace(r#""walk":{"app":"suspender-ledger","sample":"clips/ledger-wake/after/sample.json"},"#, "")
+			.replace(r#""walk":{"app":"suspender-ledger","sample":"after/sample.json"},"#, "")
 			.replace("ledger-wake", "other-walk");
 		fake.ok("clips/index.json", no_walk.as_bytes());
 		let pass = run_once(&pool, &fake, &folders, &clock).await.unwrap();

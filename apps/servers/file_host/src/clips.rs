@@ -8,10 +8,11 @@
 //!
 //! - **A walk side** (`made: "walk"`, with `walk: {app, sample}` from
 //!   `some-ui.clip-index/2`): home makes its frames itself, on its render
-//!   lane. This worker fetches the walk's sample and writes it, with the app's
-//!   name, to [`WALKS_FOLDER`]; the render worker runs `motion walk` on it
-//!   when the lane admits it (`infra/render/render-calls.sh`'s `clip-walk`
-//!   job) into [`WALK_RENDERS_FOLDER`]; the next pass checks that the walk's
+//!   lane. This worker fetches the walk's sample (named from the clip's own
+//!   folder: `after/sample.json` is `clips/<clip>/after/sample.json`) and
+//!   writes it, with the app's name, to [`WALKS_FOLDER`]; the render worker
+//!   runs `motion walk` on it when the lane admits it
+//!   (`infra/render/render-calls.sh`'s `clip-walk` job) into [`WALK_RENDERS_FOLDER`]; the next pass checks that the walk's
 //!   `walk.json` names the index's snips, in order, by the same files and
 //!   labels, and only then keeps them.
 //! - **The six legacy frames** (`made: "session"`, named in [`pass::LEGACY`]):
@@ -25,6 +26,16 @@
 //! name are a failure, never written. Each frame is a PNG by its magic bytes,
 //! at most [`pass::MAX_FRAME`], and a walk side has at most
 //! [`pass::MAX_SNIPS`]: well under 50 MB a year.
+//!
+//! **The walk's honest limit.** A walk is drawn by the render image's own
+//! pinned some-ui, not at the commit of the change the clip shows: the render
+//! network reaches nothing, so it cannot fetch another. What guards it is the
+//! check above: a walk whose snips or labels differ from the index's is
+//! `mismatch`, and nothing of it is kept. Such a walk is stuck until the
+//! image moves to a some-ui that draws it, and is seen two ways: the pass's
+//! log line counts `mismatch` every hour, and a walk the worker could not run
+//! at all is on the phone's Renders page as failed, its whole log on home in
+//! `renders/clip-walk-worker/<clip>-<side>.failed.log`.
 //!
 //! **Why this is a poll,** as `call_weeks`: GitHub tells home nothing, and a
 //! clip lands a few times a week. An idle pass is one request for the index.

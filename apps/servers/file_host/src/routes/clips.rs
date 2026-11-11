@@ -2,13 +2,12 @@
 //! (paulgsc/some-ui#2670's clips; the owner's decisions of 2026-11-11).
 //!
 //! ```text
-//! GET /clips                    → { held: [{ id, side, file, sha256 }] }
 //! GET /clips/:id/:side/:file    → the frame, image/png, ETag "<sha256>", immutable
 //! ```
 //!
 //! **Trust model:** a paired phone's only, as `routes::feed_videos`'. A frame
 //! is a screenshot of an app on sample data, but home serves it to no one
-//! else: every handler takes a `Paired`, so a request without a session is
+//! else: the handler takes a `Paired`, so a request without a session is
 //! `401` and a browser's session `403`.
 //!
 //! What is kept is `clips`'s; the answers are `handlers::clips`'.
@@ -35,7 +34,7 @@ where
 	AuthContext: FromRef<S>,
 	ClipFrames: FromRef<S>,
 {
-	let table = RouteTable::new().get("/clips", handlers::get_held).get("/clips/:id/:side/:file", handlers::get_frame);
+	let table = RouteTable::new().get("/clips/:id/:side/:file", handlers::get_frame);
 	Module::versioned("clips", table).with_cors(cors)
 }
 

@@ -1,7 +1,7 @@
 //! Handlers for `routes::clips`: the clip frames home keeps (`clips`), for
 //! the paired phone.
 //!
-//! **A paired phone's only**, as every feed handler: each takes [`Paired`],
+//! **A paired phone's only**, as every feed handler: it takes [`Paired`],
 //! so a request without a session is `401` and a browser's session `403`.
 //! A frame is served only once `clip_frame` holds it: a file on the drive
 //! with no row (a pass that stopped between the two) is not home's yet.
@@ -16,9 +16,7 @@ use axum::{
 		HeaderValue,
 	},
 	response::{IntoResponse, Response},
-	Json,
 };
-use serde::Serialize;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use tower::ServiceExt;
@@ -36,42 +34,6 @@ impl FromRef<crate::AppState> for ClipFrames {
 	fn from_ref(_: &crate::AppState) -> Self {
 		Self(PathBuf::from(crate::clips::FRAMES_FOLDER))
 	}
-}
-
-/// A frame home holds, as `GET /clips` lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HeldFrame {
-	pub id: String,
-	pub side: String,
-	pub file: String,
-	pub sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Held {
-	pub held: Vec<HeldFrame>,
-}
-
-/// `GET /clips`: every frame home holds, by clip, side and file.
-///
-/// # Errors
-/// 401 without a session, 403 for a browser's, and 500 for a storage
-/// failure.
-#[axum::debug_handler(state = crate::AppState)]
-#[instrument(name = "clips_held", skip_all, fields(otel.kind = "server"))]
-pub async fn get_held(_paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Held>, FileHostError> {
-	let mut conn = db.acquire().await?;
-	let held = clip_frame_repo::held(&mut conn)
-		.await?
-		.into_iter()
-		.map(|frame| HeldFrame {
-			id: frame.clip_id,
-			side: frame.side,
-			file: frame.file,
-			sha256: frame.sha256,
-		})
-		.collect();
-	Ok(Json(Held { held }))
 }
 
 /// `GET /clips/:id/:side/:file`: a frame home holds, `image/png`, its
@@ -139,7 +101,6 @@ mod tests {
 		Router,
 	};
 	use clip_frame_repo::{Frame, Made};
-	use serde_json::{json, Value};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 	use std::path::PathBuf;
 	use tower::ServiceExt;
@@ -206,7 +167,7 @@ mod tests {
 		};
 		let (phone, browser) = (session(&state, Carrier::Bearer).await, session(&state, Carrier::Cookie).await);
 		let module = crate::routes::clips::clips::<TestState>();
-		assert_eq!(module.descriptors().count(), 2);
+		assert_eq!(module.descriptors().count(), 1);
 		let app = module.into_table_router().with_state(state);
 
 		// One frame held, on the drive with its row; one on the drive alone.
@@ -227,15 +188,9 @@ mod tests {
 		let sha256 = clip_frame_repo::sha256_hex(&png);
 		let phone = [(phone.0.clone(), phone.1.as_str())];
 
-		for uri in ["/clips", "/clips/ledger-wake/after/01.png"] {
-			assert_eq!(get(&app, uri, &[]).await.0, StatusCode::UNAUTHORIZED, "{uri}");
-			assert_eq!(get(&app, uri, &[(browser.0.clone(), browser.1.as_str())]).await.0, StatusCode::FORBIDDEN, "{uri}");
-		}
-
-		let (status, _, body) = get(&app, "/clips", &phone).await;
-		assert_eq!(status, StatusCode::OK);
-		let listed: Value = serde_json::from_slice(&body).unwrap();
-		assert_eq!(listed, json!({ "held": [{ "id": "ledger-wake", "side": "after", "file": "01.png", "sha256": sha256 }] }));
+		let uri = "/clips/ledger-wake/after/01.png";
+		assert_eq!(get(&app, uri, &[]).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(get(&app, uri, &[(browser.0.clone(), browser.1.as_str())]).await.0, StatusCode::FORBIDDEN);
 
 		let (status, headers, body) = get(&app, "/clips/ledger-wake/after/01.png", &phone).await;
 		assert_eq!(status, StatusCode::OK);
