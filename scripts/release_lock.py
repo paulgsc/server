@@ -30,8 +30,8 @@ Docker Hub's tag API gives each tag's digest, so every reference is
 
 - **Moves a held entry.** `file-host` stays `pgathondu/server:latest` until R4
   (#793), because `envctl deploy` pulls, tags and rolls back that tag.
-- **Moves an entry it does not follow** (third-party images are R7's, #796;
-  locally built ones are not published), or adds or removes a service.
+- **Moves an entry it does not follow** (third-party images are R7's, #796),
+  or adds or removes a service.
 - **Moves an entry backwards in serial**: `serial` rises once, from main's,
   when anything changes; `server_commit` is main's commit it formed on.
 
@@ -327,7 +327,8 @@ class Tests(unittest.TestCase):
         suffixes = set(re.findall(r'repo_suffix: "([^"]+)"', detect))
         release = json.loads(RELEASE.read_text())
         followed = {source.suffix for source in SOURCES.values() if isinstance(source, Changesets)}
-        held = {"server"}  # file-host, HELD until R4
+        # The suffixes of the held entries' repositories (file-host's is server).
+        held = {release["services"][name]["image"].split("@")[0].rsplit(":", 1)[0].removeprefix("pgathondu/") for name in HELD}
         for suffix in suffixes:
             runs = any(entry["image"].startswith(f"pgathondu/{suffix}:") for entry in release["services"].values())
             if runs or suffix in followed:
