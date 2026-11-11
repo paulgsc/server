@@ -19,7 +19,7 @@ that adds it.
 | **Protected** | `file-host`, `nats`, `redis`, `prometheus`, `grafana`, `node_exporter`, `cadvisor` | Home's state, and the path that tells the owner what happened: Prometheus evaluates the alerts, Grafana delivers them, node_exporter and cAdvisor count the kills. Killed last. |
 | **Interactive** | `rust-runner`, `orchestrator`, `home-deploy` | Short work someone may be waiting on. The default. The voice-note transcriber is interactive too, but it runs inside `file-host`, so it is protected with it. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
-| **Batch**, the lowest | `render`, `kokoro`, `call-stage`, `ollama` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
+| **Batch**, the lowest | `render`, `kokoro`, `ollama` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
 
 The lane (below) decides when the batch class may run: a render starts
 only when no interactive work waits and its peak fits, pauses for
@@ -121,7 +121,7 @@ that, and that wait is not interactive work.
 | Value | Home's | Why |
 |---|---|---|
 | Floor | 2 GiB | Interactive work must fit beside a render that holds its memory while paused: the rust-runner's whole 1 GiB cap, and as much again for the transcriber's working memory (its model's 500 MB stays loaded, so is already counted), file_host's requests and the error in `MemAvailable`'s estimate. |
-| Declared peak | 6.09 GiB | Until the worker measures one: the render's 4 GiB cap, the speaker's room above the 1.25 GB it keeps between renders (its 3 GiB cap less that, #691), and the stage's 256 MiB. What the speaker keeps is already out of `MemAvailable`, so it is not counted twice. Inside the render's cap, ffmpeg's joins peak under 1 GB since VR1 (some-ui#2657; 4.17 GB before it, #694). |
+| Declared peak | 5.84 GiB | Until the worker measures one: the render's 4 GiB cap and the speaker's room above the 1.25 GB it keeps between renders (its 3 GiB cap less that, #691). The stage is served inside the render's container, so its cap holds it (#718; 6.09 GiB while it was a container of its own). What the speaker keeps is already out of `MemAvailable`, so it is not counted twice. Inside the render's cap, ffmpeg's joins peak under 1 GB since VR1 (some-ui#2657; 4.17 GB before it, #694). |
 | Pressure limit | 10% `some avg10` | Some task stalled on memory for a tenth of the last ten seconds. Home has no measurement of memory PSI under a render yet: the CALL dashboard's LANE row draws it against this limit, which is where it is tuned. |
 | Hold-down | 30 s | Three of `avg10`'s windows, so room that comes back is not a lull inside one. |
 | Stuck after | 3 stops | A job stopped three times in a row for memory or pressure is reported (LA4). |
@@ -205,7 +205,7 @@ way; CI runs it on every PR.
   - **A yield is never a failure:** no `failed.log`, no `CallRenderFailed`.
 - **Its peak**, once it renders: the render container's `memory.peak` (its
   most since the container started, so never less than this render's) plus
-  the speaker's room and the stage's cap, as the declared peak counts them.
+  the speaker's room, as the declared peak counts it.
   An unreadable `memory.peak` writes none, and the lane keeps the declared
   one.
 - **A restart keeps the job.** `job.state` names it, it runs before any
@@ -270,7 +270,7 @@ service sets one by its class, in `infra/compose/*.yml`:
 
 | Class | `oom_score_adj` |
 |---|---|
-| Batch | `ollama` 900, `render` 800, `kokoro` 800, `call-stage` 800 |
+| Batch | `ollama` 900, `render` 800, `kokoro` 800 |
 | Tooling | 500 |
 | Interactive | 0 (`home-deploy` takes systemd's default, which is 0) |
 | Protected | −500 |
@@ -288,9 +288,8 @@ order above decides only when the host as a whole runs out.
 
 | Killed | What it costs | What retries it | What says so |
 |---|---|---|---|
-| a process in `render` (ffmpeg, Chromium, the recorder) | the week's attempt fails (one the lane stops is no failure: it resumes, "What the render worker does") | an hour after the failure; every step it finished is in the step cache, so the retry pays only for the step in flight and the stills | `HomeOomKill`, `CallRenderFailed` |
+| a process in `render` (ffmpeg, Chromium, the recorder and the stage it serves itself, #718) | the week's attempt fails (one the lane stops is no failure: it resumes, "What the render worker does") | an hour after the failure; every step it finished is in the step cache, so the retry pays only for the step in flight and the stills | `HomeOomKill`, `CallRenderFailed` |
 | `kokoro` | the line being said; the container restarts, and the render's attempt fails on the dropped connection | as above; takes already said are cached | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
-| `call-stage` | the render's attempt fails | as above | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
 | `ollama` | a request in flight; the container restarts | nothing in this repo calls it | `HomeOomKill` |
 | `file-host` | the API and every poll stop until Docker restarts it. A voice note being heard keeps nothing and is heard again (`transcribe/pass.rs`, "A shutdown keeps nothing") | Docker's restart; each poll's first pass runs at start | `HomeOomKill`, `FileHostDown` |
 | `rust-runner` | the program it was running is kept as a loss (`dropped`), and at the second loss of one program it is kept as `runner-lost` for good under that toolchain (`rust_rounds/pass.rs`, `DROPS`) | Docker's restart; the next pass asks again until `DROPS` | `HomeOomKill`. A program lost to *another* service's memory is blamed on nothing yet: #706 |

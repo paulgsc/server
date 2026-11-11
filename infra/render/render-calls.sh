@@ -7,11 +7,11 @@
 # infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
-# no video in the job's renders folder, it records the stage (`call-stage`,
-# the pinned home-network app) with each scene said by home's speaker
-# (`kokoro`), renders it, and keeps the result: the video, its takes and
-# stills, its cut list and what it was made from. The same episode gives the
-# same files.
+# no video in the job's renders folder, it records the stage (the slice of
+# the app its image carries at /opt/stage, which the recorder serves itself,
+# #718) with each scene said by home's speaker (`kokoro`), renders it, and
+# keeps the result: the video, its takes and stills, its cut list and what it
+# was made from. The same episode gives the same files.
 #
 # | job           | file_host writes (read-only here)      | kept in                     | video       |
 # |---------------|----------------------------------------|-----------------------------|-------------|
@@ -139,9 +139,10 @@ PAUSE_FAILS=3
 CGROUP=/sys/fs/cgroup
 # What the render takes beyond its own container, which its cgroup doesn't
 # see: the speaker's room above what it holds between renders (its 3 GiB cap
-# less the 1.25 GB it keeps, #691) and the stage's 256 MiB, as file_host's
-# declared peak counts them (`call_weeks::lane::DECLARED_PEAK_BYTES`).
-BESIDE_BYTES=$(( 3 * 1024 * 1024 * 1024 - 1250 * 1000 * 1000 + 256 * 1024 * 1024 ))
+# less the 1.25 GB it keeps, #691), as file_host's declared peak counts it
+# (`call_weeks::lane::DECLARED_PEAK_BYTES`). The stage the recorder serves
+# itself is inside this container, so its cgroup sees it (#718).
+BESIDE_BYTES=$(( 3 * 1024 * 1024 * 1024 - 1250 * 1000 * 1000 ))
 # Where the folders below are mounted: the container's root. Only
 # render-calls.test.sh moves it, to a temporary folder.
 ROOT=
@@ -149,18 +150,15 @@ ROOT=
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
 TSX=/opt/some-ui/node_modules/.bin/tsx
-# The motion, for a clip's walk, with its own tsx: the image's own motion
-# checkout where it pins one apart from the recorders (/opt/some-ui-motion,
-# infra/docker/Dockerfile.render's MOTION_COMMIT, as `make promo` runs it),
-# else the one beside them (some-ui's published render image, #2866, which
-# builds both at one commit).
+# The motion, for a clip's walk, with its own tsx: in the published render
+# image beside the recorders, built at their commit (#718, some-ui#2866).
 MOTION_DIR=/opt/some-ui/packages/video-motion
-[ -d /opt/some-ui-motion/packages/video-motion ] && MOTION_DIR=/opt/some-ui-motion/packages/video-motion
 MOTION_TSX=$MOTION_DIR/node_modules/.bin/tsx
-# What both recorders take. /brand is home's folder of the owner's files a
-# series names (its music bed), read-only (call-render.yml); a series that
-# names none never reads it.
-COMMON=(--app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
+# What both recorders take. /opt/stage is the stage the image carries, built
+# at the recorders' own commit, which each recorder serves to itself (#718).
+# /brand is home's folder of the owner's files a series names (its music
+# bed), read-only (call-render.yml); a series that names none never reads it.
+COMMON=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
 JOBS=(call playoff-delta preview rust-essay clip-walk)

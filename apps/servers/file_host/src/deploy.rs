@@ -7,7 +7,7 @@
 //! build's epoch, and what home's deploy last recorded; when a deploy is
 //! wanted it writes [`WANTED`] into [`FOLDER`], which is `${STORAGE}/deploy`
 //! on the host. A systemd path unit there (`nix/modules/home-deploy.nix`)
-//! runs `scripts/deploy.py --on-demand`, which pulls, deploys only an image
+//! runs `envctl deploy --on-demand`, which pulls, deploys only an image
 //! whose epoch is above this one, health-waits, rolls back, writes
 //! [`STATE`] and removes the marker. Nothing polls: with no client newer
 //! than home, home sends no request anywhere.
@@ -43,7 +43,7 @@ pub const FOLDER: &str = "/app/dbs/deploy";
 /// The deploy-wanted marker's file name in [`FOLDER`].
 pub const WANTED: &str = "wanted";
 /// The file name, in [`FOLDER`], of what home's deploy last did
-/// (`scripts/deploy.py`, `--on-demand`). Read only here.
+/// (`envctl deploy --on-demand`). Read only here.
 pub const STATE: &str = "state.json";
 
 /// The shortest time between two pulls.

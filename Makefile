@@ -231,7 +231,7 @@ promo: envctl ## A release's promo on home, the same bytes twice: make promo APP
 	    env -u LD_LIBRARY_PATH curl -fsSL "$(PROMO_DATA)/$(APP)/$(VERSION)/$$file.json" -o "$$data/$$file.json" || exit 1; \
 	  done && chmod -R a+rX "$$data" && \
 	  $(ENVCTL_RUN) compose --role $(ROLE) -- run --rm --no-deps -v "$$data:/promo:ro" \
-	    -w /opt/some-ui-motion/packages/video-motion --entrypoint node_modules/.bin/tsx render \
+	    -w /opt/some-ui/packages/video-motion --entrypoint node_modules/.bin/tsx render \
 	    src/cli.ts promo /promo --out /renders/promo/$(APP)-$(VERSION) --brand /brand --prove --work /renders
 
 # Once, on the box (ENV2, #615): deploy/$(ROLE)/ written from what the

@@ -104,7 +104,7 @@ local count(title, description, expr, steps) =
   restarts: count(
     'CRASHES, 24H',
     'Times the speaker, the stage or the render worker died and Docker started the same container again in the last 24 hours. Each start resets the container\'s CPU counter; a deploy is a new container, not one of these, and the crashes of every container a service had in the day are added up. CallServiceRestarted fires on each.',
-    'sum(max by (name, id) (resets(container_cpu_usage_seconds_total{name=~"kokoro|call-stage|render"}[24h])))',
+    'sum(max by (name, id) (resets(container_cpu_usage_seconds_total{name=~"kokoro|render"}[24h])))',
     [{ color: 'green', value: null }, { color: 'red', value: 1 }],
   ),
 
@@ -166,7 +166,7 @@ local count(title, description, expr, steps) =
     datasource: ds,
     targets: [
       {
-        expr: '100 * max by (name) (container_memory_working_set_bytes{name=~"kokoro|call-stage|render"}) / max by (name) (container_spec_memory_limit_bytes{name=~"kokoro|call-stage|render"} > 0)',
+        expr: '100 * max by (name) (container_memory_working_set_bytes{name=~"kokoro|render"}) / max by (name) (container_spec_memory_limit_bytes{name=~"kokoro|render"} > 0)',
         legendFormat: '{{name}}',
         refId: 'A',
       },

@@ -841,7 +841,7 @@ check "a preview a restart left is resumed" test -e "$ROOT/renders/preview/$ID/p
 # policy's caps, the pinned stage, and home's Kokoro speaker. Read from what
 # the fake recorders were given, written out, not from the script's variables,
 # so a cap changed without the ledger moving fails here.
-HANDED=(--app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
+HANDED=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes 15 --max-video-mb 500 --cache-mb 2048)
 # Whether `args` (one to a line) has each of HANDED's flags followed by its value.
 handed() {
@@ -906,22 +906,24 @@ again=$(awk '$1 == "start" { n++ } n == 2 { print $2; exit }' "$FAKE/times")
 check "no sooner than RETRY_AFTER after its failure" test "$(( again - ended ))" -ge "$RETRY_AFTER"
 RETRY_AFTER=0
 
-# The stage and the speaker are pinned by digest, the recorders by a whole
-# commit, and the stage's pin names the commit the recorders are built at,
-# so the pages the recorders drive are the ones they were written for
-# (CW5: "from the pinned stage with each scene said by home's Kokoro speaker").
+# The render's image and the speaker are pinned by digest. The render's image
+# carries the recorders, the motion and the stage they record, all built at
+# one some-ui commit (#718), so the pages the recorders drive are the ones
+# they were written for (CW5: "from the pinned stage with each scene said by
+# home's Kokoro speaker"); its tag is that whole commit. The pin is home's
+# release's (deploy/home/release.json, #788), which compose reads as
+# ${IMAGE_RENDER}.
 COMPOSE=$HERE/../compose/call-render.yml
-# The stage's image is home's release's (deploy/home/release.json, #788),
-# which compose reads as ${IMAGE_CALL_STAGE}.
 RELEASE=$HERE/../../deploy/home/release.json
-stage=$(grep -oE '"call-stage": \{"image": "[^"]+"' "$RELEASE" | cut -d'"' -f6)
-check "the stage is pinned by digest" grep -qE '^pgathondu/www:[0-9.]+@sha256:[0-9a-f]{64}$' <<< "$stage"
+image=$(grep -oE '"render": \{"image": "[^"]+"' "$RELEASE" | cut -d'"' -f6)
+check "the render's image is pinned by its some-ui commit and digest" \
+  grep -qE '^pgathondu/render:[0-9a-f]{40}@sha256:[0-9a-f]{64}$' <<< "$image"
+check "and compose takes it from the release" \
+  grep -qE '^    image: \$\{IMAGE_RENDER:\?' "$COMPOSE"
 check "the speaker is built from a base pinned by digest" \
   grep -qE '^FROM [^ ]+@sha256:[0-9a-f]{64}$' "$HERE/../docker/Dockerfile.kokoro"
-recorders=$(grep -oE '^ARG SOME_UI_COMMIT=[0-9a-f]+$' "$HERE/../docker/Dockerfile.render" | cut -d= -f2)
-check "the recorders are pinned by a whole commit" grep -qE '^[0-9a-f]{40}$' <<< "$recorders"
-published=$(grep -A1 '^  call-stage:' "$COMPOSE" | grep -oE 'paulgsc/some-ui [0-9a-f]{7,40}' | cut -d' ' -f2)
-check "the stage's pin names the recorders' commit" test -n "$published" -a "${recorders#"$published"}" != "$recorders"
+check "the stage is the image's own, never a container beside it" \
+  test -z "$(grep -E '^  call-stage:|"call-stage"|--app ' "$COMPOSE" "$RELEASE" "$HERE/render-calls.sh")"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures of the render worker's guarantees failed"

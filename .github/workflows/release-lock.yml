@@ -1,0 +1,126 @@
+# Home's release follows what has been published (RELEASE R2, #789; epic #787;
+# docs/release.md says what it promises).
+#
+# `deploy/home/release.json` names every image compose starts on home (R1,
+# #788). Each run reconciles it: `scripts/release_lock.py` works out, from
+# the sources of truth alone (main's image changesets and Docker Hub's tags),
+# the newest published reference of every image the release follows, and
+# writes main's release with those. If that differs from main, it becomes the
+# one release pull request, `automation/release`, which auto-merges once its
+# checks pass (C119: each image keeps the one approval it has where it is
+# published, and forming the set adds none).
+#
+# A run carries no images of its own: what started it is only a reason to
+# look. So any run computes the whole set, and the one concurrency group's
+# single pending slot loses nothing when GitHub cancels a queued run for a
+# newer one: the newer one sees everything the cancelled one would have.
+#
+# It runs after server's images are pushed (publish-image-changesets.yml's
+# `release` job), when some-ui's www and render releases dispatch it (U1,
+# #791, `gh workflow run release-lock.yml` with SERVER_ROUTES_DISPATCH_TOKEN),
+# and by hand.
+#
+# A pull request opened with the default GITHUB_TOKEN gets its checks in an
+# approval-required state (docs/assurance.md, "A pull request the image bot …
+# opens"), so it waits for "Approve workflows to run" before auto-merge can
+# complete. With the `RELEASE_BOT_TOKEN` secret (a token on this repository
+# with Contents and Pull requests read/write) its checks run as anyone's and
+# auto-merge completes it. Whether to add it is the owner's call.
+name: Release lock
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why to look (a published image, say). Only logged: the run reads the sources itself."
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-lock
+  cancel-in-progress: false
+jobs:
+  release:
+    name: Reconcile the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      RELEASE_BRANCH: automation/release
+      GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+      # Runs are one at a time (the concurrency group), so the only thing that
+      # can move under a run is main itself: a release, or anything else,
+      # merging meanwhile. The run forms on main as it is, pushes, and forms
+      # again if main moved, so the release pull request is never one formed
+      # on a main that is gone.
+      - name: Reconcile the release with what has been published
+        id: reconcile
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          [ -z "${REASON:-}" ] || echo "Started for: $REASON"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            formed_on=$(git rev-parse origin/main)
+            git checkout -q --detach "$formed_on"
+            python3 scripts/release_lock.py > "$RUNNER_TEMP/changes.md"
+            cat "$RUNNER_TEMP/changes.md"
+            if git diff --quiet -- deploy/home/release.json; then
+              echo "main's release already names the newest of everything it follows."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # The branch is main plus this release, whatever it held before:
+            # the run computed the whole set, so nothing on it is owed to an
+            # earlier run.
+            git commit -q -m "chore(release): home's release follows the newest published images" -- deploy/home/release.json
+            git push -q --force origin "HEAD:refs/heads/$RELEASE_BRANCH"
+            git fetch -q origin main
+            if [ "$(git rev-parse origin/main)" = "$formed_on" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "main moved while the release formed; forming it again (attempt $attempt)."
+          done
+          echo "::error::main kept moving; the next run forms the release"
+          exit 1
+      # main already has the release: a pull request still open for it would
+      # propose nothing, or something main has passed, so it is closed.
+      - name: Close a release pull request main no longer needs
+        if: steps.reconcile.outputs.changed == 'false'
+        run: |
+          set -euo pipefail
+          number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr close "$number" --comment "main's release already names the newest published image of everything it follows (release-lock.yml)."
+          fi
+      - name: Open the release pull request and ask for auto-merge
+        if: steps.reconcile.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          body="Home's next release (\`deploy/home/release.json\`, epic #787): main's release with every image it follows at its newest published reference, by tag and digest (docs/release.md).
+
+          $(cat "$RUNNER_TEMP/changes.md")
+
+          Formed by \`release-lock.yml\` and merged by auto-merge once its checks pass (C119). Home applies it at the next \`make home-deploy\`, or when a client needs a newer contract epoch."
+          number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            created=$(gh pr create --base main --head "$RELEASE_BRANCH" --title "chore(release): home's next release" --body "$body")
+            number=$(grep -oE '[0-9]+$' <<< "$created")
+          else
+            gh pr edit "$number" --body "$body"
+          fi
+          gh pr merge --auto --squash "$number"

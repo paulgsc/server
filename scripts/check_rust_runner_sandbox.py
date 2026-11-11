@@ -45,7 +45,7 @@ only check that does.
 
 Usage:
   python3 scripts/check_rust_runner_sandbox.py           # build, check, tear down
-  python3 scripts/check_rust_runner_sandbox.py --no-build  # use the image already tagged
+  python3 scripts/check_rust_runner_sandbox.py --no-build  # use the image already tagged rust-runner:sandbox-check
 
 Needs Docker with compose. Stdlib only. Exits 1 on the first failed check.
 """
@@ -65,11 +65,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = REPO_ROOT / "infra" / "compose" / "rust_runner.yml"
 PROJECT = "rust-runner-check"
 CONTAINER = "rust-runner"
-# The runner's image as home's release names it (deploy/home/release.json,
-# #788): compose reads it as ${IMAGE_RUST_RUNNER}, so the check runs on what
-# home would.
-RELEASE = REPO_ROOT / "deploy" / "home" / "release.json"
-IMAGE = json.loads(RELEASE.read_text())["services"]["rust-runner"]["image"]
+# The image this check builds and runs: a local tag, never home's release's
+# reference (deploy/home/release.json, #788), which names a published digest
+# (#789). The check is of this checkout's build, so compose is given this tag
+# as ${IMAGE_RUST_RUNNER}, and `--no-build` runs one already built under it.
+IMAGE = "rust-runner:sandbox-check"
 CLIENT_UID = "10000"
 OTHER_UID = "10002"
 PROGRAM_ID = "10101"
@@ -690,7 +690,7 @@ def check_compiles() -> None:
 
 def main() -> int:
 	parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-	parser.add_argument("--no-build", action="store_true", help="use the image already tagged pgathondu/rust-runner:latest")
+	parser.add_argument("--no-build", action="store_true", help=f"use the image already tagged {IMAGE}")
 	parser.add_argument("--keep", action="store_true", help="leave the container running afterwards")
 	args = parser.parse_args()
 
