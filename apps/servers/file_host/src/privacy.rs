@@ -70,6 +70,10 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 		"each week of the weekly call, as paulgsc/testing served it — what merged in two public repositories, nobody's record",
 	),
 	(
+		"clip_frame",
+		"each clip frame home keeps: a screenshot of an app on sample data, by clip, side and file, with its SHA-256 — nobody's record",
+	),
+	(
 		"call_video_deletion",
 		"a receipt for each step of a week of the call the owner let go from My data: the week, the step, its public YouTube video's id, the bytes and when; nobody's record",
 	),

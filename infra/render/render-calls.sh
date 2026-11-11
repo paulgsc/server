@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Home's render worker (GWB10, paulgsc/some-ui#2084), with four jobs, one
+# Home's render worker (GWB10, paulgsc/some-ui#2084), with five jobs, one
 # loop: the weekly call's (paulgsc/some-ui#2635, ST36), Playoff Delta's
 # (FEED4, paulgsc/some-ui#2647), a template's preview (SFEED12,
-# paulgsc/some-ui#2757) and a Rust Rounds essay's (RR16, paulgsc/some-ui#2691).
+# paulgsc/some-ui#2757), a Rust Rounds essay's (RR16, paulgsc/some-ui#2691)
+# and a clip's walk (paulgsc/some-ui#2670's clips, C125).
 # infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
@@ -18,6 +19,7 @@
 # | playoff-delta | /episodes/<key>/{fill,season}.json     | /renders/playoff-delta/<key>/ | episode.mp4 |
 # | preview       | /previews/<id>.json (previews)         | /renders/preview/<id>/      | preview.mp4 |
 # | rust-essay    | /essays/<week>/essay.json (rust_essays) | /renders/rust-essay/<week>/ | essay.mp4   |
+# | clip-walk     | /clip-walks/<clip>-<side>/{sample.json,app} (clips) | /renders/clip-walk/<clip>-<side>/ | walk.json |
 #
 # A Playoff Delta key is <season>-<team>-<NN> (2026-SF-08, NN 00 the legend);
 # file_host writes only fills of a voiced version (pd_fills::render), so a
@@ -35,6 +37,14 @@
 # worker reads no record and no draft. The tutor's lines are said by home's
 # speaker as every job's; each answer scene is the owner's take, played
 # whole by the recorder.
+# A clip's walk is keyed <clip>-<side> (ledger-wake-after): file_host gives
+# it the walk's sample and app (`clips`), and the motion replays the app's
+# scripted walk over that sample (`motion walk`), its snips and walk.json
+# into the finished folder; nothing is said and no video is made. file_host
+# checks the walk against the clip index before it keeps a frame of it, so a
+# walk this image draws differently is never kept. It is drawn by this
+# image's some-ui, not the commit of the change the clip shows: nothing here
+# reaches the internet to fetch another.
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -139,18 +149,27 @@ ROOT=
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
 TSX=/opt/some-ui/node_modules/.bin/tsx
+# The motion, for a clip's walk: its own tsx, in the image beside the
+# recorders (RENDER-IMAGE, paulgsc/some-ui#2866).
+MOTION_DIR=/opt/some-ui/packages/video-motion
+MOTION_TSX=$MOTION_DIR/node_modules/.bin/tsx
 # What both recorders take. /brand is home's folder of the owner's files a
 # series names (its music bed), read-only (call-render.yml); a series that
 # names none never reads it.
 COMMON=(--app http://call-stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
-JOBS=(call playoff-delta preview rust-essay)
+JOBS=(call playoff-delta preview rust-essay clip-walk)
 
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
 # `previews::TEMPLATES`).
 PREVIEW_ID='^(conference-call|playoff-delta-legend|playoff-delta-week|rust-essay)-[0-9]{8}T[0-9]{6}Z$'
+
+# A clip's walk: <clip>-<side>, the clip's id plain (file_host's
+# `clips::pass`), and the app it walks, plain too.
+WALK_KEY='^[a-z0-9]+(-[a-z0-9]+)*-(before|after)$'
+WALK_APP='^[a-z0-9]+(-[a-z0-9]+)*$'
 
 # The job's folders and video's name, as globals: INPUT, RENDERS, STATUS,
 # WORK, VIDEO. The work folder is on the same drive as the videos, not the
@@ -171,6 +190,9 @@ use_job() {
     rust-essay)
       INPUT=$ROOT/essays RENDERS=$ROOT/renders/rust-essay STATUS=$ROOT/renders/rust-essay-worker
       WORK=$ROOT/renders/rust-essay-work VIDEO=essay.mp4 ;;
+    clip-walk)
+      INPUT=$ROOT/clip-walks RENDERS=$ROOT/renders/clip-walk STATUS=$ROOT/renders/clip-walk-worker
+      WORK=$ROOT/renders/clip-walk-work VIDEO=walk.json ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -208,6 +230,13 @@ episodes() {
         [[ "$key" =~ ^[0-9]{4}-w[0-9]{2}$ ]] || continue
         [ -e "$entry/essay.json" ] && echo "$key"
       done ;;
+    clip-walk)
+      for entry in "$INPUT"/*/; do
+        [ -d "$entry" ] || continue
+        key=$(basename "$entry")
+        [[ "$key" =~ $WALK_KEY ]] || continue
+        [ -e "$entry/sample.json" ] && [ -e "$entry/app" ] && echo "$key"
+      done ;;
   esac
 }
 
@@ -219,6 +248,7 @@ holds() {
     playoff-delta) [ -d "$INPUT/$2" ] ;;
     preview) [ -e "$INPUT/$2.json" ] ;;
     rust-essay) [ -e "$INPUT/$2/essay.json" ] ;;
+    clip-walk) [ -e "$INPUT/$2/sample.json" ] ;;
   esac
 }
 
@@ -242,6 +272,16 @@ record() {
       # --out. Each take it plays is <ticket>.<webm|ogg|m4a> in --takes.
       (cd "$APP_DIR" && "$TSX" tests/record/essay.ts "${COMMON[@]}" \
         --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" --out "$WORK") ;;
+    clip-walk)
+      # The app is file_host's word, read here as one plain name or refused.
+      local app=
+      read -r app < "$INPUT/$key/app"
+      if ! [[ "$app" =~ $WALK_APP ]]; then
+        echo "the walk of $key names no app this worker runs"
+        return 2
+      fi
+      (cd "$MOTION_DIR" && "$MOTION_TSX" src/cli.ts walk "$app" \
+        --sample "$INPUT/$key/sample.json" --out "$WORK/$key") ;;
   esac
 }
 
@@ -261,6 +301,7 @@ finished() {
     playoff-delta) echo "$WORK/$2/${2%%-*}-week-${2##*-}" ;;
     preview) echo "$WORK/$2" ;;
     rust-essay) echo "$WORK/$2" ;;
+    clip-walk) echo "$WORK/$2" ;;
   esac
 }
 
@@ -349,7 +390,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview | rust-essay) return 0 ;;
+    call | playoff-delta | preview | rust-essay | clip-walk) return 0 ;;
     *) return 1 ;;
   esac
 }

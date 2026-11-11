@@ -27,6 +27,11 @@
 //! Friday) and Playoff Delta's next Tuesday, for a feed that took an episode
 //! in the last [`ACTIVE_DAYS`] days, by home's clock ([`HOME_ZONE`]).
 //!
+//! **A clip's walk** (paulgsc/some-ui#2670's clips) is on the board too, as
+//! the `clip-walk` shelf: no feed (no video, no link, nothing let go), each
+//! walk file_host gave the worker (`clips::WALKS_FOLDER`) waiting until its
+//! `walk.json` is made, or failed with its log, as any episode.
+//!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
 //! an episode a week), a `stat` per episode, and a handful of small files,
 //! once per request. Nothing here adds a clock or a poll: the phone asks.
@@ -153,6 +158,43 @@ impl Lane {
 			stuck: *fields.get("stuck")? == "true",
 			at: fields.get("at")?.parse().ok()?,
 		})
+	}
+}
+
+/// What the board shows a row of: a feed's episodes, or a clip's walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shelf {
+	Feed(Feed),
+	/// A clip's walk (`clips`): keyed `<clip>-<side>`, done once its
+	/// `walk.json` is made.
+	ClipWalk,
+}
+
+impl Shelf {
+	/// The worker's name for it, `job.state`'s `kind`.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Feed(feed) => feed.as_str(),
+			Self::ClipWalk => "clip-walk",
+		}
+	}
+
+	#[must_use]
+	pub fn parse(kind: &str) -> Option<Self> {
+		match kind {
+			"clip-walk" => Some(Self::ClipWalk),
+			_ => Feed::parse(kind).map(Self::Feed),
+		}
+	}
+
+	/// The file a finished episode is known by.
+	#[must_use]
+	pub const fn video(self) -> &'static str {
+		match self {
+			Self::Feed(feed) => feed.video(),
+			Self::ClipWalk => crate::clips::WALK_FILE,
+		}
 	}
 }
 
@@ -374,14 +416,22 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 	}
 }
 
-/// The board, from what was read: pure, so every rule is tested.
+/// The board, from what the feeds' folders said: pure, so every rule is
+/// tested.
 #[must_use]
 pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>, now: i64) -> Board {
+	let shelves: Vec<(Shelf, &FeedSeen)> = feeds.iter().map(|(feed, seen)| (Shelf::Feed(*feed), seen)).collect();
+	board_of(&shelves, job, lane, now)
+}
+
+/// [`board`], over every shelf: the feeds' and the clips' walks.
+#[must_use]
+pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&Lane>, now: i64) -> Board {
 	let today = DateTime::<Utc>::from_timestamp(now, 0).map_or(NaiveDate::MIN, |at| at.with_timezone(&HOME_ZONE).date_naive());
 	// A job.state the worker left behind for an episode let go or already
 	// rendered is over.
 	let job = job.filter(|job| {
-		Feed::parse(&job.kind)
+		Shelf::parse(&job.kind)
 			.and_then(|feed| feeds.iter().find(|(f, _)| *f == feed))
 			.is_none_or(|(_, seen)| !seen.let_go.contains(&job.key) && !seen.videos.contains_key(&job.key))
 	});
@@ -396,7 +446,7 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 		stuck: fresh(lane, now).is_some_and(|lane| lane.stuck),
 		estimate: estimate(
 			job,
-			Feed::parse(&job.kind)
+			Shelf::parse(&job.kind)
 				.and_then(|feed| feeds.iter().find(|(f, _)| *f == feed))
 				.and_then(|(_, seen)| seen.took),
 			now,
@@ -431,7 +481,8 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 				});
 			}
 		}
-		if let Some(on) = coming(*feed, seen, now, today) {
+		let Shelf::Feed(feed) = *feed else { continue };
+		if let Some(on) = coming(feed, seen, now, today) {
 			expected.push(Coming {
 				feed: name.to_owned(),
 				on: on.format("%Y-%m-%d").to_string(),
@@ -460,6 +511,9 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 pub struct Folders {
 	/// Each feed's renders and status folders.
 	pub feeds: Vec<(Feed, PathBuf, PathBuf)>,
+	/// The clips' walks: what file_host gave the worker, and its renders and
+	/// status folders.
+	pub clip_walks: Option<(PathBuf, PathBuf, PathBuf)>,
 	/// The lane's folder: `job.state` and `lane`.
 	pub lane: PathBuf,
 }
@@ -485,6 +539,11 @@ impl Folders {
 					PathBuf::from(crate::rust_essays::STATUS_FOLDER),
 				),
 			],
+			clip_walks: Some((
+				PathBuf::from(crate::clips::WALKS_FOLDER),
+				PathBuf::from(crate::clips::WALK_RENDERS_FOLDER),
+				PathBuf::from(crate::clips::WALK_STATUS_FOLDER),
+			)),
 			lane: PathBuf::from(crate::call_weeks::render::STATUS_FOLDER),
 		}
 	}
@@ -509,11 +568,43 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 			}
 			Feed::RustEssay => crate::rust_essays::held(db, subject, Feed::RustEssay.input()).await?,
 		};
-		feeds.push((*feed, seen(*feed, &held, &let_go, renders, status).await));
+		feeds.push((Shelf::Feed(*feed), seen(Shelf::Feed(*feed), &held, &let_go, renders, status).await));
+	}
+	if let Some((given, renders, status)) = &folders.clip_walks {
+		feeds.push((Shelf::ClipWalk, seen(Shelf::ClipWalk, &walks_given(given).await, &[], renders, status).await));
 	}
 	let job = small(&folders.lane.join("job.state")).await.as_deref().and_then(Job::parse);
 	let lane = small(&folders.lane.join(crate::call_weeks::lane::DECISION)).await.as_deref().and_then(Lane::parse);
-	Ok(board(&feeds, job.as_ref(), lane.as_ref(), now))
+	let shelves: Vec<(Shelf, &FeedSeen)> = feeds.iter().map(|(shelf, seen)| (*shelf, seen)).collect();
+	Ok(board_of(&shelves, job.as_ref(), lane.as_ref(), now))
+}
+
+/// Each walk file_host gave the worker, by its folder's name, taken when
+/// the folder was made (its time on the drive). A name that isn't a walk's
+/// key is never read, as the worker reads none.
+async fn walks_given(given: &Path) -> Vec<Held> {
+	let mut held = Vec::new();
+	let Ok(mut entries) = tokio::fs::read_dir(given).await else {
+		return held;
+	};
+	while let Ok(Some(entry)) = entries.next_entry().await {
+		let Ok(key) = entry.file_name().into_string() else { continue };
+		let clip = key.strip_suffix("-before").or_else(|| key.strip_suffix("-after"));
+		let plain = |clip: &str| {
+			!clip.is_empty()
+				&& clip
+					.split('-')
+					.all(|run| !run.is_empty() && run.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+		};
+		if !clip.is_some_and(plain) {
+			continue;
+		}
+		let Some(at) = modified(&entry.path()).await.and_then(|at| DateTime::<Utc>::from_timestamp(at, 0)) else {
+			continue;
+		};
+		held.push(Held { key, taken_at: at.to_rfc3339() });
+	}
+	held
 }
 
 /// A small file's text, or `None`.
@@ -521,7 +612,7 @@ async fn small(path: &Path) -> Option<String> {
 	tokio::fs::read_to_string(path).await.ok()
 }
 
-async fn seen(feed: Feed, held: &[Held], let_go: &[String], renders: &Path, status: &Path) -> FeedSeen {
+async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, status: &Path) -> FeedSeen {
 	let mut seen = FeedSeen {
 		took: small(&status.join("took")).await.and_then(|took| took.trim().parse().ok()),
 		..FeedSeen::default()
@@ -530,7 +621,7 @@ async fn seen(feed: Feed, held: &[Held], let_go: &[String], renders: &Path, stat
 		let taken = DateTime::parse_from_rfc3339(&episode.taken_at).map_or(0, |at| at.timestamp());
 		// The feed's cadence counts every episode it took, let go or not.
 		seen.newest_taken = seen.newest_taken.max(Some(taken));
-		if feed == Feed::Call {
+		if feed == Shelf::Feed(Feed::Call) {
 			if let Ok(day) = NaiveDate::parse_from_str(&episode.key, "%Y-%m-%d") {
 				seen.newest_week = seen.newest_week.max(Some(day));
 			}
