@@ -76,7 +76,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # file-host's compose service, its container_name and its image.
 # `Tests.test_the_service_is_the_compose_files` holds these to
-# infra/compose/file_host.yml.
+# infra/compose/file_host.yml and the image to deploy/home/release.json.
 FILE_HOST = "file-host"
 CONTAINER = "file-host-server"
 IMAGE = "pgathondu/server:latest"
@@ -1012,7 +1012,10 @@ class Tests(unittest.TestCase):
         block = re.search(rf"^  {re.escape(FILE_HOST)}:\n((?:    .*\n|\s*\n)+)", text, re.MULTILINE)
         self.assertIsNotNone(block)
         assert block is not None
-        self.assertIn(f"image: {IMAGE}\n", block.group(1))
+        # The image is home's release's (deploy/home/release.json, #788).
+        self.assertIn("image: ${IMAGE_FILE_HOST:?", block.group(1))
+        release = json.loads((REPO_ROOT / "deploy" / "home" / "release.json").read_text())
+        self.assertEqual(release["services"][FILE_HOST]["image"], IMAGE)
         self.assertIn(f"container_name: {CONTAINER}\n", block.group(1))
 
 

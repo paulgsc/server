@@ -22,6 +22,7 @@ mod import;
 mod nix;
 mod preflight;
 mod prune;
+mod release;
 mod schema;
 mod sops;
 mod values;
@@ -248,6 +249,11 @@ fn deployment(repo: &Path, role: &str, raw: &Value, env_dir: &Path, sops_program
 	let mut compose = read(sops::COMPOSE)?.unwrap_or_default();
 	compose.insert("REPO_ROOT".to_owned(), repo.display().to_string());
 	compose.insert("ENV_DIR".to_owned(), env_dir.display().to_string());
+	// Every image compose starts, from the role's release (#788), never from
+	// a deployment file or the shell.
+	if let Some(release) = release::read(repo, role)? {
+		compose.extend(release.variables());
+	}
 	let mut apps = IndexMap::new();
 	for app in labelled(raw).into_iter().chain(files_of(repo, role)) {
 		if !apps.contains_key(&app) {
@@ -508,6 +514,7 @@ fn check(repo: &Path, schemas: &[Schema]) -> Result<ExitCode> {
 			continue;
 		};
 		let mut files = Vec::new();
+		let mut release_text = None;
 		let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
 			.with_context(|| format!("reading {shown}"))?
 			.filter_map(|entry| Some(entry.ok()?.path()))
@@ -517,15 +524,27 @@ fn check(repo: &Path, schemas: &[Schema]) -> Result<ExitCode> {
 			let shown = path.strip_prefix(repo).unwrap_or(&path).display().to_string();
 			let app = path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_suffix(sops::SUFFIX));
 			match app {
+				// The release, the one plain file: image references are not
+				// secret (#788).
+				None if path.is_file() && path.file_name().is_some_and(|name| name == release::FILE) => {
+					release_text = Some(std::fs::read_to_string(&path).with_context(|| format!("reading {shown}"))?);
+				}
 				Some(app) if path.is_file() => {
 					let text = std::fs::read_to_string(&path).with_context(|| format!("reading {shown}"))?;
 					files.push((app.to_owned(), text));
 				}
-				_ => problems.push(format!("{shown} is not a <app>{} file; deploy/ holds only encrypted ones", sops::SUFFIX)),
+				_ => problems.push(format!(
+					"{shown} is not a <app>{} file; deploy/ holds only encrypted ones and the role's {}",
+					sops::SUFFIX,
+					release::FILE
+				)),
 			}
 		}
+		let compose_file = files.iter().find(|(app, _)| app == sops::COMPOSE).map(|(_, text)| text.as_str());
+		problems.extend(release::role_problems(&role, &raw, release_text.as_deref(), compose_file));
 		roles.push(conform::Role { name: role, files });
 	}
+	problems.extend(release::line_problems(&raw));
 	problems.extend(conform::problems(schemas, &compose::read(repo)?, &raw, &roles));
 	let tracked = Process::new("git").args(["ls-files", "-z"]).current_dir(repo).output().context("running git ls-files")?;
 	if !tracked.status.success() {

@@ -30,7 +30,7 @@
 #   curl -s http://127.0.0.1:8880/health
 services:
   kokoro:
-    image: some-kokoro:local
+    image: ${IMAGE_KOKORO:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile.kokoro
@@ -79,7 +79,7 @@ services:
 
   call-stage:
     # Published from paulgsc/some-ui 7de89c3; Dockerfile.render's SOME_UI_COMMIT moves with it.
-    image: pgathondu/www:0.1.65@sha256:4c3de076f03ce88d7b4fb06832538fa6c9f2ed0121dc490554eb821b04f1253c
+    image: ${IMAGE_CALL_STAGE:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: call-stage
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").
@@ -103,7 +103,7 @@ services:
           pids: 32
 
   render:
-    image: some-render:local
+    image: ${IMAGE_RENDER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile.render

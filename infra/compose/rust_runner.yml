@@ -12,6 +12,7 @@
 # scrape it (no network), so infra/prometheus/inventory.yml says why. It
 # also runs on its own:
 #
+#   export IMAGE_RUST_RUNNER=pgathondu/rust-runner:latest  # deploy/home/release.json's
 #   docker compose -f infra/compose/rust_runner.yml up -d
 #   echo '{"ask":"toolchain"}' | docker compose -f infra/compose/rust_runner.yml \
 #     exec -T --user 10000 rust-runner rust-runner ask
@@ -23,7 +24,7 @@
 # the hostile programs against it.
 services:
   rust-runner:
-    image: pgathondu/rust-runner:latest
+    image: ${IMAGE_RUST_RUNNER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile.rust-runner

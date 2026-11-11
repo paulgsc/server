@@ -1,6 +1,6 @@
 services:
   metabase:
-    image: metabase/metabase:latest
+    image: ${IMAGE_METABASE:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: metabase
     # Who the kernel kills first when home runs out of memory: tooling
     # (docs/home-compute.md, "Who is killed first").

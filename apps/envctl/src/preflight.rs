@@ -5,7 +5,7 @@
 
 use crate::{
 	compose::{self, ComposeVariables},
-	dotenv,
+	dotenv, release,
 	schema::Schema,
 	sops::{self, Plain},
 	values::{bound_refusal, refusal},
@@ -79,7 +79,11 @@ pub(crate) fn preflight(schemas: &[Schema], compose_variables: &ComposeVariables
 		let value = given(&variable.name);
 		if variable.required && value.as_deref().is_none_or(|value| variable.nonempty && value.is_empty()) {
 			let help = if variable.message.is_empty() { &variable.help } else { &variable.message };
-			let reader = format!("docker compose ({}), in {compose_file}", variable.files.join(", "));
+			let reader = if release::is_variable(&variable.name) {
+				format!("docker compose ({}), from {}", variable.files.join(", "), release::relative(role).display())
+			} else {
+				format!("docker compose ({}), in {compose_file}", variable.files.join(", "))
+			};
 			report.missing.push(gap(&variable.name, &reader, help, "missing"));
 		}
 	}
@@ -255,7 +259,7 @@ pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariabl
 	}
 	let mut rest: Vec<_> = compose_variables
 		.values()
-		.filter(|variable| !seen.contains(&variable.name) && !FROM_MAKE.contains(&variable.name.as_str()))
+		.filter(|variable| !seen.contains(&variable.name) && !FROM_MAKE.contains(&variable.name.as_str()) && !release::is_variable(&variable.name))
 		.collect();
 	rest.sort_by(|a, b| a.name.cmp(&b.name));
 	for variable in rest {
