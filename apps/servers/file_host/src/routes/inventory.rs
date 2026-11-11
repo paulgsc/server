@@ -39,8 +39,8 @@
 
 use super::table::Module;
 use super::{
-	admin_settings, aph, app_events, auth, compat, db, episode_notes, feed_videos, health, ideas, jobs, korean, leetype_files, leetype_log, outcomes, presence, previews, push,
-	readiness, renders, routine, rust_rounds, shelf, signals, studio_log, studio_videos, study_notes, subjects, sync, tab_metadata, utterance, voice,
+	admin_settings, aph, app_events, auth, clips, compat, db, episode_notes, feed_videos, health, ideas, jobs, korean, leetype_files, leetype_log, outcomes, presence, previews,
+	push, readiness, renders, routine, rust_rounds, shelf, signals, studio_log, studio_videos, study_notes, subjects, sync, tab_metadata, utterance, voice,
 };
 use crate::{auth::AuthContext, websocket, AppState, Config, API_V1_BASE_PATH};
 use axum::{extract::FromRef, Router};
@@ -112,6 +112,7 @@ where
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
+	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -136,6 +137,7 @@ where
 		feed_videos::feed_videos(),
 		episode_notes::episode_notes(),
 		renders::renders(),
+		clips::clips(),
 		previews::previews(),
 		app_events::app_events(),
 		ideas::ideas(),
@@ -174,6 +176,7 @@ where
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
+	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	split(|module| {
 		if module.is_versioned() {
@@ -192,6 +195,7 @@ where
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
+	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

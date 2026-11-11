@@ -128,6 +128,7 @@ capture_repo = { workspace = true }
 curriculum_repo = { workspace = true }
 game_feed_repo = { workspace = true }
 call_week_repo = { workspace = true }
+clip_frame_repo = { workspace = true }
 lane = { workspace = true }
 pd_fill_repo = { workspace = true }
 jobs_repo = { workspace = true }

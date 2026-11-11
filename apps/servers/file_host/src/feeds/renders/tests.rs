@@ -407,6 +407,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	std::fs::write(status.join("lane"), b"verb=pause\nwhy=busy\nstops=0\nstuck=false\nat=1794139198\n").unwrap();
 	let folders = Folders {
 		feeds: vec![(Feed::Call, renders, status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
+		clip_walks: None,
 		lane: status,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
@@ -422,4 +423,45 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 			on: String::from("2026-11-13")
 		}]
 	);
+}
+
+#[tokio::test]
+async fn a_clips_walks_are_on_the_board_as_episodes_are() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let (given, renders, status, lane) = (
+		dir.path().join("clip-walks"),
+		dir.path().join("clip-walk"),
+		dir.path().join("clip-walk-worker"),
+		dir.path().join("call-worker"),
+	);
+	for folder in [&renders, &status, &lane] {
+		std::fs::create_dir_all(folder).unwrap();
+	}
+	// Three walks given, and a folder that isn't one; one walked, one failed.
+	for key in ["ledger-wake-after", "ledger-wake-before", "other-after", "not-a-walk"] {
+		std::fs::create_dir_all(given.join(key)).unwrap();
+	}
+	std::fs::create_dir_all(renders.join("ledger-wake-after")).unwrap();
+	std::fs::write(renders.join("ledger-wake-after/walk.json"), b"{}").unwrap();
+	std::fs::write(status.join("ledger-wake-before.failed.log"), b"the recorder exited 1\n").unwrap();
+	let job = worker_text("rendering", NOW - 10, 0)
+		.replace("kind=call", "kind=clip-walk")
+		.replace("key=2026-11-06", "key=other-after");
+	std::fs::write(lane.join("job.state"), job).unwrap();
+	let folders = Folders {
+		feeds: vec![],
+		clip_walks: Some((given, renders, status)),
+		lane,
+	};
+	let read = read(&db, &folders, "", NOW).await.unwrap();
+	let now = read.now.unwrap();
+	assert_eq!((now.feed.as_str(), now.key.as_str()), ("clip-walk", "other-after"));
+	assert_eq!(
+		read.done.iter().map(|e| (e.feed.as_str(), e.key.as_str())).collect::<Vec<_>>(),
+		[("clip-walk", "ledger-wake-after")]
+	);
+	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["ledger-wake-before"]);
+	assert_eq!(read.waiting, [], "the walk in progress is not also waiting, and what isn't a walk is not read");
+	assert_eq!(read.coming, [], "a walk is expected on no day");
 }
