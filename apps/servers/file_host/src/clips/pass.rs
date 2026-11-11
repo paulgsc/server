@@ -436,7 +436,7 @@ async fn keep(at: &Taking<'_>, file: &str, made: Made, bytes: &[u8], pass: &mut 
 		return Ok(());
 	}
 	let folder = at.folders.frames.join(at.clip).join(at.side);
-	match put(&folder, file, bytes).await {
+	match put(&at.folders.frames, &folder, file, bytes).await {
 		Put::Placed => {}
 		Put::Differs => {
 			pass.failures.push("differs");
@@ -477,13 +477,14 @@ enum Put {
 /// Makes `folder/file` hold `bytes`, never replacing it: written whole
 /// beside it and synced, then hard-linked into place, which fails if the
 /// name is taken, so a frame already there is never overwritten; the folder
-/// is synced before `Placed`, so a row is only ever written for a frame that
-/// is on the disk, name and bytes, through a power loss.
+/// and the folders above it up to `root` are synced before `Placed`, so a
+/// row is only ever written for a frame that is on the disk, name and bytes,
+/// through a power loss.
 ///
 /// One pass at a time: the clips worker is one task (`clips::start`), and a
 /// second pass running `put` on the same name at once could link the other's
 /// unfinished file.
-async fn put(folder: &Path, file: &str, bytes: &[u8]) -> Put {
+async fn put(root: &Path, folder: &Path, file: &str, bytes: &[u8]) -> Put {
 	let target = folder.join(file);
 	let partial = folder.join(String::from(".") + file + ".partial");
 	if tokio::fs::create_dir_all(folder).await.is_err() {
@@ -505,16 +506,19 @@ async fn put(folder: &Path, file: &str, bytes: &[u8]) -> Put {
 	let _ = tokio::fs::remove_file(&partial).await;
 	let held = match linked {
 		Ok(()) => true,
+		// Already there (an earlier pass stopped before its row): these bytes
+		// are read from memory, so they are synced before they count.
 		Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => match tokio::fs::read(&target).await {
-			Ok(there) if there == bytes => true,
+			Ok(there) if there == bytes => sync_file(&target).await,
 			Ok(_) => return Put::Differs,
 			Err(_) => false,
 		},
 		Err(_) => false,
 	};
-	// The name holds these bytes; it is `Placed` only once the folder's
-	// entry is on the disk too.
-	if held && sync_folder(folder).await {
+	// The name holds these bytes; it is `Placed` only once its entry is on
+	// the disk too, and every folder's above it up to the frames root (a
+	// clip's first frame made its clip's and side's folders just now).
+	if held && sync_up(root, folder).await {
 		Put::Placed
 	} else {
 		Put::Failed
@@ -530,13 +534,28 @@ async fn write_new(path: &Path, bytes: &[u8]) -> bool {
 	file.write_all(bytes).await.is_ok() && file.sync_all().await.is_ok()
 }
 
-/// Syncs `folder`'s entries to the disk, so a name linked into it survives a
-/// power loss.
-async fn sync_folder(folder: &Path) -> bool {
-	match tokio::fs::File::open(folder).await {
-		Ok(dir) => dir.sync_all().await.is_ok(),
+/// Syncs `path`, a file or a folder (its entries), to the disk.
+async fn sync_file(path: &Path) -> bool {
+	match tokio::fs::File::open(path).await {
+		Ok(file) => file.sync_all().await.is_ok(),
 		Err(_) => false,
 	}
+}
+
+/// Syncs `folder` and each folder above it up to `root`, both included, so
+/// a name made in any of them survives a power loss.
+async fn sync_up(root: &Path, folder: &Path) -> bool {
+	let mut at = Some(folder);
+	while let Some(dir) = at {
+		if !sync_file(dir).await {
+			return false;
+		}
+		if dir == root {
+			return true;
+		}
+		at = dir.parent().filter(|parent| parent.starts_with(root));
+	}
+	false
 }
 
 #[cfg(test)]
