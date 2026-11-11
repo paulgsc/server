@@ -77,3 +77,14 @@ jobs:
     secrets: inherit
     with:
       matrix: ${{ needs.changesets.outputs.matrix }}
+  # Home's release takes each image just pushed, by digest, in one release
+  # pull request (RELEASE R2, #789; release-lock.yml says how).
+  release:
+    needs: [changesets, publish]
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/release-lock.yml
+    secrets: inherit
+    with:
+      matrix: ${{ needs.changesets.outputs.matrix }}

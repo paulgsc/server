@@ -76,7 +76,8 @@ jobs:
           file: infra/docker/Dockerfile.rust-runner
           push: false
           load: true
-          tags: pgathondu/rust-runner:latest
+          # The tag check_rust_runner_sandbox.py runs (its IMAGE), never home's release's.
+          tags: rust-runner:sandbox-check
           cache-from: type=gha,scope=rust-runner
       - name: Run every hostile program against it
         run: python3 scripts/check_rust_runner_sandbox.py --no-build

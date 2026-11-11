@@ -220,9 +220,15 @@ file sets it. `REPO_ROOT` comes from make (`$(CURDIR)`), and so does
 `image:` is `${IMAGE_<SERVICE>:?…}` (`file-host` reads `IMAGE_FILE_HOST`),
 and envctl sets those from the release, never from a deployment file or the
 shell. It is the one plain file under `deploy/`, since an image reference is
-not secret. To move an image, change its line there; `make deploy-check`
-refuses an `image:` written any other way, a service the release does not
-name, and a release entry no service starts. A bare `docker compose` stops on
+not secret. A release moves when an image is published, not by hand
+(R2 #789): `.github/workflows/release-lock.yml` writes each newly published
+image into it by tag and digest (`scripts/release_lock.py`) and opens one
+release pull request, which auto-merges once its checks pass (C119). It runs
+after server's image changesets are pushed, and when some-ui's www or render
+release dispatches it. `file-host` stays `pgathondu/server:latest` until the
+deploy applies whole releases (R4 #793). `make deploy-check` refuses an
+`image:` written any other way, a service the release does not name, and a
+release entry no service starts. A bare `docker compose` stops on
 the first of these variables it lacks, naming it, which is why every compose
 command goes through `make compose`.
 

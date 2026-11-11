@@ -1,0 +1,119 @@
+# Home's release moves when an image is published (RELEASE R2, #789; epic #787).
+#
+# `deploy/home/release.json` names every image compose starts on home (R1,
+# #788). This workflow writes a newly published image into it, by tag and
+# digest, through `scripts/release_lock.py`, and opens or updates one release
+# pull request, `automation/release`, which auto-merges once its checks pass
+# (C119: each image keeps the one approval it has where it is published, and
+# forming the set adds none). Two callers:
+#
+# - publish-image-changesets.yml, after server's images are pushed: each
+#   pushed image's digest is read back from Docker Hub by the tag push-image
+#   gives it (`pgathondu/<repo_suffix>:<source_sha>`).
+# - paulgsc/some-ui's www and render releases (U1, #791), through
+#   `gh workflow run release-lock.yml -f image=<repo>:<tag>@sha256:<digest>`
+#   with its `SERVER_ROUTES_DISPATCH_TOKEN`.
+#
+# A pull request this workflow opens with the default GITHUB_TOKEN gets its
+# checks in an approval-required state (docs/assurance.md, "A pull request the
+# image bot … opens"), so it would wait for "Approve workflows to run" and
+# never auto-merge. With the `RELEASE_BOT_TOKEN` secret (a token on this
+# repository with Contents and Pull requests read/write) its checks run as
+# anyone's, and auto-merge completes it. Without the secret it still opens the
+# pull request and asks for auto-merge; someone approves its runs.
+#
+# Releases are formed one at a time (the concurrency group), each on the
+# pending release pull request's own release.json, so publishes that land
+# while one waits accumulate into it rather than racing it.
+name: Release lock
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: "The image changesets publish-image-changesets.yml pushed (its matrix)"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "A published image by tag and digest: repo:tag@sha256:<64 hex>"
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-lock
+  cancel-in-progress: false
+jobs:
+  release:
+    name: Form the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      RELEASE_BRANCH: automation/release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Start from the pending release
+        run: |
+          if git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null; then
+            git fetch origin "$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+            git checkout "refs/remotes/origin/$RELEASE_BRANCH" -- deploy/home/release.json
+          fi
+      - name: Read each published image's digest
+        id: published
+        env:
+          MATRIX: ${{ inputs.matrix }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          : > published.txt
+          if [ -n "${IMAGE:-}" ]; then
+            printf '%s\n' "$IMAGE" >> published.txt
+          else
+            jq -r '.include[] | "pgathondu/\(.repo_suffix):\(.source_sha)"' <<< "$MATRIX" | while read -r tagged; do
+              digest=$(docker buildx imagetools inspect "$tagged" --format '{{json .Manifest}}' | jq -er .digest)
+              printf '%s@%s\n' "$tagged" "$digest" >> published.txt
+            done
+          fi
+          cat published.txt
+      - name: Write them into the release
+        id: write
+        run: |
+          set -euo pipefail
+          args=()
+          while read -r reference; do args+=(--set "$reference"); done < published.txt
+          python3 scripts/release_lock.py --server-commit "${{ github.sha }}" "${args[@]}" > changes.md
+          cat changes.md
+          {
+            echo 'changes<<EOF'
+            cat changes.md
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          rm published.txt changes.md
+      - name: Open or update the release pull request
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+          branch: automation/release
+          delete-branch: true
+          add-paths: deploy/home/release.json
+          commit-message: "chore(release): move home's release to the newly published images"
+          title: "chore(release): home's next release"
+          body: |
+            Home's next release (`deploy/home/release.json`, epic #787): every image newly published since the last one, by tag and digest.
+
+            ${{ steps.write.outputs.changes }}
+
+            Opened by `release-lock.yml`, and merged by auto-merge once its checks pass (C119). Home applies it at the next `make home-deploy`, or when a client needs a newer contract epoch.
+      - name: Merge it once its checks pass
+        if: steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh pr merge --auto --squash "${{ steps.pr.outputs.pull-request-number }}"

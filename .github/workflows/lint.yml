@@ -155,6 +155,10 @@ jobs:
         run: cargo test -q -p envctl --bin envctl 'deploy::'
       - name: Nothing home runs calls python
         run: cargo test -q -p envctl --test home_runs_no_python
+      # CI's half of home's release (R2, #789): release-lock.yml writes each
+      # published image in by tag and digest, never a held entry or a tag alone.
+      - name: A publish moves home's release
+        run: python3 scripts/release_lock.py --self-test
 
   # The contract epoch (apps/servers/file_host/src/contract.rs) only rises,
   # and rises whenever the route fingerprint changes: a client bundles it,
