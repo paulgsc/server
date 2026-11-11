@@ -6,7 +6,7 @@
 //! database (#559), and the game feed, game bites and the storage sample
 //! stayed broken until someone ran `sqlx migrate run` by hand. Now `main.rs`
 //! calls [`bring_current`] before it opens its pool, on every start: the
-//! deploy's (`make home-deploy`, `scripts/deploy.py`, AS18 #564), a
+//! deploy's (`make home-deploy`, `envctl deploy`, AS18 #564), a
 //! reboot's, a restart's, `make up`'s and `make dev`'s alike, so no start
 //! path can skip it.
 //!
@@ -46,7 +46,7 @@
 //!
 //! Any failure is an `Err`, and `main.rs` exits non-zero with it, so no
 //! build serves on a schema half applied: the deploy sees the container
-//! fail and puts the previous image back (`scripts/deploy.py`). The
+//! fail and puts the previous image back (`envctl deploy`). The
 //! migrations before the one that failed stay applied; a database ahead of
 //! its binary is one the old `file_host` serves (`schema`). The database is
 //! never restored automatically (owner, 2026-11-10); restoring a backup is
