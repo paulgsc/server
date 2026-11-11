@@ -29,7 +29,7 @@
 //!
 //! **A clip's walk** (paulgsc/some-ui#2670's clips) is on the board too, as
 //! the `clip-walk` shelf: no feed (no video, no link, nothing let go), each
-//! walk file_host gave the worker (`clips::WALKS_FOLDER`) waiting until its
+//! walk `file_host` gave the worker (`clips::WALKS_FOLDER`) waiting until its
 //! `walk.json` is made, or failed with its log, as any episode.
 //!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
@@ -511,7 +511,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 pub struct Folders {
 	/// Each feed's renders and status folders.
 	pub feeds: Vec<(Feed, PathBuf, PathBuf)>,
-	/// The clips' walks: what file_host gave the worker, and its renders and
+	/// The clips' walks: what `file_host` gave the worker, and its renders and
 	/// status folders.
 	pub clip_walks: Option<(PathBuf, PathBuf, PathBuf)>,
 	/// The lane's folder: `job.state` and `lane`.
@@ -579,7 +579,7 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 	Ok(board_of(&shelves, job.as_ref(), lane.as_ref(), now))
 }
 
-/// Each walk file_host gave the worker, by its folder's name, taken when
+/// Each walk `file_host` gave the worker, by its folder's name, taken when
 /// the folder was made (its time on the drive). A name that isn't a walk's
 /// key is never read, as the worker reads none.
 async fn walks_given(given: &Path) -> Vec<Held> {

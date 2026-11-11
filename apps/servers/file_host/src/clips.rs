@@ -59,8 +59,9 @@ const _: () = assert!(RETRY.as_secs() <= INTERVAL.as_secs() && TICK.as_secs() <=
 /// call's, the essays' and the promos' renders, on the same drive.
 pub const FRAMES_FOLDER: &str = "/app/dbs/renders/clips";
 
-/// Where each walk home is to render is written for the render worker: one
-/// folder a side, `<clip>-<side>`, holding `sample.json` and `app`.
+/// Where each walk home is to render is written for the render worker.
+///
+/// One folder a side, `<clip>-<side>`, holding `sample.json` and `app`.
 /// `infra/compose/call-render.yml` mounts it read-only at `/clip-walks`.
 pub const WALKS_FOLDER: &str = "/app/dbs/clip-walks";
 

@@ -46,8 +46,9 @@ pub const MAX_FRAME: usize = 1_048_576;
 /// The most snips a walk side may have.
 pub const MAX_SNIPS: usize = 12;
 
-/// The six frames taken by sessions before testing kept no media, each by
-/// its path in the repository and the SHA-256 it is held to: testing's
+/// The six frames taken by sessions before testing kept no media.
+///
+/// Each by its path in the repository and the SHA-256 it is held to: testing's
 /// `scripts/guard.py`, `LEGACY_MEDIA`, copied. Home keeps these and no other
 /// session-taken frame (the owner's decision, 2026-11-11).
 pub const LEGACY: [(&str, &str); 6] = [
@@ -541,17 +542,23 @@ mod tests {
 		 "before":{"made":"session","snips":[{"file":"before/01-templates.png","label":"a"}]},
 		 "after":{"made":"session","snips":[{"file":"after/01-templates.png","label":"b"},{"file":"after/09-not-pinned.png","label":"c"}]}}]}"#;
 
+	/// The snip `i` (from 0) is named for: `01.png` and on.
+	fn numbered(i: usize) -> String {
+		let n = (i + 1).to_string();
+		(if n.len() == 1 { String::from("0") + &n } else { n }) + ".png"
+	}
+
 	fn walk_index(labels: &[&str]) -> String {
 		let snips: Vec<String> = labels
 			.iter()
 			.enumerate()
-			.map(|(i, label)| format!(r#"{{"file":"after/snips/{:02}.png","label":"{label}","sha256":"{}"}}"#, i + 1, "0".repeat(64)))
+			.map(|(i, label)| String::from(r#"{"file":"after/snips/"#) + &numbered(i) + r#"","label":""# + label + r#"","sha256":""# + &"0".repeat(64) + r#""}"#)
 			.collect();
-		format!(
-			r#"{{"schema":"some-ui.clip-index/2","clips":[{{"id":"ledger-wake","title":"t","app":"suspender-ledger","change":{{"repo":"some-ui","kind":"pr","number":1}},"landed":"2026-11-11",
-			"before":null,"after":{{"made":"walk","walk":{{"app":"suspender-ledger","sample":"clips/ledger-wake/after/sample.json"}},"snips":[{}]}}}}]}}"#,
-			snips.join(",")
-		)
+		String::from(
+			r#"{"schema":"some-ui.clip-index/2","clips":[{"id":"ledger-wake","title":"t","app":"suspender-ledger","change":{"repo":"some-ui","kind":"pr","number":1},"landed":"2026-11-11",
+			"before":null,"after":{"made":"walk","walk":{"app":"suspender-ledger","sample":"clips/ledger-wake/after/sample.json"},"snips":["#,
+		) + &snips.join(",")
+			+ "]}}]}"
 	}
 
 	/// Writes what the render worker leaves for a walk: `walk.json` naming
@@ -563,14 +570,11 @@ mod tests {
 			.iter()
 			.enumerate()
 			.map(|(i, label)| {
-				std::fs::write(made.join(format!("snips/{:02}.png", i + 1)), png(label.as_bytes())).unwrap();
-				format!(r#"{{"file":"snips/{:02}.png","label":"{label}","atMs":{}}}"#, i + 1, i * 1000)
+				std::fs::write(made.join("snips").join(numbered(i)), png(label.as_bytes())).unwrap();
+				String::from(r#"{"file":"snips/"#) + &numbered(i) + r#"","label":""# + label + r#"","atMs":"# + &(i * 1000).to_string() + "}"
 			})
 			.collect();
-		let body = format!(
-			r#"{{"schema":"some-ui.walk/1","app":"suspender-ledger","version":"1.0.0","snips":[{}],"taps":[],"lengthMs":1}}"#,
-			snips.join(",")
-		);
+		let body = String::from(r#"{"schema":"some-ui.walk/1","app":"suspender-ledger","version":"1.0.0","snips":["#) + &snips.join(",") + r#"],"taps":[],"lengthMs":1}"#;
 		std::fs::write(made.join("walk.json"), body).unwrap();
 	}
 
@@ -643,7 +647,7 @@ mod tests {
 		assert!(rows(&pool).await.is_empty());
 
 		// Past twelve snips, a walk side is refused before anything is asked.
-		let many: Vec<String> = (0..13).map(|i| format!("Step {i}")).collect();
+		let many: Vec<String> = (0..13).map(|i| String::from("Step ") + &i.to_string()).collect();
 		let many: Vec<&str> = many.iter().map(String::as_str).collect();
 		fake.ok("clips/index.json", walk_index(&many).as_bytes());
 		let pass = run_once(&pool, &fake, &folders, &clock).await.unwrap();
