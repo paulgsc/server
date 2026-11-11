@@ -104,4 +104,30 @@ ignore = [
   # meaning index needs to read its model's tokenizer (`file_host::meaning`,
   # docs/take-library.md). Revisit when `tokenizers` drops it.
   { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained, compile-time proc-macro only) via tokenizers 0.23.2, the latest stable release; needed by file_host::meaning" },
+  # SQLite before 3.54.0 can return uninitialized page-cache memory when it
+  # opens a database together with a `-wal` file of a different page size
+  # (CVE-2026-119375). Exposed only when a process opens a database and
+  # `-wal` that a less-trusted party could have written (#764, 2026-11-11).
+  #
+  # Reachable via `sqlx 0.8.6` -> `sqlx-sqlite`'s `bundled` feature ->
+  # `libsqlite3-sys 0.30.1`, statically linked with its bundled SQLite 3.46.0
+  # (`cargo tree -e features -i libsqlite3-sys`; nothing sets
+  # `LIBSQLITE3_SYS_USE_PKG_CONFIG`, so the image's `libsqlite3-0` is not what
+  # file_host runs). The fix is `libsqlite3-sys` 0.39, and no sqlx release
+  # reaches it: every `sqlx-sqlite` 0.8.x requires `^0.30.1`, and 0.9.0, the
+  # latest, requires `>=0.30.1, <0.38.0` (crates.io index, 2026-11-11).
+  #
+  # Not exposed, because every SQLite file opened is one this deployment wrote
+  # (docs/storage.md, "Which SQLite files are opened"): file_host's own
+  # `DATABASE_URL` and its `-wal`, and the backup `crate::migrate` writes with
+  # `VACUUM INTO` and reopens read-only to verify it. Both live under home's
+  # storage, which only file_host and the owner write. Restoring a backup is a
+  # manual owner step. The operator binaries open the `DATABASE_URL` the
+  # operator names. A path that opens a database someone else supplied (an
+  # import or an uploaded backup) breaks this argument and must remove the
+  # ignore first.
+  #
+  # Watch for a `sqlx-sqlite` release that accepts `libsqlite3-sys >= 0.39`.
+  # Revisit by 2027-02-11 even if none has appeared.
+  { id = "RUSTSEC-2026-0459", reason = "bundled SQLite 3.46 via sqlx 0.8.6's libsqlite3-sys 0.30.1; no sqlx release reaches 0.39; file_host opens only SQLite files it wrote (docs/storage.md); revisit 2027-02-11" },
 ]
