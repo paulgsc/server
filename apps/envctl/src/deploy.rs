@@ -3,7 +3,7 @@
 //! (`envctl deploy`), in the checkout (README.md, "Deploying to home"); the
 //! on-demand unit (`nix/modules/home-deploy.nix`) runs `envctl deploy
 //! --on-demand`. It is Rust, like everything else home runs: home has no
-//! `python3` (server#786 moved it here from `scripts/deploy.py`).
+//! `python3` (server#786 moved it here from a python script).
 //!
 //! In order:
 //!
@@ -892,8 +892,8 @@ impl Clock for Monotonic {
 
 // ── Tests: a simulated host and clock ───────────────────────────────────────
 //
-// Ported from scripts/deploy.py's `--self-test` with the same names, less the
-// `test_` prefix: some-ui's assurance ledger cites them.
+// Ported from the python script's `--self-test` (server#786) with the same
+// names, less the `test_` prefix: some-ui's assurance ledger cites them.
 
 #[cfg(test)]
 mod tests {
