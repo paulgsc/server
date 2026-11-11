@@ -110,7 +110,8 @@ commit once each, and write what they see, pending or decided:
   finishes (events a `GITHUB_TOKEN` causes start no workflow, `workflow_dispatch` and
   `repository_dispatch` aside), so `PR gate (verdict)` never heard those runs, and the schedule was
   the only thing that could decide their gate (#772, #781). So the job, which `needs` every other
-  job and runs `if: always()` only when the actor is that bot, sends the head to `PR gate (verdict)`
+  job and runs `if: always()` only when the actor is that bot and the head is this repository's (a fork's
+  token cannot dispatch; the sweep judges those), sends the head to `PR gate (verdict)`
   through `workflow_dispatch`, the one event that token may fire. Its run is still finishing when
   the verdict starts, so a dispatched verdict first waits, up to 3 minutes (seconds, in practice),
   for each run on the head whose only unfinished job is `Tell PR gate`, and for nothing else: a run

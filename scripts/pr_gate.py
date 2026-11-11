@@ -142,7 +142,11 @@ DYNAMIC_WORKFLOWS = ("CodeQL",)
 # (#772): a run whose actor is github-actions[bot] fires no `workflow_run` when it finishes.
 TELL_JOB = "tell_gate"
 TELL_NAME = "Tell PR gate"
-TELL_IF = "always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]'"
+# A fork's head gets a read-only token, which cannot dispatch: the sweep judges those.
+TELL_IF = (
+	"always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]'"
+	" && github.event.pull_request.head.repo.full_name == github.repository"
+)
 # How long a dispatched verdict waits for runs whose only unfinished job is TELL_NAME (seconds, normally).
 SETTLE_SECONDS = 3 * 60
 SETTLE_POLL_SECONDS = 5
