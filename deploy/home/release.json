@@ -1,0 +1,25 @@
+{
+  "serial": 1,
+  "server_commit": "",
+  "services": {
+    "blackbox-exporter": {"image": "prom/blackbox-exporter:latest"},
+    "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:latest"},
+    "call-stage": {"image": "pgathondu/www:0.1.65@sha256:4c3de076f03ce88d7b4fb06832538fa6c9f2ed0121dc490554eb821b04f1253c"},
+    "file-host": {"image": "pgathondu/server:latest"},
+    "grafana": {"image": "grafana/grafana-oss:latest"},
+    "kokoro": {"image": "some-kokoro:local"},
+    "metabase": {"image": "metabase/metabase:latest"},
+    "nats": {"image": "nats:latest"},
+    "nats-exporter": {"image": "natsio/prometheus-nats-exporter:latest"},
+    "node_exporter": {"image": "prom/node-exporter:latest"},
+    "ollama": {"image": "ollama/ollama:latest"},
+    "orchestrator": {"image": "pgathondu/orchestrator:latest"},
+    "process-exporter": {"image": "ncabatoff/process-exporter:latest"},
+    "prometheus": {"image": "prom/prometheus:latest"},
+    "redis": {"image": "redis:latest"},
+    "redis-exporter": {"image": "oliver006/redis_exporter:latest"},
+    "redisinsight": {"image": "redislabs/redisinsight:latest"},
+    "render": {"image": "some-render:local"},
+    "rust-runner": {"image": "pgathondu/rust-runner:latest"}
+  }
+}

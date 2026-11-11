@@ -11,7 +11,7 @@
 #   docker compose exec ollama ollama pull llama3.2:1b
 services:
   ollama:
-    image: ollama/ollama:latest
+    image: ${IMAGE_OLLAMA:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: tabsched-ollama
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").

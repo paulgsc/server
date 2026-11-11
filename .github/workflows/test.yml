@@ -186,8 +186,10 @@ jobs:
             echo "ENV_DIR=$env_dir"
             echo "REPO_ROOT=$GITHUB_WORKSPACE"
             for name in $(grep -ohE '\$\{[A-Z_0-9]+:\?' docker-compose.yml infra/compose/*.yml | sed -E 's/^\$\{//; s/:\?$//' | sort -u); do
-              case "$name" in ENV_DIR|REPO_ROOT) ;; *) echo "$name=/stand-in/$name" ;; esac
+              case "$name" in ENV_DIR|REPO_ROOT|IMAGE_*) ;; *) echo "$name=/stand-in/$name" ;; esac
             done
+            # Every image from home's release, as envctl gives compose (#788).
+            jq -r '.services | to_entries[] | "IMAGE_\(.key | ascii_upcase | gsub("[^A-Z0-9]"; "_"))=\(.value.image)"' deploy/home/release.json
           } >> "$GITHUB_ENV"
 
       - name: Validate docker compose config resolves
