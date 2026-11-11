@@ -60,3 +60,23 @@ jobs:
           set -euo pipefail
           python3 server/scripts/check_pipeline_graph.py --self-test
           python3 server/scripts/check_pipeline_graph.py --some-ui some-ui
+
+  # GitHub starts no `workflow_run` when a run whose actor is github-actions[bot] finishes (a pull
+  # request the image bot pushed), so PR gate (verdict) would never hear this one: tell it here, last,
+  # with the one event GITHUB_TOKEN may fire (#772). Skipped for everyone else, whose runs it hears.
+  tell_gate:
+    name: Tell PR gate
+    needs: [ledger]
+    if: always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Send this head to PR gate (verdict)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.event.repository.default_branch }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh workflow run gate-verdict.yml --ref "$REF" -f pr="$PR" -f head_sha="$HEAD_SHA"

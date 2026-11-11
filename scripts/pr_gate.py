@@ -25,7 +25,14 @@ write what they see, pending or decided:
   (`--sweep`, every 15 minutes) sends each open pull request whose gate is
   still unfinished back to be judged again (`workflow_dispatch`): the
   backstop for a check still running when the last workflow finished, or an
-  event GitHub dropped.
+  event GitHub dropped;
+- each pull-request workflow's last job, `Tell PR gate`, which dispatches
+  `--event` for its head when its run's actor is `github-actions[bot]`:
+  GitHub fires no `workflow_run` for such a run (a pull request the image bot
+  pushed), and `workflow_dispatch` is the one event a GITHUB_TOKEN may fire
+  (#772). A dispatched `--event` first waits, briefly, for runs whose only
+  unfinished job is that one (`settle`). Every pull-request workflow must have
+  the job, needing every other job, or the gate fails.
 
 Both share one concurrency group per head commit, so their writes land in the
 order they read. GitHub runs the base branch's `gate-verdict.yml`, not the
@@ -131,6 +138,14 @@ CHECK_NAME = "PR gate"
 EXTERNAL_ID = "pr-gate"
 # Not a workflow file here: CodeQL's default setup runs as a `dynamic` workflow of this name.
 DYNAMIC_WORKFLOWS = ("CodeQL",)
+# Each pull-request workflow's last job, which sends its head to gate-verdict.yml when GitHub will not
+# (#772): a run whose actor is github-actions[bot] fires no `workflow_run` when it finishes.
+TELL_JOB = "tell_gate"
+TELL_NAME = "Tell PR gate"
+TELL_IF = "always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]'"
+# How long a dispatched verdict waits for runs whose only unfinished job is TELL_NAME (seconds, normally).
+SETTLE_SECONDS = 3 * 60
+SETTLE_POLL_SECONDS = 5
 
 
 class Unreadable(Exception):
@@ -354,6 +369,51 @@ def verdict_listens(text: str) -> tuple[str, ...]:
 		column = indent_of(line)
 		return tuple(scalar(item.strip()[2:]) for _, item in block(lines, index, column) if item.strip().startswith("- "))
 	raise Unreadable(f"{VERDICT}: `workflow_run:` lists no `workflows:`")
+
+
+def job_ids(text: str) -> list[str]:
+	"""The ids of a workflow's jobs, as written under its top-level `jobs:`."""
+	lines = text.replace("\t", "    ").split("\n")
+	start = next((i for i, line in enumerate(lines) if re.match(r"^jobs:\s*(#.*)?$", line)), None)
+	if start is None:
+		return []
+	return [m.group(1) for _, line in block(lines, start, 0) if (m := re.match(r"^  ([\w-]+):\s*(#.*)?$", line))]
+
+
+def job_key(text: str, job: str, key: str) -> str | None:
+	"""A job's one-line `key:` value as written, or None when it has none."""
+	lines = text.replace("\t", "    ").split("\n")
+	start = next((i for i, line in enumerate(lines) if line == f"  {job}:"), None)
+	if start is None:
+		return None
+	for _, line in block(lines, start, 2):
+		found = re.match(rf"^    {re.escape(key)}:\s*(.+)$", line)
+		if found:
+			return found.group(1).strip()
+	return None
+
+
+def untold(texts: dict[str, str], paths: list[str]) -> list[str]:
+	"""The workflows among `paths` that would not tell the gate they finished when GitHub does not (#772):
+	each needs a last job `tell_gate`, named TELL_NAME, run on TELL_IF, that `needs` every other job."""
+	problems = []
+	for path in sorted(paths):
+		text = texts[path]
+		ids = job_ids(text)
+		if TELL_JOB not in ids:
+			problems.append(f"{path} has no `{TELL_JOB}` job, so on a pull request the image bot pushed nothing would decide the gate after it: copy the job from another workflow")
+			continue
+		needs = job_key(text, TELL_JOB, "needs") or "[]"
+		try:
+			listed = set(flow_list(needs, f"{path} {TELL_JOB}.needs")) if needs.startswith("[") else {scalar(needs)}
+		except Unreadable:
+			listed = set()
+		left = [job for job in ids if job != TELL_JOB and job not in listed]
+		if left:
+			problems.append(f"{path}'s `{TELL_JOB}` does not need {', '.join(left)}, so it could tell the gate before they finish: add them to its `needs`")
+		if job_key(text, TELL_JOB, "name") != TELL_NAME or job_key(text, TELL_JOB, "if") != TELL_IF:
+			problems.append(f"{path}'s `{TELL_JOB}` must be named {TELL_NAME!r} and run `if: {TELL_IF}`, as in every other workflow")
+	return problems
 
 
 def job_if(text: str, job: str) -> str:
@@ -622,6 +682,7 @@ def look(
 	others = [c for c in checks if ((c.get("app") or {}).get("slug")) != "github-actions"]
 	verdict = judge(expected, not_expected, runs, by_run, others, elapsed, len(files), event=event)
 	verdict.errors += unheard(texts, expected)
+	verdict.errors += untold(texts, list(expected))
 	problem = opener_problem(api, listed, head_sha, pr)
 	if problem:
 		verdict.errors.append(problem)
@@ -868,11 +929,44 @@ def sweep(api: Api, ref: str) -> int:
 	return 0
 
 
-def event_gate(api: Api, head_sha: str, numbers: list[int]) -> int:
-	"""gate-verdict.yml: something on `head_sha` finished, so judge each pull request it heads, once."""
+def telling(jobs: list[dict[str, Any]]) -> bool:
+	"""Whether a run is only telling the gate it finished: its sole unfinished jobs are TELL_NAME."""
+	unfinished = [j for j in jobs if j.get("status") != "completed"]
+	return bool(unfinished) and all(j.get("name") == TELL_NAME for j in unfinished)
+
+
+def settle(api: Api, head_sha: str, sleep: Any = time.sleep, clock: Any = time.monotonic) -> list[int]:
+	"""A run's `tell_gate` job dispatches this verdict as its last step, so the run is still in progress for
+	the seconds that job takes to end. Wait, up to SETTLE_SECONDS, for every run on `head_sha` that is only
+	telling the gate, so the verdict reads it finished. Waits on nothing else: a run still doing work tells the
+	gate itself when it ends. Returns the ids of the runs still telling when it stopped waiting."""
+	deadline = clock() + SETTLE_SECONDS
+	while True:
+		listed = api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5)
+		waiting = []
+		for run in listed:
+			if run.get("head_sha") != head_sha or run.get("status") == "completed" or run.get("event") not in AWAITED_EVENTS or run.get("path") in GATE_FILES:
+				continue
+			if telling(api.pages(f"actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs", "jobs", limit=5)):
+				waiting.append(run["id"])
+		if not waiting or clock() >= deadline:
+			if waiting:
+				print(f"still telling the gate after {SETTLE_SECONDS} s, judged as unfinished: runs {waiting}")
+			return waiting
+		print(f"waiting for runs {waiting} to finish telling the gate")
+		sleep(SETTLE_POLL_SECONDS)
+
+
+def event_gate(api: Api, head_sha: str, numbers: list[int], dispatched: bool = False) -> int:
+	"""gate-verdict.yml: something on `head_sha` finished, so judge each pull request it heads, once.
+
+	`dispatched`: sent by a `tell_gate` job or the sweep (`workflow_dispatch`), not by GitHub after a run
+	finished, so first let any run that is only telling the gate end (settle)."""
 	gate_trigger = read_trigger((REPO_ROOT / OPENER).read_text(encoding="utf-8")) or Trigger()
 	if not numbers:
 		print(f"no open pull request has {head_sha[:12]} as its head: nothing to judge")
+	elif dispatched:
+		settle(api, head_sha)
 	for pr in numbers:
 		pull = api.get(f"pulls/{pr}")
 		if pull.get("state") != "open":
@@ -1086,6 +1180,46 @@ def self_test() -> int:
 		except Unreadable:
 			pass
 
+	# Bot-pushed heads (#772): every pull-request workflow tells the gate it finished, after every other job.
+	same("every pull-request workflow tells the gate", untold(here, sorted(every)), [])
+	told = "name: X\non: pull_request\njobs:\n  a:\n    runs-on: x\n  b-c:\n    needs: a\n  tell_gate:\n    name: Tell PR gate\n    needs: [a, b-c]\n    if: " + TELL_IF + "\n"
+	same("tell_gate, read", (job_ids(told), job_key(told, "tell_gate", "needs")), (["a", "b-c", "tell_gate"], "[a, b-c]"))
+	same("tell_gate needing every job", untold({"x.yml": told}, ["x.yml"]), [])
+	same("tell_gate missing a job", len(untold({"x.yml": told.replace("[a, b-c]", "[a]")}, ["x.yml"])), 1)
+	same("no tell_gate", len(untold({"x.yml": told.split("  tell_gate:")[0]}, ["x.yml"])), 1)
+	same("tell_gate on another condition", len(untold({"x.yml": told.replace("always() && ", "")}, ["x.yml"])), 1)
+	same("only telling", (telling([job("a"), job("Tell PR gate", None, "in_progress")]), telling([job("a", None, "in_progress"), job("Tell PR gate", None, "queued")]), telling([job("a")])), (True, False, False))
+
+	class Settling:
+		"""Two readings of the head: a run only telling the gate, then the same run finished; plus a run still
+		at work, which is never waited on."""
+
+		def __init__(self) -> None:
+			self.reads = 0
+
+		def pages(self, path: str, key: str | None, limit: int = 30) -> list[Any]:
+			if path.startswith("actions/runs?"):
+				self.reads += 1
+				telling_run = run(20, "lint.yml", status="completed" if self.reads > 1 else "in_progress", conclusion=None)
+				return [telling_run, run(21, "test.yml", status="in_progress", conclusion=None), run(22, OPENER, status="in_progress", conclusion=None)]
+			if path.startswith("actions/runs/20/"):
+				return [job("Rust lint"), job("Tell PR gate", None, "in_progress")]
+			if path.startswith("actions/runs/21/"):
+				return [job("rust_ci", None, "in_progress"), job("Tell PR gate", None, "queued")]
+			raise AssertionError(f"unexpected read {path}")
+
+	slept: list[float] = []
+	fake = Settling()
+	same("settle waits for the telling run only", (settle(fake, head, sleep=slept.append, clock=lambda: 0.0), fake.reads, slept), ([], 2, [SETTLE_POLL_SECONDS]))  # type: ignore[arg-type]
+	times = iter([0.0, SETTLE_SECONDS + 1.0])
+
+	class Stuck(Settling):
+		def pages(self, path: str, key: str | None, limit: int = 30) -> list[Any]:
+			self.reads = 0
+			return super().pages(path, key, limit)
+
+	same("settle gives up at its bound", settle(Stuck(), head, sleep=slept.append, clock=lambda: next(times)), [20])  # type: ignore[arg-type]
+
 	if failures:
 		print("::error::pr_gate.py's own tests failed:")
 		for failure in failures:
@@ -1122,8 +1256,9 @@ def main() -> int:
 		if args.event:
 			if args.pr:
 				head_sha = args.head_sha or api.get(f"pulls/{args.pr}")["head"]["sha"]
-				return event_gate(api, head_sha, [args.pr])
-			return event_gate(api, *event_pulls(api, os.environ.get("GITHUB_EVENT_NAME", ""), event))
+				return event_gate(api, head_sha, [args.pr], dispatched=True)
+			event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+			return event_gate(api, *event_pulls(api, event_name, event), dispatched=event_name == "workflow_dispatch")
 		pr = args.pr or (event.get("pull_request") or {}).get("number")
 		if not pr:
 			parser.error("needs --pr, or a pull_request event")

@@ -19,6 +19,15 @@
 # It judges nothing itself, so every write still happens inside the head
 # commit's concurrency group.
 #
+# A run whose actor is github-actions[bot] (a pull request the image bot
+# pushed) fires no `workflow_run` at all when it finishes: events a
+# GITHUB_TOKEN causes start no workflow, `workflow_dispatch` aside. So each
+# pull-request workflow ends with a `Tell PR gate` job, run only for that
+# actor, that dispatches this workflow with `pr` and `head_sha` (#772). That
+# job's run is still finishing when the verdict starts, so a dispatched
+# verdict first waits (seconds; at most 3 minutes) for runs whose only
+# unfinished job is `Tell PR gate`, and for nothing else.
+#
 # Cost of the backstop: 96 sweep runs a day, one job of about 10 s each
 # (GitHub bills each as one minute: 96 runner-minutes a day at most), plus
 # one judging job of about 15 s per pull request whose gate is still
@@ -48,7 +57,7 @@ on:
   # Off the hour, so it does not queue behind every other schedule.
   schedule:
     - cron: '7,22,37,52 * * * *'
-  # With pr and head_sha (what the sweep sends): judge that pull request's
+  # With pr and head_sha (what the sweep and `Tell PR gate` send): judge that pull request's
   # head. With neither (Actions → Run workflow, empty): sweep now, as the
   # schedule does (#772).
   workflow_dispatch:
