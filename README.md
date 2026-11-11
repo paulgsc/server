@@ -336,7 +336,8 @@ A new `file_host` image takes one command and no other step (AS16 #563, AS18
 make home-deploy
 ```
 
-It runs `scripts/deploy.py`:
+It runs `envctl deploy` (`apps/envctl/src/deploy.rs`, built by make like the
+rest of envctl; home has no python, and nothing home runs needs it):
 
 1. **Pulls `pgathondu/server:latest`**, and stops there, having restarted
    nothing, when it is the image already serving. Only that image:
@@ -431,7 +432,8 @@ home, home sends no request anywhere (the owner's ask, 2026-11-10):
    (no `${STORAGE}/deploy`, as under `make dev`).
 3. **The trigger.** For `wanted`, `file_host` writes `${STORAGE}/deploy/wanted`.
    A systemd path unit (`nixosModules.home-deploy`) starts
-   `scripts/deploy.py --on-demand ${STORAGE}/deploy`: it pulls
+   `envctl deploy --on-demand ${STORAGE}/deploy` (built as the checkout's
+   user first, `make envctl`): it pulls
    `pgathondu/server:latest`, reads the pulled image's epoch
    (`file_host --contract-epoch`), and deploys it, as above, only when that
    epoch is above the running one; a newer build of the same contract is not

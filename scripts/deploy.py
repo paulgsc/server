@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Home's deploy of file_host, with the previous image put back when the new
+"""DEAD CODE: nothing runs this. Home's deploy is `envctl deploy`
+(apps/envctl/src/deploy.rs), since home has no python3 (server#786). This
+file stays only because some-ui's assurance ledger still cites it, and a
+`server:` path the ledger cites may not be removed; it is deleted once the
+ledger cites the Rust file instead. Change apps/envctl/src/deploy.rs, never
+this.
+
+Home's deploy of file_host, with the previous image put back when the new
 one does not come up ready (AS18, #564).
 
 `make home-deploy` runs one pass, in the checkout (README.md, "Deploying to

@@ -47,7 +47,7 @@ first (`VACUUM INTO` `<database dir>/backups/`, verified with
 migrations with the embedded `MIGRATOR`. On any failure it exits non-zero
 with the reason as its last log line, so it never serves a schema half
 applied; on home the deploy then puts the previous image back
-(`scripts/deploy.py`, AS18 #564; README.md, "Deploying to home"), and a
+(`envctl deploy`, AS18 #564; README.md, "Deploying to home"), and a
 database ahead of its binary is one that binary serves. It refuses, rather
 than migrates, a database file that is missing or never migrated, since
 that is what an unmounted volume looks like; a new host passes
