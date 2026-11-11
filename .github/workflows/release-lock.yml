@@ -58,6 +58,11 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+      # Runs are one at a time (the concurrency group), so the only thing that
+      # can move under a run is main itself: a release, or anything else,
+      # merging meanwhile. The run forms on main as it is, pushes, and forms
+      # again if main moved, so the release pull request is never one formed
+      # on a main that is gone.
       - name: Reconcile the release with what has been published
         id: reconcile
         env:
@@ -65,24 +70,43 @@ jobs:
         run: |
           set -euo pipefail
           [ -z "${REASON:-}" ] || echo "Started for: $REASON"
-          python3 scripts/release_lock.py > "$RUNNER_TEMP/changes.md"
-          cat "$RUNNER_TEMP/changes.md"
-          if git diff --quiet -- deploy/home/release.json; then
-            echo "main's release already names the newest of everything it follows."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-      # The branch is main plus this release, whatever it held before: the
-      # run computed the whole set, so nothing on it is owed to an earlier run.
-      - name: Push the release branch
-        if: steps.reconcile.outputs.changed == 'true'
-        run: |
-          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -q -m "chore(release): home's release follows the newest published images" -- deploy/home/release.json
-          git push -q --force origin "HEAD:refs/heads/$RELEASE_BRANCH"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            formed_on=$(git rev-parse origin/main)
+            git checkout -q --detach "$formed_on"
+            python3 scripts/release_lock.py > "$RUNNER_TEMP/changes.md"
+            cat "$RUNNER_TEMP/changes.md"
+            if git diff --quiet -- deploy/home/release.json; then
+              echo "main's release already names the newest of everything it follows."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # The branch is main plus this release, whatever it held before:
+            # the run computed the whole set, so nothing on it is owed to an
+            # earlier run.
+            git commit -q -m "chore(release): home's release follows the newest published images" -- deploy/home/release.json
+            git push -q --force origin "HEAD:refs/heads/$RELEASE_BRANCH"
+            git fetch -q origin main
+            if [ "$(git rev-parse origin/main)" = "$formed_on" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "main moved while the release formed; forming it again (attempt $attempt)."
+          done
+          echo "::error::main kept moving; the next run forms the release"
+          exit 1
+      # main already has the release: a pull request still open for it would
+      # propose nothing, or something main has passed, so it is closed.
+      - name: Close a release pull request main no longer needs
+        if: steps.reconcile.outputs.changed == 'false'
+        run: |
+          set -euo pipefail
+          number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr close "$number" --comment "main's release already names the newest published image of everything it follows (release-lock.yml)."
+          fi
       - name: Open the release pull request and ask for auto-merge
         if: steps.reconcile.outputs.changed == 'true'
         run: |

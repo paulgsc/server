@@ -27,7 +27,9 @@ per CLAUDE.md, "Drift is loud, not silent".
   (`scripts/release_lock.py`). A run holds no images of its own, and what
   started it is only a reason to look. So runs are idempotent and order-free.
   Any run computes the whole set, so a cancelled, dropped or reordered run
-  loses nothing (R2). Two review rounds on #804 found images lost by the shape
+  loses nothing (R2). Runs go one at a time, so only main can move under one.
+  A run forms the release again if main moved before it finished. When main
+  already has the newest set, it closes a release pull request still open. Two review rounds on #804 found images lost by the shape
   that carried them, which is why this is written down.
 - **RL3. Newest published, defined per image.** For each image the release
   follows (`SOURCES` in `release_lock.py`), "newest published" means exactly
