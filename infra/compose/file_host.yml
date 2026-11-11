@@ -102,7 +102,7 @@ services:
     # the first one that passes reads healthy at once. start_interval probes
     # every 5 s meanwhile (Docker Engine 25+), so a ready container reads
     # healthy within seconds. Home's deploy (`make home-deploy`,
-    # scripts/deploy.py, AS18 #564) waits on this to decide whether to roll
+    # `envctl deploy`, AS18 #564) waits on this to decide whether to roll
     # the image back, and its bound (DEFAULT_READY_TIMEOUT) is above
     # start_period, so a slow migrating start is not taken for a bad image.
     healthcheck:

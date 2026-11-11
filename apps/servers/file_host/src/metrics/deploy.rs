@@ -4,7 +4,7 @@
 //! `state.json` on `metrics::periodic`'s sweep), a marker nobody acted on,
 //! and the migration backups held (`crate::migrate`).
 //!
-//! The deploy runs outside this process (`scripts/deploy.py`, from a systemd
+//! The deploy runs outside this process (`envctl deploy --on-demand`, from a systemd
 //! path unit), so its totals are its own file's, exported here as gauges
 //! that only rise: Prometheus' `increase()` reads them as counters, and a
 //! rewrite of the file (a reset) reads as one.
