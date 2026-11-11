@@ -105,6 +105,18 @@ commit once each, and write what they see, pending or decided:
   It costs 96 runs a day of about 10 s each, plus one ~15 s judging job per gate still unfinished.
   To sweep now, run `PR gate verdict` by hand (Actions → Run workflow) with its inputs empty; with
   `pr` and `head_sha` it judges that one head instead (#772).
+- each pull-request workflow's last job, `Tell PR gate` (`tell_gate`), on a pull request the image
+  bot pushed. GitHub fires no `workflow_run` when a run whose actor is `github-actions[bot]`
+  finishes (events a `GITHUB_TOKEN` causes start no workflow, `workflow_dispatch` and
+  `repository_dispatch` aside), so `PR gate (verdict)` never heard those runs, and the schedule was
+  the only thing that could decide their gate (#772, #781). So the job, which `needs` every other
+  job and runs `if: always()` only when the actor is that bot and the head is this repository's (a fork's
+  token cannot dispatch; the sweep judges those), sends the head to `PR gate (verdict)`
+  through `workflow_dispatch`, the one event that token may fire. Its run is still finishing when
+  the verdict starts, so a dispatched verdict first waits, up to 3 minutes (seconds, in practice),
+  for each run on the head whose only unfinished job is `Tell PR gate`, and for nothing else: a run
+  still at work tells the gate itself. Everyone else's runs skip the job. The gate fails a pull
+  request whose workflow lacks it or whose `needs` leaves a job out.
 
 They share one concurrency group per head commit, so the writes land in the order they were read.
 A write that changes a finished verdict writes a new check run, which is the one the ruleset reads,
@@ -130,7 +142,7 @@ skips has no run at all: the gate reads the same filter, so a run it expects and
 it once nothing else is unfinished (GitHub creates an event's runs before any job starts), and one
 it does not expect is not waited on. A job skipped inside a run passes, which is right because every `if:` on
 a pull-request job here reads a path diff (`determine_jobs`) or the event (`sync`, `stage`, which
-are not pull-request jobs). That is an assumption, not a check: **a new job-level `if:` on a
+are not pull-request jobs), except `tell_gate`'s, which reads the actor and checks nothing. That is an assumption, not a check: **a new job-level `if:` on a
 pull-request job that skips for any other reason would pass the gate while skipped**, so a
 reviewer reading one should ask what skips it.
 
@@ -155,7 +167,16 @@ leaves out, and the script's self-test fails a name listed there that no workflo
 - A fork's pull request gets a read-only token on `pull_request`, so `PR gate (open)` cannot write;
   `PR gate (verdict)` finds the pull request by its head branch and writes the verdict.
 - A check that finishes after the last workflow, and that no event reports, is judged at the next
-  sweep: up to 15 minutes late, and pending, never green, until then.
+  sweep: up to 15 minutes late, and pending, never green, until then. On a bot-pushed head that
+  includes CodeQL's `dynamic` run, which no `tell_gate` can follow; it starts at the push, not at
+  the approval the other runs wait for (below), so it has usually finished long before them.
+  GitHub's scheduler also skips many slots here (three runs in 13 hours on 2026-11-10), so "the
+  next sweep" can be hours: that is why the bot path does not lean on it.
+- A pull request the image bot (`detect.yml`'s `stage`, `GITHUB_TOKEN`) opens or pushes gets its
+  `pull_request` runs in an approval-required state (`action_required`): someone with write access
+  approves them (**Approve workflows to run**), or pushes to the branch, whose runs are then theirs
+  and need no approval. A GitHub App token for that push would remove both the approval and the
+  need for `tell_gate`; that is a new credential, the owner's call.
 - On a pull request of more than 300 files GitHub reads only 300 for a path filter, so an expected
   path-filtered run that never comes is a warning there, not a failure.
 - If GitHub starts a workflow the gate's reading of its filter says it would not, the gate waits
