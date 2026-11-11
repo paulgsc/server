@@ -114,6 +114,13 @@ in
         && deploy.config.systemd.paths.home-deploy.pathConfig.Unit == "home-deploy.service"))
     (expect "the deploy runs on demand, as root, with make as the user" (!(deployUnit.serviceConfig ? User)
         && deployUnit.serviceConfig.WorkingDirectory == "/home/dev/server"
-        && lib.hasInfix "/home/dev/server/scripts/deploy.py --on-demand /mnt/storage/hopium/deploy --as-user dev" deployUnit.serviceConfig.ExecStart))
+        && lib.hasInfix "/home/dev/server/target/debug/envctl --repo /home/dev/server deploy --on-demand /mnt/storage/hopium/deploy --as-user dev" deployUnit.serviceConfig.ExecStart
+        && lib.hasInfix "runuser -u dev -- " deployUnit.serviceConfig.ExecStartPre
+        && lib.hasSuffix "'HOME=~dev exec make -s envctl'" deployUnit.serviceConfig.ExecStartPre))
+    # Home has no python3 (server#PRNUM): nothing the unit runs or puts on its
+    # PATH may be python. apps/envctl/tests/home_runs_no_python.rs holds the
+    # Makefile and the modules' text to the same.
+    (expect "the deploy runs no python" (!(lib.any (package: lib.hasPrefix "python" (lib.getName package)) deployUnit.path)
+        && !(lib.hasInfix "python" (deployUnit.serviceConfig.ExecStartPre + deployUnit.serviceConfig.ExecStart))))
     (expect "nothing runs on a timer" (!(deploy.config.systemd.timers ? home-deploy)))
   ]

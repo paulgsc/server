@@ -200,9 +200,11 @@ up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/, decry
 # Home's deploy of file_host (AS18, #564): pull pgathondu/server:latest and,
 # only when it changed, `make up` (file_host migrates as it starts, AS16
 # #563), a wait for it to be ready, and the previous image put back when it
-# is not (scripts/deploy.py; README.md, "Deploying to home").
-home-deploy: ## Pull file_host's image and, if it changed, up, wait for it to be ready, and roll it back if it is not
-	@python3 scripts/deploy.py
+# is not (`envctl deploy`, apps/envctl/src/deploy.rs; README.md, "Deploying
+# to home"). ARGS passes its flags: make home-deploy ARGS="--no-pull".
+# Nothing home runs calls python: home has none (apps/envctl/tests/home_runs_no_python.rs).
+home-deploy: envctl ## Pull file_host's image and, if it changed, up, wait for it to be ready, and roll it back if it is not
+	@$(ENVCTL_RUN) deploy $(ARGS)
 
 compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose ARGS="ps"
 	@$(ENVCTL_RUN) compose --role $(ROLE) -- $(ARGS)

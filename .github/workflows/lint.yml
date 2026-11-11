@@ -134,18 +134,27 @@ jobs:
           nix eval --impure --expr
           'import ./nix/modules/test.nix { nixpkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs; }'
 
-  # scripts/deploy.py's decisions (AS18, #564): when home's deploy restarts
-  # nothing, when it waits, when it rolls back and skips an image that
-  # failed, and that it never touches the database, run against a simulated
-  # host and clock; and that its service is the compose file's.
-  # No path gate: stdlib python3, a second.
+  # `envctl deploy`'s decisions (AS18, #564; apps/envctl/src/deploy.rs):
+  # when home's deploy restarts nothing, when it waits, when it rolls back
+  # and skips an image that failed, the on-demand marker, epoch and pull gap,
+  # and that it never touches the database, run against a simulated host and
+  # clock; and that its service is the compose file's. Then that nothing
+  # home runs (the Makefile, nix/modules, the scripts they name) calls
+  # python, which home does not have (server#PRNUM); test.nix holds the unit.
+  # No path gate: envctl alone builds in about a minute.
   deploy_script:
     name: Deploy script
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.94.1
       - name: A deploy that does not come up ready rolls back
-        run: python3 scripts/deploy.py --self-test
+        run: cargo test -q -p envctl --bin envctl deploy::
+      - name: Nothing home runs calls python
+        run: cargo test -q -p envctl --test home_runs_no_python
 
   # The contract epoch (apps/servers/file_host/src/contract.rs) only rises,
   # and rises whenever the route fingerprint changes: a client bundles it,

@@ -12,6 +12,7 @@ through `make`:
 | `make dev` | `run` | Runs `file_host` from source on `deploy/dev/file_host.sops.env`, decrypted into its environment, the shell winning. |
 | `make import` | `import` | Once, on the box (#615): writes `deploy/<role>/` from the running containers, straight through `sops encrypt`. |
 | `make prune APP=…` | `prune` | A checklist of one app's variables, grouped by the schema's sections and paged, to prune some (declared: stated unset; undeclared: removed), written through sops (#628). |
+| `make home-deploy` | `deploy` | Home's deploy of file_host (AS18, #564): pull `pgathondu/server:latest`, `make up` only when it changed, wait for it to be ready, and put the previous image back when it is not; `--on-demand <dir>` only when file_host's marker asks for a newer contract epoch (`nix/modules/home-deploy.nix`). Rust because home has no python (#PRNUM). |
 | `make env` | `list` | Every variable the stack reads, and whether the role's files set it, read by name without decrypting. |
 | `make deploy-check` | `check` | Without a key (CI's `Env schema`, ENV3 #616): every `deploy/` file sops-encrypted and naming only what its binary or compose reads, each labelled service reading only its own file, a schema for every binary that reads `app-config`, and no tracked plain-text env file. |
 | `make env-schema` | `nix` | Regenerates `nix/modules/generated/`. |
