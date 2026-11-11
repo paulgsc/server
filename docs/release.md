@@ -46,8 +46,14 @@ per CLAUDE.md, "Drift is loud, not silent".
   `pgathondu/server:latest` until the deploy applies whole releases (R4,
   #793), because `envctl deploy` pulls, tags and rolls back that tag. An
   entry the release does not follow keeps whatever main says: third-party
-  images until R7 (#796), and locally built ones until they are published
-  (kokoro, R2b #805).
+  images until R7 (#796). kokoro is followed (R2b, #805), but until its
+  first publish main's entry is still `some-kokoro:local`, the image home
+  last built, and nothing builds it any more. Home has it, so home is
+  unaffected. On a box without it, `make up` fails pulling
+  `docker.io/library/some-kokoro:local` and compose starts nothing, file-host
+  included, so `envctl deploy` (which runs `make up`) fails too. That lasts
+  until the first release naming `pgathondu/kokoro` by digest, which follows
+  the first image publish after R2b merges.
 - **RL6. No approval of its own.** Forming the set adds no human step
   (C119). Each image keeps the one approval it has where it is published, and
   the release pull request auto-merges once its checks pass. **Planned:**
