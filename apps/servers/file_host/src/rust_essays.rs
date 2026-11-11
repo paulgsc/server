@@ -963,6 +963,48 @@ mod tests {
 		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap(), Exported::default(), "and it is never given again");
 	}
 
+	/// EV5: a week the owner let go from My data, video then rest, is never
+	/// given to the worker again, even once its renders folder is gone and
+	/// nothing on the drive says it was made; `tidy` leaves no input for it.
+	#[tokio::test]
+	async fn a_week_let_go_is_never_given_again() {
+		use crate::feeds::videos::{let_go, record_link, Folders as FeedFolders, LetGo, LinkRecorded};
+		use crate::feeds::Feed;
+		use call_week_repo::video::Step;
+
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		final_week(&pool).await;
+		hold_take(&pool).await;
+		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap().written, 1, "given once");
+		let rendered = folders.renders.join("2026-w46");
+		std::fs::create_dir_all(&rendered).unwrap();
+		std::fs::write(rendered.join(VIDEO), b"video").unwrap();
+
+		assert_eq!(
+			record_link(&pool, Feed::RustEssay, ME, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", AFTER).await.unwrap(),
+			LinkRecorded::Kept(String::from("dQw4w9WgXcQ"))
+		);
+		let feed = FeedFolders {
+			renders: &folders.renders,
+			input: &folders.essays,
+		};
+		for step in [Step::Video, Step::Rest] {
+			assert!(matches!(let_go(&pool, Feed::RustEssay, ME, feed, "2026-w46", step, AFTER).await.unwrap(), LetGo::Gone(_)));
+		}
+		// Whatever the let-go left, or a drive emptied by hand: no render says
+		// the video was made, so only the receipt keeps the week from coming back.
+		let _ = std::fs::remove_dir_all(&folders.renders);
+		assert!(!folders.essays.join("2026-w46").exists() && !rendered.exists());
+
+		let again = export(&pool, ME, &folders, AFTER).await.unwrap();
+		assert_eq!(again.written, 0, "a week let go is never given again");
+		assert_eq!(again, Exported::default());
+		assert!(!folders.essays.join("2026-w46").exists(), "its input is not recreated");
+		tidy(&pool, Some(ME), &folders, AFTER).await.unwrap();
+		assert!(!folders.essays.join("2026-w46").exists(), "and tidy leaves none");
+	}
+
 	/// Invariant 23's exception, (c): a take deleted from My data takes the
 	/// week's essay video and folder with it, and the week is never rendered
 	/// again; before it was given, it is never given.
