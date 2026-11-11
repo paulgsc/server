@@ -633,4 +633,43 @@ mod tests {
 		assert_eq!((rest.size, folder.exists()), (2, false));
 		assert_eq!(list(&pool, Feed::RustEssay, "me", &renders).await.unwrap()[0].receipts, [video, rest]);
 	}
+
+	/// A week withdrawn because a take its essay plays was deleted from My
+	/// data has no video left to list or let go: the feed leaves it out,
+	/// though the subject still holds its essay in `brief`, so it is never
+	/// shown as waiting for a render that will not come.
+	#[tokio::test]
+	async fn an_essay_withdrawn_for_a_deleted_take_is_not_listed() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (renders, essays) = (dir.path().join("rust-essay"), dir.path().join("essays"));
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('me', 'me')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		for (seq, week) in [(1, "2026-w45"), (2, "2026-w46")] {
+			sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES ('me', 'brief', ?1, ?2, 's', 2, x'7b7d', 'now')")
+				.bind(String::from("rust-essay-") + week + ".json")
+				.bind(seq)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let listed =
+			|pool: SqlitePool, renders: PathBuf| async move { list(&pool, Feed::RustEssay, "me", &renders).await.unwrap().into_iter().map(|e| e.key).collect::<Vec<_>>() };
+		assert_eq!(listed(pool.clone(), renders.clone()).await, ["2026-w46", "2026-w45"]);
+
+		let mut tx = pool.begin().await.unwrap();
+		assert!(rust_round_repo::essay_video::withdraw(&mut tx, "me", "2026-w46", "note-311", 0, NOW).await.unwrap());
+		tx.commit().await.unwrap();
+		assert_eq!(listed(pool.clone(), renders.clone()).await, ["2026-w45"], "withdrawn: not listed, so never waiting");
+		let folders = Folders {
+			renders: &renders,
+			input: &essays,
+		};
+		assert_eq!(
+			let_go(&pool, Feed::RustEssay, "me", folders, "2026-w46", Step::Video, NOW).await.unwrap(),
+			LetGo::NoEpisode,
+			"and there is nothing of it to let go"
+		);
+	}
 }
