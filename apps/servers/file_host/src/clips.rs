@@ -31,10 +31,12 @@
 //! pinned some-ui, not at the commit of the change the clip shows: the render
 //! network reaches nothing, so it cannot fetch another. What guards it is the
 //! check above: a walk whose snips or labels differ from the index's is
-//! `mismatch`, and nothing of it is kept. Such a walk is stuck until the
-//! image moves to a some-ui that draws it, and is seen two ways: the pass's
-//! log line counts `mismatch` every hour, and a walk the worker could not run
-//! at all is on the phone's Renders page as failed, its whole log on home in
+//! `mismatch`, nothing of it is kept, and its output is removed, so the
+//! render worker walks it again. While the image draws it wrong, that is one
+//! short walk an hour, each rejected; once the image moves to a some-ui that
+//! draws it, the next walk is kept. It is seen two ways: each pass's log line
+//! counts `mismatch`, and a walk the worker could not run at all is on the
+//! phone's Renders page as failed, its whole log on home in
 //! `renders/clip-walk-worker/<clip>-<side>.failed.log`.
 //!
 //! **Why this is a poll,** as `call_weeks`: GitHub tells home nothing, and a

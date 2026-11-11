@@ -364,18 +364,44 @@ async fn queue_walk<F: Fetch>(fetch: &F, folders: &Folders, clip: &str, key: &st
 }
 
 /// Keeps a finished walk's frames, once its `walk.json` names exactly the
-/// index's snips, in order, by file name and label. One that doesn't is
-/// `mismatch`, and nothing of it is kept: the walk the image draws is not the
-/// one the index says (the render image moves with some-ui's `main`).
+/// index's snips, in order, by file name and label.
+///
+/// A walk that doesn't (`mismatch`), or whose `walk.json` or snips don't
+/// read as a walk's, is rejected: nothing of it is kept, and its output is
+/// removed, so the render worker walks it again (it skips any walk whose
+/// `walk.json` is there). The walk the image draws is not the one the index
+/// says until the render image moves with some-ui's `main`; removing the
+/// rejected output is what lets a new image recover it, at the cost of one
+/// short walk a pass, an hour apart, while it stays wrong. A frame already
+/// kept is never touched.
 async fn take_walk(at: &Taking<'_>, side: &Side, made: &Path, body: &[u8], pass: &mut Pass) -> Result<(), sqlx::Error> {
-	let Some(walked) = (body.len() <= MAX_FRAME)
+	match checked_walk(side, made, body).await {
+		Ok(frames) => {
+			for (file, bytes) in frames {
+				keep(at, &file, Made::Walk, &bytes, pass).await?;
+			}
+		}
+		Err(kind) => {
+			pass.failures.push(kind);
+			if kind != "drive" && tokio::fs::remove_dir_all(made).await.is_err() {
+				pass.failures.push("drive");
+			}
+		}
+	}
+	Ok(())
+}
+
+/// A finished walk's frames, by the names home keeps them under, when the
+/// walk is the index's and every snip is a frame home keeps; otherwise why
+/// not. Every frame is read and checked before any is kept, so a side is
+/// kept whole or not at all. `drive` is a read that failed, not a wrong
+/// walk: it is tried again as it is.
+async fn checked_walk(side: &Side, made: &Path, body: &[u8]) -> Result<Vec<(String, Vec<u8>)>, &'static str> {
+	let walked = (body.len() <= MAX_FRAME)
 		.then(|| serde_json::from_slice::<WalkFile>(body).ok())
 		.flatten()
 		.filter(|walked| walked.schema == WALK_SCHEMA && walked.snips.iter().all(|snip| is_relative(&snip.file, ".png")))
-	else {
-		pass.failures.push("unreadable");
-		return Ok(());
-	};
+		.ok_or("unreadable")?;
 	let same = walked.snips.len() == side.snips.len()
 		&& walked
 			.snips
@@ -383,29 +409,22 @@ async fn take_walk(at: &Taking<'_>, side: &Side, made: &Path, body: &[u8], pass:
 			.zip(&side.snips)
 			.all(|(walked, listed)| file_name(&walked.file) == file_name(&listed.file) && walked.label == listed.label);
 	if !same {
-		pass.failures.push("mismatch");
-		return Ok(());
+		return Err("mismatch");
 	}
-	// Every frame is read and checked before any is kept, so a side is kept
-	// whole or not at all.
 	let mut frames = Vec::with_capacity(walked.snips.len());
 	for snip in &walked.snips {
 		let path = made.join(&snip.file);
-		let small = tokio::fs::metadata(&path).await.is_ok_and(|meta| meta.len() <= MAX_FRAME as u64);
-		let Some(bytes) = (if small { tokio::fs::read(&path).await.ok() } else { None }) else {
-			pass.failures.push(if small { "drive" } else { "too_big" });
-			return Ok(());
-		};
-		if !is_frame(&bytes) {
-			pass.failures.push("not_png");
-			return Ok(());
+		let length = tokio::fs::metadata(&path).await.map_err(|_| "drive")?.len();
+		if length > MAX_FRAME as u64 {
+			return Err("too_big");
 		}
-		frames.push((file_name(&snip.file), bytes));
+		let bytes = tokio::fs::read(&path).await.map_err(|_| "drive")?;
+		if !is_frame(&bytes) {
+			return Err("not_png");
+		}
+		frames.push((file_name(&snip.file).to_owned(), bytes));
 	}
-	for (file, bytes) in frames {
-		keep(at, file, Made::Walk, &bytes, pass).await?;
-	}
-	Ok(())
+	Ok(frames)
 }
 
 /// Puts `bytes` on the drive as `<clip>/<side>/<file>` unless that name is
@@ -640,6 +659,10 @@ mod tests {
 		assert_eq!((pass.kept, pass.failures), (0, vec!["mismatch"]));
 		assert!(rows(&pool).await.is_empty());
 		assert!(!folders.frames.join("ledger-wake").exists(), "nothing of a mismatched walk is kept");
+		assert!(
+			!folders.walk_renders.join("ledger-wake-after").exists(),
+			"its output is removed, so the worker walks it again (with a newer image, rightly)"
+		);
 
 		// A snip that is not a PNG keeps none of the side.
 		finish_walk(&folders, &["Opens", "Keeps awake"]);
@@ -647,6 +670,12 @@ mod tests {
 		let pass = run_once(&pool, &fake, &folders, &clock).await.unwrap();
 		assert_eq!((pass.kept, pass.failures), (0, vec!["not_png"]));
 		assert!(rows(&pool).await.is_empty());
+		assert!(!folders.walk_renders.join("ledger-wake-after").exists());
+
+		// Walked again rightly (a newer image): kept whole.
+		finish_walk(&folders, &["Opens", "Keeps awake"]);
+		let pass = run_once(&pool, &fake, &folders, &clock).await.unwrap();
+		assert_eq!((pass.kept, pass.failures), (2, vec![]));
 
 		// Past twelve snips, a walk side is refused before anything is asked.
 		let many: Vec<String> = (0..13).map(|i| String::from("Step ") + &i.to_string()).collect();
