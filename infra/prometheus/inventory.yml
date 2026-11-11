@@ -59,11 +59,6 @@ services:
     hoist_set: false
     scrape:
       reason: 'a plain HTTP speaker with no metrics endpoint; it answers only when the call is recorded, and the recorder fails loudly when it does not'
-  - service: call-stage
-    container_name: call-stage
-    hoist_set: false
-    scrape:
-      reason: 'the pinned home-network app, serving the call stage to the render worker only, on a network nothing else is on'
   - service: render
     container_name: render
     hoist_set: false

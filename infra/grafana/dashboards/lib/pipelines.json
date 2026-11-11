@@ -57,9 +57,9 @@
         {
           "id": "stage",
           "title": "stage",
-          "subtitle": "the pinned app · home",
+          "subtitle": "in the render's image · home",
           "dashboard": "call",
-          "alerts": ["alertname=\"CallServiceRestarted\",name=\"call-stage\""]
+          "alerts": ["alertname=\"CallServiceRestarted\",name=\"render\""]
         },
         {
           "id": "render",

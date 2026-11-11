@@ -90,7 +90,7 @@ async fn migrate_on_start(config: &Config) -> Result<()> {
 
 /// `file_host --contract-epoch`: print the contract epoch this build serves,
 /// and exit. Home's deploy reads a pulled image's with `docker run …
-/// file_host --contract-epoch` before it starts it (scripts/deploy.py), with
+/// file_host --contract-epoch` before it starts it (`envctl deploy`), with
 /// no configuration at all, so this answers before `Config` is parsed
 /// (`file_host::contract`), and exits before anything has started.
 fn exit_if_asked_for_contract_epoch() {
@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
 	// database (AS16, #563; `file_host::migrate`). On every start, so no
 	// deploy, restart or reboot can serve a schema behind its build. A
 	// refusal or a failed migration ends the process: the deploy sees the
-	// container fail and puts the previous image back (scripts/deploy.py).
+	// container fail and puts the previous image back (`envctl deploy`).
 	// Said on stdout/stderr, not through tracing: the subscriber is not
 	// installed until `AppState::build`, below.
 	migrate_on_start(&config).await?;
