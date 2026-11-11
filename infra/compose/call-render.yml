@@ -28,7 +28,7 @@
 #   `/playoff-delta` and `/burn-ins`, which the recorder serves itself with
 #   `--dist`) all at one some-ui commit, so they can never be out of step,
 #   and Node, Chromium, ffmpeg and the fonts frozen with them by the digest.
-#   Bump the pin to move any of them.
+#   Bump its pin in deploy/home/release.json to move any of them.
 #
 #   make compose ARGS="pull render" && make compose ARGS="up -d --build kokoro render"
 #   curl -s http://127.0.0.1:8880/health
