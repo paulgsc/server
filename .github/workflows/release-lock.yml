@@ -22,9 +22,13 @@
 # anyone's, and auto-merge completes it. Without the secret it still opens the
 # pull request and asks for auto-merge; someone approves its runs.
 #
-# Releases are formed one at a time (the concurrency group), each on the
-# pending release pull request's own release.json, so publishes that land
-# while one waits accumulate into it rather than racing it.
+# Runs are not queued behind one another: GitHub keeps one pending run per
+# concurrency group and cancels the rest, which would drop a published image
+# for good. Instead each run forms the release afresh on main's
+# release.json, re-applying what the open release pull request already
+# carries, and pushes with a lease on the branch it read, trying again when
+# another run pushed first. So no run's image is lost, and none reverts a
+# change main made to the release since the pull request opened.
 name: Release lock
 on:
   workflow_call:
@@ -41,9 +45,6 @@ on:
         type: string
 permissions:
   contents: read
-concurrency:
-  group: release-lock
-  cancel-in-progress: false
 jobs:
   release:
     name: Form the release
@@ -53,67 +54,90 @@ jobs:
       pull-requests: write
     env:
       RELEASE_BRANCH: automation/release
+      GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Start from the pending release
-        run: |
-          if git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null; then
-            git fetch origin "$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
-            git checkout "refs/remotes/origin/$RELEASE_BRANCH" -- deploy/home/release.json
-          fi
+          token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
       - name: Read each published image's digest
-        id: published
         env:
           MATRIX: ${{ inputs.matrix }}
           IMAGE: ${{ inputs.image }}
         run: |
           set -euo pipefail
-          : > published.txt
+          : > "$RUNNER_TEMP/published.txt"
           if [ -n "${IMAGE:-}" ]; then
-            printf '%s\n' "$IMAGE" >> published.txt
+            printf '%s\n' "$IMAGE" >> "$RUNNER_TEMP/published.txt"
           else
             jq -r '.include[] | "pgathondu/\(.repo_suffix):\(.source_sha)"' <<< "$MATRIX" | while read -r tagged; do
               digest=$(docker buildx imagetools inspect "$tagged" --format '{{json .Manifest}}' | jq -er .digest)
-              printf '%s@%s\n' "$tagged" "$digest" >> published.txt
+              printf '%s@%s\n' "$tagged" "$digest" >> "$RUNNER_TEMP/published.txt"
             done
           fi
-          cat published.txt
-      - name: Write them into the release
-        id: write
+          cat "$RUNNER_TEMP/published.txt"
+      - name: Form the release on main and push it
+        id: form
         run: |
           set -euo pipefail
-          args=()
-          while read -r reference; do args+=(--set "$reference"); done < published.txt
-          python3 scripts/release_lock.py --server-commit "${{ github.sha }}" "${args[@]}" > changes.md
-          cat changes.md
-          {
-            echo 'changes<<EOF'
-            cat changes.md
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-          rm published.txt changes.md
-      - name: Open or update the release pull request
-        id: pr
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
-          branch: automation/release
-          delete-branch: true
-          add-paths: deploy/home/release.json
-          commit-message: "chore(release): move home's release to the newly published images"
-          title: "chore(release): home's next release"
-          body: |
-            Home's next release (`deploy/home/release.json`, epic #787): every image newly published since the last one, by tag and digest.
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git checkout -q --detach origin/main
+            # What the branch holds now, for the lease: empty when it does not exist.
+            leased=""
+            if git fetch -q origin "refs/heads/$RELEASE_BRANCH" 2>/dev/null; then
+              leased=$(git rev-parse FETCH_HEAD)
+            fi
+            open=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+            args=()
+            # Only an open release pull request's images are pending; a merged
+            # or closed one's branch is stale.
+            if [ -n "$open" ] && [ -n "$leased" ]; then
+              while read -r reference; do args+=(--set "$reference"); done < <(
+                git show "$leased:deploy/home/release.json" | jq -r '.services[].image | select(test("@sha256:"))')
+            fi
+            while read -r reference; do args+=(--set "$reference"); done < "$RUNNER_TEMP/published.txt"
+            python3 scripts/release_lock.py --server-commit "$(git rev-parse origin/main)" "${args[@]}" > "$RUNNER_TEMP/changes.md"
+            cat "$RUNNER_TEMP/changes.md"
+            if git diff --quiet -- deploy/home/release.json; then
+              echo "The release is main's already; nothing to propose."
+              echo "pushed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git commit -q -m "chore(release): move home's release to the newly published images" -- deploy/home/release.json
+            if git push -q --force-with-lease="refs/heads/$RELEASE_BRANCH:$leased" origin "HEAD:refs/heads/$RELEASE_BRANCH"; then
+              echo "pushed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Another run moved $RELEASE_BRANCH first; forming the release again (attempt $attempt)."
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not push $RELEASE_BRANCH after 5 attempts"
+          exit 1
+      - name: Open the release pull request and ask for auto-merge
+        if: steps.form.outputs.pushed == 'true'
+        run: |
+          set -euo pipefail
+          # Read again: a run that pushed after this one may have opened it.
+          number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          body="Home's next release (\`deploy/home/release.json\`, epic #787): every image newly published since the last one, by tag and digest, formed on main as it is now.
 
-            ${{ steps.write.outputs.changes }}
+          $(cat "$RUNNER_TEMP/changes.md" 2>/dev/null || true)
 
-            Opened by `release-lock.yml`, and merged by auto-merge once its checks pass (C119). Home applies it at the next `make home-deploy`, or when a client needs a newer contract epoch.
-      - name: Merge it once its checks pass
-        if: steps.pr.outputs.pull-request-number != ''
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: gh pr merge --auto --squash "${{ steps.pr.outputs.pull-request-number }}"
+          Opened by \`release-lock.yml\` and merged by auto-merge once its checks pass (C119). Home applies it at the next \`make home-deploy\`, or when a client needs a newer contract epoch."
+          if [ -z "$number" ]; then
+            # Another run may open it between the read and this create: then take theirs.
+            if created=$(gh pr create --base main --head "$RELEASE_BRANCH" --title "chore(release): home's next release" --body "$body"); then
+              number=$(grep -oE '[0-9]+$' <<< "$created")
+            else
+              number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number')
+              gh pr edit "$number" --body "$body"
+            fi
+          else
+            gh pr edit "$number" --body "$body"
+          fi
+          gh pr merge --auto --squash "$number"
