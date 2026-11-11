@@ -25,9 +25,10 @@
 # Runs are not queued behind one another: GitHub keeps one pending run per
 # concurrency group and cancels the rest, which would drop a published image
 # for good. Instead each run forms the release afresh on main's
-# release.json, re-applying what the open release pull request already
-# carries, and pushes with a lease on the branch it read, trying again when
-# another run pushed first. So no run's image is lost, and none reverts a
+# release.json, re-applying what the pending release already
+# carries (its branch, while that branch's serial is ahead of main's), and
+# pushes with a lease on the branch it read, trying again when another run
+# pushed first. So no run's image is lost, and none reverts a
 # change main made to the release since the pull request opened.
 name: Release lock
 on:
@@ -92,11 +93,19 @@ jobs:
             if git fetch -q origin "refs/heads/$RELEASE_BRANCH" 2>/dev/null; then
               leased=$(git rev-parse FETCH_HEAD)
             fi
-            open=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
             args=()
-            # Only an open release pull request's images are pending; a merged
-            # or closed one's branch is stale.
-            if [ -n "$open" ] && [ -n "$leased" ]; then
+            # The branch's images are pending while its serial is ahead of
+            # main's, whether or not its pull request is open yet (another run
+            # may have pushed and not opened it). A merged release brought
+            # main's serial up to it, so it is stale then; so is a head
+            # someone closed unmerged, which is a release they turned down.
+            if [ -n "$leased" ]; then
+              main_serial=$(jq -e .serial deploy/home/release.json)
+              branch_serial=$(git show "$leased:deploy/home/release.json" | jq -e .serial)
+              turned_down=$(gh pr list --head "$RELEASE_BRANCH" --state closed --json headRefOid,mergedAt \
+                --jq "[.[] | select(.mergedAt == null and .headRefOid == \"$leased\")] | length")
+            fi
+            if [ -n "$leased" ] && [ "$branch_serial" -gt "$main_serial" ] && [ "$turned_down" = 0 ]; then
               while read -r reference; do args+=(--set "$reference"); done < <(
                 git show "$leased:deploy/home/release.json" | jq -r '.services[].image | select(test("@sha256:"))')
             fi
