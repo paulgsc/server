@@ -129,9 +129,10 @@ PAUSE_FAILS=3
 CGROUP=/sys/fs/cgroup
 # What the render takes beyond its own container, which its cgroup doesn't
 # see: the speaker's room above what it holds between renders (its 3 GiB cap
-# less the 1.25 GB it keeps, #691) and the stage's 256 MiB, as file_host's
-# declared peak counts them (`call_weeks::lane::DECLARED_PEAK_BYTES`).
-BESIDE_BYTES=$(( 3 * 1024 * 1024 * 1024 - 1250 * 1000 * 1000 + 256 * 1024 * 1024 ))
+# less the 1.25 GB it keeps, #691), as file_host's declared peak counts it
+# (`call_weeks::lane::DECLARED_PEAK_BYTES`). The stage the recorder serves
+# itself is inside this container, so its cgroup sees it (#718).
+BESIDE_BYTES=$(( 3 * 1024 * 1024 * 1024 - 1250 * 1000 * 1000 ))
 # Where the folders below are mounted: the container's root. Only
 # render-calls.test.sh moves it, to a temporary folder.
 ROOT=

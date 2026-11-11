@@ -59,7 +59,6 @@ pub const STALE_AFTER: Duration = Duration::from_secs(30);
 const _: () = assert!(STALE_AFTER.as_secs() >= 6 * TICK.as_secs());
 
 const GIB: u64 = 1024 * 1024 * 1024;
-const MIB: u64 = 1024 * 1024;
 
 /// Home's thresholds (`docs/home-compute.md`, "Home's policy", has why
 /// each is what it is).
@@ -80,12 +79,13 @@ pub const POLICY: Policy = Policy {
 
 /// The most a render may take before one is measured.
 ///
-/// The render worker's 4 GiB cap, the speaker's room above what it holds
-/// between renders (its 3 GiB cap less the 1.25 GB it keeps, #691) and the
-/// stage's 256 MiB (`infra/compose/call-render.yml`). What the speaker keeps
+/// The render worker's 4 GiB cap and the speaker's room above what it holds
+/// between renders (its 3 GiB cap less the 1.25 GB it keeps, #691), as
+/// `infra/compose/call-render.yml` caps them. The stage is served inside the
+/// render's own container (#718), so its cap holds it. What the speaker keeps
 /// between renders is already out of `MemAvailable`, so it is not counted
 /// twice.
-pub const DECLARED_PEAK_BYTES: u64 = 4 * GIB + (3 * GIB - 1250 * 1000 * 1000) + 256 * MIB;
+pub const DECLARED_PEAK_BYTES: u64 = 4 * GIB + (3 * GIB - 1250 * 1000 * 1000);
 
 /// The decision's file in the render worker's status folder.
 pub const DECISION: &str = "lane";
@@ -485,7 +485,7 @@ mod tests {
 	fn home_policy_and_peak_are_what_the_doc_says() {
 		assert_eq!(POLICY.floor_bytes, 2 * GIB);
 		assert_eq!(POLICY.stuck_after.get(), 3);
-		assert_eq!(DECLARED_PEAK_BYTES, 6_534_628_224, "about 6.09 GiB");
+		assert_eq!(DECLARED_PEAK_BYTES, 6_266_192_768, "about 5.84 GiB");
 	}
 
 	#[test]

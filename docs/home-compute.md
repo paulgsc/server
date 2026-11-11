@@ -121,7 +121,7 @@ that, and that wait is not interactive work.
 | Value | Home's | Why |
 |---|---|---|
 | Floor | 2 GiB | Interactive work must fit beside a render that holds its memory while paused: the rust-runner's whole 1 GiB cap, and as much again for the transcriber's working memory (its model's 500 MB stays loaded, so is already counted), file_host's requests and the error in `MemAvailable`'s estimate. |
-| Declared peak | 6.09 GiB | Until the worker measures one: the render's 4 GiB cap, the speaker's room above the 1.25 GB it keeps between renders (its 3 GiB cap less that, #691), and the stage's 256 MiB. What the speaker keeps is already out of `MemAvailable`, so it is not counted twice. Inside the render's cap, ffmpeg's joins peak under 1 GB since VR1 (some-ui#2657; 4.17 GB before it, #694). |
+| Declared peak | 5.84 GiB | Until the worker measures one: the render's 4 GiB cap and the speaker's room above the 1.25 GB it keeps between renders (its 3 GiB cap less that, #691). The stage is served inside the render's container, so its cap holds it (#718; 6.09 GiB while it was a container of its own). What the speaker keeps is already out of `MemAvailable`, so it is not counted twice. Inside the render's cap, ffmpeg's joins peak under 1 GB since VR1 (some-ui#2657; 4.17 GB before it, #694). |
 | Pressure limit | 10% `some avg10` | Some task stalled on memory for a tenth of the last ten seconds. Home has no measurement of memory PSI under a render yet: the CALL dashboard's LANE row draws it against this limit, which is where it is tuned. |
 | Hold-down | 30 s | Three of `avg10`'s windows, so room that comes back is not a lull inside one. |
 | Stuck after | 3 stops | A job stopped three times in a row for memory or pressure is reported (LA4). |
@@ -201,7 +201,7 @@ way; CI runs it on every PR.
   - **A yield is never a failure:** no `failed.log`, no `CallRenderFailed`.
 - **Its peak**, once it renders: the render container's `memory.peak` (its
   most since the container started, so never less than this render's) plus
-  the speaker's room and the stage's cap, as the declared peak counts them.
+  the speaker's room, as the declared peak counts it.
   An unreadable `memory.peak` writes none, and the lane keeps the declared
   one.
 - **A restart keeps the job.** `job.state` names it, it runs before any
