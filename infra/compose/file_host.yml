@@ -1,6 +1,6 @@
 services:
   file-host:
-    image: pgathondu/server:latest
+    image: ${IMAGE_FILE_HOST:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: file-host-server
     # Who the kernel kills first when home runs out of memory: protected
     # (docs/home-compute.md, "Who is killed first").

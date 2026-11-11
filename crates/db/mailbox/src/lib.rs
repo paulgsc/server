@@ -895,6 +895,33 @@ pub async fn rust_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Ve
 	Ok(weeks)
 }
 
+/// The newest `limit` files `subject` holds under a week's name, newest first.
+///
+/// [`rust_weeks`] bounded, for a pass that reads only the latest weeks
+/// (`file_host`'s `mailbox::index::rust`). A week's name sorts by its id, so
+/// the newest are the first by name, read backwards off the primary key's
+/// range of week names (`rust-week-` up to `rust-week-:`, the character after
+/// the digits).
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn newest_rust_weeks(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+	let weeks = sqlx::query_as!(
+		HeldWeek,
+		r#"SELECT substr(name, 11, 8) AS "id!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String", body AS "body!: Vec<u8>"
+		   FROM mailbox_item
+		   WHERE subject_id = ?1 AND folder = 'brief' AND name > 'rust-week-' AND name < 'rust-week-:'
+		     AND name GLOB 'rust-week-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json'
+		   ORDER BY name DESC
+		   LIMIT ?2"#,
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(weeks)
+}
+
 /// One Rust Rounds essay file home holds, whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldEssay {

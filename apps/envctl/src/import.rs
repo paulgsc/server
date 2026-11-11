@@ -14,6 +14,7 @@ use crate::{
 	compose, dotenv,
 	dotenv::Token,
 	preflight::{DEPENDENCY, FROM_MAKE},
+	release,
 	schema::Schema,
 	sops::{self, Plain},
 };
@@ -127,7 +128,7 @@ pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<S
 	// declare different defaults (file-host's RUST_LOG and orchestrator's).
 	let mut seen: IndexMap<String, Vec<(String, Option<String>)>> = IndexMap::new();
 	let mut observe = |name: &str, value: String, default: Option<&str>| {
-		if !FROM_MAKE.contains(&name) {
+		if !FROM_MAKE.contains(&name) && !release::is_variable(name) {
 			seen.entry(name.to_owned()).or_default().push((value, default.map(str::to_owned)));
 		}
 	};
@@ -499,7 +500,7 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 	for variable in compose_variables.values() {
 		// Only what no running container showed: one seen on its default runs
 		// on that, whatever an edited .env says now (Codex on #622).
-		if FROM_MAKE.contains(&variable.name.as_str()) || compose_found.contains_key(&variable.name) || observed.contains(&variable.name) {
+		if FROM_MAKE.contains(&variable.name.as_str()) || release::is_variable(&variable.name) || compose_found.contains_key(&variable.name) || observed.contains(&variable.name) {
 			continue;
 		}
 		match env.get(&variable.name) {

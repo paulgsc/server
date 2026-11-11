@@ -1,6 +1,6 @@
 services:
   redis-exporter:
-    image: oliver006/redis_exporter:latest
+    image: ${IMAGE_REDIS_EXPORTER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: redis-exporter
     # Who the kernel kills first when home runs out of memory: tooling
     # (docs/home-compute.md, "Who is killed first").
@@ -29,7 +29,7 @@ services:
           memory: 128M
           pids: 20
   redisinsight:
-    image: redislabs/redisinsight:latest
+    image: ${IMAGE_REDISINSIGHT:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: redisinsight
     # Who the kernel kills first when home runs out of memory: tooling
     # (docs/home-compute.md, "Who is killed first").
@@ -59,7 +59,7 @@ services:
           memory: 512M
           pids: 30
   nats-exporter:
-    image: natsio/prometheus-nats-exporter:latest
+    image: ${IMAGE_NATS_EXPORTER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: nats-exporter
     # Who the kernel kills first when home runs out of memory: tooling
     # (docs/home-compute.md, "Who is killed first").
@@ -94,7 +94,7 @@ services:
       timeout: 10s
       retries: 3
   prometheus:
-    image: prom/prometheus:latest
+    image: ${IMAGE_PROMETHEUS:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: prometheus
     # Who the kernel kills first when home runs out of memory: protected
     # (docs/home-compute.md, "Who is killed first").
@@ -148,7 +148,7 @@ services:
       timeout: 10s
       retries: 3
   grafana:
-    image: grafana/grafana-oss:latest
+    image: ${IMAGE_GRAFANA:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: grafana
     # Who the kernel kills first when home runs out of memory: protected
     # (docs/home-compute.md, "Who is killed first").
@@ -232,7 +232,7 @@ services:
           memory: 1G
           pids: 50
   node_exporter:
-    image: prom/node-exporter:latest
+    image: ${IMAGE_NODE_EXPORTER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: node_exporter
     # Who the kernel kills first when home runs out of memory: protected
     # (docs/home-compute.md, "Who is killed first").
@@ -260,7 +260,7 @@ services:
           memory: 128M
           pids: 20
   process-exporter:
-    image: ncabatoff/process-exporter:latest
+    image: ${IMAGE_PROCESS_EXPORTER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: process_exporter
     # Who the kernel kills first when home runs out of memory: tooling
     # (docs/home-compute.md, "Who is killed first").
@@ -289,7 +289,7 @@ services:
           memory: 256M
           pids: 20
   blackbox-exporter:
-    image: prom/blackbox-exporter:latest
+    image: ${IMAGE_BLACKBOX_EXPORTER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: blackbox_exporter
     # Who the kernel kills first when home runs out of memory: tooling
     # (docs/home-compute.md, "Who is killed first").
@@ -321,7 +321,7 @@ services:
       timeout: 10s
       retries: 3
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+    image: ${IMAGE_CADVISOR:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: cadvisor
     # Who the kernel kills first when home runs out of memory: protected
     # (docs/home-compute.md, "Who is killed first").

@@ -911,7 +911,10 @@ RETRY_AFTER=0
 # so the pages the recorders drive are the ones they were written for
 # (CW5: "from the pinned stage with each scene said by home's Kokoro speaker").
 COMPOSE=$HERE/../compose/call-render.yml
-stage=$(grep -A2 '^  call-stage:' "$COMPOSE" | grep -oE 'image: .*' | cut -d' ' -f2)
+# The stage's image is home's release's (deploy/home/release.json, #788),
+# which compose reads as ${IMAGE_CALL_STAGE}.
+RELEASE=$HERE/../../deploy/home/release.json
+stage=$(grep -oE '"call-stage": \{"image": "[^"]+"' "$RELEASE" | cut -d'"' -f6)
 check "the stage is pinned by digest" grep -qE '^pgathondu/www:[0-9.]+@sha256:[0-9a-f]{64}$' <<< "$stage"
 check "the speaker is built from a base pinned by digest" \
   grep -qE '^FROM [^ ]+@sha256:[0-9a-f]{64}$' "$HERE/../docker/Dockerfile.kokoro"

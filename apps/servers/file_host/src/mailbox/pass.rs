@@ -388,7 +388,9 @@ fn before(now: &str, back: std::time::Duration) -> Option<String> {
 ///
 /// It reads each of [`READS`] after `subject`'s cursor and keeps what checks out, then
 /// hands the mailbox what the phone filed and it has not answered, then puts
-/// each routine's index if what it counts moved since `last_index`, then, with
+/// each routine's index if what it counts moved since `last_index` (making
+/// each of the newest Rust Rounds weeks past its deadline final first,
+/// `index::rust`), then, with
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
@@ -442,7 +444,8 @@ pub async fn run_once<T: MailboxTransport>(
 		let jobs = super::index::put_jobs_index(db, mailbox, subject, &last_index.jobs, now, &mut outcome).await;
 		let reflections = super::index::put_reflections_index(db, mailbox, subject, &last_index.reflections, now, &mut outcome).await;
 		let call = super::index::put_call_index(db, mailbox, subject, &last_index.call, now, &mut outcome).await;
-		jobs.and(reflections).and(call)
+		let rust = super::index::put_rust_index(db, mailbox, subject, deletion, &last_index.rust, now, &mut outcome).await;
+		jobs.and(reflections).and(call).and(rust)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
@@ -3214,5 +3217,116 @@ mod tests {
 			assert!(idle.indexed.is_empty(), "{now}");
 			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
 		}
+	}
+
+	/// RR18 (paulgsc/some-ui#2693): no read of the week after its deadline is
+	/// needed. The first pass past `due` makes the standing draft final and
+	/// puts the week's record, in `GET /rust-weeks/:id/record`'s shape, as
+	/// `index-rust-*`; it puts nothing before, nothing again while the record
+	/// holds, and again when a put failed or the record moved.
+	#[tokio::test]
+	async fn the_rust_index_puts_each_week_final_once_its_deadline_passes() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let rust = |fake: &Fake| -> Vec<serde_json::Value> {
+			let puts = fake.indexes.lock().unwrap();
+			puts
+				.iter()
+				.filter(|(name, _)| name.starts_with("index-rust-"))
+				.map(|(_, body)| serde_json::from_str(body).unwrap())
+				.collect()
+		};
+		let ticket = |key: &str| serde_json::json!({ "id": key, "program": "fn main() {}\n" });
+		let week = serde_json::json!({
+			"schema": "some-ui.rust-week/1", "id": "2026-w46",
+			"opens": "2026-11-09T00:00:00-08:00", "due": "2026-11-15T23:59:00-08:00",
+			"tickets": [ticket("QM-1"), ticket("QM-2")],
+		});
+		fake.add(10, "rust-week-2026-w46.json", &week.to_string());
+		pass_at(&pool, &fake, "2026-11-12T17:00:00.000Z").await.unwrap();
+		let sent: rust_round_repo::sent::Sent = serde_json::from_value(serde_json::json!({
+			"week": "2026-w46", "at": "2026-11-12T18:00:00.000Z",
+			"answers": [{ "ticket": "QM-1", "take": "2026-w46:QM-1", "recordedAt": "2026-11-12T17:30:00.000Z" }],
+			"passed": ["QM-2"],
+		}))
+		.unwrap();
+		rust_round_repo::sent::put_draft(&mut pool.acquire().await.unwrap(), OWNER, &sent, "2026-11-12T18:00:01.000Z")
+			.await
+			.unwrap();
+		let open = pass_at(&pool, &fake, "2026-11-15T20:00:00.000Z").await.unwrap();
+		assert!(rust(&fake).is_empty() && open.indexed.is_empty(), "nothing before the deadline, and never a draft");
+
+		// The first pass past `due` (07:59Z): final, and put.
+		assert_eq!(pass_at(&pool, &fake, "2026-11-16T08:15:00.000Z").await.unwrap().indexed, ["added"]);
+		let final_ = rust_round_repo::sent::is_final(&mut pool.acquire().await.unwrap(), OWNER, "2026-w46").await.unwrap();
+		assert!(final_, "the pass made the week final; no read of it was needed");
+		let put = rust(&fake);
+		assert_eq!(put.len(), 1);
+		assert_eq!(
+			(&put[0]["schema"], &put[0]["routine"]),
+			(&serde_json::json!("some-ui.routine-index/1"), &serde_json::json!("rust"))
+		);
+		let held = crate::handlers::rust_rounds::reads_as_named("2026-w46", week.to_string().as_bytes()).unwrap();
+		let record = crate::handlers::rust_week_record::week_record(&mut pool.acquire().await.unwrap(), OWNER, held, "2026-11-16T08:15:00.000Z")
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(put[0]["weeks"], serde_json::json!([serde_json::to_value(&record).unwrap()]), "the record's own shape");
+		assert_eq!(put[0]["weeks"][0]["sent"]["draft"], serde_json::json!(false));
+		assert_eq!(put[0]["weeks"][0]["unanswered"], serde_json::json!(["QM-2"]));
+
+		// Nothing moved: nothing put.
+		assert!(pass_at(&pool, &fake, "2026-11-16T09:15:00.000Z").await.unwrap().indexed.is_empty());
+
+		// A paste of the week reaches home late, and the mailbox is down: the
+		// pass says so, remembers nothing, and the next one puts it.
+		let paste = rust_round_repo::sent::Paste {
+			at: String::from("2026-11-14T09:00:00.000Z"),
+			text: String::from("error[E0502]: cannot borrow"),
+			note: None,
+		};
+		rust_round_repo::sent::put_paste(&mut pool.acquire().await.unwrap(), OWNER, "2026-w46", &paste, "2026-11-16T09:20:00.000Z")
+			.await
+			.unwrap();
+		*fake.index_fails.lock().unwrap() = true;
+		let failed = pass_at(&pool, &fake, "2026-11-16T09:30:00.000Z").await.unwrap_err();
+		assert!(failed.failures.iter().any(|(phase, _)| *phase == Phase::Index));
+		*fake.index_fails.lock().unwrap() = false;
+		assert_eq!(pass_at(&pool, &fake, "2026-11-16T09:45:00.000Z").await.unwrap().indexed, ["added"]);
+		let put = rust(&fake);
+		assert_eq!(put.len(), 2);
+		assert_eq!(put[1]["weeks"][0]["pastes"][0]["text"], serde_json::json!("error[E0502]: cannot borrow"));
+		assert_eq!(put[1]["asOf"], serde_json::json!("2026-11-16T09:20:00.000Z"));
+		assert_eq!(put[1]["weeks"][0]["tickets"], put[0]["weeks"][0]["tickets"], "a final's takes never move");
+		// The Worker exempts a paste's text from its base64-run scan only in
+		// serde's compact spelling (paulgsc/some-ui#2864), so the body put is
+		// compact, never pretty-printed.
+		let raw = fake.indexes.lock().unwrap().last().map(|(_, body)| body.clone()).unwrap();
+		assert!(raw.contains(r#""text":"error[E0502]: cannot borrow""#), "{raw}");
+		assert!(!raw.contains('\n') && !raw.contains("\": "), "compact: {raw}");
+
+		// A restart forgets what was put, so it puts once more, the same bytes.
+		let restarted = Fake::default();
+		restarted.add(10, "rust-week-2026-w46.json", &week.to_string());
+		assert_eq!(pass_at(&pool, &restarted, "2026-11-16T10:00:00.000Z").await.unwrap().indexed, ["added"]);
+		assert_eq!(rust(&restarted), [put[1].clone()]);
+	}
+
+	/// A week nothing was sent of is final too: every ticket a silence.
+	#[tokio::test]
+	async fn a_silent_week_is_put_with_nothing_sent() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let week = serde_json::json!({
+			"schema": "some-ui.rust-week/1", "id": "2026-w46",
+			"opens": "2026-11-09T00:00:00-08:00", "due": "2026-11-15T23:59:00-08:00",
+			"tickets": [{ "id": "QM-1", "program": "fn main() {}\n" }],
+		});
+		fake.add(10, "rust-week-2026-w46.json", &week.to_string());
+		assert_eq!(pass_at(&pool, &fake, "2026-11-16T08:15:00.000Z").await.unwrap().indexed, ["added"]);
+		let (name, body) = fake.indexes.lock().unwrap().iter().find(|(name, _)| name.starts_with("index-rust-")).cloned().unwrap();
+		assert_eq!(name, "index-rust-20261116T081500000Z.json");
+		let index: serde_json::Value = serde_json::from_str(&body).unwrap();
+		assert_eq!(index["weeks"][0]["sent"], serde_json::json!(null));
+		assert_eq!(index["weeks"][0]["unanswered"], serde_json::json!(["QM-1"]));
+		assert_eq!(index["asOf"], serde_json::json!("2026-11-16T07:59:00.000Z"));
 	}
 }

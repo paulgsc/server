@@ -1685,7 +1685,8 @@ nowhere is marked as such and belongs to review.
     deadline is final (RR22, paulgsc/some-ui#2832; owner, 2026-11-10):
     `rust_week_final` keeps it once per week, written in one transaction with
     the draft's deletion at the first read of the week after its deadline,
-    and never updated. A send whose moment is after the deadline, or that
+    or the first mailbox pass after it, whichever comes first (RR18), and
+    never updated. A send whose moment is after the deadline, or that
     reaches home after it, is refused, since a take not sent by then doesn't
     count (owner, 2026-11-07; no grace, 2026-11-10), so the final is the same
     whenever it is written. `rust_week_sent` keeps, as they were, the weeks
@@ -1708,12 +1709,19 @@ nowhere is marked as such and belongs to review.
     how often each ticket was opened, which is the phone's engagement events
     (`left` at the ticket's place, invariant 34) counted in the week's window,
     so there is no second counter. A ticket no take answered is listed as
-    unanswered whether or not anything was sent.
+    unanswered whether or not anything was sent. Once a week is final, its
+    record, in exactly that shape, also reaches the subject's own mailbox,
+    in the `index` folder as `index-rust-*` (`mailbox::index::rust`, RR18,
+    paulgsc/some-ui#2693), for the routine that writes the week's essay:
+    only the newest weeks of the mailbox's own subject, never a draft, and
+    nothing of it in a log line. A take is still named by id, never audio.
     *Enforced by* `rust_round_repo`'s `each_subject_reads_only_its_own_rounds`,
     `a_later_send_replaces_the_draft`,
     `the_draft_standing_at_the_deadline_is_final`,
     `a_week_rr14_kept_is_its_first_draft_and_stays_as_it_was`,
     `a_week_is_sent_between_its_opening_and_its_deadline`,
+    `mailbox::pass`'s `the_rust_index_puts_each_week_final_once_its_deadline_passes`
+    and `a_silent_week_is_put_with_nothing_sent`,
     `a_session_grows_by_revisions_and_is_never_rewritten`,
     `the_record_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
     `the_log_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
