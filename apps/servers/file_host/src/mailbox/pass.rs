@@ -3297,6 +3297,12 @@ mod tests {
 		assert_eq!(put[1]["weeks"][0]["pastes"][0]["text"], serde_json::json!("error[E0502]: cannot borrow"));
 		assert_eq!(put[1]["asOf"], serde_json::json!("2026-11-16T09:20:00.000Z"));
 		assert_eq!(put[1]["weeks"][0]["tickets"], put[0]["weeks"][0]["tickets"], "a final's takes never move");
+		// The Worker exempts a paste's text from its base64-run scan only in
+		// serde's compact spelling (paulgsc/some-ui#2864), so the body put is
+		// compact, never pretty-printed.
+		let raw = fake.indexes.lock().unwrap().last().map(|(_, body)| body.clone()).unwrap();
+		assert!(raw.contains(r#""text":"error[E0502]: cannot borrow""#), "{raw}");
+		assert!(!raw.contains('\n') && !raw.contains("\": "), "compact: {raw}");
 
 		// A restart forgets what was put, so it puts once more, the same bytes.
 		let restarted = Fake::default();
