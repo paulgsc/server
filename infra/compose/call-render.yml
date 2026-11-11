@@ -1,13 +1,9 @@
 # Home makes the weekly call's video (paulgsc/some-ui#2635, ST36): every
 # deterministic step after the written week runs here, the same bytes for the
-# same week. Three services on one network that reaches nothing else:
+# same week. Two services on one network that reaches nothing else:
 #
 # - `kokoro`, the speaker: Kokoro v1.0, seeded per line
 #   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
-# - `call-stage`, the stage: the published home-network app image, pinned by
-#   digest (the owner's choice on paulgsc/some-ui#2639), serving `/call` and
-#   `/playoff-delta` (and, once a release carries it, `/essay`). Bump the
-#   pin when any stage changes.
 # - `render`, the worker (GWB10, paulgsc/some-ui#2084), with four jobs
 #   (infra/render/render-calls.sh): for each week `file_host` writes to
 #   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
@@ -26,7 +22,15 @@
 #   ${STORAGE}/rust-essays/<week>/ (`rust_essays::ESSAYS_FOLDER`), once the
 #   week is final, is made into ${STORAGE}/renders/rust-essay/<week>/.
 #
-#   make compose ARGS="up -d --build kokoro call-stage render"
+#   Its image is published by paulgsc/some-ui's CI, not built here (#718,
+#   the owner's "B′ for render", 2026-11-11): the recorders, the motion and
+#   the stage they record (a build of only `/call`, `/essay`,
+#   `/playoff-delta` and `/burn-ins`, which the recorder serves itself with
+#   `--dist`) all at one some-ui commit, so they can never be out of step,
+#   and Node, Chromium, ffmpeg and the fonts frozen with them by the digest.
+#   Bump its pin in deploy/home/release.json to move any of them.
+#
+#   make compose ARGS="pull render" && make compose ARGS="up -d --build kokoro render"
 #   curl -s http://127.0.0.1:8880/health
 services:
   kokoro:
@@ -77,45 +81,22 @@ services:
       retries: 5
       start_period: 60s
 
-  call-stage:
-    # Published from paulgsc/some-ui 7de89c3; Dockerfile.render's SOME_UI_COMMIT moves with it.
-    image: ${IMAGE_CALL_STAGE:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
-    container_name: call-stage
-    # Who the kernel kills first when home runs out of memory: batch
-    # (docs/home-compute.md, "Who is killed first").
-    oom_score_adj: 800
-    restart: unless-stopped
-    networks:
-      - call-render-network
-    # Only the static files are served; infra/render/call-stage.nginx.conf
-    # says why the image's own config is not used. nginx's entrypoint writes
-    # its cache at start, so its root stays writable.
-    volumes:
-      - ../render/call-stage.nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    mem_limit: 256M
-    cpus: 0.5
-    pids_limit: 32
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-          pids: 32
-
   render:
+    # Its pin is home's release's render entry (deploy/home/release.json,
+    # #788): pgathondu/render tagged with the paulgsc/some-ui commit it was
+    # published from, recorders, motion and stage alike, and that tag's
+    # digest.
     image: ${IMAGE_RENDER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.render
     container_name: render
+    # The loop is server's, so it is mounted, never baked: moving it needs
+    # no new image.
+    entrypoint: ['/usr/local/bin/render-calls']
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").
     oom_score_adj: 800
     restart: unless-stopped
     depends_on:
       kokoro:
-        condition: service_started
-      call-stage:
         condition: service_started
       # file_host makes ${STORAGE}/call-weeks,
       # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests and
@@ -127,6 +108,7 @@ services:
     networks:
       - call-render-network
     volumes:
+      - ../render/render-calls.sh:/usr/local/bin/render-calls:ro
       # Written by file_host (`call_weeks::RENDER_FOLDER`), read here only,
       # through `call_week_files` (below).
       - type: volume
@@ -241,9 +223,9 @@ volumes:
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/rust-essays
 
 networks:
-  # Internal: none of the three reaches the internet or the rest of the stack.
-  # The stage's reads of paulgsc/testing are answered by the recorder from
-  # the week file or the season file, and the speaker needs nothing.
+  # Internal: neither reaches the internet or the rest of the stack. The
+  # stage's reads of paulgsc/testing are answered by the recorder from the
+  # week file or the season file, and the speaker needs nothing.
   call-render-network:
     internal: true
   kokoro-network:

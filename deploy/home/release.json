@@ -4,7 +4,6 @@
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:latest"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:latest"},
-    "call-stage": {"image": "pgathondu/www:0.1.65@sha256:4c3de076f03ce88d7b4fb06832538fa6c9f2ed0121dc490554eb821b04f1253c"},
     "file-host": {"image": "pgathondu/server:latest"},
     "grafana": {"image": "grafana/grafana-oss:latest"},
     "kokoro": {"image": "some-kokoro:local"},
@@ -19,7 +18,7 @@
     "redis": {"image": "redis:latest"},
     "redis-exporter": {"image": "oliver006/redis_exporter:latest"},
     "redisinsight": {"image": "redislabs/redisinsight:latest"},
-    "render": {"image": "some-render:local"},
+    "render": {"image": "pgathondu/render:9453523dfda6e848335e07254e9515994c1fb04a@sha256:4e72af280f9d6063416a3a352a3762f3bc8f763bd06a5383af9833bdb01e5070"},
     "rust-runner": {"image": "pgathondu/rust-runner:latest"}
   }
 }
