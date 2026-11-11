@@ -60,7 +60,8 @@ use std::{
 };
 
 /// file-host's compose service, its `container_name` and its image.
-/// `the_service_is_the_compose_files` holds these to `infra/compose/file_host.yml`.
+/// `the_service_is_the_compose_files` holds these to `infra/compose/file_host.yml`
+/// and the image to `deploy/home/release.json`.
 pub(crate) const FILE_HOST: &str = "file-host";
 pub(crate) const CONTAINER: &str = "file-host-server";
 pub(crate) const IMAGE: &str = "pgathondu/server:latest";
@@ -1540,7 +1541,11 @@ mod tests {
 		let text = compose_file();
 		let pattern = format!(r"(?m)^  {}:\n((?:    .*\n|[ \t]*\n)+)", regex::escape(FILE_HOST));
 		let block = regex::Regex::new(&pattern).unwrap().captures(&text).unwrap();
-		assert!(block[1].contains(&format!("image: {IMAGE}\n")));
+		// The image is home's release's (deploy/home/release.json, #788).
+		assert!(block[1].contains("image: ${IMAGE_FILE_HOST:?"));
+		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+		let release = crate::release::read(&repo, "home").unwrap().unwrap();
+		assert_eq!(release.services[FILE_HOST].image, IMAGE);
 		assert!(block[1].contains(&format!("container_name: {CONTAINER}\n")));
 	}
 }
