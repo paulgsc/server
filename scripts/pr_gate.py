@@ -934,9 +934,10 @@ def sweep(api: Api, ref: str) -> int:
 
 
 def telling(jobs: list[dict[str, Any]]) -> bool:
-	"""Whether a run is only telling the gate it finished: its sole unfinished jobs are TELL_NAME."""
+	"""Whether an unfinished run is only telling the gate it finished: it has a TELL_NAME job, and nothing
+	else is unfinished. That includes every job completed while the run's own status still lags behind."""
 	unfinished = [j for j in jobs if j.get("status") != "completed"]
-	return bool(unfinished) and all(j.get("name") == TELL_NAME for j in unfinished)
+	return any(j.get("name") == TELL_NAME for j in jobs) and all(j.get("name") == TELL_NAME for j in unfinished)
 
 
 def settle(api: Api, head_sha: str, sleep: Any = time.sleep, clock: Any = time.monotonic) -> list[int]:
@@ -1192,7 +1193,16 @@ def self_test() -> int:
 	same("tell_gate missing a job", len(untold({"x.yml": told.replace("[a, b-c]", "[a]")}, ["x.yml"])), 1)
 	same("no tell_gate", len(untold({"x.yml": told.split("  tell_gate:")[0]}, ["x.yml"])), 1)
 	same("tell_gate on another condition", len(untold({"x.yml": told.replace("always() && ", "")}, ["x.yml"])), 1)
-	same("only telling", (telling([job("a"), job("Tell PR gate", None, "in_progress")]), telling([job("a", None, "in_progress"), job("Tell PR gate", None, "queued")]), telling([job("a")])), (True, False, False))
+	same(
+		"only telling",
+		(
+			telling([job("a"), job("Tell PR gate", None, "in_progress")]),
+			telling([job("a"), job("Tell PR gate")]),  # every job done, the run's status not yet
+			telling([job("a", None, "in_progress"), job("Tell PR gate", None, "queued")]),
+			telling([job("a")]),
+		),
+		(True, True, False, False),
+	)
 
 	class Settling:
 		"""Two readings of the head: a run only telling the gate, then the same run finished; plus a run still
