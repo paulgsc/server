@@ -16,6 +16,7 @@
 mod compose;
 mod conform;
 mod deliver;
+mod deploy;
 mod dotenv;
 mod import;
 mod nix;
@@ -120,6 +121,36 @@ enum Command {
 		/// Prune these, without the checklist (comma-separated).
 		#[arg(long = "prune", value_delimiter = ',')]
 		names: Vec<String>,
+	},
+	/// Home's deploy of `file_host` (AS18, #564; `make home-deploy`): pull
+	/// pgathondu/server:latest and, only when it changed, `make up`, wait for
+	/// it to be ready, and put the previous image back when it is not. With
+	/// --on-demand, only when `file_host`'s marker asks for a newer contract
+	/// epoch (`nix/modules/home-deploy.nix`). Exit 0 deployed or nothing to
+	/// do, 1 not deployed, 2 rolled back, 3 nothing ready.
+	Deploy {
+		/// Use the images already here.
+		#[arg(long = "no-pull")]
+		no_pull: bool,
+		/// Seconds to wait for each start to be ready.
+		#[arg(long, default_value_t = deploy::DEFAULT_READY_TIMEOUT)]
+		ready_timeout: f64,
+		/// Where the failed images are remembered (default
+		/// `$XDG_STATE_HOME/server-deploy`).
+		#[arg(long)]
+		state_dir: Option<PathBuf>,
+		/// The image file-host runs, as `infra/compose/file_host.yml` names it.
+		#[arg(long, default_value = deploy::IMAGE)]
+		image: String,
+		/// Run only if `DEPLOY_DIR/wanted` asks (`${STORAGE}/deploy`).
+		#[arg(long, value_name = "DEPLOY_DIR")]
+		on_demand: Option<PathBuf>,
+		/// Run make as this user (the on-demand unit runs as root).
+		#[arg(long)]
+		as_user: Option<String>,
+		/// With --as-user: a tmpfs directory for envctl, chowned to the user.
+		#[arg(long, requires = "as_user")]
+		runtime_dir: Option<PathBuf>,
 	},
 	/// Write deploy/<role>/ from what the running containers use, through
 	/// sops: no plain text reaches a disk (ENV2, #615).
@@ -309,8 +340,12 @@ fn compose_on(
 
 fn run(cli: Cli) -> Result<ExitCode> {
 	let repo = find_repo(cli.repo)?;
-	let schemas = schema::load(&repo.join("infra/env"))?;
 	let shell = shell();
+	// The deploy reads no schema: it pulls, runs `make up` and waits.
+	if matches!(cli.command, Command::Deploy { .. }) {
+		return run_deploy(repo, &shell, cli.command);
+	}
+	let schemas = schema::load(&repo.join("infra/env"))?;
 	let sops_program = sops::program(&shell);
 	match cli.command {
 		Command::Preflight { role } => {
@@ -394,7 +429,63 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			import::run(&repo, &schemas, &role, &containers, dry_run, &sops_program)?;
 			Ok(ExitCode::SUCCESS)
 		}
+		Command::Deploy { .. } => unreachable!("handled above, before the schemas are read"),
 	}
+}
+
+/// `envctl deploy`: one pass, or with `on_demand` the marker's.
+fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command) -> Result<ExitCode> {
+	let Command::Deploy {
+		no_pull,
+		ready_timeout,
+		state_dir,
+		image,
+		on_demand,
+		as_user,
+		runtime_dir,
+	} = command
+	else {
+		bail!("not a deploy");
+	};
+	let options = deploy::Options {
+		pull: !no_pull,
+		image,
+		ready_timeout,
+		poll: deploy::POLL_SECONDS,
+	};
+	if options.ready_timeout <= 0.0 || !options.ready_timeout.is_finite() {
+		bail!("--ready-timeout must be positive");
+	}
+	let as_user = match as_user.as_deref() {
+		Some(user) => deploy::runuser_prefix(user, runtime_dir.as_deref())?,
+		None => Vec::new(),
+	};
+	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(shell.get("XDG_STATE_HOME").map(String::as_str), shell.get("HOME").map(String::as_str)));
+	let mut host = deploy::RealHost::new(repo, &state_dir, as_user);
+	let clock = deploy::Monotonic::new();
+	let mut say = |line: &str| println!("{line}");
+	let code = if let Some(folder) = on_demand {
+		let mut demand = deploy::RealDemand::new(folder);
+		let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			deploy::on_demand(&mut host, &mut demand, &options, &deploy::wall_now, &clock, &mut say)
+		}));
+		match ran {
+			Ok(Ok(code)) => code,
+			failed => {
+				// Never leave the marker behind a crash: the path unit would
+				// start this again at once. The failure is recorded for the
+				// alert, and the reason goes to the journal.
+				deploy::record_crash(&mut demand, deploy::wall_now());
+				if let Ok(Err(err)) = failed {
+					eprintln!("envctl deploy: {err:#}");
+				}
+				deploy::EXIT_NOT_DEPLOYED
+			}
+		}
+	} else {
+		deploy::deploy(&mut host, &options, &clock, &mut say)
+	};
+	Ok(ExitCode::from(code))
 }
 
 /// Conformance without a key (ENV3, #616): every problem in the deployment
