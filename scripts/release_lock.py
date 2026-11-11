@@ -84,6 +84,7 @@ class Hub:
 # Every service the release follows, and where its newest reference comes
 # from. A service not here keeps whatever main's release says.
 SOURCES: dict[str, Changesets | Hub] = {
+    "kokoro": Changesets("kokoro"),
     "orchestrator": Changesets("orchestrator"),
     "rust-runner": Changesets("rust-runner"),
 }
@@ -319,6 +320,19 @@ class Tests(unittest.TestCase):
     def test_the_file_keeps_r1_s_shape_and_round_trips(self) -> None:
         text = RELEASE.read_text()
         self.assertEqual(render(json.loads(text)), text, "release.json is written exactly as render writes it")
+
+    def test_every_server_image_home_runs_is_followed(self) -> None:
+        """Each image the detector publishes and home runs is in SOURCES or HELD (#805)."""
+        detect = (REPO_ROOT / ".github" / "scripts" / "detect" / "src" / "main.rs").read_text()
+        suffixes = set(re.findall(r'repo_suffix: "([^"]+)"', detect))
+        release = json.loads(RELEASE.read_text())
+        followed = {source.suffix for source in SOURCES.values() if isinstance(source, Changesets)}
+        held = {"server"}  # file-host, HELD until R4
+        for suffix in suffixes:
+            runs = any(entry["image"].startswith(f"pgathondu/{suffix}:") for entry in release["services"].values())
+            if runs or suffix in followed:
+                self.assertIn(suffix, followed | held, f"pgathondu/{suffix} is published and home runs it, so the release follows it")
+        self.assertIn("kokoro", followed)
 
     def test_the_checked_in_changesets_all_read(self) -> None:
         for found in changesets(CHANGESETS):

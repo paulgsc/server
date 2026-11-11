@@ -46,8 +46,10 @@ per CLAUDE.md, "Drift is loud, not silent".
   `pgathondu/server:latest` until the deploy applies whole releases (R4,
   #793), because `envctl deploy` pulls, tags and rolls back that tag. An
   entry the release does not follow keeps whatever main says: third-party
-  images until R7 (#796), and locally built ones until they are published
-  (kokoro, R2b #805).
+  images until R7 (#796). kokoro is followed (R2b, #805), but until its
+  first publish main's entry is still `some-kokoro:local`, the image home
+  last built. A box without that image cannot start kokoro until the first
+  release that names `pgathondu/kokoro` by digest.
 - **RL6. No approval of its own.** Forming the set adds no human step
   (C119). Each image keeps the one approval it has where it is published, and
   the release pull request auto-merges once its checks pass. **Planned:**
