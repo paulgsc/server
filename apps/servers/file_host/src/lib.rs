@@ -10,6 +10,7 @@ use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 pub mod auth;
 pub mod cache;
 pub mod call_weeks;
+pub mod clips;
 pub mod config;
 pub mod contract;
 pub mod db;
@@ -296,7 +297,9 @@ impl AppState {
 /// - Playoff Delta's fills (`pd_fills`), read hourly from `paulgsc/testing`;
 ///   always on;
 /// - Rust Rounds' essays (`rust_essays`), given to the render worker from
-///   the mailbox once their week is final; on with the mailbox.
+///   the mailbox once their week is final; on with the mailbox;
+/// - the clips' frames (`clips`), read hourly from `paulgsc/testing`'s
+///   index, a walk rendered on home's render lane; always on.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
@@ -306,6 +309,7 @@ pub fn start_polls(state: &AppState) {
 	pd_fills::start(state);
 	previews::start(state);
 	rust_essays::start(state);
+	clips::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

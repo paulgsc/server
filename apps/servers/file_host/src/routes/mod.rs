@@ -2,6 +2,7 @@ pub mod admin_settings;
 pub mod aph;
 pub mod app_events;
 pub mod auth;
+pub mod clips;
 pub mod compat;
 pub mod cors;
 pub mod db;

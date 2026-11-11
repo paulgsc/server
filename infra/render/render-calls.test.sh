@@ -38,6 +38,10 @@
 # And a template's preview (SFEED12, paulgsc/some-ui#2757): rendered with
 # the template its id names and kept whole; a failed one never tried again;
 # one a restart left resumed first.
+#
+# And a clip's walk (paulgsc/some-ui#2670's clips): the motion walks the app
+# file_host named over its sample, kept whole in renders/clip-walk; a walk
+# naming an app that is not a plain name is never run.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -48,6 +52,8 @@ SCRATCH=$(mktemp -d)
 FAKE=$SCRATCH/fake
 APP_DIR=$SCRATCH/app
 TSX=$FAKE/tsx
+MOTION_DIR=$APP_DIR
+MOTION_TSX=$TSX
 mkdir -p "$FAKE" "$APP_DIR"
 # The worker's timing, at a test's pace; a failed week is tried again on the
 # next pass unless a case says otherwise.
@@ -189,6 +195,26 @@ if [ "$1" = tests/record/preview.ts ]; then
   touch -d '2 days ago' "$out/preview.mp4"
   exit 0
 fi
+# A clip's walk: `tsx src/cli.ts walk <app> --sample <f> --out <w>/<key>`
+# writes walk.json and a snip into <w>/<key>, as the motion does. Each run is
+# counted in $FAKE/walk-runs as `<app> <sample> <out>`.
+if [ "$1" = src/cli.ts ]; then
+  [ "$2" = walk ] || { echo "not a walk: $2"; exit 2; }
+  app=$3 sample= out=
+  shift 3
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --sample) sample=$2; shift ;;
+      --out) out=$2; shift ;;
+    esac
+    shift
+  done
+  echo "$app $sample $out" >> "$fake/walk-runs"
+  mkdir -p "$out/snips"
+  echo png > "$out/snips/01.png"
+  printf '{"schema":"some-ui.walk/1","app":"%s"}\n' "$app" > "$out/walk.json"
+  exit 0
+fi
 # An essay (RR16): `tsx tests/record/essay.ts … --essay-file <f> --takes <d>
 # --out <w>` writes essay.mp4 and a cache into <w>/<week>, the week being
 # the essay file's folder's name, or fails as the real one does for a take
@@ -317,7 +343,7 @@ fresh() {
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
-    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large"
+    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -783,6 +809,23 @@ run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a failed essay's output is its failed.log" grep -q "has none for it" "$ROOT/renders/rust-essay-worker/2026-w46.failed.log"
 check "and it leaves no folder in renders/rust-essay" test ! -e "$ROOT/renders/rust-essay/2026-w46"
 check "and the job is over" test ! -e "$ROOT/renders/call-worker/job"
+
+# A clip's walk: each folder file_host gave with its sample and app is
+# walked by the motion, kept whole in renders/clip-walk; a folder of another
+# shape, or naming an app that is not plain, is never walked.
+fresh walk
+mkdir -p "$ROOT/clip-walks/ledger-wake-after" "$ROOT/clip-walks/bad-app-after" "$ROOT/clip-walks/not-a-side"
+for key in ledger-wake-after bad-app-after not-a-side; do echo '{}' > "$ROOT/clip-walks/$key/sample.json"; done
+echo suspender-ledger > "$ROOT/clip-walks/ledger-wake-after/app"
+echo '../x' > "$ROOT/clip-walks/bad-app-after/app"
+echo suspender-ledger > "$ROOT/clip-walks/not-a-side/app"
+run_job clip-walk > "$SCRATCH/pass.out" 2>&1
+check "a walk is the motion's, over its sample, into its key's work folder" \
+  test "$(cat "$FAKE/walk-runs")" = "suspender-ledger $ROOT/clip-walks/ledger-wake-after/sample.json $ROOT/renders/clip-walk-work/ledger-wake-after"
+check "and kept whole in renders/clip-walk" test -e "$ROOT/renders/clip-walk/ledger-wake-after/walk.json" -a -e "$ROOT/renders/clip-walk/ledger-wake-after/snips/01.png"
+check "a walk naming no plain app fails, unwalked" grep -q "names no app" "$ROOT/renders/clip-walk-worker/bad-app-after.failed.log"
+run_job clip-walk > "$SCRATCH/pass.out" 2>&1
+check "a walk is not made again, and no other folder is read" test "$(wc -l < "$FAKE/walk-runs")" -eq 1
 
 # A preview a restart left runs first, as any job does.
 fresh preview-left

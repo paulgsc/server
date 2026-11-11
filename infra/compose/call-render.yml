@@ -4,7 +4,7 @@
 #
 # - `kokoro`, the speaker: Kokoro v1.0, seeded per line
 #   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
-# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with four jobs
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with five jobs
 #   (infra/render/render-calls.sh): for each week `file_host` writes to
 #   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
 #   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
@@ -20,7 +20,12 @@
 #   removes a day later (`previews::prune`). Its fourth is a week's Rust
 #   Rounds essay (RR16, paulgsc/some-ui#2691): each essay file_host writes to
 #   ${STORAGE}/rust-essays/<week>/ (`rust_essays::ESSAYS_FOLDER`), once the
-#   week is final, is made into ${STORAGE}/renders/rust-essay/<week>/.
+#   week is final, is made into ${STORAGE}/renders/rust-essay/<week>/. Its
+#   fifth is a clip's walk (paulgsc/some-ui#2670's clips): each clip side
+#   file_host writes to ${STORAGE}/clip-walks/<clip>-<side>/
+#   (`clips::WALKS_FOLDER`) is walked by the motion into
+#   ${STORAGE}/renders/clip-walk/<clip>-<side>/, its snips and walk.json,
+#   which file_host checks against the clip index before it keeps a frame.
 #
 #   Its image is published by paulgsc/some-ui's CI, not built here (#718,
 #   the owner's "B′ for render", 2026-11-11): the recorders, the motion and
@@ -99,10 +104,10 @@ services:
       kokoro:
         condition: service_started
       # file_host makes ${STORAGE}/call-weeks,
-      # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests and
-      # ${STORAGE}/rust-essays before it answers its health check
-      # (call_weeks::start, pd_fills::start, previews::start,
-      # rust_essays::start), so each is its own, never Docker's.
+      # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests,
+      # ${STORAGE}/rust-essays and ${STORAGE}/clip-walks before it answers its
+      # health check (call_weeks::start, pd_fills::start, previews::start,
+      # rust_essays::start, clips::start), so each is its own, never Docker's.
       file-host:
         condition: service_healthy
     networks:
@@ -141,6 +146,15 @@ services:
       - type: volume
         source: rust_essay_files
         target: /essays
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`clips::WALKS_FOLDER`), read here only, through
+      # `clip_walk_files` (below): one folder per clip side to walk, its
+      # sample and the app it walks (paulgsc/some-ui#2670's clips).
+      - type: volume
+        source: clip_walk_files
+        target: /clip-walks
         read_only: true
         volume:
           nocopy: true
@@ -221,6 +235,14 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/rust-essays
+  # ${STORAGE}/clip-walks, where file_host writes each clip side home walks;
+  # bound as call_week_files is, for the same reason (clips::start makes it).
+  clip_walk_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/clip-walks
 
 networks:
   # Internal: neither reaches the internet or the rest of the stack. The
