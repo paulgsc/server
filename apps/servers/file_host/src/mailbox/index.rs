@@ -76,6 +76,10 @@
 //!
 //! **The weekly call's index** is [`call`]'s: every week of the call home
 //! holds, put only when home takes a new one.
+//!
+//! **The Rust Rounds essay routine's index** is [`rust`]'s: each final week's
+//! record, the pass making a week final once its deadline has passed, put
+//! only when a record changes.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
@@ -89,9 +93,11 @@ use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
 
 pub mod call;
 pub mod reflections;
+pub mod rust;
 
 pub(super) use call::put_call_index;
 pub(super) use reflections::put_reflections_index;
+pub(super) use rust::put_rust_index;
 
 /// What an index put to the mailbox's `index` folder is (paulgsc/some-ui
 /// `apps/mailbox/README.md`, "What a put must satisfy").
@@ -796,6 +802,7 @@ pub struct LastIndexes {
 	pub jobs: LastIndex,
 	pub reflections: LastIndex,
 	pub call: LastIndex,
+	pub rust: LastIndex,
 }
 
 /// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),

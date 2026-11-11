@@ -281,24 +281,54 @@ pub async fn get_record(paired: Paired, State(db): State<SqlitePool>, Path(id): 
 	let now = now();
 	let mut conn = db.acquire().await?;
 	let week = held_week(&mut conn, subject, &id).await?;
-	let Some(window) = week.window.clone() else {
+	if week.window.is_none() {
 		tracing::error!(kind = "no_window", "a week home holds has no deadline it can read; no record");
 		return Err(FileHostError::NotFound);
-	};
-	let (Some(from), Some(to)) = (stored_instant(&window.opens), stored_instant(&window.due)) else {
-		return Err(FileHostError::NotFound);
-	};
-	let closed = rust_round_repo::instant_order(&now, &window.due) == Some(std::cmp::Ordering::Greater);
-	if closed {
+	}
+	if is_closed(&week, &now) {
 		let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
 		finalize(&mut tx, subject, &week, &now).await?;
 		tx.commit().await?;
 	}
-	let sent = rust_round_repo::sent::standing(&mut conn, subject, &week.id).await?;
-	let pastes = rust_round_repo::sent::pastes(&mut conn, subject, &week.id).await?;
-	let opens = app_event_repo::left_by_place(&mut conn, subject, PIPELINE, TICKET_AFFORDANCE, &from, &to)
+	let record = week_record(&mut conn, subject, week, &now).await?;
+	record.map(Json).ok_or(FileHostError::NotFound)
+}
+
+/// Whether home's clock, at `now`, is past `week`'s deadline: nothing sent
+/// after it counts. A week with no deadline home can read is never closed.
+pub(crate) fn is_closed(week: &Week, now: &str) -> bool {
+	week
+		.window
+		.as_ref()
+		.is_some_and(|window| rust_round_repo::instant_order(now, &window.due) == Some(std::cmp::Ordering::Greater))
+}
+
+/// `week`'s record for `subject` with home's clock at `now`, as
+/// `GET /rust-weeks/:id/record` answers it and the mailbox's `rust` index
+/// carries it (`mailbox::index::rust`). It only reads: a closed week's draft
+/// is made final by the caller first ([`rust_round_repo::sent::finalize`]).
+/// `None` for a week with no deadline home can read.
+///
+/// # Errors
+/// Any `sqlx` failure, or a stored send or event that no longer reads.
+pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week: Week, now: &str) -> Result<Option<WeekRecord>, sqlx::Error> {
+	let Some(window) = week.window.clone() else {
+		return Ok(None);
+	};
+	let (Some(from), Some(to)) = (stored_instant(&window.opens), stored_instant(&window.due)) else {
+		return Ok(None);
+	};
+	let closed = is_closed(&week, now);
+	let sent = rust_round_repo::sent::standing(&mut *conn, subject, &week.id).await?;
+	let pastes = rust_round_repo::sent::pastes(&mut *conn, subject, &week.id).await?;
+	let opens = app_event_repo::left_by_place(&mut *conn, subject, PIPELINE, TICKET_AFFORDANCE, &from, &to)
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+		.map_err(|err| match err {
+			app_event_repo::EventError::Storage(err) => err,
+			other @ (app_event_repo::EventError::Invalid(_) | app_event_repo::EventError::Rewritten | app_event_repo::EventError::Unreadable) => {
+				sqlx::Error::Protocol(other.to_string())
+			}
+		})?;
 	let answers: &[Answer] = sent.as_ref().map_or(&[], |held| held.sent.answers.as_slice());
 	let mut tickets = Vec::with_capacity(week.programs.len());
 	let mut unanswered = Vec::new();
@@ -317,7 +347,7 @@ pub async fn get_record(paired: Paired, State(db): State<SqlitePool>, Path(id): 
 			opens: opened,
 		});
 	}
-	Ok(Json(WeekRecord {
+	Ok(Some(WeekRecord {
 		week: week.id,
 		opens: window.opens,
 		due: window.due,
