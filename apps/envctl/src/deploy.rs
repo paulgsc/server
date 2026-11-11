@@ -1,4 +1,4 @@
-//! Home's deploy of file_host, with the previous image put back when the new
+//! Home's deploy of `file_host`, with the previous image put back when the new
 //! one does not come up ready (AS18, #564). `make home-deploy` runs one pass
 //! (`envctl deploy`), in the checkout (README.md, "Deploying to home"); the
 //! on-demand unit (`nix/modules/home-deploy.nix`) runs `envctl deploy
@@ -59,17 +59,17 @@ use std::{
 	process::{Command, Stdio},
 };
 
-/// file-host's compose service, its container_name and its image.
-/// `the_service_is_the_compose_files` holds these to infra/compose/file_host.yml.
+/// file-host's compose service, its `container_name` and its image.
+/// `the_service_is_the_compose_files` holds these to `infra/compose/file_host.yml`.
 pub(crate) const FILE_HOST: &str = "file-host";
 pub(crate) const CONTAINER: &str = "file-host-server";
 pub(crate) const IMAGE: &str = "pgathondu/server:latest";
 
-/// The bound on becoming ready, in seconds. file_host copies the database
+/// The bound on becoming ready, in seconds. `file_host` copies the database
 /// and applies its migrations before it listens, so the healthcheck's
-/// start_period (infra/compose/file_host.yml, 300 s) covers that work: no
+/// `start_period` (`infra/compose/file_host.yml`, 300 s) covers that work: no
 /// failed probe counts during it, and the first that passes reads healthy.
-/// The bound is above start_period, so a slow migrating start is never taken
+/// The bound is above `start_period`, so a slow migrating start is never taken
 /// for a bad image (which would be rolled back and then skipped). A start
 /// that exits or restarts fails at once, whatever the bound, so only an image
 /// that hangs costs all of it. `the_bound_outlasts_the_start_period` holds
@@ -82,8 +82,8 @@ pub(crate) const EXIT_NOT_DEPLOYED: u8 = 1;
 pub(crate) const EXIT_ROLLED_BACK: u8 = 2;
 pub(crate) const EXIT_NOTHING_READY: u8 = 3;
 
-/// What file_host prints at start when it took a backup
-/// (apps/servers/file_host/src/main.rs, `migrate_on_start`).
+/// What `file_host` prints at start when it took a backup
+/// (`apps/servers/file_host/src/main.rs`, `migrate_on_start`).
 pub(crate) const BACKUP_LINE: &str = "migrate: backed up to ";
 
 /// How many failed image ids the state file remembers; older ones fall off.
@@ -225,7 +225,7 @@ pub(crate) fn previous_ref(image_ref: &str) -> String {
 	format!("{name}:previous")
 }
 
-/// The backup file_host took at this start, from its log, if it took one.
+/// The backup `file_host` took at this start, from its log, if it took one.
 pub(crate) fn backup_from(lines: &[String]) -> Option<String> {
 	let mut found = None;
 	for line in lines {
@@ -271,7 +271,7 @@ pub(crate) trait Host {
 #[derive(Clone, Debug)]
 pub(crate) struct Options {
 	pub(crate) pull: bool,
-	/// The image compose starts file-host from (infra/compose/file_host.yml);
+	/// The image compose starts file-host from (`infra/compose/file_host.yml`);
 	/// another only for a rehearsal against a local registry.
 	pub(crate) image: String,
 	pub(crate) ready_timeout: f64,
@@ -445,11 +445,11 @@ pub(crate) fn deploy(host: &mut dyn Host, options: &Options, clock: &dyn Clock, 
 // marker. Nothing else ever pulls: with no client newer than home, home sends
 // no request anywhere.
 
-/// The shortest time between two pulls: deploy.rs's PULL_GAP, checked here
+/// The shortest time between two pulls: `deploy.rs`'s `PULL_GAP`, checked here
 /// again so a marker written by hand cannot make home pull twice in a row.
 pub(crate) const PULL_GAP_SECONDS: i64 = 600;
 
-/// `${STORAGE}/deploy`: the marker file_host writes and the state it reads.
+/// `${STORAGE}/deploy`: the marker `file_host` writes and the state it reads.
 pub(crate) trait Demand {
 	/// None: no marker. An unreadable or malformed one is an empty object.
 	fn read_marker(&mut self) -> Option<Map<String, Value>>;
@@ -492,7 +492,7 @@ fn bump(counts: &mut Map<String, Value>, key: &str, by: i64) {
 
 /// Seconds since the epoch, whole, as state.json records them.
 #[allow(clippy::cast_possible_truncation)] // Unix seconds, far inside i64
-fn whole(seconds: f64) -> i64 {
+const fn whole(seconds: f64) -> i64 {
 	seconds as i64
 }
 
@@ -537,9 +537,8 @@ pub(crate) fn on_demand(host: &mut dyn Host, demand: &mut dyn Demand, options: &
 
 	if let Some(Value::Number(last_pull)) = state.get("last_pull_at") {
 		if let Some(last_pull) = last_pull.as_i64() {
-			let since = wall() - last_pull as f64;
-			#[allow(clippy::cast_precision_loss)] // PULL_GAP_SECONDS is 600
-			let gap = PULL_GAP_SECONDS as f64;
+			#[allow(clippy::cast_precision_loss)] // Unix seconds and 600, far below 2^52
+			let (since, gap) = (wall() - last_pull as f64, PULL_GAP_SECONDS as f64);
 			if since < gap {
 				say(&format!(
 					"deploy: the last pull was {} s ago, under the {PULL_GAP_SECONDS} s gap; not pulling",
@@ -800,7 +799,7 @@ impl Demand for RealDemand {
 		// Whole or not at all: file_host reads it every 10 s. Keys sorted, as
 		// serde_json's map keeps them.
 		let temp = self.folder.join(".state.json.tmp");
-		let mut text = serde_json::to_string(state)?;
+		let mut text = Value::Object(state.clone()).to_string();
 		text.push('\n');
 		std::fs::write(&temp, text).with_context(|| format!("writing {}", temp.display()))?;
 		std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o644))?;
@@ -824,7 +823,7 @@ impl Demand for RealDemand {
 	}
 }
 
-/// A non-negative integer written in digits only, as file_host prints them.
+/// A non-negative integer written in digits only, as `file_host` prints them.
 fn digits(text: &str) -> Option<i64> {
 	if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
 		return None;
@@ -1063,7 +1062,7 @@ mod tests {
 			self
 		}
 
-		fn with_state(mut self, state: Value) -> Self {
+		fn with_state(mut self, state: &Value) -> Self {
 			self.state = state.as_object().unwrap().clone();
 			self
 		}
@@ -1437,7 +1436,7 @@ mod tests {
 	#[test]
 	fn a_pull_within_the_gap_is_deferred() {
 		let mut host = world(Some(ready_after(0.0)), ready_after(0.0), true);
-		let mut demand = FakeDemand::new(Some(json!({"needs": 2, "running": 1}))).with_state(json!({"last_pull_at": wall() - 60}));
+		let mut demand = FakeDemand::new(Some(json!({"needs": 2, "running": 1}))).with_state(&json!({"last_pull_at": wall() - 60}));
 		assert_eq!(run_on_demand(&mut host, &mut demand).0, EXIT_DEPLOYED);
 		assert!(host.calls.is_empty());
 		assert_eq!(demand.state["counts"], json!({"deferred": 1}));
@@ -1448,7 +1447,7 @@ mod tests {
 	fn a_newer_epoch_that_fails_is_rolled_back_and_counted() {
 		let mut host = world(Some(ready_after(0.0)), crashes_after(3.0), true);
 		let mut demand = FakeDemand::new(Some(json!({"needs": 2, "running": 1})))
-			.with_state(json!({"counts": {"pulls": 4, "deployed": 3}}))
+			.with_state(&json!({"counts": {"pulls": 4, "deployed": 3}}))
 			.epoch("sha256:new", Some(2));
 		let (code, _) = run_on_demand(&mut host, &mut demand);
 		assert_eq!(code, EXIT_ROLLED_BACK);
@@ -1470,7 +1469,7 @@ mod tests {
 
 	#[test]
 	fn a_crash_is_counted_and_clears_the_marker() {
-		let mut demand = FakeDemand::new(Some(json!({"needs": 2, "running": 1}))).with_state(json!({"counts": {"pulls": 4}}));
+		let mut demand = FakeDemand::new(Some(json!({"needs": 2, "running": 1}))).with_state(&json!({"counts": {"pulls": 4}}));
 		record_crash(&mut demand, WALL);
 		assert!(demand.cleared);
 		assert_eq!(demand.state["counts"], json!({"pulls": 4, "failed": 1}));

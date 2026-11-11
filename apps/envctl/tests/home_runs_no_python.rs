@@ -12,19 +12,19 @@
 // the plain way to say it, and nothing here is a hot path.
 #![allow(clippy::disallowed_macros)]
 
+use anyhow::Result;
 use regex::Regex;
-use std::path::{Path, PathBuf};
+use std::{
+	path::{Path, PathBuf},
+	sync::LazyLock,
+};
 
 /// `python`, `python3`, `python3.12`, `pkgs.python3`, `python3Packages`: a
 /// word starting `python`.
-fn python() -> Regex {
-	Regex::new(r"(?i)\bpython").unwrap()
-}
+static PYTHON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bpython").unwrap_or_else(|err| panic!("{err}")));
 
 /// `scripts/<file>` as a recipe or a unit names it.
-fn script_ref() -> Regex {
-	Regex::new(r"\bscripts/[A-Za-z0-9_./-]+").unwrap()
-}
+static SCRIPT_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bscripts/[A-Za-z0-9_./-]+").unwrap_or_else(|err| panic!("{err}")));
 
 /// Lines a shell, make or nix would run: not a comment.
 fn code_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
@@ -38,14 +38,14 @@ fn code_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
 /// Every place `text` (from `shown`) calls python or names a python script,
 /// and the scripts it names, to be read the same way.
 fn findings(shown: &str, text: &str, found: &mut Vec<String>, named: &mut Vec<String>) {
-	if text.lines().next().is_some_and(|first| first.starts_with("#!") && python().is_match(first)) {
+	if text.lines().next().is_some_and(|first| first.starts_with("#!") && PYTHON.is_match(first)) {
 		found.push(format!("{shown}:1: its interpreter is python"));
 	}
 	for (at, line) in code_lines(text) {
-		if python().is_match(line) {
+		if PYTHON.is_match(line) {
 			found.push(format!("{shown}:{at}: {}", line.trim()));
 		}
-		for script in script_ref().find_iter(line) {
+		for script in SCRIPT_REF.find_iter(line) {
 			let script = script.as_str().trim_end_matches(['.', '/']).to_owned();
 			if Path::new(&script).extension().is_some_and(|extension| extension == "py") {
 				found.push(format!("{shown}:{at}: runs {script}, a python script"));
@@ -57,12 +57,12 @@ fn findings(shown: &str, text: &str, found: &mut Vec<String>, named: &mut Vec<St
 
 /// What home runs: the Makefile and every module under nix/modules but the
 /// modules' own test.
-fn home_files(repo: &Path) -> Vec<PathBuf> {
+fn home_files(repo: &Path) -> Result<Vec<PathBuf>> {
 	let mut files = vec![repo.join("Makefile")];
 	let mut dirs = vec![repo.join("nix/modules")];
 	while let Some(dir) = dirs.pop() {
-		for entry in std::fs::read_dir(&dir).unwrap() {
-			let path = entry.unwrap().path();
+		for entry in std::fs::read_dir(&dir)? {
+			let path = entry?.path();
 			if path.is_dir() {
 				dirs.push(path);
 			} else if path.extension().is_some_and(|extension| extension == "nix") && path.file_name().is_some_and(|name| name != "test.nix") {
@@ -71,16 +71,16 @@ fn home_files(repo: &Path) -> Vec<PathBuf> {
 		}
 	}
 	files.sort();
-	files
+	Ok(files)
 }
 
 /// Every finding in `files` and, followed once each, the scripts they name.
-fn scan(repo: &Path, files: Vec<PathBuf>) -> Vec<String> {
+fn scan(repo: &Path, files: Vec<PathBuf>) -> Result<Vec<String>> {
 	let mut found = Vec::new();
 	let mut queue: Vec<String> = Vec::new();
 	for path in files {
 		let shown = path.strip_prefix(repo).unwrap_or(&path).display().to_string();
-		let text = std::fs::read_to_string(&path).unwrap();
+		let text = std::fs::read_to_string(&path)?;
 		findings(&shown, &text, &mut found, &mut queue);
 	}
 	let mut seen: Vec<String> = Vec::new();
@@ -93,17 +93,17 @@ fn scan(repo: &Path, files: Vec<PathBuf>) -> Vec<String> {
 			findings(&script, &text, &mut found, &mut queue);
 		}
 	}
-	found
+	Ok(found)
 }
 
-fn repo() -> PathBuf {
-	Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+fn repo() -> Result<PathBuf> {
+	Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?)
 }
 
 #[test]
 fn nothing_home_runs_calls_python() {
-	let repo = repo();
-	let found = scan(&repo, home_files(&repo));
+	let repo = repo().unwrap();
+	let found = scan(&repo, home_files(&repo).unwrap()).unwrap();
 	assert!(
 		found.is_empty(),
 		"home has no python3, and these would run it there (write it in Rust, as envctl):\n{}",
@@ -126,7 +126,7 @@ fn the_check_finds_what_failed_on_home() {
 	std::fs::write(dir.join("scripts/build.sh"), "#!/bin/sh\npython -c 'print(1)'\n").unwrap();
 	std::fs::write(dir.join("scripts/hidden"), "#!/usr/bin/env python3\nprint(1)\n").unwrap();
 	std::fs::write(dir.join("clean.nix"), "{pkgs, ...}: {\n  path = [pkgs.docker];\n  ExecStart = \"envctl deploy\";\n}\n").unwrap();
-	let found = scan(&dir, vec![dir.join("Makefile"), dir.join("unit.nix")]);
+	let found = scan(&dir, vec![dir.join("Makefile"), dir.join("unit.nix")]).unwrap();
 	let has = |text: &str| found.iter().any(|line| line.contains(text));
 	assert!(has("Makefile:3: @python3 scripts/deploy.py"), "{found:?}");
 	assert!(has("Makefile:3: runs scripts/deploy.py, a python script"), "{found:?}");
@@ -136,7 +136,7 @@ fn the_check_finds_what_failed_on_home() {
 	assert_eq!(found.len(), 4, "{found:?}");
 	// A script found only by its shebang.
 	std::fs::write(dir.join("Makefile"), "x:\n\t@scripts/hidden\n").unwrap();
-	assert_eq!(scan(&dir, vec![dir.join("Makefile")]), ["scripts/hidden:1: its interpreter is python"]);
-	assert!(scan(&dir, vec![dir.join("clean.nix")]).is_empty());
+	assert_eq!(scan(&dir, vec![dir.join("Makefile")]).unwrap(), ["scripts/hidden:1: its interpreter is python"]);
+	assert!(scan(&dir, vec![dir.join("clean.nix")]).unwrap().is_empty());
 	std::fs::remove_dir_all(&dir).unwrap();
 }
