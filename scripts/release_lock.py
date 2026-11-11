@@ -1,32 +1,44 @@
 #!/usr/bin/env python3
-"""Move published images into home's release (RELEASE R2, #789; epic #787).
+"""Reconcile home's release with what has been published (RELEASE R2, #789).
 
 `deploy/home/release.json` names every image compose starts on home
-(`apps/envctl/src/release.rs`, R1 #788). When an image is published, CI
-(`.github/workflows/release-lock.yml`) runs this with the published reference
-by tag and digest. Every release entry whose repository is that image's gets
-the new reference, `serial` rises once, and `server_commit` becomes the main
-commit the release was formed at. The workflow then opens the release pull
-request.
+(`apps/envctl/src/release.rs`, R1 #788). This works out, from the sources of
+truth alone, the newest published reference of every image the release
+follows, and writes the release so it names those. A run carries no images
+of its own, so runs are idempotent and order-free: any run computes the
+whole set, a dropped or cancelled run loses nothing, and the last one wins
+with the right answer (docs/release.md, "Invariants").
 
-    python3 scripts/release_lock.py --server-commit <sha> \\
-        --set pgathondu/rust-runner:<sha>@sha256:<digest> [--set ...]
+    python3 scripts/release_lock.py              # reconcile deploy/home/release.json
     python3 scripts/release_lock.py --self-test
 
-What it never does:
+Where "newest published" comes from, per followed service (`SOURCES`):
+
+- **A server image** (`changesets`): the newest image changeset on main
+  (`.github/docker-changesets/*.json`, ordered by its `source_sha`'s place in
+  main's history, as publish-image-changesets.yml orders them) that includes
+  the image and whose `pgathondu/<suffix>:<source_sha>` tag Docker Hub has.
+  A changeset whose publish failed has no tag, so the one before it is used.
+- **A some-ui image** (`hub`): the most recently pushed tag of the shape its
+  release publishes (a whole commit for render, a version for www), never
+  `latest`. None is followed yet: they enter with U1 (#791) once R3's set
+  check (#790) can refuse an inconsistent set, so a www release can never
+  again move without the render that records it (#756's break).
+
+Docker Hub's tag API gives each tag's digest, so every reference is
+`repo:tag@sha256:…`. What it never does:
 
 - **Moves a held entry.** `file-host` stays `pgathondu/server:latest` until R4
-  (#793): `envctl deploy` pulls, tags and rolls back that tag, and a digest
-  there would leave it pulling an image compose never starts.
-- **Takes a reference without a digest.** A tag alone can move under the
-  release; the release names bytes.
-- **Adds a service.** A repository no entry starts (an image home does not
-  run, such as `pgathondu/obs`) is reported and left out: compose decides
-  which services exist, and `envctl check` holds the release to it.
+  (#793), because `envctl deploy` pulls, tags and rolls back that tag.
+- **Moves an entry it does not follow** (third-party images are R7's, #796;
+  locally built ones are not published), or adds or removes a service.
+- **Moves an entry backwards in serial**: `serial` rises once, from main's,
+  when anything changes; `server_commit` is main's commit it formed on.
 
-It prints one line per change, which the workflow puts in the pull request.
-Exit status: 0 whether or not anything changed (the workflow reads the file),
-2 on a malformed reference or release. Stdlib only.
+It prints one line per change for the release pull request. Exit status: 0,
+whether or not anything changed (the workflow reads the file); 2 when a
+source cannot be read, so the run fails loudly and the next one tries again.
+Stdlib only.
 """
 
 from __future__ import annotations
@@ -34,32 +46,156 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
-import tempfile
 import unittest
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RELEASE = REPO_ROOT / "deploy" / "home" / "release.json"
+CHANGESETS = REPO_ROOT / ".github" / "docker-changesets"
+HUB = "https://hub.docker.com/v2/repositories"
 
-# Entries no publish moves, and why. Each names the story that frees it.
+# Entries no source moves, and why. Each names the story that frees it.
 HELD = {
     "file-host": "held on pgathondu/server:latest until R4 (#793): envctl deploy pulls, tags and rolls back that tag",
 }
 
-PUBLISHED = re.compile(r"^(?P<repository>[a-z0-9][a-z0-9._/-]*):(?P<tag>[A-Za-z0-9._-]+)@sha256:[0-9a-f]{64}$")
+
+@dataclass(frozen=True)
+class Changesets:
+    """A server image: the newest changeset on main that pushed it."""
+
+    suffix: str
 
 
-class Refused(Exception):
+@dataclass(frozen=True)
+class Hub:
+    """A some-ui image: the most recently pushed tag of its release's shape."""
+
+    repository: str
+    shape: str  # a regex the whole tag matches
+
+
+# Every service the release follows, and where its newest reference comes
+# from. A service not here keeps whatever main's release says.
+SOURCES: dict[str, Changesets | Hub] = {
+    "orchestrator": Changesets("orchestrator"),
+    "rust-runner": Changesets("rust-runner"),
+}
+
+COMMIT = r"[0-9a-f]{40}"
+VERSION = r"[0-9]+\.[0-9]+\.[0-9]+"
+
+
+class Unreadable(Exception):
     pass
 
 
-def repository(image: str) -> str:
-    """`repo:tag@sha256:…` → `repo`. A registry host's port is not a tag."""
-    image = image.split("@", 1)[0]
-    slash = image.rfind("/")
-    colon = image.rfind(":")
-    return image[:colon] if colon > slash else image
+# ── Reading the sources ─────────────────────────────────────────────────────
+
+
+def hub_get(path: str) -> dict | None:
+    """One Docker Hub API document, None when it does not exist."""
+    request = urllib.request.Request(f"{HUB}/{path}", headers={"User-Agent": "release-lock"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as err:
+        if err.code == 404:
+            return None
+        raise Unreadable(f"Docker Hub answered {err.code} for {path}") from err
+    except (urllib.error.URLError, TimeoutError, ValueError) as err:
+        raise Unreadable(f"Docker Hub could not be read for {path}: {err}") from err
+
+
+def main_order(repo: Path) -> list[str]:
+    """main's commits, oldest first."""
+    done = subprocess.run(["git", "rev-list", "--reverse", "--topo-order", "HEAD"], cwd=repo, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise Unreadable(f"git rev-list failed: {done.stderr.strip()}")
+    return done.stdout.split()
+
+
+def changesets(folder: Path) -> list[dict]:
+    found = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            found.append(json.loads(path.read_text()))
+        except ValueError as err:
+            raise Unreadable(f"{path.name} is not JSON: {err}") from err
+    return found
+
+
+@dataclass(frozen=True)
+class World:
+    """What the sources say, read once: injected whole by the tests."""
+
+    order: list[str]
+    changesets: list[dict]
+    tag: Callable[[str, str], str | None]  # (repository, tag) → digest, None if absent
+    tags: Callable[[str], list[tuple[str, str]]]  # repository → [(tag, digest)], newest push first
+
+
+def real_world(repo: Path) -> World:
+    def tag(repository: str, name: str) -> str | None:
+        found = hub_get(f"{repository}/tags/{name}")
+        return None if found is None else found.get("digest")
+
+    def tags(repository: str) -> list[tuple[str, str]]:
+        found = hub_get(f"{repository}/tags?page_size=100&ordering=last_updated") or {}
+        return [(entry["name"], entry["digest"]) for entry in found.get("results", []) if entry.get("digest")]
+
+    return World(main_order(repo), changesets(repo / ".github" / "docker-changesets"), tag, tags)
+
+
+# ── The decision, pure ──────────────────────────────────────────────────────
+
+
+def newest(source: Changesets | Hub, world: World) -> str | None:
+    """The newest published reference of one followed image, or None."""
+    if isinstance(source, Changesets):
+        place = {sha: index for index, sha in enumerate(world.order)}
+        shas = {
+            changeset["source_sha"]
+            for changeset in world.changesets
+            if changeset.get("source_sha") in place and any(image.get("repo_suffix") == source.suffix for image in changeset.get("include", []))
+        }
+        repository = f"pgathondu/{source.suffix}"
+        for sha in sorted(shas, key=place.__getitem__, reverse=True):
+            digest = world.tag(repository, sha)
+            if digest:
+                return f"{repository}:{sha}@{digest}"
+        return None
+    for name, digest in world.tags(source.repository):
+        if name != "latest" and re.fullmatch(source.shape, name):
+            return f"{source.repository}:{name}@{digest}"
+    return None
+
+
+def reconcile(release: dict, world: World, server_commit: str, sources: dict | None = None) -> tuple[dict, list[str]]:
+    """main's release with every followed entry at its newest, and what moved."""
+    sources = SOURCES if sources is None else sources
+    services = {name: dict(entry) for name, entry in release["services"].items()}
+    said: list[str] = []
+    for name, source in sorted(sources.items()):
+        if name not in services:
+            raise Unreadable(f"the release follows {name}, which it does not name")
+        if name in HELD:
+            said.append(f"- {name}: {HELD[name]}")
+            continue
+        wanted = newest(source, world)
+        if wanted is None or wanted == services[name]["image"]:
+            continue
+        said.append(f"- {name}: {services[name]['image']} → {wanted}")
+        services[name]["image"] = wanted
+    if services == release["services"]:
+        return release, said
+    return {"serial": int(release["serial"]) + 1, "server_commit": server_commit, "services": services}, said
 
 
 def render(release: dict) -> str:
@@ -74,48 +210,19 @@ def render(release: dict) -> str:
     )
 
 
-def apply(release: dict, published: list[str], server_commit: str) -> tuple[dict, list[str]]:
-    """The release with each published reference in, and what was said."""
-    said: list[str] = []
-    changed = False
-    services = {name: dict(entry) for name, entry in release["services"].items()}
-    for reference in published:
-        match = PUBLISHED.match(reference)
-        if match is None:
-            raise Refused(f"{reference} is not repo:tag@sha256:<64 hex>; a release names bytes, not a tag alone")
-        wanted = match.group("repository")
-        names = sorted(name for name, entry in services.items() if repository(entry["image"]) == wanted)
-        if not names:
-            said.append(f"- {wanted}: no service home runs starts it; left out")
-            continue
-        for name in names:
-            if name in HELD:
-                said.append(f"- {name}: {HELD[name]}")
-            elif services[name]["image"] == reference:
-                said.append(f"- {name}: already {reference}")
-            else:
-                said.append(f"- {name}: {services[name]['image']} → {reference}")
-                services[name]["image"] = reference
-                changed = True
-    if not changed:
-        return release, said
-    return {"serial": int(release["serial"]) + 1, "server_commit": server_commit, "services": services}, said
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--release", type=Path, default=RELEASE)
-    parser.add_argument("--server-commit", default="")
-    parser.add_argument("--set", dest="published", action="append", default=[], metavar="REPO:TAG@sha256:DIGEST")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         result = unittest.main(argv=[sys.argv[0]], exit=False, verbosity=1).result
         return 0 if result.wasSuccessful() else 1
     try:
+        world = real_world(REPO_ROOT)
         release = json.loads(args.release.read_text())
-        updated, said = apply(release, args.published, args.server_commit)
-    except (Refused, KeyError, ValueError) as err:
+        updated, said = reconcile(release, world, world.order[-1] if world.order else "")
+    except (Unreadable, KeyError, ValueError) as err:
         print(f"release_lock: {err}", file=sys.stderr)
         return 2
     if updated is not release:
@@ -126,8 +233,8 @@ def main() -> int:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-DIGEST = "sha256:" + "a" * 64
-OTHER = "sha256:" + "b" * 64
+A, B, C = ("a" * 40, "b" * 40, "c" * 40)
+DA, DB, DC = ("sha256:" + "1" * 64, "sha256:" + "2" * 64, "sha256:" + "3" * 64)
 
 
 def sample() -> dict:
@@ -137,67 +244,85 @@ def sample() -> dict:
         "services": {
             "file-host": {"image": "pgathondu/server:latest"},
             "rust-runner": {"image": "pgathondu/rust-runner:latest"},
+            "render": {"image": f"pgathondu/render:{A}@{DA}"},
             "redis": {"image": "redis:latest"},
-            "local": {"image": "registry.example:5000/team/app:1"},
         },
     }
 
 
+def world(published: dict[tuple[str, str], str], changesets_: list[dict], order: list[str], hub_tags: dict[str, list[tuple[str, str]]] | None = None) -> World:
+    return World(order, changesets_, lambda repository, tag: published.get((repository, tag)), lambda repository: (hub_tags or {}).get(repository, []))
+
+
+def changeset(sha: str, *suffixes: str) -> dict:
+    return {"source_sha": sha, "include": [{"repo_suffix": suffix} for suffix in suffixes]}
+
+
 class Tests(unittest.TestCase):
-    def test_a_published_image_moves_its_entries_and_the_serial_once(self) -> None:
-        updated, said = apply(sample(), [f"pgathondu/rust-runner:abc@{DIGEST}", f"redis:7.4@{OTHER}"], "new")
-        self.assertEqual(updated["serial"], 5)
-        self.assertEqual(updated["server_commit"], "new")
-        self.assertEqual(updated["services"]["rust-runner"]["image"], f"pgathondu/rust-runner:abc@{DIGEST}")
-        self.assertEqual(updated["services"]["redis"]["image"], f"redis:7.4@{OTHER}")
-        self.assertIn(f"- rust-runner: pgathondu/rust-runner:latest → pgathondu/rust-runner:abc@{DIGEST}", said)
+    def test_the_newest_published_changeset_wins_whatever_order_they_were_read(self) -> None:
+        sets = [changeset(C, "rust-runner"), changeset(A, "rust-runner"), changeset(B, "server")]
+        seen = world({("pgathondu/rust-runner", A): DA, ("pgathondu/rust-runner", C): DC}, sets, [A, B, C])
+        updated, said = reconcile(sample(), seen, "main", {"rust-runner": Changesets("rust-runner")})
+        self.assertEqual(updated["services"]["rust-runner"]["image"], f"pgathondu/rust-runner:{C}@{DC}")
+        self.assertEqual((updated["serial"], updated["server_commit"]), (5, "main"))
+        self.assertEqual(len(said), 1)
+
+    def test_a_changeset_whose_publish_failed_falls_back_to_the_one_before(self) -> None:
+        sets = [changeset(A, "rust-runner"), changeset(C, "rust-runner")]
+        seen = world({("pgathondu/rust-runner", A): DA}, sets, [A, B, C])
+        updated, _ = reconcile(sample(), seen, "main", {"rust-runner": Changesets("rust-runner")})
+        self.assertEqual(updated["services"]["rust-runner"]["image"], f"pgathondu/rust-runner:{A}@{DA}")
+
+    def test_a_changeset_not_on_main_is_ignored(self) -> None:
+        seen = world({("pgathondu/rust-runner", C): DC}, [changeset(C, "rust-runner")], [A, B])
+        before = sample()
+        updated, said = reconcile(before, seen, "main", {"rust-runner": Changesets("rust-runner")})
+        self.assertIs(updated, before)
+        self.assertEqual(said, [])
+
+    def test_reconciling_twice_changes_nothing_the_second_time(self) -> None:
+        seen = world({("pgathondu/rust-runner", A): DA}, [changeset(A, "rust-runner")], [A])
+        once, _ = reconcile(sample(), seen, "m1", {"rust-runner": Changesets("rust-runner")})
+        twice, said = reconcile(once, seen, "m2", {"rust-runner": Changesets("rust-runner")})
+        self.assertIs(twice, once, "idempotent: a second run on the same sources writes nothing")
+        self.assertEqual((twice["serial"], said), (5, []))
 
     def test_file_host_is_held_until_r4(self) -> None:
+        seen = world({("pgathondu/server", A): DA}, [changeset(A, "server")], [A])
         before = sample()
-        updated, said = apply(before, [f"pgathondu/server:abc@{DIGEST}"], "new")
-        self.assertIs(updated, before, "nothing changed, so the release is not rewritten")
-        self.assertEqual(updated["services"]["file-host"]["image"], "pgathondu/server:latest")
+        updated, said = reconcile(before, seen, "main", {"file-host": Changesets("server")})
+        self.assertIs(updated, before)
         self.assertTrue(any("file-host: held" in line and "#793" in line for line in said), said)
 
-    def test_an_image_no_service_starts_is_left_out(self) -> None:
-        before = sample()
-        updated, said = apply(before, [f"pgathondu/obs:abc@{DIGEST}"], "new")
-        self.assertIs(updated, before)
-        self.assertEqual(said, ["- pgathondu/obs: no service home runs starts it; left out"])
+    def test_a_hub_source_takes_the_newest_tag_of_its_shape_never_latest(self) -> None:
+        tags = {"pgathondu/render": [("latest", DC), ("v-test", DC), (B, DB), (A, DA)]}
+        updated, said = reconcile(sample(), world({}, [], [A], tags), "main", {"render": Hub("pgathondu/render", COMMIT)})
+        self.assertEqual(updated["services"]["render"]["image"], f"pgathondu/render:{B}@{DB}")
+        self.assertEqual(len(said), 1)
 
-    def test_the_same_reference_again_changes_nothing(self) -> None:
-        once, _ = apply(sample(), [f"pgathondu/rust-runner:abc@{DIGEST}"], "c1")
-        twice, said = apply(once, [f"pgathondu/rust-runner:abc@{DIGEST}"], "c2")
-        self.assertIs(twice, once)
-        self.assertEqual(twice["serial"], 5)
-        self.assertEqual(said, [f"- rust-runner: already pgathondu/rust-runner:abc@{DIGEST}"])
+    def test_an_unfollowed_entry_is_never_moved(self) -> None:
+        seen = world({("pgathondu/rust-runner", A): DA}, [changeset(A, "rust-runner")], [A], {"redis": [("7.4", DA)]})
+        updated, _ = reconcile(sample(), seen, "main", {"rust-runner": Changesets("rust-runner")})
+        self.assertEqual(updated["services"]["redis"]["image"], "redis:latest")
+        self.assertEqual(updated["services"]["render"]["image"], f"pgathondu/render:{A}@{DA}")
 
-    def test_a_reference_without_a_digest_is_refused(self) -> None:
-        for reference in ["pgathondu/rust-runner:abc", "pgathondu/rust-runner@" + DIGEST, "pgathondu/rust-runner:abc@sha256:short", ""]:
-            with self.assertRaises(Refused, msg=reference):
-                apply(sample(), [reference], "c")
+    def test_following_a_service_the_release_lacks_is_unreadable(self) -> None:
+        with self.assertRaises(Unreadable):
+            reconcile(sample(), world({}, [], []), "main", {"ghost": Changesets("ghost")})
 
-    def test_a_registry_port_is_not_a_tag(self) -> None:
-        self.assertEqual(repository("registry.example:5000/team/app:1"), "registry.example:5000/team/app")
-        self.assertEqual(repository("redis:7.4@" + DIGEST), "redis")
-        self.assertEqual(repository("some-render:local"), "some-render")
-        self.assertEqual(repository("nats"), "nats")
+    def test_the_checked_in_sources_name_real_services(self) -> None:
+        release = json.loads(RELEASE.read_text())
+        for name in list(SOURCES) + list(HELD):
+            self.assertIn(name, release["services"])
+        self.assertFalse(set(SOURCES) & set(HELD), "a held entry is not also followed")
 
     def test_the_file_keeps_r1_s_shape_and_round_trips(self) -> None:
         text = RELEASE.read_text()
-        release = json.loads(text)
-        self.assertEqual(render(release), text, "release.json is written exactly as render writes it")
-        for name in HELD:
-            self.assertIn(name, release["services"], "a held entry names a real service")
+        self.assertEqual(render(json.loads(text)), text, "release.json is written exactly as render writes it")
 
-    def test_main_writes_the_file_and_prints_the_changes(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "release.json"
-            path.write_text(render(sample()))
-            updated, said = apply(json.loads(path.read_text()), [f"pgathondu/rust-runner:abc@{DIGEST}"], "c")
-            path.write_text(render(updated))
-            self.assertEqual(json.loads(path.read_text())["services"]["rust-runner"]["image"], f"pgathondu/rust-runner:abc@{DIGEST}")
-            self.assertEqual(len(said), 1)
+    def test_the_checked_in_changesets_all_read(self) -> None:
+        for found in changesets(CHANGESETS):
+            self.assertIn("source_sha", found)
 
 
 if __name__ == "__main__":

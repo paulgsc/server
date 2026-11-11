@@ -155,9 +155,10 @@ jobs:
         run: cargo test -q -p envctl --bin envctl 'deploy::'
       - name: Nothing home runs calls python
         run: cargo test -q -p envctl --test home_runs_no_python
-      # CI's half of home's release (R2, #789): release-lock.yml writes each
-      # published image in by tag and digest, never a held entry or a tag alone.
-      - name: A publish moves home's release
+      # CI's half of home's release (R2, #789; docs/release.md): each run
+      # reconciles it with what is published, idempotent and order-free, by
+      # digest, never moving a held or unfollowed entry.
+      - name: Home's release follows what is published
         run: python3 scripts/release_lock.py --self-test
 
   # The contract epoch (apps/servers/file_host/src/contract.rs) only rises,

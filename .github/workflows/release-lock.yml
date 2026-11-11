@@ -1,54 +1,48 @@
-# Home's release moves when an image is published (RELEASE R2, #789; epic #787).
+# Home's release follows what has been published (RELEASE R2, #789; epic #787;
+# docs/release.md says what it promises).
 #
 # `deploy/home/release.json` names every image compose starts on home (R1,
-# #788). This workflow writes a newly published image into it, by tag and
-# digest, through `scripts/release_lock.py`, and opens or updates one release
-# pull request, `automation/release`, which auto-merges once its checks pass
-# (C119: each image keeps the one approval it has where it is published, and
-# forming the set adds none). Two callers:
+# #788). Each run reconciles it: `scripts/release_lock.py` works out, from
+# the sources of truth alone (main's image changesets and Docker Hub's tags),
+# the newest published reference of every image the release follows, and
+# writes main's release with those. If that differs from main, it becomes the
+# one release pull request, `automation/release`, which auto-merges once its
+# checks pass (C119: each image keeps the one approval it has where it is
+# published, and forming the set adds none).
 #
-# - publish-image-changesets.yml, after server's images are pushed: each
-#   pushed image's digest is read back from Docker Hub by the tag push-image
-#   gives it (`pgathondu/<repo_suffix>:<source_sha>`).
-# - paulgsc/some-ui's www and render releases (U1, #791), through
-#   `gh workflow run release-lock.yml -f image=<repo>:<tag>@sha256:<digest>`
-#   with its `SERVER_ROUTES_DISPATCH_TOKEN`.
+# A run carries no images of its own: what started it is only a reason to
+# look. So any run computes the whole set, and the one concurrency group's
+# single pending slot loses nothing when GitHub cancels a queued run for a
+# newer one: the newer one sees everything the cancelled one would have.
 #
-# A pull request this workflow opens with the default GITHUB_TOKEN gets its
-# checks in an approval-required state (docs/assurance.md, "A pull request the
-# image bot … opens"), so it would wait for "Approve workflows to run" and
-# never auto-merge. With the `RELEASE_BOT_TOKEN` secret (a token on this
-# repository with Contents and Pull requests read/write) its checks run as
-# anyone's, and auto-merge completes it. Without the secret it still opens the
-# pull request and asks for auto-merge; someone approves its runs.
+# It runs after server's images are pushed (publish-image-changesets.yml's
+# `release` job), when some-ui's www and render releases dispatch it (U1,
+# #791, `gh workflow run release-lock.yml` with SERVER_ROUTES_DISPATCH_TOKEN),
+# and by hand.
 #
-# Runs are not queued behind one another: GitHub keeps one pending run per
-# concurrency group and cancels the rest, which would drop a published image
-# for good. Instead each run forms the release afresh on main's
-# release.json, re-applying what the pending release already
-# carries (its branch, while that branch's serial is ahead of main's), and
-# pushes with a lease on the branch it read, trying again when another run
-# pushed first. So no run's image is lost, and none reverts a
-# change main made to the release since the pull request opened.
+# A pull request opened with the default GITHUB_TOKEN gets its checks in an
+# approval-required state (docs/assurance.md, "A pull request the image bot …
+# opens"), so it waits for "Approve workflows to run" before auto-merge can
+# complete. With the `RELEASE_BOT_TOKEN` secret (a token on this repository
+# with Contents and Pull requests read/write) its checks run as anyone's and
+# auto-merge completes it. Whether to add it is the owner's call.
 name: Release lock
 on:
   workflow_call:
-    inputs:
-      matrix:
-        description: "The image changesets publish-image-changesets.yml pushed (its matrix)"
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
-      image:
-        description: "A published image by tag and digest: repo:tag@sha256:<64 hex>"
-        required: true
+      reason:
+        description: "Why to look (a published image, say). Only logged: the run reads the sources itself."
+        required: false
         type: string
 permissions:
   contents: read
+concurrency:
+  group: release-lock
+  cancel-in-progress: false
 jobs:
   release:
-    name: Form the release
+    name: Reconcile the release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -58,94 +52,50 @@ jobs:
       GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Checkout repository
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
-      - name: Read each published image's digest
+      - name: Reconcile the release with what has been published
+        id: reconcile
         env:
-          MATRIX: ${{ inputs.matrix }}
-          IMAGE: ${{ inputs.image }}
+          REASON: ${{ inputs.reason }}
         run: |
           set -euo pipefail
-          : > "$RUNNER_TEMP/published.txt"
-          if [ -n "${IMAGE:-}" ]; then
-            printf '%s\n' "$IMAGE" >> "$RUNNER_TEMP/published.txt"
+          [ -z "${REASON:-}" ] || echo "Started for: $REASON"
+          python3 scripts/release_lock.py > "$RUNNER_TEMP/changes.md"
+          cat "$RUNNER_TEMP/changes.md"
+          if git diff --quiet -- deploy/home/release.json; then
+            echo "main's release already names the newest of everything it follows."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            jq -r '.include[] | "pgathondu/\(.repo_suffix):\(.source_sha)"' <<< "$MATRIX" | while read -r tagged; do
-              digest=$(docker buildx imagetools inspect "$tagged" --format '{{json .Manifest}}' | jq -er .digest)
-              printf '%s@%s\n' "$tagged" "$digest" >> "$RUNNER_TEMP/published.txt"
-            done
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-          cat "$RUNNER_TEMP/published.txt"
-      - name: Form the release on main and push it
-        id: form
+      # The branch is main plus this release, whatever it held before: the
+      # run computed the whole set, so nothing on it is owed to an earlier run.
+      - name: Push the release branch
+        if: steps.reconcile.outputs.changed == 'true'
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          for attempt in 1 2 3 4 5; do
-            git fetch -q origin main
-            git checkout -q --detach origin/main
-            # What the branch holds now, for the lease: empty when it does not exist.
-            leased=""
-            if git fetch -q origin "refs/heads/$RELEASE_BRANCH" 2>/dev/null; then
-              leased=$(git rev-parse FETCH_HEAD)
-            fi
-            args=()
-            # The branch's images are pending while its serial is ahead of
-            # main's, whether or not its pull request is open yet (another run
-            # may have pushed and not opened it). A merged release brought
-            # main's serial up to it, so it is stale then; so is a head
-            # someone closed unmerged, which is a release they turned down.
-            if [ -n "$leased" ]; then
-              main_serial=$(jq -e .serial deploy/home/release.json)
-              branch_serial=$(git show "$leased:deploy/home/release.json" | jq -e .serial)
-              turned_down=$(gh pr list --head "$RELEASE_BRANCH" --state closed --json headRefOid,mergedAt \
-                --jq "[.[] | select(.mergedAt == null and .headRefOid == \"$leased\")] | length")
-            fi
-            if [ -n "$leased" ] && [ "$branch_serial" -gt "$main_serial" ] && [ "$turned_down" = 0 ]; then
-              while read -r reference; do args+=(--set "$reference"); done < <(
-                git show "$leased:deploy/home/release.json" | jq -r '.services[].image | select(test("@sha256:"))')
-            fi
-            while read -r reference; do args+=(--set "$reference"); done < "$RUNNER_TEMP/published.txt"
-            python3 scripts/release_lock.py --server-commit "$(git rev-parse origin/main)" "${args[@]}" > "$RUNNER_TEMP/changes.md"
-            cat "$RUNNER_TEMP/changes.md"
-            if git diff --quiet -- deploy/home/release.json; then
-              echo "The release is main's already; nothing to propose."
-              echo "pushed=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            git commit -q -m "chore(release): move home's release to the newly published images" -- deploy/home/release.json
-            if git push -q --force-with-lease="refs/heads/$RELEASE_BRANCH:$leased" origin "HEAD:refs/heads/$RELEASE_BRANCH"; then
-              echo "pushed=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "Another run moved $RELEASE_BRANCH first; forming the release again (attempt $attempt)."
-            sleep $((attempt * 5))
-          done
-          echo "::error::Could not push $RELEASE_BRANCH after 5 attempts"
-          exit 1
+          git commit -q -m "chore(release): home's release follows the newest published images" -- deploy/home/release.json
+          git push -q --force origin "HEAD:refs/heads/$RELEASE_BRANCH"
       - name: Open the release pull request and ask for auto-merge
-        if: steps.form.outputs.pushed == 'true'
+        if: steps.reconcile.outputs.changed == 'true'
         run: |
           set -euo pipefail
-          # Read again: a run that pushed after this one may have opened it.
+          body="Home's next release (\`deploy/home/release.json\`, epic #787): main's release with every image it follows at its newest published reference, by tag and digest (docs/release.md).
+
+          $(cat "$RUNNER_TEMP/changes.md")
+
+          Formed by \`release-lock.yml\` and merged by auto-merge once its checks pass (C119). Home applies it at the next \`make home-deploy\`, or when a client needs a newer contract epoch."
           number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
-          body="Home's next release (\`deploy/home/release.json\`, epic #787): every image newly published since the last one, by tag and digest, formed on main as it is now.
-
-          $(cat "$RUNNER_TEMP/changes.md" 2>/dev/null || true)
-
-          Opened by \`release-lock.yml\` and merged by auto-merge once its checks pass (C119). Home applies it at the next \`make home-deploy\`, or when a client needs a newer contract epoch."
           if [ -z "$number" ]; then
-            # Another run may open it between the read and this create: then take theirs.
-            if created=$(gh pr create --base main --head "$RELEASE_BRANCH" --title "chore(release): home's next release" --body "$body"); then
-              number=$(grep -oE '[0-9]+$' <<< "$created")
-            else
-              number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number')
-              gh pr edit "$number" --body "$body"
-            fi
+            created=$(gh pr create --base main --head "$RELEASE_BRANCH" --title "chore(release): home's next release" --body "$body")
+            number=$(grep -oE '[0-9]+$' <<< "$created")
           else
             gh pr edit "$number" --body "$body"
           fi
