@@ -162,6 +162,25 @@ size (`voice_note`, the mailbox tables), `SUM(length(body))` on
 `size` counts a body once per fetch, not the bytes held), plus the database's
 bytes.
 
+## Which SQLite files are opened
+
+**Invariant: every SQLite file a binary here opens was written by this
+deployment.** That covers file_host's `DATABASE_URL` and its `-wal`, the
+backup `crate::migrate` writes with `VACUUM INTO` and reopens read-only to
+verify, and the `DATABASE_URL` an operator binary is pointed at. All of it
+lives under home's storage, which only file_host and the owner write.
+Restoring a backup is a manual owner step (README, "Deploying to home"). No
+path opens a database or `-wal` that a client, an upload or another host
+supplied.
+
+This invariant carries `deny.toml`'s ignore of RUSTSEC-2026-0459 (#764). The
+bundled SQLite 3.46.0 above predates 3.54.0, and a crafted database and
+`-wal` pair can make it return uninitialized memory. No sqlx release yet
+reaches the `libsqlite3-sys` that fixes it. A change that opens a database
+someone else supplied, such as an import of a client's file or an uploaded
+backup, breaks this invariant. It must first remove that ignore, which needs
+the sqlx upgrade.
+
 ## Deliberately not measured
 
 - **No per-request byte accounting.** Bytes per unit of work come from
