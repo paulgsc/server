@@ -1,6 +1,6 @@
 services:
   redis:
-    image: redis:latest
+    image: ${IMAGE_REDIS:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: some-redis
     # Who the kernel kills first when home runs out of memory: protected
     # (docs/home-compute.md, "Who is killed first").

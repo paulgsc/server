@@ -12,7 +12,7 @@
 # Monitoring port 8222 is retained — the healthcheck uses it.
 services:
   nats:
-    image: nats:latest
+    image: ${IMAGE_NATS:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: nats-server
     # Who the kernel kills first when home runs out of memory: protected
     # (docs/home-compute.md, "Who is killed first").

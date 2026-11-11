@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -64,7 +65,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = REPO_ROOT / "infra" / "compose" / "rust_runner.yml"
 PROJECT = "rust-runner-check"
 CONTAINER = "rust-runner"
-IMAGE = "pgathondu/rust-runner:latest"
+# The runner's image as home's release names it (deploy/home/release.json,
+# #788): compose reads it as ${IMAGE_RUST_RUNNER}, so the check runs on what
+# home would.
+RELEASE = REPO_ROOT / "deploy" / "home" / "release.json"
+IMAGE = json.loads(RELEASE.read_text())["services"]["rust-runner"]["image"]
 CLIENT_UID = "10000"
 OTHER_UID = "10002"
 PROGRAM_ID = "10101"
@@ -100,7 +105,7 @@ class Failed(Exception):
 
 def compose(*args: str, stdin: str | None = None, check: bool = True, timeout: float = 600) -> subprocess.CompletedProcess[str]:
 	command = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), *args]
-	result = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=timeout, check=False)
+	result = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=timeout, check=False, env={**os.environ, "IMAGE_RUST_RUNNER": IMAGE})
 	if check and result.returncode != 0:
 		raise Failed(f"`{' '.join(command)}` failed ({result.returncode}):\n{result.stdout}{result.stderr}")
 	return result

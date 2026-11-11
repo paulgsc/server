@@ -215,8 +215,16 @@ once compose returns, and a running container keeps its environment. Compose
 runs with `--env-file /dev/null`, so a stray `.env` is read by nothing, and a
 compose variable the shell happens to export is dropped unless the role's
 file sets it. `REPO_ROOT` comes from make (`$(CURDIR)`), and so does
-`ENV_DIR`. A bare `docker compose` stops on the first of them it lacks,
-naming it, which is why every compose command goes through `make compose`.
+`ENV_DIR`. Every image compose starts comes from the role's release,
+`deploy/<role>/release.json` (RELEASE #787, R1 #788): each service's
+`image:` is `${IMAGE_<SERVICE>:?…}` (`file-host` reads `IMAGE_FILE_HOST`),
+and envctl sets those from the release, never from a deployment file or the
+shell. It is the one plain file under `deploy/`, since an image reference is
+not secret. To move an image, change its line there; `make deploy-check`
+refuses an `image:` written any other way, a service the release does not
+name, and a release entry no service starts. A bare `docker compose` stops on
+the first of these variables it lacks, naming it, which is why every compose
+command goes through `make compose`.
 
 The preflight checks every service labelled `env-schema` against that
 binary's schema, as compose would start it: its file, and its service's own

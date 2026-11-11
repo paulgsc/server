@@ -1,6 +1,6 @@
 services:
   orchestrator:
-    image: pgathondu/orchestrator:latest
+    image: ${IMAGE_ORCHESTRATOR:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: orchestrator-service
     # Who the kernel kills first when home runs out of memory: interactive
     # (docs/home-compute.md, "Who is killed first").
