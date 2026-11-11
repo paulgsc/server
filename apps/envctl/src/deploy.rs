@@ -3,7 +3,7 @@
 //! (`envctl deploy`), in the checkout (README.md, "Deploying to home"); the
 //! on-demand unit (`nix/modules/home-deploy.nix`) runs `envctl deploy
 //! --on-demand`. It is Rust, like everything else home runs: home has no
-//! `python3` (server#PRNUM moved it here from `scripts/deploy.py`).
+//! `python3` (server#786 moved it here from `scripts/deploy.py`).
 //!
 //! In order:
 //!

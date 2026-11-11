@@ -1,6 +1,6 @@
 //! Nothing home runs calls python: home (NixOS) has no `python3` on PATH,
 //! and `make home-deploy` once failed there with `make: python3: No such
-//! file or directory` because the deploy was a python script (server#PRNUM).
+//! file or directory` because the deploy was a python script (server#786).
 //! Home's commands are the Makefile's targets and the NixOS modules' units,
 //! and whatever under `scripts/` they name; this holds all of them to it.
 //! CI's own checks under `scripts/` run on GitHub's runners and stay python,

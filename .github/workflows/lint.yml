@@ -140,7 +140,7 @@ jobs:
   # and that it never touches the database, run against a simulated host and
   # clock; and that its service is the compose file's. Then that nothing
   # home runs (the Makefile, nix/modules, the scripts they name) calls
-  # python, which home does not have (server#PRNUM); test.nix holds the unit.
+  # python, which home does not have (server#786); test.nix holds the unit.
   # No path gate: envctl alone builds in about a minute.
   deploy_script:
     name: Deploy script

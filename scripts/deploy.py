@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """DEAD CODE: nothing runs this. Home's deploy is `envctl deploy`
-(apps/envctl/src/deploy.rs), since home has no python3 (server#PRNUM). This
+(apps/envctl/src/deploy.rs), since home has no python3 (server#786). This
 file stays only because some-ui's assurance ledger still cites it, and a
 `server:` path the ledger cites may not be removed; it is deleted once the
 ledger cites the Rust file instead. Change apps/envctl/src/deploy.rs, never
