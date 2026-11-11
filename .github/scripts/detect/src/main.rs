@@ -18,8 +18,14 @@ struct ImageSpec {
 	needs_sqlx: bool,
 	needs_migrations: bool,
 
+	/// The image's application crate; None for an image built from no crate
+	/// of this workspace (kokoro: a pinned base and a script).
 	#[serde(skip_serializing)]
-	manifest: &'static str,
+	manifest: Option<&'static str>,
+	/// Files or directories, besides the Dockerfile, whose change rebuilds
+	/// the image: an image with no crate names what it copies in.
+	#[serde(skip_serializing)]
+	inputs: &'static [&'static str],
 }
 
 #[derive(Serialize)]
@@ -36,7 +42,8 @@ const IMAGES: &[ImageSpec] = &[
 		repo_suffix: "server",
 		needs_sqlx: true,
 		needs_migrations: true,
-		manifest: "apps/servers/file_host/Cargo.toml",
+		manifest: Some("apps/servers/file_host/Cargo.toml"),
+		inputs: &[],
 	},
 	ImageSpec {
 		name: "maishatu-obs",
@@ -44,7 +51,8 @@ const IMAGES: &[ImageSpec] = &[
 		repo_suffix: "obs",
 		needs_sqlx: false,
 		needs_migrations: false,
-		manifest: "apps/some-obs/Cargo.toml",
+		manifest: Some("apps/some-obs/Cargo.toml"),
+		inputs: &[],
 	},
 	ImageSpec {
 		name: "orchestrator",
@@ -52,7 +60,8 @@ const IMAGES: &[ImageSpec] = &[
 		repo_suffix: "orchestrator",
 		needs_sqlx: false,
 		needs_migrations: false,
-		manifest: "apps/orchestrator/Cargo.toml",
+		manifest: Some("apps/orchestrator/Cargo.toml"),
+		inputs: &[],
 	},
 	// Rust Rounds' sandboxed recorder (paulgsc/some-ui#2234): the pinned
 	// toolchain plus one binary. No database.
@@ -62,7 +71,20 @@ const IMAGES: &[ImageSpec] = &[
 		repo_suffix: "rust-runner",
 		needs_sqlx: false,
 		needs_migrations: false,
-		manifest: "crates/rust_runner/Cargo.toml",
+		manifest: Some("crates/rust_runner/Cargo.toml"),
+		inputs: &[],
+	},
+	// The call render's speaker (infra/compose/call-render.yml): Kokoro v1.0
+	// on a base pinned by digest, plus infra/kokoro/say.py. Published so home
+	// runs it by digest from its release (RELEASE R2b, #805), not a local build.
+	ImageSpec {
+		name: "kokoro",
+		dockerfile: "./infra/docker/Dockerfile.kokoro",
+		repo_suffix: "kokoro",
+		needs_sqlx: false,
+		needs_migrations: false,
+		manifest: None,
+		inputs: &["infra/kokoro"],
 	},
 ];
 
@@ -157,7 +179,10 @@ fn is_build_pipeline_file(file: &Path, workspace_root: &Path) -> bool {
 /// canonicalized, but they still have to rebuild the image which previously
 /// contained them.
 fn is_image_crate_file(image: &ImageSpec, file: &Path, workspace_root: &Path) -> bool {
-	let manifest = normalize_path(Path::new(image.manifest), workspace_root);
+	let Some(manifest) = image.manifest else {
+		return false;
+	};
+	let manifest = normalize_path(Path::new(manifest), workspace_root);
 	let crate_dir = manifest.parent().expect("image manifest must have a parent directory");
 	is_under_dir(file, crate_dir)
 }
@@ -242,6 +267,15 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 		}
 	}
 
+	// What an image copies in besides its crate (kokoro's script).
+	for file in changed_files {
+		let normalized_file = normalize_path(file, workspace_root);
+		if image.inputs.iter().any(|input| is_under_dir(&normalized_file, &normalize_path(Path::new(input), workspace_root))) {
+			eprintln!("  ✓ Image input changed: {}", file.display());
+			return true;
+		}
+	}
+
 	// The server's schema is owned by the hoisted workspace migrations
 	// directory rather than by an individual crate in its dependency graph.
 	if image.needs_migrations {
@@ -255,10 +289,16 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 		}
 	}
 
+	// An image built from no crate depends on nothing in the cargo graph.
+	let Some(manifest) = image.manifest else {
+		eprintln!("  ✗ No relevant changes detected (no crate)");
+		return false;
+	};
+
 	// Find the package by manifest path
 	let pkg = metadata.packages.iter().find(|p| {
 		let pkg_manifest = Path::new(&p.manifest_path);
-		let expected_manifest = normalize_path(Path::new(image.manifest), workspace_root);
+		let expected_manifest = normalize_path(Path::new(manifest), workspace_root);
 		pkg_manifest == expected_manifest
 	});
 
@@ -268,7 +308,7 @@ fn needs_rebuild(image: &ImageSpec, changed_files: &[PathBuf], metadata: &Metada
 			p
 		}
 		None => {
-			eprintln!("  ✗ Package not found for manifest: {}", image.manifest);
+			eprintln!("  ✗ Package not found for manifest: {manifest}");
 			return false;
 		}
 	};
@@ -353,7 +393,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-	use super::{is_image_crate_file, normalize_path, IMAGES};
+	use super::{is_image_crate_file, is_under_dir, normalize_path, IMAGES};
 	use std::path::Path;
 
 	#[test]
@@ -370,5 +410,18 @@ mod tests {
 		let obs_file = normalize_path(Path::new("apps/some-obs/src/main.rs"), workspace_root);
 
 		assert!(!is_image_crate_file(&IMAGES[0], &obs_file, workspace_root));
+	}
+
+	#[test]
+	fn an_image_with_no_crate_owns_no_crate_file_and_rebuilds_on_its_inputs() {
+		let workspace_root = Path::new("/tmp/detect-workspace");
+		let kokoro = IMAGES.iter().find(|image| image.name == "kokoro").unwrap();
+		let server_file = normalize_path(Path::new("apps/servers/file_host/src/main.rs"), workspace_root);
+		assert!(!is_image_crate_file(kokoro, &server_file, workspace_root));
+		let script = normalize_path(Path::new("infra/kokoro/say.py"), workspace_root);
+		assert!(kokoro
+			.inputs
+			.iter()
+			.any(|input| is_under_dir(&script, &normalize_path(Path::new(input), workspace_root))));
 	}
 }
