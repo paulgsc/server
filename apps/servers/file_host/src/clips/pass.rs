@@ -480,7 +480,19 @@ enum Put {
 async fn put(folder: &Path, file: &str, bytes: &[u8]) -> Put {
 	let target = folder.join(file);
 	let partial = folder.join(String::from(".") + file + ".partial");
-	if tokio::fs::create_dir_all(folder).await.is_err() || tokio::fs::write(&partial, bytes).await.is_err() {
+	if tokio::fs::create_dir_all(folder).await.is_err() {
+		return Put::Failed;
+	}
+	// A pass that stopped between the link and the removal below leaves the
+	// partial as a second name of a kept frame: writing through it would
+	// rewrite that frame. So it is unlinked first (the frame keeps its own
+	// name), and the new one is made exclusively, a fresh file or nothing.
+	match tokio::fs::remove_file(&partial).await {
+		Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Put::Failed,
+		_ => {}
+	}
+	if !write_new(&partial, bytes).await {
+		let _ = tokio::fs::remove_file(&partial).await;
 		return Put::Failed;
 	}
 	let linked = tokio::fs::hard_link(&partial, &target).await;
@@ -494,6 +506,15 @@ async fn put(folder: &Path, file: &str, bytes: &[u8]) -> Put {
 		},
 		Err(_) => Put::Failed,
 	}
+}
+
+/// Writes `bytes` to `path` as a file made here, refusing one already there.
+async fn write_new(path: &Path, bytes: &[u8]) -> bool {
+	use tokio::io::AsyncWriteExt;
+	let Ok(mut file) = tokio::fs::OpenOptions::new().write(true).create_new(true).open(path).await else {
+		return false;
+	};
+	file.write_all(bytes).await.is_ok() && file.flush().await.is_ok()
 }
 
 #[cfg(test)]
@@ -743,6 +764,14 @@ mod tests {
 		assert_eq!((pass.kept, pass.failures), (0, vec!["differs"]));
 		assert_eq!(std::fs::read(kept.join("01.png")).unwrap(), png(b"older"));
 		assert!(rows(&pool).await.is_empty());
+
+		// A pass that stopped after the link left its partial as a second name
+		// of a kept frame: other bytes are refused, and the frame is untouched.
+		std::fs::hard_link(kept.join("01.png"), kept.join(".01.png.partial")).unwrap();
+		let pass = run_once(&pool, &fake, &folders, &clock).await.unwrap();
+		assert_eq!((pass.kept, pass.failures), (0, vec!["differs"]));
+		assert_eq!(std::fs::read(kept.join("01.png")).unwrap(), png(b"older"), "never rewritten through a leftover partial");
+		assert!(!kept.join(".01.png.partial").exists());
 
 		// The same bytes already there (a pass stopped before its row): kept.
 		std::fs::remove_file(kept.join("01.png")).unwrap();
