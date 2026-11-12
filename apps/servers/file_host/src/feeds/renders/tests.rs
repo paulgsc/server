@@ -192,7 +192,9 @@ fn each_episode_is_in_one_place() {
 		[Episode {
 			feed: String::from("call"),
 			key: String::from("2026-10-23"),
-			at: NOW - 15 * 86_400
+			at: NOW - 15 * 86_400,
+			template: None,
+			expires_at: None,
 		}]
 	);
 	assert_eq!(read.failed.len(), 1);
@@ -318,6 +320,8 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		key: String::from("2026-11-06"),
 		at: 1,
 		failure: failure_in(refused),
+		template: None,
+		reason: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "recorder", "exit": 1 }));
@@ -326,6 +330,8 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		key: String::from("2026-11-06"),
 		at: 1,
 		failure: failure_in(home),
+		template: None,
+		reason: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "home", "exit": null }));
@@ -541,6 +547,21 @@ async fn a_template_s_previews_are_on_the_board_while_home_keeps_them() {
 		]
 	);
 	assert_eq!(read.coming, [], "a preview is expected on no day");
+	// What the phone links and says by: the template, a done one's day, a
+	// failed one's class.
+	assert_eq!(now.template.as_deref(), Some("conference-call"));
+	assert_eq!(
+		serde_json::to_value(&read.done[0]).unwrap(),
+		serde_json::json!({ "feed": "preview", "key": ready, "at": NOW - 3_600, "template": "conference-call", "expiresAt": NOW - 3_600 + 86_400 })
+	);
+	assert_eq!(
+		serde_json::to_value(&read.waiting[0]).unwrap(),
+		serde_json::json!({ "feed": "preview", "key": queued, "at": NOW - 5 * 3_600, "template": "rust-essay" })
+	);
+	assert_eq!(
+		read.failed.iter().map(|f| (f.template.as_deref(), f.reason)).collect::<Vec<_>>(),
+		[(Some("playoff-delta-legend"), Some("overdue")), (Some("playoff-delta-week"), Some("render"))]
+	);
 }
 
 #[tokio::test]

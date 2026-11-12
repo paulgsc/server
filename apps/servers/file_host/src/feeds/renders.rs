@@ -39,6 +39,10 @@
 //! failed once it ran past its day (`previews`' deadline, its request
 //! renamed `<id>.overdue`), and done only while `file_host` keeps it: a
 //! day after it was made it is off the board, as it is off the drive.
+//! Each preview row also names its template (the phone links its page), a
+//! done one when home lets it go (`expiresAt`), and a failed one why, as
+//! `previews`' short class (`reason`): fields only a preview's row carries, so
+//! every other row reads as it did.
 //!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
 //! an episode a week), a `stat` per episode, and a handful of small files,
@@ -224,6 +228,9 @@ pub struct FeedSeen {
 	pub failed: BTreeMap<String, (i64, Failure)>,
 	/// Each episode the owner let go.
 	pub let_go: BTreeSet<String>,
+	/// Of the failed, why, as a short class, a preview's only
+	/// (`previews`' classes, and `overdue`): never its log.
+	pub reasons: BTreeMap<String, &'static str>,
 	/// Of the failed, each that is over whatever `job.state` says: a preview
 	/// past its day, which the worker lets go.
 	pub ended: BTreeSet<String>,
@@ -258,6 +265,9 @@ pub struct Board {
 pub struct Now {
 	pub feed: String,
 	pub key: String,
+	/// A preview's template, its page on the phone.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub template: Option<String>,
 	pub state: Phase,
 	/// Unix seconds when the job began.
 	pub since: i64,
@@ -333,6 +343,13 @@ pub struct Episode {
 	pub feed: String,
 	pub key: String,
 	pub at: i64,
+	/// A preview's template, its page on the phone.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub template: Option<String>,
+	/// A done preview's: when home lets it go (Unix seconds), a day after it
+	/// was made.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub expires_at: Option<i64>,
 }
 
 /// An episode whose last attempt couldn't finish.
@@ -344,6 +361,13 @@ pub struct Failed {
 	pub at: i64,
 	#[serde(flatten)]
 	pub failure: Failure,
+	/// A preview's template, its page on the phone.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub template: Option<String>,
+	/// Why a preview failed, as a short class (`previews`: `no-sample`,
+	/// `too-long`, `too-large`, `render`, `overdue`), never its log.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub reason: Option<&'static str>,
 }
 
 /// How an attempt failed, as its log ends: never its words.
@@ -433,6 +457,16 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 	}
 }
 
+/// A preview's template, by its key; `None` for any other shelf's row.
+fn template_of(shelf: Option<Shelf>, key: &str) -> Option<String> {
+	(shelf == Some(Shelf::Preview)).then(|| crate::previews::template_of(key)).flatten().map(str::to_owned)
+}
+
+/// How long `file_host` keeps a made preview, in seconds.
+fn preview_life() -> i64 {
+	i64::try_from(crate::previews::LIFETIME.as_secs()).unwrap_or(i64::MAX)
+}
+
 /// The board, from what the feeds' folders said: pure, so every rule is
 /// tested.
 #[must_use]
@@ -455,6 +489,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 	let now_view = job.map(|job| Now {
 		feed: job.kind.clone(),
 		key: job.key.clone(),
+		template: template_of(Shelf::parse(&job.kind), &job.key),
 		state: job.state,
 		since: job.since,
 		state_since: job.state_since,
@@ -478,10 +513,13 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 		for (key, taken) in &seen.held {
 			let current = job.is_some_and(|job| job.kind == name && job.key == *key);
 			if let Some(made) = seen.videos.get(key) {
+				let template = template_of(Some(*feed), key);
 				done.push(Episode {
 					feed: name.to_owned(),
 					key: key.clone(),
 					at: *made,
+					expires_at: template.is_some().then(|| made.saturating_add(preview_life())),
+					template,
 				});
 			} else if let Some((at, failure)) = seen.failed.get(key).filter(|_| !current) {
 				failed.push(Failed {
@@ -489,12 +527,16 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					key: key.clone(),
 					at: *at,
 					failure: *failure,
+					template: template_of(Some(*feed), key),
+					reason: seen.reasons.get(key).copied(),
 				});
 			} else if !current {
 				waiting.push(Episode {
 					feed: name.to_owned(),
 					key: key.clone(),
 					at: *taken,
+					template: template_of(Some(*feed), key),
+					expires_at: None,
 				});
 			}
 		}
@@ -679,7 +721,7 @@ async fn previews_asked(requests: &Path) -> (Vec<Held>, BTreeMap<String, i64>) {
 /// off the drive; one past its deadline unmade failed, home's, whatever the
 /// worker last wrote.
 fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64) {
-	let life = i64::try_from(crate::previews::LIFETIME.as_secs()).unwrap_or(i64::MAX);
+	let life = preview_life();
 	let expired: Vec<String> = seen
 		.videos
 		.iter()
@@ -695,6 +737,7 @@ fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64
 			continue;
 		}
 		seen.failed.insert(key.clone(), (*at, Failure { by: FailedBy::Home, exit: None }));
+		seen.reasons.insert(key.clone(), "overdue");
 		seen.ended.insert(key.clone());
 	}
 }
@@ -731,7 +774,13 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 		name.push_str(".failed.log");
 		let log = status.join(name);
 		if let Some(at) = modified(&log).await {
-			let failure = tail(&log).await.as_deref().map_or(
+			let text = tail(&log).await;
+			if feed == Shelf::Preview {
+				seen
+					.reasons
+					.insert(episode.key.clone(), crate::previews::failure_class(text.as_deref().unwrap_or_default()));
+			}
+			let failure = text.as_deref().map_or(
 				Failure {
 					by: FailedBy::Recorder,
 					exit: None,

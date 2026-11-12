@@ -265,7 +265,7 @@ async fn job_in_progress(folders: &Folders) -> Option<(String, String, u64)> {
 
 /// Why a failed attempt failed, as a class: its log is the recorder's, and
 /// never leaves home.
-fn failure_class(log: &str) -> &'static str {
+pub(crate) fn failure_class(log: &str) -> &'static str {
 	// paulgsc/some-ui `tests/record/preview.ts` and
 	// `packages/video-render/src/policy.ts`, which word each refusal.
 	if log.contains("has no sample fill") {
