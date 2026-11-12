@@ -168,8 +168,8 @@ impl Job {
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
 	pub station: Station,
-	/// The scenes it has recorded this run.
-	pub scene: u32,
+	/// The scenes it has recorded this run, once it has recorded one.
+	pub scene: Option<u32>,
 	/// How many there are, once the recorder says.
 	pub scenes: Option<u32>,
 	/// Unix seconds when it reached its station.
@@ -197,15 +197,20 @@ impl Progress {
 			"assembling" => Station::Assembling,
 			_ => return None,
 		};
-		let scenes = match *fields.get("scenes")? {
-			"" => None,
-			scenes => Some(scenes.parse().ok()?),
+		// A count of none is no count: the phone reads each as above zero
+		// or null.
+		let count = |name: &str| -> Option<Option<u32>> {
+			match *fields.get(name)? {
+				"" => Some(None),
+				count => Some(Some(count.parse::<u32>().ok()?).filter(|count| *count > 0)),
+			}
 		};
+		let (scene, scenes) = (count("scene")?, count("scenes")?);
 		Some((
 			(*fields.get("id")?).to_owned(),
 			Self {
 				station,
-				scene: fields.get("scene")?.parse().ok()?,
+				scene,
 				scenes,
 				since: fields.get("since")?.parse().ok()?,
 			},

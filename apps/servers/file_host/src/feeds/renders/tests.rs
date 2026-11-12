@@ -612,7 +612,7 @@ fn progress_reads_as_the_worker_keeps_it() {
 			String::from("1794000000000000000"),
 			Progress {
 				station: Station::Recording,
-				scene: 5,
+				scene: Some(5),
 				scenes: Some(22),
 				since: 1_794_139_000,
 			}
@@ -637,7 +637,7 @@ fn progress_reads_as_the_worker_keeps_it() {
 fn progress_is_shown_only_while_the_job_renders_or_is_paused() {
 	let progress = Progress {
 		station: Station::Recording,
-		scene: 2,
+		scene: Some(2),
 		scenes: Some(6),
 		since: NOW - 30,
 	};
@@ -671,7 +671,7 @@ async fn a_run_s_progress_is_its_job_s_only() {
 	)
 	.unwrap();
 	let progress = read(&db, &folders, "", NOW).await.unwrap().now.unwrap().progress.unwrap();
-	assert_eq!((progress.station, progress.scene, progress.scenes), (Station::Assembling, 6, Some(6)));
+	assert_eq!((progress.station, progress.scene, progress.scenes), (Station::Assembling, Some(6), Some(6)));
 	std::fs::write(
 		lane.join("job.progress"),
 		"id=1793000000000000000\nstation=recording\nscene=6\nscenes=6\nsince=1794139100\n",
