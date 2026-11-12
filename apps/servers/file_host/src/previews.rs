@@ -21,7 +21,8 @@
 //!   `renders/preview-worker/<id>.failed.log`. A failed preview is never
 //!   tried again: the owner asks for another.
 //! - **Its state** is read from those files and the lane's `job.state`
-//!   ([`read`]), never kept here.
+//!   ([`read`]), never kept here. Studio › Renders lists each preview from
+//!   the same files (`feeds::renders`, its `preview` shelf).
 //! - **One at a time per template.** A request while one of the template is
 //!   still to be made answers that one ([`request`]).
 //! - **The deadline.** A request not ready [`LIFETIME`] after it was asked

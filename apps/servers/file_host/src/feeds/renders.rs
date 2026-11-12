@@ -32,6 +32,14 @@
 //! walk `file_host` gave the worker (`clips::WALKS_FOLDER`) waiting until its
 //! `walk.json` is made, or failed with its log, as any episode.
 //!
+//! **A template's preview** (SFEED12, `previews`) is on the board too, as
+//! the `preview` shelf, keyed by its id, `<template>-<UTC stamp>`: no feed,
+//! each request `file_host` wrote for the worker (`previews::REQUESTS_FOLDER`)
+//! waiting until its video is made, failed with its log, as any episode, or
+//! failed once it ran past its day (`previews`' deadline, its request
+//! renamed `<id>.overdue`), and done only while `file_host` keeps it: a
+//! day after it was made it is off the board, as it is off the drive.
+//!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
 //! an episode a week), a `stat` per episode, and a handful of small files,
 //! once per request. Nothing here adds a clock or a poll: the phone asks.
@@ -168,6 +176,9 @@ pub enum Shelf {
 	/// A clip's walk (`clips`): keyed `<clip>-<side>`, done once its
 	/// `walk.json` is made.
 	ClipWalk,
+	/// A template's preview (`previews`): keyed by its id,
+	/// `<template>-<UTC stamp>`, done once its video is made, while it lives.
+	Preview,
 }
 
 impl Shelf {
@@ -177,6 +188,7 @@ impl Shelf {
 		match self {
 			Self::Feed(feed) => feed.as_str(),
 			Self::ClipWalk => "clip-walk",
+			Self::Preview => "preview",
 		}
 	}
 
@@ -184,6 +196,7 @@ impl Shelf {
 	pub fn parse(kind: &str) -> Option<Self> {
 		match kind {
 			"clip-walk" => Some(Self::ClipWalk),
+			"preview" => Some(Self::Preview),
 			_ => Feed::parse(kind).map(Self::Feed),
 		}
 	}
@@ -194,6 +207,7 @@ impl Shelf {
 		match self {
 			Self::Feed(feed) => feed.video(),
 			Self::ClipWalk => crate::clips::WALK_FILE,
+			Self::Preview => crate::previews::VIDEO,
 		}
 	}
 }
@@ -210,6 +224,9 @@ pub struct FeedSeen {
 	pub failed: BTreeMap<String, (i64, Failure)>,
 	/// Each episode the owner let go.
 	pub let_go: BTreeSet<String>,
+	/// Of the failed, each that is over whatever `job.state` says: a preview
+	/// past its day, which the worker lets go.
+	pub ended: BTreeSet<String>,
 	/// When home took its newest episode, let go or not.
 	pub newest_taken: Option<i64>,
 	/// The seconds its last render rendered.
@@ -433,7 +450,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 	let job = job.filter(|job| {
 		Shelf::parse(&job.kind)
 			.and_then(|feed| feeds.iter().find(|(f, _)| *f == feed))
-			.is_none_or(|(_, seen)| !seen.let_go.contains(&job.key) && !seen.videos.contains_key(&job.key))
+			.is_none_or(|(_, seen)| !seen.let_go.contains(&job.key) && !seen.videos.contains_key(&job.key) && !seen.ended.contains(&job.key))
 	});
 	let now_view = job.map(|job| Now {
 		feed: job.kind.clone(),
@@ -514,6 +531,9 @@ pub struct Folders {
 	/// The clips' walks: what `file_host` gave the worker, and its renders and
 	/// status folders.
 	pub clip_walks: Option<(PathBuf, PathBuf, PathBuf)>,
+	/// The templates' previews: the requests `file_host` wrote for the
+	/// worker, and its renders and status folders.
+	pub previews: Option<(PathBuf, PathBuf, PathBuf)>,
 	/// The lane's folder: `job.state` and `lane`.
 	pub lane: PathBuf,
 }
@@ -544,6 +564,11 @@ impl Folders {
 				PathBuf::from(crate::clips::WALK_RENDERS_FOLDER),
 				PathBuf::from(crate::clips::WALK_STATUS_FOLDER),
 			)),
+			previews: Some((
+				PathBuf::from(crate::previews::REQUESTS_FOLDER),
+				PathBuf::from(crate::previews::RENDERS_FOLDER),
+				PathBuf::from(crate::previews::STATUS_FOLDER),
+			)),
 			lane: PathBuf::from(crate::call_weeks::render::STATUS_FOLDER),
 		}
 	}
@@ -572,6 +597,12 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 	}
 	if let Some((given, renders, status)) = &folders.clip_walks {
 		feeds.push((Shelf::ClipWalk, seen(Shelf::ClipWalk, &walks_given(given).await, &[], renders, status).await));
+	}
+	if let Some((requests, renders, status)) = &folders.previews {
+		let (asked, overdue) = previews_asked(requests).await;
+		let mut seen = seen(Shelf::Preview, &asked, &[], renders, status).await;
+		previews_lived(&mut seen, &overdue, now);
+		feeds.push((Shelf::Preview, seen));
 	}
 	let job = small(&folders.lane.join("job.state")).await.as_deref().and_then(Job::parse);
 	let lane = small(&folders.lane.join(crate::call_weeks::lane::DECISION)).await.as_deref().and_then(Lane::parse);
@@ -605,6 +636,67 @@ async fn walks_given(given: &Path) -> Vec<Held> {
 		held.push(Held { key, taken_at: at.to_rfc3339() });
 	}
 	held
+}
+
+/// Each preview asked for, by its request's name (`<id>.json`, or
+/// `<id>.overdue` once past its deadline), taken when it was asked (its id's
+/// stamp); and of those, each overdue, with when it was found so (the
+/// marker's time on the drive). A name that isn't a preview's id is never
+/// read, as the worker reads none.
+async fn previews_asked(requests: &Path) -> (Vec<Held>, BTreeMap<String, i64>) {
+	let (mut asked, mut overdue) = (Vec::new(), BTreeMap::new());
+	let Ok(mut entries) = tokio::fs::read_dir(requests).await else {
+		return (asked, overdue);
+	};
+	while let Ok(Some(entry)) = entries.next_entry().await {
+		let Ok(name) = entry.file_name().into_string() else { continue };
+		let (id, late) = match (name.strip_suffix(".json"), name.strip_suffix(".overdue")) {
+			(Some(id), _) => (id, false),
+			(_, Some(id)) => (id, true),
+			_ => continue,
+		};
+		let Some(at) = crate::previews::asked_at(id)
+			.and_then(|at| i64::try_from(at).ok())
+			.and_then(|at| DateTime::<Utc>::from_timestamp(at, 0))
+		else {
+			continue;
+		};
+		if late {
+			overdue.insert(id.to_owned(), modified(&entry.path()).await.unwrap_or_else(|| at.timestamp()));
+		}
+		if !asked.iter().any(|held: &Held| held.key == id) {
+			asked.push(Held {
+				key: id.to_owned(),
+				taken_at: at.to_rfc3339(),
+			});
+		}
+	}
+	(asked, overdue)
+}
+
+/// The previews as `previews` keeps them: one made is done only for its
+/// day (`previews::LIFETIME`), off the board after it as the prune takes it
+/// off the drive; one past its deadline unmade failed, home's, whatever the
+/// worker last wrote.
+fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64) {
+	let life = i64::try_from(crate::previews::LIFETIME.as_secs()).unwrap_or(i64::MAX);
+	let expired: Vec<String> = seen
+		.videos
+		.iter()
+		.filter(|(_, made)| made.saturating_add(life) <= now)
+		.map(|(key, _)| key.clone())
+		.collect();
+	for key in expired {
+		seen.videos.remove(&key);
+		seen.held.retain(|(held, _)| *held != key);
+	}
+	for (key, at) in overdue {
+		if seen.videos.contains_key(key) || !seen.held.iter().any(|(held, _)| held == key) {
+			continue;
+		}
+		seen.failed.insert(key.clone(), (*at, Failure { by: FailedBy::Home, exit: None }));
+		seen.ended.insert(key.clone());
+	}
 }
 
 /// A small file's text, or `None`.
