@@ -192,7 +192,9 @@ fn each_episode_is_in_one_place() {
 		[Episode {
 			feed: String::from("call"),
 			key: String::from("2026-10-23"),
-			at: NOW - 15 * 86_400
+			at: NOW - 15 * 86_400,
+			template: None,
+			expires_at: None,
 		}]
 	);
 	assert_eq!(read.failed.len(), 1);
@@ -318,6 +320,8 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		key: String::from("2026-11-06"),
 		at: 1,
 		failure: failure_in(refused),
+		template: None,
+		reason: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "recorder", "exit": 1 }));
@@ -326,6 +330,8 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		key: String::from("2026-11-06"),
 		at: 1,
 		failure: failure_in(home),
+		template: None,
+		reason: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "home", "exit": null }));
@@ -408,6 +414,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	let folders = Folders {
 		feeds: vec![(Feed::Call, renders, status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
 		clip_walks: None,
+		previews: None,
 		lane: status,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
@@ -452,6 +459,7 @@ async fn a_clips_walks_are_on_the_board_as_episodes_are() {
 	let folders = Folders {
 		feeds: vec![],
 		clip_walks: Some((given, renders, status)),
+		previews: None,
 		lane,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
@@ -464,4 +472,133 @@ async fn a_clips_walks_are_on_the_board_as_episodes_are() {
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["ledger-wake-before"]);
 	assert_eq!(read.waiting, [], "the walk in progress is not also waiting, and what isn't a walk is not read");
 	assert_eq!(read.coming, [], "a walk is expected on no day");
+}
+
+#[tokio::test]
+async fn a_template_s_previews_are_on_the_board_while_home_keeps_them() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let (requests, renders, status, lane) = (
+		dir.path().join("preview-requests"),
+		dir.path().join("preview"),
+		dir.path().join("preview-worker"),
+		dir.path().join("call-worker"),
+	);
+	for folder in [&requests, &renders, &status, &lane] {
+		std::fs::create_dir_all(folder).unwrap();
+	}
+	let at = |secs: i64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(secs).unwrap());
+	let touched = |path: &std::path::Path, secs: i64| std::fs::File::options().write(true).open(path).unwrap().set_modified(at(secs)).unwrap();
+	// NOW is 2026-11-08T12:00:00Z.
+	let (ready, expired, broken, overdue, queued, running) = (
+		"conference-call-20261108T060000Z",
+		"rust-essay-20261106T060000Z",
+		"playoff-delta-week-20261108T061000Z",
+		"playoff-delta-legend-20261107T050000Z",
+		"rust-essay-20261108T070000Z",
+		"conference-call-20261108T074500Z",
+	);
+	for id in [ready, expired, broken, queued, running] {
+		std::fs::write(requests.join(String::from(id) + ".json"), b"{}").unwrap();
+	}
+	std::fs::write(requests.join(String::from(overdue) + ".overdue"), b"{}").unwrap();
+	touched(&requests.join(String::from(overdue) + ".overdue"), NOW - 600);
+	// Neither a preview's id nor a whole request: never read.
+	std::fs::write(requests.join("podcast-20261108T060000Z.json"), b"{}").unwrap();
+	std::fs::write(requests.join(String::from(".") + queued + ".json"), b"{}").unwrap();
+	for (id, when) in [(ready, NOW - 3_600), (expired, NOW - 86_400 - 1)] {
+		std::fs::create_dir_all(renders.join(id)).unwrap();
+		std::fs::write(renders.join(id).join("preview.mp4"), b"mp4").unwrap();
+		touched(&renders.join(id).join("preview.mp4"), when);
+	}
+	std::fs::write(status.join(String::from(broken) + ".failed.log"), b"the recorder exited 3\n").unwrap();
+	touched(&status.join(String::from(broken) + ".failed.log"), NOW - 1_200);
+	std::fs::write(status.join("took"), b"400\n").unwrap();
+	let job = worker_text("rendering", NOW - 100, 100)
+		.replace("kind=call", "kind=preview")
+		.replace("key=2026-11-06", &(String::from("key=") + running));
+	std::fs::write(lane.join("job.state"), job).unwrap();
+	let folders = Folders {
+		feeds: vec![],
+		clip_walks: None,
+		previews: Some((requests, renders, status)),
+		lane,
+	};
+	let read = read(&db, &folders, "", NOW).await.unwrap();
+	let now = read.now.unwrap();
+	assert_eq!((now.feed.as_str(), now.key.as_str()), ("preview", running));
+	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9, "its bar is the last preview's time");
+	let rows = |rows: &[Episode]| rows.iter().map(|e| (e.feed.clone(), e.key.clone())).collect::<Vec<_>>();
+	let preview = |key: &str| (String::from("preview"), String::from(key));
+	assert_eq!(rows(&read.done), [preview(ready)], "one past its day is off the board");
+	assert!(
+		read.failed.iter().all(|f| f.key != expired) && read.waiting.iter().all(|e| e.key != expired),
+		"one made and past its day is gone, never failed: only one never made is"
+	);
+	assert_eq!(rows(&read.waiting), [preview(queued)]);
+	assert_eq!(
+		read.failed.iter().map(|f| (f.key.as_str(), f.at, f.failure)).collect::<Vec<_>>(),
+		[
+			(overdue, NOW - 600, Failure { by: FailedBy::Home, exit: None }),
+			(
+				broken,
+				NOW - 1_200,
+				Failure {
+					by: FailedBy::Recorder,
+					exit: Some(3)
+				}
+			),
+		]
+	);
+	assert_eq!(read.coming, [], "a preview is expected on no day");
+	// What the phone links and says by: the template, a done one's day, a
+	// failed one's class.
+	assert_eq!(now.template.as_deref(), Some("conference-call"));
+	assert_eq!(
+		serde_json::to_value(&read.done[0]).unwrap(),
+		serde_json::json!({ "feed": "preview", "key": ready, "at": NOW - 3_600, "template": "conference-call", "expiresAt": NOW - 3_600 + 86_400 })
+	);
+	assert_eq!(
+		serde_json::to_value(&read.waiting[0]).unwrap(),
+		serde_json::json!({ "feed": "preview", "key": queued, "at": NOW - 5 * 3_600, "template": "rust-essay" })
+	);
+	assert_eq!(
+		read.failed.iter().map(|f| (f.template.as_deref(), f.reason)).collect::<Vec<_>>(),
+		[(Some("playoff-delta-legend"), Some("overdue")), (Some("playoff-delta-week"), Some("render"))]
+	);
+}
+
+#[tokio::test]
+async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let (requests, renders, status, lane) = (
+		dir.path().join("preview-requests"),
+		dir.path().join("preview"),
+		dir.path().join("preview-worker"),
+		dir.path().join("call-worker"),
+	);
+	for folder in [&requests, &renders, &status, &lane] {
+		std::fs::create_dir_all(folder).unwrap();
+	}
+	let overdue = "conference-call-20261107T050000Z";
+	std::fs::write(requests.join(String::from(overdue) + ".overdue"), b"{}").unwrap();
+	// A render that landed after the deadline: `previews::read` calls it
+	// failed, and so does the board.
+	std::fs::create_dir_all(renders.join(overdue)).unwrap();
+	std::fs::write(renders.join(overdue).join("preview.mp4"), b"mp4").unwrap();
+	let job = worker_text("rendering", NOW - 100, 100)
+		.replace("kind=call", "kind=preview")
+		.replace("key=2026-11-06", &(String::from("key=") + overdue));
+	std::fs::write(lane.join("job.state"), job).unwrap();
+	let folders = Folders {
+		feeds: vec![],
+		clip_walks: None,
+		previews: Some((requests, renders, status)),
+		lane,
+	};
+	let read = read(&db, &folders, "", NOW).await.unwrap();
+	assert_eq!(read.now, None, "the worker lets an overdue preview go");
+	assert_eq!(read.failed.iter().map(|f| (f.key.as_str(), f.reason)).collect::<Vec<_>>(), [(overdue, Some("overdue"))]);
+	assert_eq!(read.done, [], "its late video is not done");
 }
