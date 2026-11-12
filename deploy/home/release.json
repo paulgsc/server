@@ -1,5 +1,5 @@
 {
-  "serial": 2,
+  "serial": 3,
   "server_commit": "f870c6de8bc28ba35683f8c605f659faa7a07858",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:latest"},
@@ -18,7 +18,7 @@
     "redis": {"image": "redis:latest"},
     "redis-exporter": {"image": "oliver006/redis_exporter:latest"},
     "redisinsight": {"image": "redislabs/redisinsight:latest"},
-    "render": {"image": "pgathondu/render:9453523dfda6e848335e07254e9515994c1fb04a@sha256:4e72af280f9d6063416a3a352a3762f3bc8f763bd06a5383af9833bdb01e5070"},
+    "render": {"image": "pgathondu/render:ad03474df8d4023904ef92d6d626b483419d21c7@sha256:644218c91b9eac79db1cf2005bbfe12f88ec0a99b708926fea155c33399c3a41"},
     "rust-runner": {"image": "pgathondu/rust-runner:249470f9481783dcc993ad3c8003254e51b629f0@sha256:4699847feb5d7cca47c27de347bfdaf6fa178721078256770274cd3c461c5db2"}
   }
 }
