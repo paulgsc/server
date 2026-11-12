@@ -44,6 +44,13 @@
 //! `previews`' short class (`reason`): fields only a preview's row carries, so
 //! every other row reads as it did.
 //!
+//! **How far a render is** (C138): the worker keeps the recorder's own
+//! count in `renders/call-worker/job.progress` as it goes (its station,
+//! `recording` or `assembling`, the scenes recorded, how many there are once
+//! the recorder says, and since when), and `now.progress` carries it while
+//! the job renders or is paused, when it is that job's (by its id). A count
+//! and a station: never a scene's name or a line of the recorder's.
+//!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
 //! an episode a week), a `stat` per episode, and a handful of small files,
 //! once per request. Nothing here adds a clock or a poll: the phone asks.
@@ -81,6 +88,10 @@ const TAIL_BYTES: u64 = 16 * 1024;
 /// The job in progress, as the worker writes it to `job.state`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
+	/// The worker's id for it, when `job.state` names one.
+	pub id: Option<String>,
+	/// How far the recorder is, from `job.progress`, when it is this job's.
+	pub progress: Option<Progress>,
 	/// `call`, `playoff-delta`, or a kind a later worker adds (a preview).
 	pub kind: String,
 	pub key: String,
@@ -128,6 +139,8 @@ impl Job {
 			return None;
 		}
 		Some(Self {
+			id: field("id").filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned),
+			progress: None,
 			kind: kind.to_owned(),
 			key: key.to_owned(),
 			since: field("since")?.parse().ok()?,
@@ -147,6 +160,61 @@ impl Job {
 			0
 		};
 		self.ran.saturating_add(running)
+	}
+}
+
+/// How far the recorder is, as the worker keeps it in `job.progress`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+	pub station: Station,
+	/// The scenes it has recorded this run, once it has recorded one.
+	pub scene: Option<u32>,
+	/// How many there are, once the recorder says.
+	pub scenes: Option<u32>,
+	/// Unix seconds when it reached its station.
+	pub since: i64,
+}
+
+/// Where in a render the recorder is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Station {
+	/// Recording its scenes, one by one.
+	Recording,
+	/// Putting the video together from them.
+	Assembling,
+}
+
+impl Progress {
+	/// The progress `job.progress`'s text says, with the id of the job it is
+	/// of, or `None` when it says none whole.
+	#[must_use]
+	pub fn parse(text: &str) -> Option<(String, Self)> {
+		let fields: BTreeMap<&str, &str> = text.lines().filter_map(|line| line.split_once('=')).collect();
+		let station = match *fields.get("station")? {
+			"recording" => Station::Recording,
+			"assembling" => Station::Assembling,
+			_ => return None,
+		};
+		// A count of none is no count: the phone reads each as above zero
+		// or null.
+		let count = |name: &str| -> Option<Option<u32>> {
+			match *fields.get(name)? {
+				"" => Some(None),
+				count => Some(Some(count.parse::<u32>().ok()?).filter(|count| *count > 0)),
+			}
+		};
+		let (scene, scenes) = (count("scene")?, count("scenes")?);
+		Some((
+			(*fields.get("id")?).to_owned(),
+			Self {
+				station,
+				scene,
+				scenes,
+				since: fields.get("since")?.parse().ok()?,
+			},
+		))
 	}
 }
 
@@ -282,6 +350,9 @@ pub struct Now {
 	/// a fresh decision.
 	pub stuck: bool,
 	pub estimate: Option<Estimate>,
+	/// How far the recorder is, while it renders or is paused: `null` while
+	/// it waits or finishes, or when the recorder has said nothing.
+	pub progress: Option<Progress>,
 }
 
 /// Why a job isn't rendering: the lane's reason, or `silent` when the lane
@@ -503,6 +574,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 				.and_then(|(_, seen)| seen.took),
 			now,
 		),
+		progress: job.progress.filter(|_| matches!(job.state, Phase::Rendering | Phase::Paused)),
 	});
 	let mut waiting = Vec::new();
 	let mut failed = Vec::new();
@@ -646,7 +718,12 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 		previews_lived(&mut seen, &overdue, now);
 		feeds.push((Shelf::Preview, seen));
 	}
-	let job = small(&folders.lane.join("job.state")).await.as_deref().and_then(Job::parse);
+	let mut job = small(&folders.lane.join("job.state")).await.as_deref().and_then(Job::parse);
+	if let Some(job) = job.as_mut() {
+		// A run's progress is its job's only: one left by another job is not.
+		let progress = small(&folders.lane.join("job.progress")).await.as_deref().and_then(Progress::parse);
+		job.progress = progress.filter(|(id, _)| job.id.as_deref() == Some(id.as_str())).map(|(_, progress)| progress);
+	}
 	let lane = small(&folders.lane.join(crate::call_weeks::lane::DECISION)).await.as_deref().and_then(Lane::parse);
 	let shelves: Vec<(Shelf, &FeedSeen)> = feeds.iter().map(|(shelf, seen)| (*shelf, seen)).collect();
 	Ok(board_of(&shelves, job.as_ref(), lane.as_ref(), now))
