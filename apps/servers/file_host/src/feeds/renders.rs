@@ -716,11 +716,21 @@ async fn previews_asked(requests: &Path) -> (Vec<Held>, BTreeMap<String, i64>) {
 	(asked, overdue)
 }
 
-/// The previews as `previews` keeps them: one made is done only for its
+/// The previews as `previews` keeps them: one past its deadline failed,
+/// home's, whatever the worker last wrote, even a video that landed after it
+/// (`previews::read` reads the marker first); one made is done only for its
 /// day (`previews::LIFETIME`), off the board after it as the prune takes it
-/// off the drive; one past its deadline unmade failed, home's, whatever the
-/// worker last wrote.
+/// off the drive.
 fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64) {
+	for (key, at) in overdue {
+		if !seen.held.iter().any(|(held, _)| held == key) {
+			continue;
+		}
+		seen.videos.remove(key);
+		seen.failed.insert(key.clone(), (*at, Failure { by: FailedBy::Home, exit: None }));
+		seen.reasons.insert(key.clone(), "overdue");
+		seen.ended.insert(key.clone());
+	}
 	let life = preview_life();
 	let expired: Vec<String> = seen
 		.videos
@@ -731,14 +741,6 @@ fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64
 	for key in expired {
 		seen.videos.remove(&key);
 		seen.held.retain(|(held, _)| *held != key);
-	}
-	for (key, at) in overdue {
-		if seen.videos.contains_key(key) || !seen.held.iter().any(|(held, _)| held == key) {
-			continue;
-		}
-		seen.failed.insert(key.clone(), (*at, Failure { by: FailedBy::Home, exit: None }));
-		seen.reasons.insert(key.clone(), "overdue");
-		seen.ended.insert(key.clone());
 	}
 }
 

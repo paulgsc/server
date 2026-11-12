@@ -531,6 +531,10 @@ async fn a_template_s_previews_are_on_the_board_while_home_keeps_them() {
 	let rows = |rows: &[Episode]| rows.iter().map(|e| (e.feed.clone(), e.key.clone())).collect::<Vec<_>>();
 	let preview = |key: &str| (String::from("preview"), String::from(key));
 	assert_eq!(rows(&read.done), [preview(ready)], "one past its day is off the board");
+	assert!(
+		read.failed.iter().all(|f| f.key != expired) && read.waiting.iter().all(|e| e.key != expired),
+		"one made and past its day is gone, never failed: only one never made is"
+	);
 	assert_eq!(rows(&read.waiting), [preview(queued)]);
 	assert_eq!(
 		read.failed.iter().map(|f| (f.key.as_str(), f.at, f.failure)).collect::<Vec<_>>(),
@@ -579,6 +583,10 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	}
 	let overdue = "conference-call-20261107T050000Z";
 	std::fs::write(requests.join(String::from(overdue) + ".overdue"), b"{}").unwrap();
+	// A render that landed after the deadline: `previews::read` calls it
+	// failed, and so does the board.
+	std::fs::create_dir_all(renders.join(overdue)).unwrap();
+	std::fs::write(renders.join(overdue).join("preview.mp4"), b"mp4").unwrap();
 	let job = worker_text("rendering", NOW - 100, 100)
 		.replace("kind=call", "kind=preview")
 		.replace("key=2026-11-06", &(String::from("key=") + overdue));
@@ -591,5 +599,6 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(read.now, None, "the worker lets an overdue preview go");
-	assert_eq!(read.failed.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), [overdue]);
+	assert_eq!(read.failed.iter().map(|f| (f.key.as_str(), f.reason)).collect::<Vec<_>>(), [(overdue, Some("overdue"))]);
+	assert_eq!(read.done, [], "its late video is not done");
 }
