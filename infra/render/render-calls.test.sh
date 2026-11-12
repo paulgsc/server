@@ -280,9 +280,12 @@ if [ -e "$fake/fail-$week" ]; then
   exit 1
 fi
 if [ -e "$fake/steps" ]; then
+  # The real recorder's count lines (voiced.ts), which job.progress reads.
+  echo "scenes $(cat "$fake/steps")"
   for i in $(seq 1 "$(cat "$fake/steps")"); do
     if [ -e "$dir/steps/step-$i" ]; then
       echo "cache hit: step $i"
+      echo "recorded 0$i-scene-name"
       continue
     fi
     # Held in one child that lives as long as the hold, so the child a case
@@ -301,7 +304,9 @@ if [ -e "$fake/steps" ]; then
     wait $!
     echo "step $i of $week" > "$dir/steps/.step-$i" && mv "$dir/steps/.step-$i" "$dir/steps/step-$i"
     echo "made step $i"
+    echo "recorded 0$i-scene-name"
   done
+  echo assembling
   if [ -e "$fake/fail-after-pause" ]; then
     rm "$fake/fail-after-pause"
     echo "a page timed out"
@@ -552,6 +557,13 @@ pass_behind
 check "the recorder reaches its second step" within has_steps 2
 lane_says pause
 check "the job says it is paused" within job_state_is paused
+progress_is() {
+  grep -qx "$1" "$ROOT/renders/call-worker/job.progress" 2> /dev/null
+}
+check "its progress counts the scenes recorded" progress_is "scene=2"
+check "and how many there are" progress_is "scenes=6"
+check "and its station" progress_is "station=recording"
+check "and never a scene's name" sh -c '! grep -q scene-name "$1"' _ "$ROOT/renders/call-worker/job.progress"
 held=$(steps_made)
 rm "$FAKE/hold-at"
 sleep 1
@@ -564,6 +576,8 @@ check "a paused render finishes once the lane says run" test "$(video_of)" = "$R
 check "a paused render made each step once" test "$(runs_of 2026-10-30)" -eq 1
 check "a pause is no failure" test ! -e "$ROOT/renders/call-worker/2026-10-30.failed.log"
 check "the pause is said in the log" grep -q "^paused the call of 2026-10-30" "$SCRATCH/pass.out"
+check "the recorder's lines still reach the worker's output" grep -q "^made step 6" "$SCRATCH/pass.out"
+check "a finished job leaves no progress" test ! -e "$ROOT/renders/call-worker/job.progress"
 
 # A stop: killed, the work and the id kept, resumed from the kept steps.
 fresh stopped 2026-10-30

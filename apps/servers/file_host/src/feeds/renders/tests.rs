@@ -602,3 +602,80 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	assert_eq!(read.failed.iter().map(|f| (f.key.as_str(), f.reason)).collect::<Vec<_>>(), [(overdue, Some("overdue"))]);
 	assert_eq!(read.done, [], "its late video is not done");
 }
+
+#[test]
+fn progress_reads_as_the_worker_keeps_it() {
+	let text = "id=1794000000000000000\nstation=recording\nscene=5\nscenes=22\nsince=1794139000\n";
+	assert_eq!(
+		Progress::parse(text),
+		Some((
+			String::from("1794000000000000000"),
+			Progress {
+				station: Station::Recording,
+				scene: 5,
+				scenes: Some(22),
+				since: 1_794_139_000,
+			}
+		))
+	);
+	let untold = "id=7\nstation=assembling\nscene=3\nscenes=\nsince=1\n";
+	assert_eq!(
+		Progress::parse(untold).map(|(_, p)| (p.station, p.scenes)),
+		Some((Station::Assembling, None)),
+		"a recorder that never said how many"
+	);
+	for broken in [
+		"id=7\nstation=encoding\nscene=3\nscenes=\nsince=1\n",
+		"id=7\nstation=recording\nscene=x\nscenes=\nsince=1\n",
+		"station=recording\nscene=3\nscenes=\nsince=1\n",
+	] {
+		assert_eq!(Progress::parse(broken), None, "{broken}");
+	}
+}
+
+#[test]
+fn progress_is_shown_only_while_the_job_renders_or_is_paused() {
+	let progress = Progress {
+		station: Station::Recording,
+		scene: 2,
+		scenes: Some(6),
+		since: NOW - 30,
+	};
+	for (state, shown) in [("rendering", true), ("paused", true), ("waiting", false), ("done", false)] {
+		let mut job = job(state, NOW - 60, 0);
+		job.progress = Some(progress);
+		let read = board(&[], Some(&job), Some(&decided("run", "clear", NOW, false)), NOW);
+		assert_eq!(read.now.unwrap().progress, shown.then_some(progress), "{state}");
+	}
+	let json = serde_json::to_value(progress).unwrap();
+	assert_eq!(json, serde_json::json!({ "station": "recording", "scene": 2, "scenes": 6, "since": NOW - 30 }));
+}
+
+#[tokio::test]
+async fn a_run_s_progress_is_its_job_s_only() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let lane = dir.path().join("call-worker");
+	std::fs::create_dir_all(&lane).unwrap();
+	std::fs::write(lane.join("job.state"), worker_text("rendering", NOW - 10, 0)).unwrap();
+	let folders = Folders {
+		feeds: vec![],
+		clip_walks: None,
+		previews: None,
+		lane: lane.clone(),
+	};
+	assert_eq!(read(&db, &folders, "", NOW).await.unwrap().now.unwrap().progress, None, "the recorder has said nothing yet");
+	std::fs::write(
+		lane.join("job.progress"),
+		"id=1794000000000000000\nstation=assembling\nscene=6\nscenes=6\nsince=1794139100\n",
+	)
+	.unwrap();
+	let progress = read(&db, &folders, "", NOW).await.unwrap().now.unwrap().progress.unwrap();
+	assert_eq!((progress.station, progress.scene, progress.scenes), (Station::Assembling, 6, Some(6)));
+	std::fs::write(
+		lane.join("job.progress"),
+		"id=1793000000000000000\nstation=recording\nscene=6\nscenes=6\nsince=1794139100\n",
+	)
+	.unwrap();
+	assert_eq!(read(&db, &folders, "", NOW).await.unwrap().now.unwrap().progress, None, "another job's");
+}

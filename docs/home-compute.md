@@ -173,7 +173,11 @@ way; CI runs it on every PR.
   rendered before `state_since`), for the phone's Renders page
   (some-ui#2761). A job that renders leaves `took`, the seconds it rendered
   with pauses and waits left out, in its kind's status folder: the next
-  one's rough bar measures against it.
+  one's rough bar measures against it. While a run records, `job.progress`
+  keeps the recorder's own count beside it (its job's `id`; `station`,
+  `recording` or `assembling`; `scene`, the scenes recorded this run;
+  `scenes`, how many, once the recorder says; `since`), a count and never a
+  scene's name, gone with the job and counted afresh by each run (C138).
 - **It starts** only on a `run` written after its id was, so the lane has
   seen it and found room for its peak (LA2). A decision missing, unreadable,
   or more than 30 s from now either way is stop.

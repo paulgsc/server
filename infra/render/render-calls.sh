@@ -450,7 +450,35 @@ begin_job() {
 
 # The job is over: rendered, failed or let go.
 end_job() {
-  rm -f "${LANE:?}/job" "${LANE:?}/job.state"
+  rm -f "${LANE:?}/job" "${LANE:?}/job.state" "${LANE:?}/job.progress"
+}
+
+# How far the recorder is, for the phone's Renders page (C138), kept whole
+# in <lane>/job.progress as it says so: its station (`recording`, then
+# `assembling` once it puts the video together), the scenes it has recorded,
+# how many there are once it says, and since when it is at its station. It
+# reads only the recorder's own count lines (`scenes <n>`, `recorded <file>`,
+# `assembling`) and keeps a count, never a file's name or a line's words;
+# every line goes on to the worker's output as before. A recorder that says
+# none of them (a clip's walk) leaves no progress.
+progress() {
+  local line scene=0 scenes='' station=recording since
+  since=$(date +%s)
+  while IFS= read -r line; do
+    printf '%s\n' "$line"
+    case $line in
+      'scenes '*)
+        [[ "${line#scenes }" =~ ^[0-9]{1,6}$ ]] || continue
+        scenes=${line#scenes } ;;
+      'recorded '*) scene=$(( scene + 1 )) ;;
+      assembling)
+        [ "$station" = assembling ] && continue
+        station=assembling since=$(date +%s) ;;
+      *) continue ;;
+    esac
+    put_in "$LANE" job.progress "$(printf 'id=%s\nstation=%s\nscene=%s\nscenes=%s\nsince=%s' \
+      "$JOB_ID" "$station" "$scene" "$scenes" "$since")" || true
+  done
 }
 
 # The render's measured peak, for the lane's next admission: the container's
@@ -580,10 +608,12 @@ attempt() {
   # Its own temporary folder, gone after it, killed or not: a killed
   # Chromium leaves its profile behind, and /tmp is held in memory.
   rm -rf "${tmp:?}" && mkdir -p "$tmp"
+  # Each run counts afresh: one resumed from its kept steps says each again.
+  rm -f "${LANE:?}/job.progress"
   (
     # shellcheck disable=SC2030 # the recorder's alone
     export TMPDIR=$tmp
-    record "$job" "$key" 2>&1 | tee -a "$log"
+    record "$job" "$key" 2>&1 | tee -a "$log" | progress
     exit "${PIPESTATUS[0]}"
   ) &
   RECORDER=$!
