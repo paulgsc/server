@@ -283,6 +283,8 @@ handoff document (owner, 2026-10-25). It lives in two places, for two readers:
   it did since its last. A coordinating session asks another to wind down, never archives it. A
   session that can't write its note stays unarchived and says why, unless it never started work
   and so has nothing to distill.
+- **A session that coordinates other sessions (a choir)** reads paulgsc/some-ui's
+  `.claude/skills/coordinate/SKILL.md` before it spawns or messages any of them.
 
 Cloud sessions keep no files between them, so the issues and the ledger are the only memory.
 A footgun that recurs across sessions belongs promoted into this file (the section above) rather
