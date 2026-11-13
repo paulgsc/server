@@ -33,6 +33,8 @@
 # - the job, its state and its measured peak are written where the lane
 #   reads them, and the job is gone once it renders, fails or is let go;
 # - a job a restart left keeps its id and its work, and runs first;
+# - a job left by RESTARTS restarts it did not ask for is taken as failed
+#   (#740); a TERM's restart is not counted;
 # - a failed week waits RETRY_AFTER before it is tried again.
 #
 # And a template's preview (SFEED12, paulgsc/some-ui#2757): rendered with
@@ -724,6 +726,60 @@ check "a job a restart left runs first" test "$(head -n1 "$FAKE/runs")" = 2026-1
 check "after the lane saw it taken away and named again, so it checked room" taken_away_then 42
 check "under the id it had" test "$(cat "$FAKE/seen-job")" = 42
 check "and renders" test -e "$ROOT/renders/call/2026-10-23/call.mp4"
+
+# A job restarts that nobody asked for (#740): each restart without a TERM
+# is counted, and at RESTARTS the job is taken as failed, not resumed first
+# for good. A restart that was asked for (job.termed) is not counted.
+left_with_restarts() {
+  mkdir -p "$ROOT/renders/call-worker"
+  echo 43 > "$ROOT/renders/call-worker/job"
+  printf 'id=43\nkind=call\nkey=2026-10-23\nsince=1794000000\nstate=rendering\nstate_since=1794000000\nyields=0\nran=0\n%s\n' "$1" \
+    > "$ROOT/renders/call-worker/job.state"
+}
+fresh restarts 2026-10-23
+left_with_restarts "restarts=$(( RESTARTS - 1 ))"
+: > "$FAKE/runs"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a job left by its RESTARTS-th unasked restart is not run again" test ! -s "$FAKE/runs"
+check "it is taken as failed" test -e "$ROOT/renders/call-worker/2026-10-23.failed.log"
+check "which says why" grep -q "restarts the worker was not asked for" "$ROOT/renders/call-worker/2026-10-23.failed.log"
+check "and its job is over" test ! -e "$ROOT/renders/call-worker/job" -a ! -e "$ROOT/renders/call-worker/job.state"
+
+fresh restarts-asked 2026-10-23
+left_with_restarts "restarts=$(( RESTARTS - 1 ))"
+touch "$ROOT/renders/call-worker/job.termed"
+: > "$FAKE/runs"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a restart that was asked for (TERM) is not counted: the job renders" test -e "$ROOT/renders/call/2026-10-23/call.mp4"
+check "and its stop mark goes with the job" test ! -e "$ROOT/renders/call-worker/job.termed"
+
+fresh restarts-old 2026-10-23
+left_with_restarts ""
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a job.state written before restarts were counted is read as none" test -e "$ROOT/renders/call/2026-10-23/call.mp4"
+
+fresh restarts-counted 2026-10-23
+left_with_restarts "restarts=0"
+use_job call
+begin_job call 2026-10-23 > /dev/null 2>&1
+check "an unasked restart is one more in job.state" grep -qx 'restarts=1' "$ROOT/renders/call-worker/job.state"
+check "under the id it had" test "$JOB_ID" = 43
+end_job
+left_with_restarts "restarts=0"
+touch "$ROOT/renders/call-worker/job.termed"
+begin_job call 2026-10-23 > /dev/null 2>&1
+check "an asked one is not" grep -qx 'restarts=0' "$ROOT/renders/call-worker/job.state"
+end_job
+
+fresh termed 2026-10-23
+mkdir -p "$ROOT/renders/call-worker"
+echo 44 > "$ROOT/renders/call-worker/job"
+( use_job call; RECORDER=; on_term ) > /dev/null 2>&1
+check "a TERM marks the job's stop as asked for" test -e "$ROOT/renders/call-worker/job.termed"
+rm -rf "$ROOT/renders/call-worker"
+mkdir -p "$ROOT/renders/call-worker"
+( use_job call; RECORDER=; on_term ) > /dev/null 2>&1
+check "and marks nothing with no job" test ! -e "$ROOT/renders/call-worker/job.termed"
 
 # Attempt logs a killed attempt left are cleared between jobs; cache logs stay.
 fresh stale-logs 2026-10-30
