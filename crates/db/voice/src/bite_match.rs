@@ -72,18 +72,44 @@ pub async fn bites_of_game(conn: &mut SqliteConnection, game: &str) -> Result<Ve
 		.collect()
 }
 
-/// How many bites were said about `game`: what the reconciler's worker
-/// compares to see whether a finished game has new ones.
+/// What a finished game's reconcile depends on that can change.
+///
+/// It is how many bites were said about `game` plus how many mappings they
+/// have. The reconciler's worker compares it to see whether a game needs
+/// another pass.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn bites_in_game(conn: &mut SqliteConnection, game: &str) -> Result<i64, sqlx::Error> {
+pub async fn bite_state(conn: &mut SqliteConnection, game: &str) -> Result<i64, sqlx::Error> {
 	sqlx::query_scalar!(
-		r#"SELECT COUNT(*) AS "n!: i64" FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
+		r#"SELECT COUNT(*) + COALESCE(SUM((SELECT COUNT(*) FROM bite_mapping m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id)), 0)
+		          AS "n!: i64"
+		   FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
 		   WHERE n.of_kind = 'game' AND n.of_ref = ?1"#,
 		game
 	)
 	.fetch_one(&mut *conn)
+	.await
+}
+
+/// The games with a bite no pass has matched since it was said or last mapped.
+///
+/// Whichever week they were in: a bite that reached home late, a game that
+/// left the newest scoreboard before it was reconciled, or a mapping added
+/// after.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn games_with_bites_to_match(conn: &mut SqliteConnection) -> Result<Vec<String>, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"SELECT DISTINCT n.of_ref AS "game!" FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
+		   WHERE n.of_kind = 'game'
+		     AND (NOT EXISTS (SELECT 1 FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id)
+		          OR (SELECT MAX(p.mapped_at) FROM bite_mapping p WHERE p.subject_id = b.subject_id AND p.note_id = b.note_id)
+		             >= (SELECT MAX(m.matched_at) FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id))
+		   ORDER BY n.of_ref"#
+	)
+	.fetch_all(&mut *conn)
 	.await
 }
 

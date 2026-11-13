@@ -82,8 +82,8 @@ pub fn start(state: &AppState) {
 					return;
 				}
 				_ = ticker.tick() => match pass(&db, &mut done, chrono::Utc::now()).await {
-					Ok(Pass { games: 0, .. }) => {}
-					Ok(passed) => info!(games = passed.games, bites = passed.bites, matched = passed.matched, added = passed.added, "bite reconciler pass"),
+					Ok(Pass { games: 0, failed: 0, .. }) => {}
+					Ok(passed) => info!(games = passed.games, bites = passed.bites, matched = passed.matched, added = passed.added, failed = passed.failed, "bite reconciler pass"),
 					Err(_) => error!(error = "storage", "bite reconciler pass failed"),
 				},
 			}
@@ -104,41 +104,58 @@ pub struct Pass {
 	pub bites: usize,
 	pub matched: usize,
 	pub added: usize,
+	/// Games whose reconcile failed: tried again next pass.
+	pub failed: usize,
 }
 
 /// One worker pass.
 ///
-/// Each game of the newest week home kept whose newest summary says it is
-/// final is reconciled, unless it was already, with as many bites as it has
-/// now. `done` holds each game's bite count at its last reconcile; a restart
+/// The games looked at are those of the newest week home kept, and any game
+/// with a bite no pass has matched since it was said or mapped (a bite that
+/// reached home late, a game that left the newest scoreboard first, or a
+/// mapping added after). Each whose newest summary
+/// says it is final is reconciled, unless it already was with the same
+/// [`bite_match::bite_state`] (its bites and their mappings). A restart
 /// reconciles again, which adds nothing unchanged.
 ///
+/// A game whose reconcile fails is counted in [`Pass::failed`] and tried
+/// again next pass; it does not hold up the games after it.
+///
 /// # Errors
-/// Any storage failure; games reconciled before it keep their rows.
+/// A storage failure while choosing the games.
 pub async fn pass(db: &SqlitePool, done: &mut Done, now: DateTime<Utc>) -> Result<Pass, VoiceError> {
 	let as_of = now.to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut due = Vec::new();
 	{
 		let mut conn = db.acquire().await?;
 		let week = game_feed_repo::week(&mut conn, &as_of).await?.unwrap_or_default();
-		for game in week.games {
-			if !game_feed_repo::holds_final(&mut conn, &game.id).await? {
+		let mut games: Vec<String> = week.games.into_iter().map(|game| game.id).collect();
+		for game in bite_match::games_with_bites_to_match(&mut conn).await? {
+			if !games.contains(&game) {
+				games.push(game);
+			}
+		}
+		for game in games {
+			if !game_feed_repo::holds_final(&mut conn, &game).await? {
 				continue;
 			}
-			let bites = bite_match::bites_in_game(&mut conn, &game.id).await?;
-			if done.0.get(&game.id) != Some(&bites) {
-				due.push((game.id, bites));
+			let state = bite_match::bite_state(&mut conn, &game).await?;
+			if done.0.get(&game) != Some(&state) {
+				due.push((game, state));
 			}
 		}
 	}
 	let mut passed = Pass::default();
-	for (game, bites) in due {
-		let reconciled = reconcile(db, &game, now).await?;
+	for (game, state) in due {
+		let Ok(reconciled) = reconcile(db, &game, now).await else {
+			passed.failed += 1;
+			continue;
+		};
 		passed.games += 1;
 		passed.bites += reconciled.bites;
 		passed.matched += reconciled.matched;
 		passed.added += reconciled.added;
-		done.0.insert(game, bites);
+		done.0.insert(game, state);
 	}
 	Ok(passed)
 }
@@ -182,7 +199,12 @@ pub async fn reconcile(db: &SqlitePool, game: &str, now: DateTime<Utc>) -> Resul
 	for bite in &bites {
 		let matched = match_one(&mut conn, game, bite, &log, now).await?;
 		done.matched += usize::from(matched.method == Method::Nearest);
-		done.added += usize::from(bite_match::add_match(&mut conn, &bite.subject, &bite.note_id, &matched, &stamp).await?);
+		// Read the newest and add in one write transaction, so two passes at
+		// once (the worker's and GWB8's) cannot both add the same match.
+		let mut tx = sqlx::Connection::begin_with(&mut *conn, "BEGIN IMMEDIATE").await?;
+		let added = bite_match::add_match(&mut tx, &bite.subject, &bite.note_id, &matched, &stamp).await?;
+		tx.commit().await?;
+		done.added += usize::from(added);
 	}
 	Ok(done)
 }
@@ -455,7 +477,7 @@ mod tests {
 		assert_eq!(matched(&db, "left-for-later").await, (Method::NoScenario, None, None));
 		assert_eq!(matched(&db, "newer-set").await, (Method::Unmatched, None, None));
 		let (late, ..) = matched(&db, "too-late").await;
-		assert!(matches!(late, Method::Nearest | Method::Unmatched), "kept either way");
+		assert_eq!(late, Method::Unmatched, "no third and long within the window: kept, marked");
 
 		let again = reconcile(&db, GAME, now + TimeDelta::hours(1)).await.unwrap();
 		assert_eq!(again.added, 0, "a pass that changes nothing adds nothing");
@@ -507,7 +529,8 @@ mod tests {
 				games: 1,
 				bites: 1,
 				matched: 1,
-				added: 1
+				added: 1,
+				failed: 0
 			}
 		);
 		assert_eq!(pass(&db, &mut done, end + TimeDelta::minutes(10)).await.unwrap(), Pass::default(), "nothing new");
@@ -520,10 +543,56 @@ mod tests {
 				games: 1,
 				bites: 2,
 				matched: 1,
-				added: 1
+				added: 1,
+				failed: 0
 			},
 			"only the new bite adds a row"
 		);
 		assert_eq!(matched(&db, "after").await, (Method::NotAPlay, None, None));
+	}
+
+	#[tokio::test]
+	async fn a_late_bite_or_a_new_mapping_is_matched_after_the_week_moved_on() {
+		let db = pool().await;
+		let plays = plays();
+		let play = third_long(&plays);
+		kept_game(&db, &play).await;
+		let t = wall(&play);
+		let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+		let mut done = Done::default();
+		assert_eq!(pass(&db, &mut done, end).await.unwrap().bites, 0, "no bites yet");
+
+		// The next week's scoreboard no longer lists the game.
+		let next_week = json!({ "season": { "year": 2026, "type": 2 }, "week": { "number": 9 }, "events": [] }).to_string();
+		keep(&db, Fetched::Scoreboard, next_week.as_bytes(), end + TimeDelta::days(3)).await;
+		bite(&db, "uploaded-late", None, "said-first", t + TimeDelta::seconds(20), Some(0)).await;
+		let later = end + TimeDelta::days(3) + TimeDelta::minutes(1);
+		let first = pass(&db, &mut done, later).await.unwrap();
+		assert_eq!((first.games, first.added), (1, 1), "found by its unmatched bite");
+		assert_eq!(matched(&db, "uploaded-late").await.0, Method::NoScenario);
+		assert_eq!(pass(&db, &mut done, later).await.unwrap(), Pass::default());
+
+		assert_eq!(propose(&db, GAME, SUBJECT, "uploaded-late", "in.third-long", later).await.unwrap(), Proposal::Mapped);
+		// The week moved on, and the mapping still brings the game back.
+		let after = pass(&db, &mut done, later).await.unwrap();
+		assert_eq!((after.games, after.added), (1, 1));
+		assert_eq!(pass(&db, &mut done, later).await.unwrap(), Pass::default(), "and only once");
+		assert_eq!(matched(&db, "uploaded-late").await, (Method::Nearest, Some(play.id.clone()), Some(20)));
+	}
+
+	#[tokio::test]
+	async fn a_new_mapping_brings_a_game_of_the_week_back() {
+		let db = pool().await;
+		let plays = plays();
+		let play = third_long(&plays);
+		kept_game(&db, &play).await;
+		bite(&db, "later", None, "said-first", wall(&play) + TimeDelta::seconds(20), Some(0)).await;
+		let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+		let mut done = Done::default();
+		assert_eq!(pass(&db, &mut done, end).await.unwrap().added, 1);
+		assert_eq!(propose(&db, GAME, SUBJECT, "later", "in.third-long", end).await.unwrap(), Proposal::Mapped);
+		let again = pass(&db, &mut done, end).await.unwrap();
+		assert_eq!((again.games, again.added), (1, 1), "the mapping changed the game's state");
+		assert_eq!(matched(&db, "later").await.0, Method::Nearest);
 	}
 }
