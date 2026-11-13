@@ -287,8 +287,8 @@ pub struct NoteAudio {
 /// `GET /voice-notes/:id/audio`
 ///
 /// The caller's note `id` back from home, when it is of a kind in
-/// `voice_repo::PLAYED_BACK` (a Rust Rounds note or a Studio take), for the
-/// reasons that list gives.
+/// `voice_repo::PLAYED_BACK` (every kind, since My data plays any recording
+/// home keeps), for the reasons that list gives.
 ///
 /// The audio comes inside JSON, as base64 beside its container and SHA-256,
 /// because the phone reads every answer from home as text
@@ -302,7 +302,7 @@ pub struct NoteAudio {
 /// 401 without a session, 403 for a browser's (only a paired phone reads a
 /// note's audio), 404 for a note the caller's subject does not hold
 /// (another subject's included) and for one of a kind not in
-/// `voice_repo::PLAYED_BACK`, and 500 for a storage failure.
+/// `voice_repo::PLAYED_BACK` (none today), and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_audio_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_audio(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
@@ -357,8 +357,12 @@ pub struct Kept {
 /// page (paulgsc/some-ui#2476, MY-DATA MD2): how many of each kind, their
 /// room, how many were set aside and since when, what reached home each
 /// week, and, when `of` names a kind, that kind's newest notes, with the
-/// one `note` names when it is older (`voice_repo::kept`). It answers descriptions only: no audio, no `ref`,
-/// nothing said.
+/// one `note` names when it is older (`voice_repo::kept`). Each note says
+/// how long it ran and the first words home heard in it, the ones
+/// [`get_heard`] answers, cut at about `voice_repo::kept::HEARD_CHARS`
+/// characters, so the owner can tell what they would delete (MY-DATA,
+/// 2026-11-13). What was said goes only to the caller's own paired phone. It
+/// answers no audio and no `ref`.
 ///
 /// Read in one transaction, so its parts agree. The query is read as its pairs, so `of` or `note`
 /// said twice is refused as an unknown kind is; other keys are ignored.
@@ -1069,10 +1073,11 @@ mod tests {
 
 	/// ST32 (paulgsc/some-ui#2590; the owner's decision 8 on
 	/// paulgsc/some-ui#2248): a Studio take is played from home too, to a
-	/// paired phone, while every other kind but a Rust Rounds note stays home.
-	/// Who may read it is the Rust Rounds test's.
+	/// paired phone; and since MY-DATA (the owner, 2026-11-13, on
+	/// paulgsc/some-ui#2473) so is every other kind, so My data can play what
+	/// it would delete. Who may read it is the Rust Rounds test's.
 	#[tokio::test]
-	async fn a_paired_phone_plays_its_studio_take_from_home_and_no_other_kind() {
+	async fn a_paired_phone_plays_its_studio_take_and_every_other_kind_from_home() {
 		use base64::{engine::general_purpose::STANDARD, Engine};
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
@@ -1088,11 +1093,9 @@ mod tests {
 			body,
 			json!({ "id": "t1", "contentType": "audio/webm", "sha256": TAKE_SHA256, "audio": STANDARD.encode(TAKE) })
 		);
-		assert_eq!(
-			get(&app, "/voice-notes/n1/audio", Some(&phone)).await.0,
-			StatusCode::NOT_FOUND,
-			"a reflection's audio stays home"
-		);
+		let (status, body) = get(&app, "/voice-notes/n1/audio", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "a reflection plays back too: {body}");
+		assert_eq!(body["id"], json!("n1"));
 	}
 
 	/// ST32 (paulgsc/some-ui#2590): the take library lists the caller's
@@ -1344,11 +1347,13 @@ mod tests {
 	}
 
 	/// The kept read answers the caller's own notes, by kind and week, and a
-	/// kind's newest with `of`; descriptions only. Counting is
+	/// kind's newest with `of`, each with how long it ran and the first words
+	/// home heard once it heard them. Counting and cutting are
 	/// `voice_repo::kept`'s tests.
 	#[tokio::test]
 	async fn a_paired_phone_reads_what_home_keeps_of_its_own_notes() {
 		let state = state().await;
+		let pool = state.pool.clone();
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let browser = session(&state, A, Carrier::Cookie).await;
 		let other = session(&state, B, Carrier::Bearer).await;
@@ -1374,7 +1379,19 @@ mod tests {
 		listed.as_object_mut().unwrap().remove("storedAt");
 		assert_eq!(
 			listed,
-			json!({ "id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null, "deletable": false })
+			json!({
+				"id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null, "deletable": false,
+				"durationMs": null, "heard": null, "heardCut": false, "playsBack": true
+			})
+		);
+		hear(&pool, A, "n1", "ggml-small-q5_1.bin", said("a small idea", "en"), "2026-10-25T16:05:00.000Z").await;
+		let (status, body) = get(&app, "/voice-notes/kept?of=reflection", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		let said_of = |key: &str| body["notes"][0][key].clone();
+		assert_eq!(
+			(said_of("durationMs"), said_of("heard"), said_of("heardCut")),
+			(json!(1_200), json!("a small idea"), json!(false)),
+			"{body}"
 		);
 
 		let (status, body) = get(&app, "/voice-notes/kept", Some(&other)).await;

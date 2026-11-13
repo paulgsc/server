@@ -191,6 +191,35 @@ its key: nothing is retyped and there is no `.env` (#614).
     backoff cap at least its cadences) and a value's shape (the mailbox URL)
     stay the feature code's own check.
 
+- **ENV-CLASS: the environment holds deployment constants only (#617).**
+  - _Claim:_ every variable a binary or compose reads carries one class, with
+    its reason: a **deployment constant** (a secret, an address, a per-machine
+    path, what this deployment is; it stays env, encrypted), **runtime
+    policy** (it changes while the app runs; it is one of the operator's
+    levers, `file_host`'s `settings`) or a **source constant** (the same
+    everywhere; a `const`). Only a deployment constant is read from the
+    environment, and a `bool` is one only where the owner confirmed it a fact
+    of the deployment, not a switch.
+  - _Family:_ every variable of every binary's `Config`, the shared groups'
+    (`app_config::CLASSES`), and every `${...}` compose reads but `make`'s and
+    the release's images (`release::variable` of each compose service); a new variable, a reclassed one, one that moves out.
+  - _Proof:_ `app_config::schema` refuses to write a schema with a variable
+    that has no class, two, or no reason (each binary's
+    `the_checked_in_schema_is_this_config`, `cargo test`), so the class is in
+    `infra/env/<binary>.json`. `envctl check` (`Lint`'s `Env schema`,
+    `apps/envctl/src/classes.rs`) fails any variable classed policy or source,
+    any deployment `bool` (for compose, which declares no kinds, any name ending
+    `_ENABLED`), and any compose variable that
+    `infra/env-classes.json`'s `compose` does not class, unless `infra/env-classes.json` lists it: as moving,
+    with the issue that moves it, or as a confirmed deployment switch. That
+    file only shrinks: an entry that no longer holds fails until it is
+    dropped, and CI fails one the base branch's copy lacks.
+  - _Tolerance:_ the entries in `infra/env-classes.json`, each read from the
+    environment until its issue lands. The class is what the `Config` says,
+    and is reviewed in its PR: a policy value declared as a deployment
+    constant passes, unless it is a `bool`. `deploy/<role>/tools.sops.env`
+    is a host's tools' and declares nothing to class.
+
 ### Deploying the stack
 
 On the box, from the checkout, in any shell, with a key `.sops.yaml` names.

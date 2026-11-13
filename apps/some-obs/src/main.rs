@@ -4,7 +4,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Before anything else: a value that does not parse stops startup here.
-	let config: Config = app_config::schema::parse(&app_config::schema::NO_RULES);
+	let config: Config = app_config::schema::parse(&some_obs::RULES);
 
 	tracing_subscriber::registry()
 		.with(tracing_subscriber::EnvFilter::try_new(&config.log.rust_log)?)
