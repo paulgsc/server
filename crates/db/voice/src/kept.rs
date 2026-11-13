@@ -4,12 +4,19 @@
 //! say how many of each kind home holds, how much room they take, since
 //! when, how many were set aside, and how the room grew week by week.
 //!
-//! - **Descriptions only.** Every read here is of `voice_note`,
-//!   `voice_note_set_aside` and, for [`weeks`], the receipts in
-//!   `voice_note_deletion`, and [`newest`] reads whether an idea's answer
+//! - **Descriptions, and the start of what home heard.** Every read here is
+//!   of `voice_note`, `voice_note_set_aside` and, for [`weeks`], the receipts
+//!   in `voice_note_deletion`. [`newest`] also reads whether an idea's answer
 //!   names a note (`idea_answer`), to say whether My data may offer to delete
-//!   it; none reads `voice_note_audio`, a transcript, a
-//!   `ref` or a bite, so what was said never leaves through it.
+//!   it, and each note's chosen ending in `voice_transcript`, to say how long
+//!   it is and its first words ([`HEARD_CHARS`] or so), so the owner can tell
+//!   what they would delete (the owner, MY-DATA, paulgsc/some-ui#2473,
+//!   2026-11-13).
+//!   That ending is the one `GET /voice-notes/:id/heard` answers
+//!   ([`crate::transcript::heard`]), which already gives a note's words to its
+//!   own subject: what was said reaches only the owner's paired phone through
+//!   it. None reads `voice_note_audio`, a word's time, a `ref` or a bite;
+//!   whether a note plays back is its kind's ([`crate::PLAYED_BACK`]).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it.
 //! - **Bounded.** [`kinds`] answers at most one row per [`Of`], [`weeks`] one
@@ -20,13 +27,18 @@
 
 use crate::{
 	delete::{deletable, Deletable},
-	Of, VoiceError,
+	Of, VoiceError, PLAYED_BACK,
 };
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
 /// The most notes [`newest`] answers.
 pub const NEWEST: i64 = 50;
+
+/// About how many characters of what home heard [`newest`] answers per note:
+/// the words that fit, cut at the last space before it, or at it when a word
+/// runs past it.
+pub const HEARD_CHARS: usize = 80;
 
 /// What home keeps of one kind of note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -60,7 +72,8 @@ pub struct WeekKept {
 	pub left_bytes: i64,
 }
 
-/// One note as My data lists it: no `ref`, no audio, nothing said.
+/// One note as My data lists it: no `ref` and no audio; of what was said,
+/// only how long it ran and its first words.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteKept {
@@ -77,6 +90,78 @@ pub struct NoteKept {
 	/// My data may offer to delete it: its kind is one the owner switched on
 	/// ([`crate::delete::SWITCHED_ON`]).
 	pub deletable: bool,
+	/// How long it runs, in milliseconds, as home heard it, words or silence;
+	/// null while home has heard it neither as words nor as silence, and when
+	/// its audio was unreadable.
+	pub duration_ms: Option<i64>,
+	/// The first words home heard in it, about [`HEARD_CHARS`] characters;
+	/// null while home has not heard it, and when it was silent or heard only
+	/// whitespace.
+	pub heard: Option<String>,
+	/// Whether [`NoteKept::heard`] stops short of what home heard.
+	pub heard_cut: bool,
+	/// Whether `GET /voice-notes/:id/audio` plays it back: its kind is in
+	/// [`crate::PLAYED_BACK`].
+	pub plays_back: bool,
+}
+
+/// One `voice_note` row as [`newest`] reads it, with its chosen ending.
+struct Row {
+	note_id: String,
+	of_ref: String,
+	recorded_at: String,
+	stored_at: String,
+	size: i64,
+	set_aside_at: Option<String>,
+	answers: bool,
+	outcome: Option<String>,
+	duration_ms: Option<i64>,
+	text: Option<String>,
+}
+
+impl Row {
+	fn kept(self, of: Of, on: &[Deletable]) -> Result<NoteKept, VoiceError> {
+		let (heard, heard_cut) = match self.outcome.as_deref() {
+			Some("heard") => {
+				let (start, cut) = first_words(self.text.as_deref().ok_or(VoiceError::Unreadable)?);
+				// Words that are only whitespace say nothing, as a silence does.
+				(Some(start).filter(|start| !start.is_empty()), cut)
+			}
+			_ => (None, false),
+		};
+		Ok(NoteKept {
+			deletable: deletable(of.as_str(), &self.of_ref, self.answers).is_some_and(|kind| on.contains(&kind)),
+			id: self.note_id,
+			recorded_at: self.recorded_at,
+			stored_at: self.stored_at,
+			size: self.size,
+			set_aside_at: self.set_aside_at,
+			duration_ms: self.duration_ms,
+			heard,
+			heard_cut,
+			plays_back: PLAYED_BACK.contains(&of),
+		})
+	}
+}
+
+/// `text`'s first words, about [`HEARD_CHARS`] characters, and whether they
+/// stop short of it.
+///
+/// Cut at the last whitespace within [`HEARD_CHARS`] characters, or at
+/// [`HEARD_CHARS`] when there is none (a language written without spaces, or
+/// one long word); never inside a character.
+fn first_words(text: &str) -> (String, bool) {
+	let text = text.trim();
+	let Some((end, _)) = text.char_indices().nth(HEARD_CHARS) else {
+		return (text.to_owned(), false);
+	};
+	let head = &text[..end];
+	let start = if text[end..].starts_with(char::is_whitespace) {
+		head
+	} else {
+		head.rfind(char::is_whitespace).map_or(head, |space| &head[..space])
+	};
+	(start.trim_end().to_owned(), true)
 }
 
 /// What `subject` keeps on home, by kind, in [`Of`]'s order.
@@ -168,16 +253,28 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 /// data on (paulgsc/some-ui#2579).
 ///
 /// # Errors
-/// [`VoiceError::Storage`] for any `sqlx` failure.
+/// [`VoiceError::Unreadable`] for a heard transcript with no text, which this
+/// crate never writes, and [`VoiceError::Storage`] for any `sqlx` failure.
 pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[Deletable], also: Option<&str>) -> Result<Vec<NoteKept>, VoiceError> {
+	let kind = of;
 	let of = of.as_str();
-	let rows = sqlx::query!(
+	// The ending is `transcript::heard`'s choice, as `takes::library`'s is.
+	let rows = sqlx::query_as!(
+		Row,
 		r#"SELECT note.note_id, note.of_ref, note.recorded_at, note.stored_at, note.size,
 		          aside.set_aside_at AS "set_aside_at?: String",
 		          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
-		            AS "answers!: bool"
+		            AS "answers!: bool",
+		          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String"
 		   FROM voice_note AS note
 		   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
+		   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
+		     SELECT hearing.rowid FROM voice_transcript AS hearing
+		     WHERE hearing.subject_id = note.subject_id AND hearing.note_id = note.note_id
+		       AND hearing.outcome IN ('heard', 'silent')
+		     ORDER BY hearing.outcome = 'heard' DESC, hearing.heard_at DESC, hearing.model DESC
+		     LIMIT 1
+		   )
 		   WHERE note.subject_id = ?1 AND note.of_kind = ?2
 		   ORDER BY note.recorded_at DESC, note.note_id DESC
 		   LIMIT ?3"#,
@@ -187,25 +284,24 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 	)
 	.fetch_all(&mut *conn)
 	.await?;
-	let mut notes: Vec<NoteKept> = rows
-		.into_iter()
-		.map(|row| NoteKept {
-			deletable: deletable(of, &row.of_ref, row.answers).is_some_and(|kind| on.contains(&kind)),
-			id: row.note_id,
-			recorded_at: row.recorded_at,
-			stored_at: row.stored_at,
-			size: row.size,
-			set_aside_at: row.set_aside_at,
-		})
-		.collect();
+	let mut notes = rows.into_iter().map(|row| row.kept(kind, on)).collect::<Result<Vec<_>, _>>()?;
 	if let Some(also) = also.filter(|also| !notes.iter().any(|note| note.id == *also)) {
-		let row = sqlx::query!(
+		let row = sqlx::query_as!(
+			Row,
 			r#"SELECT note.note_id, note.of_ref, note.recorded_at, note.stored_at, note.size,
 			          aside.set_aside_at AS "set_aside_at?: String",
 			          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
-			            AS "answers!: bool"
+			            AS "answers!: bool",
+			          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String"
 			   FROM voice_note AS note
 			   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
+			   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
+			     SELECT hearing.rowid FROM voice_transcript AS hearing
+			     WHERE hearing.subject_id = note.subject_id AND hearing.note_id = note.note_id
+			       AND hearing.outcome IN ('heard', 'silent')
+			     ORDER BY hearing.outcome = 'heard' DESC, hearing.heard_at DESC, hearing.model DESC
+			     LIMIT 1
+			   )
 			   WHERE note.subject_id = ?1 AND note.of_kind = ?2 AND note.note_id = ?3"#,
 			subject,
 			of,
@@ -213,24 +309,20 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 		)
 		.fetch_optional(&mut *conn)
 		.await?;
-		notes.extend(row.map(|row| NoteKept {
-			deletable: deletable(of, &row.of_ref, row.answers).is_some_and(|kind| on.contains(&kind)),
-			id: row.note_id,
-			recorded_at: row.recorded_at,
-			stored_at: row.stored_at,
-			size: row.size,
-			set_aside_at: row.set_aside_at,
-		}));
+		if let Some(row) = row {
+			notes.push(row.kept(kind, on)?);
+		}
 	}
 	Ok(notes)
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{kinds, newest, weeks, KindKept, WeekKept, NEWEST};
+	use super::{first_words, kinds, newest, weeks, KindKept, WeekKept, HEARD_CHARS, NEWEST};
 	use crate::{
 		delete::{delete, Deletable, Deleted, SWITCHED_ON},
 		set_aside::set_aside,
+		transcript::{heard, Hearing},
 		Of,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
@@ -409,6 +501,125 @@ mod tests {
 		assert_eq!(marked, [("answer", false), ("take", true), ("spoken", false)]);
 		let listed = newest(&mut conn, A, Of::Studio, SWITCHED_ON, None).await.unwrap();
 		assert!(listed.iter().all(|kept| kept.deletable), "with answers on too, every studio note is");
+	}
+
+	/// Keeps `model`'s ending of `subject`'s note `id`, as the transcriber
+	/// would: `text` when it heard something.
+	async fn ending(pool: &SqlitePool, (subject, id): (&str, &str), model: &str, outcome: &str, duration_ms: Option<i64>, text: Option<&str>, at: &str) {
+		let language = text.map(|_| "en");
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'whisper.cpp', 1, ?4, ?5, ?6, ?7, ?8, 5, ?9)",
+		)
+		.bind(subject)
+		.bind(id)
+		.bind(model)
+		.bind(outcome)
+		.bind(language)
+		.bind(language.map(|_| 0.9))
+		.bind(duration_ms)
+		.bind(text)
+		.bind(at)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	#[test]
+	fn what_was_heard_is_cut_at_the_last_space_within_the_limit() {
+		assert_eq!(first_words("  a short note \n"), ("a short note".to_owned(), false), "trimmed, not cut");
+		let exact = "x".repeat(HEARD_CHARS);
+		assert_eq!(first_words(&exact), (exact.clone(), false), "exactly the limit is whole");
+
+		let long = "the quick brown fox jumps over the lazy dog and keeps on running until it reaches the river bank";
+		let (start, cut) = first_words(long);
+		assert!(cut);
+		assert_eq!(start, "the quick brown fox jumps over the lazy dog and keeps on running until it");
+		assert!(long.starts_with(&start) && start.chars().count() <= HEARD_CHARS);
+
+		let at_a_space = String::from(&"y".repeat(HEARD_CHARS)) + " and more";
+		assert_eq!(first_words(&at_a_space), ("y".repeat(HEARD_CHARS), true), "a space right at the limit keeps the whole word");
+
+		let no_space = "가".repeat(HEARD_CHARS + 5);
+		assert_eq!(first_words(&no_space), ("가".repeat(HEARD_CHARS), true), "no space: cut at the limit, on a character");
+	}
+
+	/// Each note says how long it ran and its first words from the ending
+	/// `GET /voice-notes/:id/heard` answers: words over silence, then the
+	/// newest; nothing while unheard, failed or silent, and never another
+	/// subject's.
+	#[tokio::test]
+	async fn each_note_says_how_long_it_ran_and_what_home_heard_first() {
+		let pool = pool().await;
+		let long = "I want to remember why the second take of the opening shot felt slower than the first one did";
+		for (id, at) in [
+			("heard", "2026-10-01T10:05:00Z"),
+			("silent", "2026-10-01T10:04:00Z"),
+			("failed", "2026-10-01T10:03:00Z"),
+			("waiting", "2026-10-01T10:02:00Z"),
+			("better", "2026-10-01T10:01:00Z"),
+			("blank", "2026-10-01T10:00:30Z"),
+			("old", "2026-09-01T10:00:00Z"),
+		] {
+			note(&pool, A, id, "reflection", at, 10, "2026-10-02T00:00:00.000Z").await;
+		}
+		note(&pool, B, "waiting", "reflection", "2026-10-01T10:02:00Z", 10, "2026-10-02T00:00:00.000Z").await;
+		ending(&pool, (A, "heard"), "small", "heard", Some(4200), Some(long), "2026-10-02T01:00:00.000Z").await;
+		ending(&pool, (A, "silent"), "small", "silent", Some(900), None, "2026-10-02T01:00:00.000Z").await;
+		ending(&pool, (A, "failed"), "small", "unreadable", None, None, "2026-10-02T01:00:00.000Z").await;
+		ending(&pool, (B, "waiting"), "small", "heard", Some(1), Some("B's words"), "2026-10-02T01:00:00.000Z").await;
+		// Heard by one model, later found silent by another, then heard by a
+		// third: the newest that heard words is the one answered.
+		ending(&pool, (A, "better"), "small", "heard", Some(3000), Some("first try"), "2026-10-02T01:00:00.000Z").await;
+		ending(&pool, (A, "better"), "medium", "silent", Some(3001), None, "2026-10-03T01:00:00.000Z").await;
+		ending(&pool, (A, "better"), "large", "heard", Some(3002), Some("  better words "), "2026-10-04T01:00:00.000Z").await;
+		ending(&pool, (A, "blank"), "small", "heard", Some(5), Some("   "), "2026-10-02T01:00:00.000Z").await;
+		ending(&pool, (A, "old"), "small", "heard", Some(10), Some("asked for by name"), "2026-10-02T01:00:00.000Z").await;
+		sqlx::query("INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at) WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM n WHERE value < ?2) SELECT ?1, 'n' || value, 'reflection', 'ref', '2026-09-15T10:00:00Z', 'audio/webm', 1, 's', 'now' FROM n")
+			.bind(A)
+			.bind(NEWEST - 5)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+
+		let listed = newest(&mut conn, A, Of::Reflection, &[], Some("old")).await.unwrap();
+		let said: Vec<(&str, Option<i64>, Option<&str>, bool)> = listed
+			.iter()
+			.filter(|kept| !kept.id.starts_with('n'))
+			.map(|kept| (kept.id.as_str(), kept.duration_ms, kept.heard.as_deref(), kept.heard_cut))
+			.collect();
+		assert_eq!(
+			said,
+			[
+				(
+					"heard",
+					Some(4200),
+					Some("I want to remember why the second take of the opening shot felt slower than the"),
+					true
+				),
+				("silent", Some(900), None, false),
+				("failed", None, None, false),
+				("waiting", None, None, false),
+				("better", Some(3002), Some("better words"), false),
+				("blank", Some(5), None, false),
+				("old", Some(10), Some("asked for by name"), false),
+			]
+		);
+		assert_eq!(
+			listed.last().map(|kept| kept.id.as_str()),
+			Some("old"),
+			"the note asked for, past the cap, carries its words too"
+		);
+		assert!(listed.iter().all(|kept| kept.plays_back), "every kind plays back from home");
+		for kept in &listed {
+			match heard(&mut conn, A, &kept.id).await.unwrap() {
+				Hearing::Heard(transcript) if !transcript.text.trim().is_empty() => {
+					assert_eq!(kept.heard, Some(first_words(&transcript.text).0), "{}: the words /heard answers", kept.id);
+				}
+				_ => assert_eq!(kept.heard, None, "{}", kept.id),
+			}
+		}
 	}
 
 	/// `i` as two digits, without `format!` (banned repo-wide).
