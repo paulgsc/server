@@ -51,6 +51,12 @@
 //! the job renders or is paused, when it is that job's (by its id). A count
 //! and a station: never a scene's name or a line of the recorder's.
 //!
+//! **Whether the worker is still there** (#739): while a job renders or is
+//! paused, the worker's own loop stamps `renders/call-worker/job.alive` (the
+//! job's id and the time) at most every 10 s. A stamp of this job's older
+//! than [`ALIVE_STALE`] reads as `heldBy: silent`, so a worker killed
+//! mid-render stops reading as rendering within a minute.
+//!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
 //! an episode a week), a `stat` per episode, and a handful of small files,
 //! once per request. Nothing here adds a clock or a poll: the phone asks.
@@ -85,6 +91,11 @@ pub const DONE_SHOWN: usize = 5;
 /// How much of a failed attempt's log is read, from its end.
 const TAIL_BYTES: u64 = 16 * 1024;
 
+/// A worker sign of life (`job.alive`) older than this is a worker gone: the
+/// worker stamps it every `ALIVE_EVERY` (10 s) while it renders or is
+/// paused (`render-calls.sh`, #739), so six stamps missed.
+pub const ALIVE_STALE: i64 = 60;
+
 /// The job in progress, as the worker writes it to `job.state`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
@@ -92,6 +103,9 @@ pub struct Job {
 	pub id: Option<String>,
 	/// How far the recorder is, from `job.progress`, when it is this job's.
 	pub progress: Option<Progress>,
+	/// Unix seconds of the worker's last sign of life, from `job.alive`,
+	/// when it is this job's. `None` when it has stamped none.
+	pub alive: Option<i64>,
 	/// `call`, `playoff-delta`, or a kind a later worker adds (a preview).
 	pub kind: String,
 	pub key: String,
@@ -141,6 +155,7 @@ impl Job {
 		Some(Self {
 			id: field("id").filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned),
 			progress: None,
+			alive: None,
 			kind: kind.to_owned(),
 			key: key.to_owned(),
 			since: field("since")?.parse().ok()?,
@@ -216,6 +231,14 @@ impl Progress {
 			},
 		))
 	}
+}
+
+/// The worker's sign of life `job.alive`'s text says: the id of the job it
+/// is of, and when, or `None` when it says neither whole.
+#[must_use]
+pub fn parse_alive(text: &str) -> Option<(String, i64)> {
+	let fields: BTreeMap<&str, &str> = text.lines().filter_map(|line| line.split_once('=')).collect();
+	Some(((*fields.get("id")?).to_owned(), fields.get("at")?.parse().ok()?))
 }
 
 /// The lane's decision, as `call_weeks::lane` writes it.
@@ -355,15 +378,16 @@ pub struct Now {
 	pub progress: Option<Progress>,
 }
 
-/// Why a job isn't rendering: the lane's reason, or `silent` when the lane
-/// has stopped deciding (its decision missing or stale).
+/// Why a job isn't rendering: the lane's reason, or `silent`.
 ///
-/// `silent` says nothing of the worker itself: a worker that stopped or hung
-/// while the lane keeps deciding `run` still reads as rendering (or about to
-/// start, or finishing), its bar resting at [`MOST_SHOWN`], because the
-/// worker writes no sign of life while it renders (it stamps `last-pass`
-/// only while held back, so `CallRenderWorkerStale` catches a hung render
-/// after 4 hours). A worker that stops for good leaves `CallRenderOverdue`.
+/// `silent` is the lane that stopped deciding (its decision missing or
+/// stale), or the worker that went quiet (its sign of life, `job.alive`,
+/// older than [`ALIVE_STALE`], #739).
+///
+/// The worker's own loop stamps that sign while a job renders or is paused,
+/// so a worker killed mid-render reads as `silent` within [`ALIVE_STALE`].
+/// A recorder that hangs while the worker lives still reads as rendering,
+/// its bar resting at [`MOST_SHOWN`], until `CallRenderOverdue`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HeldBy {
@@ -379,7 +403,7 @@ pub enum HeldBy {
 	Unknown,
 	/// Nothing holds it: it is about to start.
 	Clear,
-	/// The lane isn't deciding.
+	/// The lane isn't deciding, or the worker has gone quiet mid-render.
 	Silent,
 }
 
@@ -490,7 +514,14 @@ fn fresh(lane: Option<&Lane>, now: i64) -> Option<&Lane> {
 
 /// Why `job` isn't rendering, by the lane's decision. A job that says it
 /// renders under no fresh `run` is not rendering: the worker stopped with it.
+/// Nor is one rendering or paused whose worker's sign of life has gone stale
+/// (#739): the worker is gone, whatever the lane decides. One with no sign
+/// at all is judged by the lane alone (a worker from before #739).
 fn held_by(job: &Job, lane: Option<&Lane>, now: i64) -> Option<HeldBy> {
+	let gone = matches!(job.state, Phase::Rendering | Phase::Paused) && job.alive.is_some_and(|at| now.saturating_sub(at).unsigned_abs() > ALIVE_STALE.unsigned_abs());
+	if gone {
+		return Some(HeldBy::Silent);
+	}
 	match (job.state, fresh(lane, now)) {
 		(Phase::Finishing, _) => None,
 		(Phase::Rendering, Some(lane)) if lane.verb == "run" => None,
@@ -723,6 +754,9 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 		// A run's progress is its job's only: one left by another job is not.
 		let progress = small(&folders.lane.join("job.progress")).await.as_deref().and_then(Progress::parse);
 		job.progress = progress.filter(|(id, _)| job.id.as_deref() == Some(id.as_str())).map(|(_, progress)| progress);
+		// So is its sign of life.
+		let alive = small(&folders.lane.join("job.alive")).await.as_deref().and_then(parse_alive);
+		job.alive = alive.filter(|(id, _)| job.id.as_deref() == Some(id.as_str())).map(|(_, at)| at);
 	}
 	let lane = small(&folders.lane.join(crate::call_weeks::lane::DECISION)).await.as_deref().and_then(Lane::parse);
 	let shelves: Vec<(Shelf, &FeedSeen)> = feeds.iter().map(|(shelf, seen)| (*shelf, seen)).collect();

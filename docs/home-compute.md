@@ -267,7 +267,11 @@ way; CI runs it on every PR.
   is paused, the worker stamps `last-pass` at least every minute, so a
   worker the lane holds back is not `CallRenderWorkerStale`'s (a job that
   never fits is `LaneStuck`'s). It never stamps while a render runs, so a
-  render that hangs still goes stale.
+  render that hangs still goes stale. Its sign of life for the Renders page
+  is a separate file, `job.alive` (the job's `id` and `at`), which its own
+  loop stamps every 10 s while a job renders or is paused, whatever the
+  recorder says. A stamp more than 60 s old reads as `heldBy: silent`, so a
+  worker killed mid-render stops reading as rendering within a minute (#739).
 - **Between jobs**, it clears every attempt log (`.<key>.log`) a killed
   attempt left: none runs then, and the lane would read one as batch work
   in progress for good.

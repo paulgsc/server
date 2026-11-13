@@ -118,6 +118,45 @@ fn a_job_the_worker_left_rendering_is_not_rendering() {
 }
 
 #[test]
+fn a_worker_gone_mid_render_reads_silent_within_alive_stale() {
+	let feeds = [(Feed::Call, FeedSeen::default())];
+	let run = decided("run", "clear", NOW, false);
+	let busy = lane("busy", NOW);
+	let held = |state: &str, alive: Option<i64>, lane: &Lane| {
+		let mut job = job(state, NOW - 600, 0);
+		job.alive = alive;
+		board(&feeds, Some(&job), Some(lane), NOW).now.unwrap().held_by
+	};
+	assert_eq!(held("rendering", Some(NOW - ALIVE_STALE), &run), None, "a stamp at the bound is alive");
+	assert_eq!(
+		held("rendering", Some(NOW - ALIVE_STALE - 1), &run),
+		Some(HeldBy::Silent),
+		"the lane's run says nothing of a worker gone"
+	);
+	assert_eq!(held("paused", Some(NOW - 5), &busy), Some(HeldBy::Busy));
+	assert_eq!(held("paused", Some(NOW - 600), &busy), Some(HeldBy::Silent));
+	assert_eq!(
+		held("rendering", None, &run),
+		None,
+		"a worker from before #739 stamps none, and is judged by the lane alone"
+	);
+	assert_eq!(
+		held("waiting", Some(NOW - 600), &run),
+		Some(HeldBy::Clear),
+		"a job waiting is the lane's; its worker stamps last-pass"
+	);
+	assert_eq!(held("done", Some(NOW - 600), &run), None);
+}
+
+#[test]
+fn a_sign_of_life_is_read_whole_or_not_at_all() {
+	assert_eq!(parse_alive("id=17\nat=1794139200\n"), Some((String::from("17"), 1_794_139_200)));
+	for broken in ["id=17\n", "at=1\n", "id=17\nat=soon\n", ""] {
+		assert_eq!(parse_alive(broken), None, "{broken}");
+	}
+}
+
+#[test]
 fn stuck_is_only_a_fresh_decision_s() {
 	let feeds = [(Feed::Call, FeedSeen::default())];
 	let waiting = job("waiting", NOW, 0);
@@ -415,9 +454,16 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 		feeds: vec![(Feed::Call, renders, status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
 		clip_walks: None,
 		previews: None,
-		lane: status,
+		lane: status.clone(),
 	};
-	let read = read(&db, &folders, "", NOW).await.unwrap();
+	// Another job's stale sign of life is not this one's.
+	std::fs::write(status.join("job.alive"), b"id=17\nat=1794000000\n").unwrap();
+	let read_now = || async { read(&db, &folders, "", NOW).await.unwrap() };
+	assert_eq!(read_now().await.now.unwrap().held_by, Some(HeldBy::Busy));
+	std::fs::write(status.join("job.alive"), b"id=1794000000000000000\nat=1794000000\n").unwrap();
+	assert_eq!(read_now().await.now.unwrap().held_by, Some(HeldBy::Silent), "its own, gone stale");
+	std::fs::write(status.join("job.alive"), b"id=1794000000000000000\nat=1794139195\n").unwrap();
+	let read = read_now().await;
 	let now = read.now.unwrap();
 	assert_eq!((now.key.as_str(), now.state, now.held_by), ("2026-11-06", Phase::Paused, Some(HeldBy::Busy)));
 	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9);
