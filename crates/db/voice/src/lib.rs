@@ -39,6 +39,9 @@
 //!   said for [`Of::RustRound`], its `ref` as [`is_rust_round_ref`] says,
 //!   and nothing beside it. Its audio is read back, as a Studio take's is
 //!   ([`PLAYED_BACK`], [`audio_head`], [`audio_body`]).
+//! - **An interview take is a voice note** (paulgsc/some-ui#2932, IW1), said
+//!   for [`Of::Interview`], its `ref` as [`is_interview_ref`] says, and
+//!   nothing beside it. Its audio is read back as a Rust Rounds note's is.
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
 //! - **No background writer of a note.** The one caller of [`put_note`] is
@@ -151,10 +154,14 @@ pub enum Of {
 	/// `ref` as [`is_rust_round_ref`] says.
 	#[serde(rename = "rust-round")]
 	RustRound,
+	/// A take said in a week of mock interview (paulgsc/some-ui#2932, IW1):
+	/// an answer to one of the week's questions, or a teleprompter card read
+	/// aloud. Its `ref` as [`is_interview_ref`] says.
+	Interview,
 }
 
 impl Of {
-	const ALL: [Self; 9] = [
+	const ALL: [Self; 10] = [
 		Self::Reflection,
 		Self::Jobs,
 		Self::Scene,
@@ -164,6 +171,7 @@ impl Of {
 		Self::Lens,
 		Self::Leetype,
 		Self::RustRound,
+		Self::Interview,
 	];
 
 	/// The wire and stored name.
@@ -179,6 +187,7 @@ impl Of {
 			Self::Lens => "lens",
 			Self::Leetype => "leetype",
 			Self::RustRound => "rust-round",
+			Self::Interview => "interview",
 		}
 	}
 
@@ -461,6 +470,35 @@ pub fn is_rust_round_ref(of_ref: &str) -> bool {
 	card || ticket || paste
 }
 
+/// Whether `of_ref` names what an [`Of::Interview`] take was said for
+/// (paulgsc/some-ui#2932, IW1): a question of a week, or a teleprompter card
+/// of a week read aloud (paulgsc/some-ui#2936).
+///
+/// - **An answer:** `<week>:<question>`, like `2026-w47:about-you`.
+/// - **A read:** `<week>:read:<card>`, like `2026-w47:read:home-first`.
+///
+/// The week is `YYYY-wNN` (`rust_round_repo::week::is_week_id`), and a
+/// question and a card are slugs (`rust_round_repo::round::is_slug`). A
+/// question is never named [`READ`], so no answer's `ref` reads as the start
+/// of a read's.
+#[must_use]
+pub fn is_interview_ref(of_ref: &str) -> bool {
+	let mut parts = of_ref.splitn(3, ':');
+	let (Some(week), Some(second)) = (parts.next(), parts.next()) else {
+		return false;
+	};
+	if !is_week_id(week) {
+		return false;
+	}
+	match parts.next() {
+		None => is_slug(second) && second != READ,
+		Some(card) => second == READ && is_slug(card),
+	}
+}
+
+/// The second part of a teleprompter read's `ref` ([`is_interview_ref`]).
+const READ: &str = "read";
+
 /// The second part of a pasted error's `ref` ([`is_rust_round_ref`]).
 const PASTE: &str = "PASTE";
 
@@ -586,7 +624,7 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 	if of.is_none() {
 		problems.push((
 			"of",
-			"not what a note is said for: reflection, jobs, scene, game, studio, soundbite, lens, leetype or rust-round",
+			"not what a note is said for: reflection, jobs, scene, game, studio, soundbite, lens, leetype, rust-round or interview",
 		));
 	}
 	let of_ref = said.of_ref.filter(|of_ref| is_name(of_ref, MAX_REF_CHARS));
@@ -599,6 +637,10 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 				"ref",
 				"not what a Rust Rounds note answers: <round>:<card>, <round>:<card>:<note> on a refine card, <week>:<ticket>, or <week>:PASTE:<at>",
 			));
+			None
+		}
+		(Some(Of::Interview), Some(of_ref)) if !is_interview_ref(of_ref) => {
+			problems.push(("ref", "not what an interview take is said for: <week>:<question> or <week>:read:<card>"));
 			None
 		}
 		(_, of_ref) => of_ref,
@@ -809,9 +851,12 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 /// - [`Of::Studio`]: every take, an idea's spoken answer included, is kept
 ///   and played from home (the owner's decision 8 on paulgsc/some-ui#2248,
 ///   2026-11-04; ST32).
+/// - [`Of::Interview`]: a week's takes play back in My data and the week's
+///   essay, as Rust Rounds' do (paulgsc/some-ui#2932, IW1, under the epic
+///   paulgsc/some-ui#2931's decisions of 2026-11-13).
 ///
 /// Every other kind's audio never leaves home.
-pub const PLAYED_BACK: [Of; 2] = [Of::RustRound, Of::Studio];
+pub const PLAYED_BACK: [Of; 3] = [Of::RustRound, Of::Studio, Of::Interview];
 
 /// What home holds of a note's audio short of its bytes: its container and
 /// their SHA-256, enough to answer a read that already has them.
@@ -912,7 +957,8 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 #[cfg(test)]
 mod tests {
 	use super::{
-		audio_body, audio_head, describe, is_note_id, is_rust_round_ref, put_note, whole, AudioHead, Change, Note, Of, Said, SaidBite, VoiceError, MAX_LINE_CHARS, NOTE_CEILING,
+		audio_body, audio_head, describe, is_interview_ref, is_note_id, is_rust_round_ref, put_note, whole, AudioHead, Change, Note, Of, Said, SaidBite, VoiceError,
+		MAX_LINE_CHARS, NOTE_CEILING, PLAYED_BACK,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -929,6 +975,8 @@ mod tests {
 	const BEFORE_TAKES: i64 = 20_261_101_000_400;
 	/// The migration before `rust-round` was a note's kind.
 	const BEFORE_RUST_ROUND: i64 = 20_261_101_002_600;
+	/// The migration before `interview` was a note's kind.
+	const BEFORE_INTERVIEW: i64 = 20_261_113_000_500;
 	const NOW: &str = "2026-10-25T03:00:00.000Z";
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
@@ -2021,6 +2069,132 @@ mod tests {
 		let said = describe("r1", said_take("rust-round", "indexing-01:a"), b"said").unwrap();
 		put(&pool, A, &said, b"said").await.unwrap();
 		assert!(MIGRATOR.undo(&pool, BEFORE_RUST_ROUND).await.is_err(), "a held Rust Rounds note refuses the rollback");
+		assert_eq!(rows(&pool, "voice_note").await, 2, "and nothing went");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		assert_eq!(rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await, 0, "still leaves with the account");
+	}
+
+	/// Every kind a note is said for, by the name the phone sends, the CHECK
+	/// holds and the mailbox files; and the kinds whose audio home gives back
+	/// (IW1, paulgsc/some-ui#2932, adds `interview` to both).
+	#[test]
+	fn the_kinds_and_the_kinds_played_back_are_pinned() {
+		assert_eq!(
+			Of::ALL.map(Of::as_str),
+			["reflection", "jobs", "scene", "game", "studio", "soundbite", "lens", "leetype", "rust-round", "interview"]
+		);
+		for of in Of::ALL {
+			assert_eq!(Of::named(of.as_str()), Some(of));
+		}
+		assert_eq!(PLAYED_BACK, [Of::RustRound, Of::Studio, Of::Interview]);
+	}
+
+	/// IW1 (paulgsc/some-ui#2932): an interview take names the week's
+	/// question it answers, or the week's teleprompter card it reads
+	/// (paulgsc/some-ui#2936). Any other `ref` is refused for it, and its rule
+	/// binds no other kind.
+	#[test]
+	fn an_interview_take_names_its_question_or_the_card_it_reads() {
+		for good in ["2026-w47:about-you", "2026-w01:q1", "2026-w47:read:home-first", "2026-w53:read:c2"] {
+			assert!(is_interview_ref(good), "{good}");
+			let note = describe("i1", said_take("interview", good), b"said").unwrap();
+			assert_eq!((note.of, note.of_ref.as_str()), (Of::Interview, good));
+		}
+		for bad in [
+			"about-you",
+			"2026-w47",
+			"2026-w47:",
+			"2026-w47:read",
+			"2026-w47:read:",
+			"2026-w47:read:Home",
+			"2026-w47:about-you:extra",
+			"2026-w47:ask:c1",
+			"2026-w47:About-you",
+			"2026-w47:about--you",
+			"2026-w54:about-you",
+			"w47:about-you",
+			"2026-w47:read:c1:more",
+		] {
+			assert!(!is_interview_ref(bad), "{bad}");
+			let refused = describe("i1", said_take("interview", bad), b"said").unwrap_err();
+			assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["ref"], "{bad}");
+		}
+		assert!(describe("l1", said_take("lens", "about-you"), b"said").is_ok(), "the rule is the interview's alone");
+		assert!(!is_rust_round_ref("2026-w47:about-you"), "nor does an interview ref read as a Rust Rounds one");
+	}
+
+	/// An interview take is kept as a note like any other, and its audio is
+	/// read back for its own subject only, and only as that kind.
+	#[tokio::test]
+	async fn an_interview_takes_audio_is_kept_and_read_back_by_its_subject_only() {
+		let pool = pool().await;
+		let said = describe("i1", said_take("interview", "2026-w47:read:home-first"), b"said").unwrap();
+		assert_eq!(put(&pool, A, &said, b"said").await.unwrap(), Change::Added);
+		assert_eq!(put(&pool, A, &said, b"said").await.unwrap(), Change::Unchanged, "a retry writes nothing");
+		let other = describe("i1", said_take("interview", "2026-w47:read:home-first"), b"other").unwrap();
+		assert!(matches!(put(&pool, A, &other, b"other").await, Err(VoiceError::Rewritten)), "never replaced");
+		assert_eq!(rows(&pool, "game_bite").await, 0, "it carries no bite");
+
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			audio_head(&mut conn, A, "i1", Of::Interview).await.unwrap(),
+			Some(AudioHead {
+				content_type: "audio/webm",
+				sha256: said.sha256.clone()
+			})
+		);
+		assert_eq!(audio_body(&mut conn, A, "i1", Of::Interview).await.unwrap(), Some(b"said".to_vec()));
+		assert_eq!(audio_head(&mut conn, B, "i1", Of::Interview).await.unwrap(), None, "another subject's note is not theirs");
+		assert_eq!(audio_head(&mut conn, A, "i1", Of::RustRound).await.unwrap(), None, "read only as its own kind");
+	}
+
+	/// The rebuild that widened `voice_note` for `interview` keeps every note
+	/// held before it, still append-only, still indexed for the transcriber
+	/// and the reconciler, still leaving with the account; going back refuses
+	/// once an interview take is held.
+	#[tokio::test]
+	async fn the_notes_rebuilt_for_interviews_keep_what_was_held_before() {
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		MIGRATOR.undo(&pool, BEFORE_INTERVIEW).await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(A)
+			.bind(A.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert!(
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'early', 'interview', '2026-w47:q1', 'then', 'audio/webm', 1, 'abc', 'now')",
+			)
+			.bind(A)
+			.execute(&pool)
+			.await
+			.is_err(),
+			"before the rebuild an interview take is refused"
+		);
+		let round = describe("r1", said_take("rust-round", "indexing-01:a"), b"round").unwrap();
+		put(&pool, A, &round, b"round").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+
+		let held: Vec<(String, String, String)> = sqlx::query_as("SELECT note_id, of_kind, sha256 FROM voice_note ORDER BY note_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(held, [("r1".into(), "rust-round".into(), round.sha256.clone())]);
+		let refused = sqlx::query("UPDATE voice_note SET of_ref = 'x'").execute(&pool).await;
+		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
+		let indexes: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'voice_note' AND sql IS NOT NULL ORDER BY name")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(indexes, ["voice_note_by_ref", "voice_note_by_stored_at"], "both indexes are back");
+
+		let said = describe("i1", said_take("interview", "2026-w47:q1"), b"said").unwrap();
+		put(&pool, A, &said, b"said").await.unwrap();
+		assert!(MIGRATOR.undo(&pool, BEFORE_INTERVIEW).await.is_err(), "a held interview take refuses the rollback");
 		assert_eq!(rows(&pool, "voice_note").await, 2, "and nothing went");
 
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();

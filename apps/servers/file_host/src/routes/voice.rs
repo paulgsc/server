@@ -63,7 +63,7 @@
 //! own table beside the note, so no note is rewritten.
 //!
 //! The audio read is the one route that gives a note's bytes back, for a
-//! `rust-round` note or a `studio` take only (`voice_repo::PLAYED_BACK`
+//! `rust-round` note, a `studio` take or an `interview` take only (`voice_repo::PLAYED_BACK`
 //! says why). The take library answers what each take is and its words,
 //! never its audio (`voice_repo::takes`).
 //!

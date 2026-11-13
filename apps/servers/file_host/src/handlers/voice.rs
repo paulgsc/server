@@ -287,7 +287,8 @@ pub struct NoteAudio {
 /// `GET /voice-notes/:id/audio`
 ///
 /// The caller's note `id` back from home, when it is of a kind in
-/// `voice_repo::PLAYED_BACK` (a Rust Rounds note or a Studio take), for the
+/// `voice_repo::PLAYED_BACK` (a Rust Rounds note, a Studio take or an
+/// interview take), for the
 /// reasons that list gives.
 ///
 /// The audio comes inside JSON, as base64 beside its container and SHA-256,
@@ -1093,6 +1094,31 @@ mod tests {
 			StatusCode::NOT_FOUND,
 			"a reflection's audio stays home"
 		);
+	}
+
+	/// IW1 (paulgsc/some-ui#2932): an interview take, an answer or a
+	/// teleprompter read, is kept and played from home to a paired phone as a
+	/// Rust Rounds note is, and one whose `ref` names neither is a `422`.
+	/// Who may read it is the Rust Rounds test's.
+	#[tokio::test]
+	async fn a_paired_phone_plays_its_interview_takes_from_home() {
+		use base64::{engine::general_purpose::STANDARD, Engine};
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		for (id, of_ref) in [("i1", "2026-w47:about-you"), ("i2", "2026-w47:read:home-first")] {
+			let path = format!("/voice-notes/{id}?of=interview&ref={of_ref}&at=2026-11-13T18:20:00Z");
+			let (status, answer) = put(&app, &path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+			assert_eq!(status, StatusCode::OK, "{answer}");
+			let (status, body) = get(&app, &format!("/voice-notes/{id}/audio"), Some(&phone)).await;
+			assert_eq!(status, StatusCode::OK, "{body}");
+			assert_eq!(
+				body,
+				json!({ "id": id, "contentType": "audio/webm", "sha256": TAKE_SHA256, "audio": STANDARD.encode(TAKE) })
+			);
+		}
+		let (status, refused) = put(&app, "/voice-notes/i3?of=interview&ref=about-you&at=2026-11-13T18:20:00Z", Some(&phone), "audio/webm", TAKE).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
 	}
 
 	/// ST32 (paulgsc/some-ui#2590): the take library lists the caller's
