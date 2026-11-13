@@ -24,7 +24,7 @@ use serde::{Serialize, Serializer};
 
 /// The engine's own version. Every offer carries it, so a bite records the
 /// rules it was offered under; bump it when a rule or a line changes.
-pub const ENGINE_VERSION: u32 = 1;
+pub const ENGINE_VERSION: u32 = 2;
 
 /// The recorder's three modes (the epic's "Settings: three modes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

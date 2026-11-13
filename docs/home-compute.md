@@ -52,7 +52,7 @@ that adds it.
 | Class | Services | What it means today |
 |---|---|---|
 | **Protected** | `file-host`, `nats`, `redis`, `prometheus`, `grafana`, `node_exporter`, `cadvisor` | Home's state, and the path that tells the owner what happened: Prometheus evaluates the alerts, Grafana delivers them, node_exporter and cAdvisor count the kills. Killed last. |
-| **Interactive** | `rust-runner`, `orchestrator`, `home-deploy` | Short work someone may be waiting on. The default. The voice-note transcriber is interactive too, but it runs inside `file-host`, so it is protected with it. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
+| **Interactive** | `rust-runner`, `orchestrator`, `home-deploy` | Short work someone may be waiting on. The default. Anything that runs inside `file-host` takes its class and adds no service: the voice-note transcriber, which would be interactive on its own, and every worker loop file_host runs. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
 | **Batch**, the lowest | `render`, `kokoro`, `ollama` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
 
@@ -250,7 +250,13 @@ way; CI runs it on every PR.
 - **A restart keeps the job.** `job.state` names it, it runs before any
   other, under the same id, and its work is never removed for the
   `WORK_MAX_MB` cap while it waits. Docker stopping the container kills the
-  recorder's tree and leaves the job.
+  recorder's tree and leaves the job, marked `job.termed`: a stop that was
+  asked for. A restart without that mark (the container died under the job,
+  an OOM inside it, say) is counted in `job.state`'s `restarts`, and at
+  `RESTARTS` (3) the job is taken as failed, as an exit is: `failed.log`,
+  `CallRenderFailed`, and a retry an hour later as a new job. So a render
+  that kills its own container is not resumed first on every restart for
+  good (#740).
 - **The first render after a boot** waits for the lane's first `run`, which
   is never sooner than its hold-down (30 s after file_host starts): home's
   own services start first.
@@ -331,12 +337,50 @@ order above decides only when the host as a whole runs out.
 | `kokoro` | the line being said; the container restarts, and the render's attempt fails on the dropped connection | as above; takes already said are cached | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
 | `ollama` | a request in flight; the container restarts | nothing in this repo calls it | `HomeOomKill` |
 | `file-host` | the API and every poll stop until Docker restarts it. A voice note being heard keeps nothing and is heard again (`transcribe/pass.rs`, "A shutdown keeps nothing") | Docker's restart; each poll's first pass runs at start | `HomeOomKill`, `FileHostDown` |
-| `rust-runner` | the program it was running is kept as a loss (`dropped`), and at the second loss of one program it is kept as `runner-lost` for good under that toolchain (`rust_rounds/pass.rs`, `DROPS`) | Docker's restart; the next pass asks again until `DROPS` | `HomeOomKill`. A program lost to *another* service's memory is blamed on nothing yet: #706 |
+| `rust-runner` | the program it was running is kept as a loss (`dropped`), and at the second loss of one program it is kept as `runner-lost` for good under that toolchain (`rust_rounds/pass.rs`, `DROPS`). A loss while the kernel killed anything for memory, or while the CPU was contended, is nobody's and keeps nothing ("The contention guard") | Docker's restart; the next pass asks again until `DROPS` | `HomeOomKill`; `contention_outcomes_total{what="excused"}` |
 | `prometheus` | no alert is evaluated until Docker restarts it | Docker's restart | `HomeOomKill` once it is back, if within the hour |
 | `grafana` | no alert is delivered until Docker restarts it | Docker's restart | `HomeOomKill`, delivered once it is back |
 | `nats`, `redis` | what file_host keeps in them, and its realtime path, until Docker restarts them | Docker's restart | `HomeOomKill` |
 | tooling | nothing owed | Docker's restart | `HomeOomKill` |
 | `home-deploy` | the deploy in flight, before it records anything: a `make up` cut short can leave `file-host` stopped (then `FileHostDown`) | the path unit starts it again while the marker exists, and the run repeats from the pull | `HomeOomKill`; `FileHostDown` if it stopped `file-host`; `DeployStuck` once the marker is 30 minutes old |
+
+## The contention guard: a busy box is nobody's fault
+
+L1 (#706). The lane keeps batch work off the CPU while interactive work
+runs (LA1), but not every service is batch, and a second interactive job
+can still contend. So what interactive work *records* is guarded too.
+
+- **The rule.** A busy CPU or another service's memory only makes home
+  slower; it never changes what home records. An outcome a wall clock
+  decided, or a lost runner, taken while the box was contended, is
+  nobody's: nothing is kept, and it is asked again.
+- **The evidence**, read before and after each measurement
+  (`file_host`'s `contention` module): `/proc/pressure/cpu`'s `some`
+  total, contended at a stall share of 10% of the window or more
+  (`CONTENDED_SHARE`); and `/proc/vmstat`'s `oom_kill`, which moved if the
+  kernel killed anything. Both are the host's inside `file_host`'s
+  container, as the lane's signals are.
+- **What it excuses:**
+
+  | Worker | Excused when contended | Never excused |
+  |---|---|---|
+  | Rust Rounds (`rust_rounds/pass.rs`, RP3) | a recording that ran out of time (CPU); a lost runner, `dropped` or `timed-out` (CPU, or an OOM kill anywhere) | every other verdict: a panic, a compile error, a memory ceiling, output |
+  | Transcriber (`transcribe/pass.rs`) | a `deadline` (CPU) | `failed`, `unreadable`, `too_long` |
+
+  A recording kept from a contended window has its run's `milliseconds`
+  marked `contended` in the stored recording.
+- **Bounded.** One program or note is excused at most `NOBODYS` (3) times
+  in a row, then judged as on a calm box. The state is the last one
+  excused and its count, O(1). An excused outcome stops its pass, so the
+  next pass starts with the same one.
+- **An unreadable signal is no evidence**: the outcome is judged as before
+  the guard. The lane already reports a kernel without PSI
+  (`LaneSignalsUnreadable`).
+- **What says so:** `contention_outcomes_total{worker, what}` (`excused`,
+  `judged_anyway`, `marked`, `unreadable`) on the CALL dashboard's LANE
+  row; an INFO line for each pass that gave way, and a WARN for each
+  outcome judged anyway. No alert: an excused outcome waits a pass, and
+  one judged anyway is the bound working.
 
 ## How a kill is heard
 

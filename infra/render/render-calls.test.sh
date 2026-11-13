@@ -33,6 +33,8 @@
 # - the job, its state and its measured peak are written where the lane
 #   reads them, and the job is gone once it renders, fails or is let go;
 # - a job a restart left keeps its id and its work, and runs first;
+# - a job left by RESTARTS restarts it did not ask for is taken as failed
+#   (#740); a TERM's restart is not counted;
 # - a failed week waits RETRY_AFTER before it is tried again.
 #
 # And a template's preview (SFEED12, paulgsc/some-ui#2757): rendered with
@@ -136,8 +138,11 @@ lane_says() {
 # in one child that lives as long as the hold, so a case acts on it half
 # way without racing it.
 # $FAKE/fail-after-pause makes it fail once after its steps. It keeps
-# its pid in $FAKE/pid, its child's in $FAKE/child, and the job it saw in
-# the lane's folder in $FAKE/seen-job.
+# its pid in $FAKE/pid, its latest child's in $FAKE/child, the held child's
+# in $FAKE/held-child once it holds, and the job it saw in the lane's folder
+# in $FAKE/seen-job. Each pid file is written whole (`keep_pid`): a case
+# reads one while the fake runs, and a read between truncate and write saw
+# no pid at all (#825).
 # Both recorders keep the arguments they were given, one to a line, in
 # $FAKE/args-<script> (call, preview), and stamp each run's start and end in
 # $FAKE/times (`start <s>`, `end <s>`). While $FAKE/too-large exists, each
@@ -261,7 +266,12 @@ done
 week=$(basename "$week_file" .json)
 echo "$week" >> "$fake/runs"
 echo "recording $week: no cache warning here"
-echo $$ > "$fake/pid"
+# A pid file is written beside and moved into place, so a case reading it
+# meanwhile sees the old pid or the new, never an empty file (#825).
+keep_pid() {
+  echo "$2" > "$fake/.$1" && mv "$fake/.$1" "$fake/$1"
+}
+keep_pid pid $$
 cat "$(dirname "$out")/call-worker/job" > "$fake/seen-job" 2> /dev/null
 dir=$out/$week
 mkdir -p "$dir/steps"
@@ -296,11 +306,14 @@ if [ -e "$fake/steps" ]; then
           sleep 0.05
         done
       ) &
-      echo $! > "$fake/child"
+      keep_pid child $!
+      # The child a case acts on, named once it exists: after a step is
+      # made, $FAKE/child still names that step's ended child for a moment.
+      keep_pid held-child $!
       wait $!
     fi
     sleep "$(cat "$fake/slow" 2> /dev/null || echo 0)" &
-    echo $! > "$fake/child"
+    keep_pid child $!
     wait $!
     echo "step $i of $week" > "$dir/steps/.step-$i" && mv "$dir/steps/.step-$i" "$dir/steps/step-$i"
     echo "made step $i"
@@ -347,7 +360,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
+    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
@@ -395,9 +408,12 @@ has_steps() {
   [ "$(steps_made)" -ge "$1" ]
 }
 
-# A process's state letter: T when stopped; nothing when it is gone.
+# A process's state letter: T when stopped; nothing when it is gone; `nopid`
+# when what it was given is no pid: an empty one would read /proc//stat,
+# which is /proc/stat, and look alive as `cpu` (#825).
 state_of() {
   local stat
+  case $1 in '' | *[!0-9]*) echo nopid; return 0 ;; esac
   read -r stat 2> /dev/null < "/proc/$1/stat" || return 0
   stat=${stat##*) }
   echo "${stat%% *}"
@@ -409,6 +425,19 @@ gone() {
   local state
   state=$(state_of "$1")
   [ -z "$state" ] || [ "$state" = Z ]
+}
+
+# `within gone`, and when the process outlives the wait, what it is: its
+# stat line (state and parent), its command line, and the children the fake
+# recorder names now. Kept from #825, whose cause was a pid read as empty.
+gone_or_say() {
+  within gone "$1" && return 0
+  case $1 in '' | *[!0-9]*) echo "  no pid to look at: [$1]"; return 1 ;; esac
+  echo "  still there, pid $1: $(cat "/proc/$1/stat" 2> /dev/null || echo gone by now)"
+  echo "  its command line: $(tr '\0' ' ' 2> /dev/null < "/proc/$1/cmdline")"
+  echo "  the fake names as its child now: $(cat "$FAKE/child" 2> /dev/null)," \
+    "as its held child: $(cat "$FAKE/held-child" 2> /dev/null)"
+  return 1
 }
 
 job_state_is() {
@@ -555,6 +584,7 @@ echo 6 > "$FAKE/steps"
 echo 2 > "$FAKE/hold-at"
 pass_behind
 check "the recorder reaches its second step" within has_steps 2
+check "and holds before its third" within test -s "$FAKE/held-child"
 lane_says pause
 check "the job says it is paused" within job_state_is paused
 progress_is() {
@@ -569,7 +599,7 @@ rm "$FAKE/hold-at"
 sleep 1
 check "a pause makes no more steps, even with nothing holding it" test "$(steps_made)" -eq "$held"
 check "a pause stops the recorder" test "$(state_of "$(cat "$FAKE/pid")")" = T
-check "and what the recorder started" test "$(state_of "$(cat "$FAKE/child")")" = T
+check "and what the recorder started" test "$(state_of "$(cat "$FAKE/held-child")")" = T
 lane_says run
 wait "$PASS"
 check "a paused render finishes once the lane says run" test "$(video_of)" = "$REFERENCE"
@@ -585,12 +615,13 @@ echo 6 > "$FAKE/steps"
 echo 2 > "$FAKE/hold-at"
 pass_behind
 check "the recorder reaches its second step" within has_steps 2
+check "and holds before its third" within test -s "$FAKE/held-child"
 id=$(cat "$ROOT/renders/call-worker/job")
-recorder=$(cat "$FAKE/pid") child=$(cat "$FAKE/child")
+recorder=$(cat "$FAKE/pid") child=$(cat "$FAKE/held-child")
 : > "$SCRATCH/saw"
 lane_says stop
-check "a stop kills the recorder" within gone "$recorder"
-check "and what the recorder started" within gone "$child"
+check "a stop kills the recorder" gone_or_say "$recorder"
+check "and what the recorder started" gone_or_say "$child"
 check "the job says it waits" within job_state_is waiting
 kept=$(steps_made)
 check "a stop keeps the finished steps" test "$kept" -eq 2
@@ -695,6 +726,60 @@ check "a job a restart left runs first" test "$(head -n1 "$FAKE/runs")" = 2026-1
 check "after the lane saw it taken away and named again, so it checked room" taken_away_then 42
 check "under the id it had" test "$(cat "$FAKE/seen-job")" = 42
 check "and renders" test -e "$ROOT/renders/call/2026-10-23/call.mp4"
+
+# A job restarts that nobody asked for (#740): each restart without a TERM
+# is counted, and at RESTARTS the job is taken as failed, not resumed first
+# for good. A restart that was asked for (job.termed) is not counted.
+left_with_restarts() {
+  mkdir -p "$ROOT/renders/call-worker"
+  echo 43 > "$ROOT/renders/call-worker/job"
+  printf 'id=43\nkind=call\nkey=2026-10-23\nsince=1794000000\nstate=rendering\nstate_since=1794000000\nyields=0\nran=0\n%s\n' "$1" \
+    > "$ROOT/renders/call-worker/job.state"
+}
+fresh restarts 2026-10-23
+left_with_restarts "restarts=$(( RESTARTS - 1 ))"
+: > "$FAKE/runs"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a job left by its RESTARTS-th unasked restart is not run again" test ! -s "$FAKE/runs"
+check "it is taken as failed" test -e "$ROOT/renders/call-worker/2026-10-23.failed.log"
+check "which says why" grep -q "restarts the worker was not asked for" "$ROOT/renders/call-worker/2026-10-23.failed.log"
+check "and its job is over" test ! -e "$ROOT/renders/call-worker/job" -a ! -e "$ROOT/renders/call-worker/job.state"
+
+fresh restarts-asked 2026-10-23
+left_with_restarts "restarts=$(( RESTARTS - 1 ))"
+touch "$ROOT/renders/call-worker/job.termed"
+: > "$FAKE/runs"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a restart that was asked for (TERM) is not counted: the job renders" test -e "$ROOT/renders/call/2026-10-23/call.mp4"
+check "and its stop mark goes with the job" test ! -e "$ROOT/renders/call-worker/job.termed"
+
+fresh restarts-old 2026-10-23
+left_with_restarts ""
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a job.state written before restarts were counted is read as none" test -e "$ROOT/renders/call/2026-10-23/call.mp4"
+
+fresh restarts-counted 2026-10-23
+left_with_restarts "restarts=0"
+use_job call
+begin_job call 2026-10-23 > /dev/null 2>&1
+check "an unasked restart is one more in job.state" grep -qx 'restarts=1' "$ROOT/renders/call-worker/job.state"
+check "under the id it had" test "$JOB_ID" = 43
+end_job
+left_with_restarts "restarts=0"
+touch "$ROOT/renders/call-worker/job.termed"
+begin_job call 2026-10-23 > /dev/null 2>&1
+check "an asked one is not" grep -qx 'restarts=0' "$ROOT/renders/call-worker/job.state"
+end_job
+
+fresh termed 2026-10-23
+mkdir -p "$ROOT/renders/call-worker"
+echo 44 > "$ROOT/renders/call-worker/job"
+( use_job call; RECORDER=; on_term ) > /dev/null 2>&1
+check "a TERM marks the job's stop as asked for" test -e "$ROOT/renders/call-worker/job.termed"
+rm -rf "$ROOT/renders/call-worker"
+mkdir -p "$ROOT/renders/call-worker"
+( use_job call; RECORDER=; on_term ) > /dev/null 2>&1
+check "and marks nothing with no job" test ! -e "$ROOT/renders/call-worker/job.termed"
 
 # Attempt logs a killed attempt left are cleared between jobs; cache logs stay.
 fresh stale-logs 2026-10-30
