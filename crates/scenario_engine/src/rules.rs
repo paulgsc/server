@@ -161,15 +161,13 @@ impl<'s> Cx<'s> {
 		}
 	}
 
-	/// The last quarter hour before kickoff, until the first snap.
+	/// The last quarter hour before kickoff, until the opening kickoff. Once
+	/// the kickoff is in the log it is in "just happened" instead, so the
+	/// first snap's own moments (the opening drive) lead.
 	fn kickoff(&self) -> Found {
 		match self.phase {
 			Phase::Before if self.at >= self.game.kickoff - TimeDelta::minutes(15) => Some((55, words::before_kickoff(self.game, (self.game.kickoff - self.at).num_seconds()))),
-			Phase::Live if self.so_far.last_snap().is_none() => {
-				let kick = self.so_far.plays.iter().find(|seen| read::kind(seen.play) == "kickoff");
-				let kicking = kick.and_then(|seen| seen.play.possession.as_deref());
-				Some((55, kicking.map_or_else(|| String::from("Kickoff"), |team| words::kicks_off(team, self.so_far.other(team)))))
-			}
+			Phase::Live if self.so_far.last_snap().is_none() && self.so_far.opening_kickoff().is_none() => Some((55, String::from("Kickoff"))),
 			_ => None,
 		}
 	}
@@ -409,7 +407,7 @@ impl<'s> Cx<'s> {
 				};
 				Some((40, words::first_drive_ended(offense?, result)))
 			}
-			Moment::Kickoff if self.so_far.plays.iter().position(|seen| read::kind(seen.play) == "kickoff") == Some(i) => {
+			Moment::Kickoff if self.so_far.opening_kickoff() == Some(i) => {
 				let kicking = offense?;
 				Some((35, words::kicks_off(kicking, self.so_far.other(kicking))))
 			}
