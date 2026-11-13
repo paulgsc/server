@@ -117,8 +117,10 @@ impl Read<'_> {
 /// class, every exception that no longer holds, and, given the base branch's
 /// copy, every exception it did not have; each by app and name.
 ///
-/// `images` are the release's variables, one per compose service
-/// (`release::variable`), which `release.json` sets and nothing classes.
+/// `images` are the release's variables, one per compose service that starts
+/// from an image (`release::set_by_release`), which `release.json` sets and
+/// nothing classes. A build-only service's `IMAGE_` name is not one of them,
+/// so it is classed like any other compose variable (#837).
 pub(crate) fn problems(
 	schemas: &[Schema],
 	compose_variables: &ComposeVariables,
