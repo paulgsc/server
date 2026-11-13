@@ -211,7 +211,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
@@ -1146,7 +1146,14 @@ nowhere is marked as such and belongs to review.
     for later, and its `how` still says it was said first; a bite is never
     rewritten, so home's later mapping of one left for later (the
     reconciler, GWB7) goes in its own table
-    (`20261028000300_let_a_said_first_bite_keep_its_scenario`). Only
+    (`20261028000300_let_a_said_first_bite_keep_its_scenario`). That table
+    is `bite_mapping`, and beside it `bite_match` holds which play each bite
+    was matched to (paulgsc/some-ui#2081, `20261113000500_create_bite_match`):
+    both name the bite by id and hold only the scenario, ESPN's play id,
+    versions and times, never what was said or the screen's strip. Both are
+    append-only (a later pass is a new row, and a reader takes the newest)
+    and leave with the account by the sweep and their own trigger; no log
+    line holds whose bite was matched or to what. Only
     a game note has a bite and every game note has one; a bite's fields on
     any other note are a `422`. A bite is never updated (its trigger aborts
     an `UPDATE`) or replaced (another bite under a held id is a `409`, as

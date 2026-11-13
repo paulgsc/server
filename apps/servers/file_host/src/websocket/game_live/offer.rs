@@ -6,9 +6,9 @@
 
 use super::wire::{self, Hello, State};
 use chrono::{DateTime, SecondsFormat, Utc};
-use nfl_feed::scoreboard;
+use nfl_feed::{scoreboard, summary::Summary};
 use scenario_engine::{Reading, Situation};
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 
 /// The team every game is read through (the epic's "read through one team").
 pub const TEAM: &str = "SF";
@@ -46,23 +46,7 @@ pub async fn state(db: &SqlitePool, hello: &Hello, now: DateTime<Utc>, following
 		Some((game, listed)) => {
 			let summary = game_feed_repo::summary(&mut conn, &game.id, &as_of).await?;
 			let log = game_feed_repo::game_log(&mut conn, &game.id).await?;
-			let (status, situation, weather) = match summary {
-				Some(summary) => (summary.status, summary.situation, summary.weather.or_else(|| game.weather.clone())),
-				None => (game.status.clone(), game.situation.clone(), game.weather.clone()),
-			};
-			let engine_game = scenario_engine::Game {
-				id: game.id.clone(),
-				home: listed.home.clone(),
-				away: listed.away.clone(),
-				kickoff: game.kickoff.unwrap_or(now),
-				status,
-				situation: situation.as_ref().map(Situation::from),
-				weather,
-				reading: Reading {
-					team: TEAM.to_owned(),
-					want: listed.want.clone(),
-				},
-			};
+			let engine_game = engine_game(game, listed, summary, now);
 			let offered = scenario_engine::offer(&engine_game, &log, now.with_timezone(&hello.offset), hello.mode, hello.watching(&game.id));
 			Some(wire::Offer::from_engine(offered, now))
 		}
@@ -72,6 +56,47 @@ pub async fn state(db: &SqlitePool, hello: &Hello, now: DateTime<Utc>, following
 		games: listed.into_iter().map(|(_, listed)| listed).collect(),
 		offer,
 	})
+}
+
+/// The engine's view of `game_id` as of `at`, as [`state`] makes it: the
+/// newest scoreboard kept by then lists the game, and its newest summary
+/// kept by then, if any, gives the status and the snap to come. `None` when
+/// that scoreboard does not list it with both teams and a kickoff.
+///
+/// The reconciler (GWB7) reads a game this way at a bite's time.
+///
+/// # Errors
+/// Any storage failure.
+pub async fn game_at(conn: &mut SqliteConnection, game_id: &str, at: DateTime<Utc>) -> Result<Option<scenario_engine::Game>, sqlx::Error> {
+	let as_of = at.to_rfc3339_opts(SecondsFormat::Millis, true);
+	let week = game_feed_repo::week(conn, &as_of).await?.unwrap_or_default();
+	let Some((game, listed)) = week.games.iter().find(|game| game.id == game_id).and_then(|game| Some((game, listing(game)?))) else {
+		return Ok(None);
+	};
+	let summary = game_feed_repo::summary(conn, game_id, &as_of).await?;
+	Ok(Some(engine_game(game, &listed, summary, at)))
+}
+
+/// The engine's view of a listed game, from its newest summary when there is
+/// one, else the scoreboard's.
+fn engine_game(game: &scoreboard::Game, listed: &wire::Game, summary: Option<Summary>, now: DateTime<Utc>) -> scenario_engine::Game {
+	let (status, situation, weather) = match summary {
+		Some(summary) => (summary.status, summary.situation, summary.weather.or_else(|| game.weather.clone())),
+		None => (game.status.clone(), game.situation.clone(), game.weather.clone()),
+	};
+	scenario_engine::Game {
+		id: game.id.clone(),
+		home: listed.home.clone(),
+		away: listed.away.clone(),
+		kickoff: game.kickoff.unwrap_or(now),
+		status,
+		situation: situation.as_ref().map(Situation::from),
+		weather,
+		reading: Reading {
+			team: TEAM.to_owned(),
+			want: listed.want.clone(),
+		},
+	}
 }
 
 /// A scoreboard game as the picker lists it, or `None` without both teams

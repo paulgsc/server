@@ -1161,6 +1161,8 @@ mod tests {
 		"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at) VALUES (?1, 'n', 'reflection', 'r', 'then', 'audio/webm', 1, 's', 'now')",
 		"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'n', x'00')",
 		"INSERT INTO game_bite (subject_id, note_id, how, live_strip, watching, started_at, mode, catalog_version) VALUES (?1, 'n', 'said-first', '', 1, 'then', 'light', 1)",
+		"INSERT INTO bite_match (subject_id, note_id, scenario_id, method, engine_version, matched_at) VALUES (?1, 'n', NULL, 'no-scenario', 2, 'now')",
+		"INSERT INTO bite_mapping (subject_id, note_id, scenario_id, proposed_by, catalog_version, engine_version, mapped_at) VALUES (?1, 'n', 'in.sack', 'shot-writer', 1, 2, 'now')",
 		"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
 		 VALUES (?1, 'n', 'm', 'e', 1, 'silent', 1, 1, 'now')",
 		"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, 'n', 'm', 0, 'w', 0, 1)",

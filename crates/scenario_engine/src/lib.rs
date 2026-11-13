@@ -248,3 +248,54 @@ pub fn offer(game: &Game, log: &[Entry], now: DateTime<FixedOffset>, mode: Mode,
 		just_happened,
 	}
 }
+
+/// A play the log held, as one scenario: what the reconciler (GWB7) matches a
+/// bite to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Was {
+	/// ESPN's play id.
+	pub play_id: String,
+	/// When it happened: ESPN's wallclock, or else when home first saw it.
+	pub at: DateTime<Utc>,
+}
+
+/// Whether `scenario` can be a play at all. Pregame, the two-minute drill,
+/// the final and the owner's own scenarios are about a stretch of the game,
+/// so no play is ever one of them.
+#[must_use]
+pub fn about_a_play(scenario: Scenario) -> bool {
+	rules::about_a_play(scenario.entry().moment)
+}
+
+/// Every play of `game` in `log`, as of `now`, that `scenario`'s rule says
+/// was one, in ESPN's order.
+///
+/// It is the rule "just happened" uses (SE3), with no window and no count, so
+/// a bite can be matched to any play of its game. Each play is read at its
+/// latest version seen by `now` (SE2): replayed after the final, a play a
+/// flag wiped out is not a third and long that was stopped.
+#[must_use]
+pub fn plays_that_were(game: &Game, log: &[Entry], now: DateTime<Utc>, scenario: Scenario) -> Vec<Was> {
+	let so_far = read::SoFar::new(game, log, now);
+	rules::were(game, &so_far, now, scenario)
+		.into_iter()
+		.map(|i| Was {
+			play_id: so_far.plays[i].play.id.clone(),
+			at: so_far.plays[i].at,
+		})
+		.collect()
+}
+
+/// Every scenario that could have been happening in `game` at `now`, in the
+/// catalog's order: each one whose rule fits then, and each one a play home
+/// first saw within Full mode's window was, with no mode's count applied.
+///
+/// The reconciler (GWB7) accepts a scenario proposed for a bite said first
+/// only if it is here at the bite's time. `now` carries the owner's UTC
+/// offset, as in [`offer`].
+#[must_use]
+pub fn could_be(game: &Game, log: &[Entry], now: DateTime<FixedOffset>, watching: Watching) -> Vec<Scenario> {
+	let at = now.with_timezone(&Utc);
+	let so_far = read::SoFar::new(game, log, at);
+	rules::could_be(game, &so_far, at, *now.offset(), watching)
+}

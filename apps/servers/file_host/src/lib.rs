@@ -35,6 +35,7 @@ pub mod previews;
 #[cfg(test)]
 mod privacy;
 pub mod rate_limiter;
+pub mod reconcile;
 pub mod redacted;
 pub mod routes;
 pub mod routine_watch;

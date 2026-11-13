@@ -428,6 +428,37 @@ const fn kick_words(kick: Kick) -> &'static str {
 	}
 }
 
+/// Whether a play can be one of `moment`'s scenarios: the moments with a
+/// "just happened" rule in [`Cx::happened`]. The rest (pregame, the two-minute
+/// drill, the final and the owner's own) are about a stretch of the game, not
+/// one play.
+pub(crate) const fn about_a_play(moment: Moment) -> bool {
+	!matches!(moment, Moment::Pregame | Moment::TwoMinute | Moment::Final | Moment::Watching)
+}
+
+/// The plays of `so_far`, in ESPN's order, that `scenario`'s rule says were
+/// one: the "just happened" rule, with no window and no count.
+pub(crate) fn were(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, scenario: Scenario) -> Vec<usize> {
+	let cx = Cx::new(game, so_far, at, Mode::Full, Utc.fix(), Watching::Unknown);
+	let moment = scenario.entry().moment;
+	(0..so_far.plays.len()).filter(|i| cx.happened(moment, *i).is_some()).collect()
+}
+
+/// Every scenario that fits at `at` (its rule, untruncated) or that a play
+/// home first saw within Full mode's window was, in the catalog's order.
+pub(crate) fn could_be(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, local: FixedOffset, watching: Watching) -> Vec<Scenario> {
+	let cx = Cx::new(game, so_far, at, Mode::Full, local, watching);
+	let since = at - Mode::Full.kept();
+	let recent: Vec<usize> = (0..so_far.plays.len()).filter(|i| so_far.plays[*i].first >= since).collect();
+	Scenario::ALL
+		.into_iter()
+		.filter(|scenario| {
+			let moment = scenario.entry().moment;
+			cx.now(moment, *scenario).is_some() || recent.iter().any(|i| cx.happened(moment, *i).is_some())
+		})
+		.collect()
+}
+
 /// Heaviest first. `found` is in the catalog's order (one entry per
 /// scenario, from [`Scenario::ALL`]) and the sort is stable, so ties keep it.
 fn ranked(mut found: Vec<(u8, Scenario, String)>) -> Vec<(Scenario, String)> {
