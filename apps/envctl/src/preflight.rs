@@ -75,11 +75,12 @@ pub(crate) fn preflight(schemas: &[Schema], compose_variables: &ComposeVariables
 	let role = &deployment.role;
 	let compose_file = sops::relative(role, sops::COMPOSE).display().to_string();
 	let given = |name: &str| deployment.compose.get(name).cloned();
+	let released = release::set_by_release(raw);
 	for variable in compose_variables.values() {
 		let value = given(&variable.name);
 		if variable.required && value.as_deref().is_none_or(|value| variable.nonempty && value.is_empty()) {
 			let help = if variable.message.is_empty() { &variable.help } else { &variable.message };
-			let reader = if release::is_variable(&variable.name) {
+			let reader = if released.contains(&variable.name) {
 				format!("docker compose ({}), from {}", variable.files.join(", "), release::relative(role).display())
 			} else {
 				format!("docker compose ({}), in {compose_file}", variable.files.join(", "))
@@ -222,8 +223,10 @@ pub(crate) enum Stated {
 }
 
 /// Every variable the stack reads, who reads it, its default, and how the
-/// role's files state it, by name (`make env`).
-pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariables, stated: &dyn Fn(&str, &str) -> Stated) -> String {
+/// role's files state it, by name (`make env`). `released` are the
+/// variables the release sets ([`release::set_by_release`]), which are not
+/// listed: no deployment file states them.
+pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariables, released: &BTreeSet<String>, stated: &dyn Fn(&str, &str) -> Stated) -> String {
 	let mut rows: Vec<(String, String, Stated, String, String, String)> = Vec::new();
 	let mut seen = BTreeSet::new();
 	for schema in schemas {
@@ -259,7 +262,7 @@ pub(crate) fn render_list(schemas: &[Schema], compose_variables: &ComposeVariabl
 	}
 	let mut rest: Vec<_> = compose_variables
 		.values()
-		.filter(|variable| !seen.contains(&variable.name) && !FROM_MAKE.contains(&variable.name.as_str()) && !release::is_variable(&variable.name))
+		.filter(|variable| !seen.contains(&variable.name) && !FROM_MAKE.contains(&variable.name.as_str()) && !released.contains(&variable.name))
 		.collect();
 	rest.sort_by(|a, b| a.name.cmp(&b.name));
 	for variable in rest {
@@ -411,6 +414,39 @@ mod tests {
 		assert!(report.errors.iter().any(|error| error.contains("exactly one env_file")), "{:?}", report.errors);
 	}
 
+	/// Only a service's own image variable comes from the release; another
+	/// `IMAGE_` name is compose's, like any other (#837).
+	#[test]
+	fn only_the_release_s_variables_come_from_the_release() {
+		let images = variables(&[(
+			"c.yml".to_owned(),
+			"    image: ${IMAGE_APP:?run compose through make}\n      - Q=${IMAGE_QUALITY:?set it}\n".to_owned(),
+		)]);
+		let mut raw = raw();
+		raw["services"]["app"]["image"] = json!("${IMAGE_APP:?run compose through make}");
+		let report = preflight(
+			&[],
+			&images,
+			&raw,
+			&Deployment {
+				role: "home".into(),
+				..Deployment::default()
+			},
+		);
+		let readers: Vec<_> = report.missing.iter().map(|gap| (gap.name.as_str(), gap.reader.as_str())).collect();
+		assert_eq!(
+			readers,
+			[
+				("IMAGE_APP", "docker compose (c.yml), from deploy/home/release.json"),
+				("IMAGE_QUALITY", "docker compose (c.yml), in deploy/home/compose.sops.env")
+			]
+		);
+		let released = crate::release::set_by_release(&raw);
+		assert!(!released.contains("IMAGE_DB"), "db starts from no image");
+		let listing = render_list(&[], &images, &released, &|_, _| super::Stated::Absent);
+		assert!(listing.contains("IMAGE_QUALITY") && !listing.contains("IMAGE_APP"), "{listing}");
+	}
+
 	#[test]
 	fn listing_and_sentences() {
 		let stated = |reader: &str, name: &str| match (reader, name) {
@@ -418,7 +454,7 @@ mod tests {
 			("probe", "ON") => super::Stated::Unset,
 			_ => super::Stated::Absent,
 		};
-		let listing = render_list(&[probe()], &compose(), &stated);
+		let listing = render_list(&[probe()], &compose(), &std::collections::BTreeSet::new(), &stated);
 		assert!(
 			listing.contains("set     DB  [probe]")
 				&& listing.contains("unset   ON  [probe]")

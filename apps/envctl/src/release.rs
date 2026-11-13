@@ -24,7 +24,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, BTreeSet},
 	path::{Path, PathBuf},
 	sync::LazyLock,
 };
@@ -32,8 +32,8 @@ use std::{
 /// The release's file name, in `deploy/<role>/`.
 pub(crate) const FILE: &str = "release.json";
 
-/// Every compose variable named `IMAGE_…` is the release's, never a
-/// deployment file's.
+/// What each service's image variable starts with. Not every compose
+/// variable that starts with it is the release's: [`set_by_release`] is.
 const PREFIX: &str = "IMAGE_";
 
 /// One `${IMAGE_<SERVICE>:?message}`, the only shape an `image:` may take.
@@ -70,9 +70,14 @@ pub(crate) fn variable(service: &str) -> String {
 	name
 }
 
-/// Whether a compose variable is one the release sets.
-pub(crate) fn is_variable(name: &str) -> bool {
-	name.starts_with(PREFIX)
+/// The compose variables the release sets: the [`variable`] of each service
+/// that starts from an image, and no other, as [`Release::variables`] gives
+/// compose once [`role_problems`] holds. A bare `IMAGE_` prefix would also
+/// take a variable such as `IMAGE_QUALITY` that no release sets, and so would
+/// a build-only service's name; the class check would then ask a class for
+/// it while every other rule refused the files that could set it (#837).
+pub(crate) fn set_by_release(raw: &Value) -> BTreeSet<String> {
+	imaged(raw).into_iter().map(|(service, _)| variable(service)).collect()
 }
 
 pub(crate) fn parse(text: &str) -> Result<Release> {
@@ -128,10 +133,11 @@ pub(crate) fn role_problems(role: &str, raw: &Value, release: Option<&str>, comp
 	let mut problems = Vec::new();
 	if let Some(text) = compose_file {
 		let file = sops::relative(role, sops::COMPOSE).display().to_string();
+		let released = set_by_release(raw);
 		problems.extend(
 			sops::names(text)
 				.into_iter()
-				.filter(|name| is_variable(name))
+				.filter(|name| released.contains(name))
 				.map(|name| format!("{file} sets {name}, which {shown} sets")),
 		);
 	}
@@ -186,7 +192,19 @@ mod tests {
 	fn a_service_reads_its_own_variable() {
 		assert_eq!(variable("file-host"), "IMAGE_FILE_HOST");
 		assert_eq!(variable("node_exporter"), "IMAGE_NODE_EXPORTER");
-		assert!(is_variable("IMAGE_RENDER") && !is_variable("STORAGE"));
+	}
+
+	#[test]
+	fn the_release_sets_each_service_s_variable_and_no_other() {
+		let released = set_by_release(&raw());
+		assert_eq!(
+			released,
+			["IMAGE_FILE_HOST", "IMAGE_NODE_EXPORTER"].map(String::from).into(),
+			"not the build-only service's"
+		);
+		assert!(!released.contains("IMAGE_QUALITY") && !released.contains("STORAGE"));
+		let release: BTreeSet<String> = parse(RELEASE).unwrap().variables().into_keys().collect();
+		assert_eq!(released, release, "what a matching release gives compose");
 	}
 
 	#[test]
@@ -266,6 +284,14 @@ mod tests {
 			found,
 			vec!["deploy/home/compose.sops.env sets IMAGE_FILE_HOST, which deploy/home/release.json sets".to_owned()]
 		);
+	}
+
+	/// An `IMAGE_` name no service's image is read from is the deployment
+	/// file's to set, like any other compose variable (#837).
+	#[test]
+	fn the_deployment_file_may_set_a_stray_image_name() {
+		let compose = "IMAGE_QUALITY=ENC[AES256_GCM,data:x,type:str]\nsops_version=3.9.0\n";
+		assert_eq!(role_problems("home", &raw(), Some(RELEASE), Some(compose)), Vec::<String>::new());
 	}
 
 	/// The checkout's own: every compose image is the release's, and the
