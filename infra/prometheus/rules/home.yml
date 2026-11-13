@@ -468,15 +468,16 @@ groups:
       - alert: DeployCannotRequest
         # HD2: a client needed a newer server and /compat answered
         # cannot_request: file_host could not write the deploy-wanted marker
-        # (${STORAGE}/deploy missing or not writable), so no deploy will run
-        # and DeployStuck, which reads the marker's age, never sees it.
+        # (the folder could not be made or the file written: a storage that
+        # is not writable or full), so no deploy will run and DeployStuck,
+        # which reads the marker's age, never sees it.
         # compat_checks_total is at 0 from boot (metrics::deploy::register_all),
         # so the first such ask after a restart is an increase too. Over the
         # hour, as DeployFailed: one message, resolved an hour after the last.
         expr: sum(increase(compat_checks_total{result="cannot_request"}[1h])) > 0
         labels:
           objective: HD2
-          says: "A client needed a newer server in the last hour, but home could not write the deploy request (/compat answered cannot_request): check that the deploy folder on home's storage exists and file_host can write it; `journalctl` for file_host names the error."
+          says: "A client needed a newer server in the last hour, but home could not write the deploy request (/compat answered cannot_request), so no deploy will run: file-host-server's log names what failed."
 
   # Home runs out of memory (LN2, #707): every kill the kernel makes for
   # memory reaches the owner, named when it can be and never dropped when it

@@ -676,7 +676,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: HD2
-              says: "A client needed a newer server in the last hour, but home could not write the deploy request (/compat answered cannot_request): check that the deploy folder on home's storage exists and file_host can write it; `journalctl` for file_host names the error."
+              says: "A client needed a newer server in the last hour, but home could not write the deploy request (/compat answered cannot_request), so no deploy will run: file-host-server's log names what failed."
       - eval_time: 80m
         alertname: DeployCannotRequest
         exp_alerts: []
