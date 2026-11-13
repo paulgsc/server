@@ -31,7 +31,12 @@ or scouts file naming it is what puts it in front of the routine
 kind the owner switched on (none yet; a Studio take is the one kind it can
 ever delete), leaving a receipt in `voice_note_deletion`
 (`migrations/20261103000100_create_voice_note_deletion.up.sql`,
-`src/delete.rs`). The take library (`src/takes.rs`, docs/take-library.md)
+`src/delete.rs`). Where each Studio take is on the conveyor (in the oven,
+cooking, ready for pickup, picked up or canned) is `studio_take_move`'s: one
+append-only row per move, the newest saying where the take is, going with the
+take when My data deletes it
+(`migrations/20261113000600_create_studio_take_move.up.sql`,
+`src/conveyor.rs`). The take library (`src/takes.rs`, docs/take-library.md)
 lists and searches the Studio takes, by meaning through the index in
 `voice_note_meaning`: one vector per take and embedding model, derived from
 the take's words, written only by `file_host`'s transcriber and read only by

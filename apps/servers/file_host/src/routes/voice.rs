@@ -17,6 +17,18 @@
 //!                                      note go; home sets it aside and
 //!                                      keeps it (idempotent, the first
 //!                                      mark stands)
+//! GET /voice-notes/:id/station        → { id, station, labels, history }:
+//!                                      where the take is on the conveyor
+//!                                      and every move, oldest first
+//!                                      (paulgsc/some-ui epic #2872)
+//! POST /voice-notes/:id/station       → { change, take }: moves the take
+//!                                      from the station the body names
+//!                                      (`{ from, to, at, labels?,
+//!                                      comment?, issue? }`), else a 409
+//!                                      naming where it is
+//! GET /voice-notes/conveyor?station=  → { station, takes, total }: the
+//!                                      takes at a station, newest move
+//!                                      first, at most 100
 //! GET /voice-notes/:id/audio          → { id, contentType, sha256, audio }:
 //!                                      a Rust Rounds note's or a Studio
 //!                                      take's audio as base64, to a paired
@@ -60,7 +72,9 @@
 //! gets them from home rather than from a recognizer on the phone. The
 //! set-aside mark (paulgsc/some-ui#2372, MIC2; the owner's D3 on epic #2368:
 //! Let go sets a take aside and keeps it) is `voice_repo::set_aside`'s, its
-//! own table beside the note, so no note is rewritten.
+//! own table beside the note, so no note is rewritten. So is the conveyor
+//! (paulgsc/some-ui epic #2872, CONVEYOR1): each move of a Studio take is a
+//! row of `voice_repo::conveyor`'s, and the newest says where it is.
 //!
 //! The audio read is the one route that gives a note's bytes back, for a
 //! `rust-round` note or a `studio` take only (`voice_repo::PLAYED_BACK`
@@ -117,6 +131,9 @@ where
 		.get("/voice-notes/on-drive", handlers::get_on_drive)
 		.get("/voice-notes/:id/heard", handlers::get_heard)
 		.put("/voice-notes/:id/set-aside", handlers::put_set_aside)
+		.get("/voice-notes/:id/station", handlers::get_station)
+		.post("/voice-notes/:id/station", handlers::post_station)
+		.get("/voice-notes/conveyor", handlers::get_conveyor)
 		.get("/voice-notes/:id/audio", handlers::get_audio)
 		.get("/voice-notes/kept", handlers::get_kept)
 		.get("/voice-notes/takes", handlers::get_takes)
@@ -129,7 +146,7 @@ where
 fn cors(config: &Config) -> CorsLayer {
 	allowlisted_cors_with_credentials(
 		config,
-		vec![Method::GET, Method::PUT, Method::DELETE, Method::OPTIONS],
+		vec![Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS],
 		vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION, IF_NONE_MATCH],
 	)
 	.expose_headers([ETAG])

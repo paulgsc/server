@@ -17,6 +17,10 @@
 //! reaches a log line: the span skips every argument, and a refusal names
 //! fields with fixed words, never what was said.
 //!
+//! [`post_station`] is the only caller of `voice_repo::conveyor::advance`,
+//! the one writer of `studio_take_move`; it writes no note. A move's labels,
+//! comment and issue reach no log line: the span skips every argument.
+//!
 //! **The one way a note is deleted but with the account** (docs/identity.md
 //! invariant 23): [`delete_note`] is the only caller of
 //! `voice_repo::delete::delete`, for a kind the owner switched on (none
@@ -57,8 +61,10 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::borrow::Cow;
 use tracing::instrument;
 use voice_repo::{
+	conveyor::{Advanced, AtStation, Said as MoveSaid, Station, TakeStation},
 	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
 	kept::{KindKept, NoteKept, WeekKept},
 	meaning::Embed as _,
@@ -483,6 +489,134 @@ pub async fn put_set_aside(subject: SubjectId, State(db): State<SqlitePool>, Pat
 	}
 }
 
+/// `GET /voice-notes/:id/station`: where the caller's Studio take `id` is on
+/// the conveyor, its labels, and every move that put it there, oldest first
+/// (paulgsc/some-ui epic #2872, CONVEYOR1; `voice_repo::conveyor`). A take
+/// no move has touched is `in-the-oven`, with no history.
+///
+/// # Errors
+/// 401 without a session, 404 for a take the caller's subject does not hold
+/// (another subject's, a note of another kind or an idea's answer
+/// included), and 500 for a storage failure or a move that does not read
+/// back.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_station_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_station(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<TakeStation>, FileHostError> {
+	let mut conn = db.acquire().await?;
+	let held = voice_repo::conveyor::station(&mut conn, subject.as_str(), &id).await.map_err(refusal)?;
+	held.map(Json).ok_or(FileHostError::NotFound)
+}
+
+/// `GET /voice-notes/conveyor`'s query: which station.
+#[derive(Debug, Deserialize)]
+pub struct ConveyorQuery {
+	station: Option<String>,
+}
+
+/// `GET /voice-notes/conveyor?station=`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Conveyor {
+	/// The station read.
+	pub station: Station,
+	/// Its takes, newest move first, at most `voice_repo::conveyor::AT_STATION`.
+	pub takes: Vec<AtStation>,
+	/// How many takes are there in all.
+	pub total: i64,
+}
+
+/// `GET /voice-notes/conveyor?station=`: the caller's Studio takes at a
+/// station, for the conveyor page and the routine's pickup
+/// (`voice_repo::conveyor::at_station`). Read in one transaction, so the
+/// list and the total agree.
+///
+/// # Errors
+/// 401 without a session, 422 naming `station` when it is missing or not a
+/// station, and 500 for a storage failure or labels that do not read back.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_conveyor_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_conveyor(subject: SubjectId, State(db): State<SqlitePool>, Query(query): Query<ConveyorQuery>) -> Result<Json<Conveyor>, FileHostError> {
+	let Some(station) = query.station.as_deref().and_then(Station::parse) else {
+		return Err(FileHostError::unprocessable_entity([("station", "not a station")]));
+	};
+	let mut tx = db.begin().await?;
+	let (takes, total) = voice_repo::conveyor::at_station(&mut tx, subject.as_str(), station).await.map_err(refusal)?;
+	tx.commit().await?;
+	Ok(Json(Conveyor { station, takes, total }))
+}
+
+/// `POST /voice-notes/:id/station`'s body: the move.
+#[derive(Debug, Deserialize)]
+pub struct MoveBody {
+	from: String,
+	to: String,
+	at: String,
+	labels: Option<Vec<String>>,
+	comment: Option<String>,
+	issue: Option<String>,
+}
+
+/// `POST /voice-notes/:id/station`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TakeMoved {
+	/// `moved`, or `unchanged` when the take's newest move is this one.
+	pub change: &'static str,
+	/// Where the take is now, and every move.
+	pub take: TakeStation,
+}
+
+/// What a move from a station the take is not at answers with.
+const STALE: &str = "the take is not at the station this move starts from";
+
+/// `POST /voice-notes/:id/station`, the body `{ from, to, at, labels?,
+/// comment?, issue? }`: moves the caller's Studio take `id` along the
+/// conveyor (paulgsc/some-ui epic #2872, CONVEYOR1;
+/// `voice_repo::conveyor::advance`), and answers where it is now.
+///
+/// A move names the station it starts from, and one from a station the take
+/// is not at is a `409` whose `details.station` says where it is, so a phone
+/// that missed a later move cannot skip it. A retry of the take's newest
+/// move is a `200` with `change: "unchanged"` that writes nothing. Nothing
+/// moves back to `in-the-oven`, a take reaches `picked-up` only from
+/// `ready-for-pickup` and with its `issue`, and stays there.
+///
+/// `BEGIN IMMEDIATE`, so the read that finds where the take is and the write
+/// see one snapshot.
+///
+/// # Errors
+/// 401 without a session, 403 from an untrusted origin, 422 naming `body`
+/// when it is not a move, or each refused field (`from`, `to`, `at`,
+/// `labels`, `comment`, `issue`), 404 for a take the caller's subject does
+/// not hold, 409 for a move from a station the take is not at, and 500 for
+/// a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_station_post", skip_all, fields(otel.kind = "server"))]
+pub async fn post_station(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<TakeMoved>, FileHostError> {
+	let Ok(body) = serde_json::from_slice::<MoveBody>(&body) else {
+		return Err(FileHostError::unprocessable_entity([("body", "not a move")]));
+	};
+	let asked = voice_repo::conveyor::ask(&MoveSaid {
+		from: &body.from,
+		to: &body.to,
+		at: &body.at,
+		labels: body.labels.as_deref(),
+		comment: body.comment.as_deref(),
+		issue: body.issue.as_deref(),
+	})
+	.map_err(FileHostError::unprocessable_entity)?;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let advanced = voice_repo::conveyor::advance(&mut tx, subject.as_str(), &id, &asked, &now()).await.map_err(refusal)?;
+	tx.commit().await?;
+	match advanced {
+		Advanced::Moved(take) => Ok(Json(TakeMoved { change: "moved", take })),
+		Advanced::Unchanged(take) => Ok(Json(TakeMoved { change: "unchanged", take })),
+		Advanced::Stale(at) => Err(FileHostError::ConflictNaming {
+			reason: STALE,
+			details: std::iter::once((Cow::Borrowed("station"), vec![Cow::Borrowed(at.as_str())])).collect(),
+		}),
+		Advanced::NotHeld => Err(FileHostError::NotFound),
+	}
+}
+
 /// `DELETE /voice-notes/:id`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NoteDeleted {
@@ -682,7 +816,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 9);
+		assert_eq!(module().descriptors().count(), 12);
 		// A route named under `/voice-notes/` takes that name from the notes'
 		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
 		for route in module().descriptors() {
@@ -816,6 +950,98 @@ mod tests {
 		let status = response.status();
 		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
 		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	async fn post(app: &Router, path: &str, auth: Option<&(HeaderName, String)>, body: &Value) -> (StatusCode, Value) {
+		let mut request = Request::builder().method(Method::POST).uri(path).header(CONTENT_TYPE, "application/json");
+		if let Some((name, value)) = auth {
+			request = request.header(name, value);
+		}
+		let response = app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+		let status = response.status();
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves
+	/// only from where it is, a retry changes nothing, and the station lists
+	/// follow. Another subject's take, an unknown one and a bad move are
+	/// refused and write nothing.
+	#[tokio::test]
+	async fn the_owner_moves_a_take_along_the_conveyor() {
+		const TAKE_PATH: &str = "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z";
+		const STATION: &str = "/voice-notes/t1/station";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(put(&app, TAKE_PATH, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		let moves = || async { sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM studio_take_move").fetch_one(&pool).await.unwrap() };
+
+		assert_eq!(get(&app, STATION, None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(
+			get(&app, STATION, Some(&phone)).await,
+			(StatusCode::OK, json!({ "id": "t1", "station": "in-the-oven", "labels": [], "history": [] }))
+		);
+		assert_eq!(
+			get(&app, "/voice-notes/conveyor?station=in-the-oven", Some(&phone)).await,
+			(
+				StatusCode::OK,
+				json!({ "station": "in-the-oven", "total": 1, "takes": [
+					{ "id": "t1", "ref": "ep05:s1:1", "recordedAt": "2026-11-12T18:20:00.000Z", "movedAt": null, "labels": [], "issue": null }
+				] })
+			)
+		);
+		for bad in ["/voice-notes/conveyor", "/voice-notes/conveyor?station=oven"] {
+			let (status, refused) = get(&app, bad, Some(&phone)).await;
+			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+			assert!(refused["error"]["details"]["station"].is_array(), "{refused}");
+		}
+
+		let first = json!({ "from": "in-the-oven", "to": "cooking", "at": "2026-11-13T01:00:00-08:00", "labels": ["hook"], "comment": "opener?" });
+		assert_eq!(post(&app, STATION, None, &first).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(get(&app, STATION, Some(&other)).await.0, StatusCode::NOT_FOUND, "A's take is not B's");
+		assert_eq!(post(&app, STATION, Some(&other), &first).await.0, StatusCode::NOT_FOUND);
+		assert_eq!(post(&app, "/voice-notes/t9/station", Some(&phone), &first).await.0, StatusCode::NOT_FOUND);
+		let (status, refused) = post(&app, STATION, Some(&phone), &json!({ "from": "cooking" })).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		assert!(refused["error"]["details"]["body"].is_array(), "{refused}");
+		let (status, refused) = post(&app, STATION, Some(&phone), &json!({ "from": "cooking", "to": "in-the-oven", "at": "soon" })).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+		assert!(refused["error"]["details"]["to"].is_array() && refused["error"]["details"]["at"].is_array(), "{refused}");
+		assert_eq!(moves().await, 0, "nothing refused was written");
+
+		let moved = json!({
+			"id": "t1", "station": "cooking", "labels": ["hook"],
+			"history": [{
+				"seq": 1, "from": "in-the-oven", "to": "cooking", "at": "2026-11-13T09:00:00.000Z",
+				"labels": ["hook"], "comment": "opener?", "issue": null, "storedAt": "x"
+			}]
+		});
+		let normalised = |mut body: Value| {
+			body["take"]["history"][0]["storedAt"] = json!("x");
+			body
+		};
+		let (status, body) = post(&app, STATION, Some(&phone), &first).await;
+		assert_eq!((status, normalised(body)), (StatusCode::OK, json!({ "change": "moved", "take": moved })));
+		let (status, body) = post(&app, STATION, Some(&phone), &first).await;
+		assert_eq!((status, normalised(body)), (StatusCode::OK, json!({ "change": "unchanged", "take": moved })), "a retry");
+		assert_eq!(moves().await, 1);
+
+		let stale = json!({ "from": "in-the-oven", "to": "canned", "at": "2026-11-13T10:00:00Z" });
+		let (status, refused) = post(&app, STATION, Some(&phone), &stale).await;
+		assert_eq!(status, StatusCode::CONFLICT);
+		assert_eq!(refused["error"]["details"]["station"], json!(["cooking"]), "{refused}");
+		assert_eq!(moves().await, 1);
+
+		let ready = json!({ "from": "cooking", "to": "ready-for-pickup", "at": "2026-11-13T10:00:00Z" });
+		assert_eq!(post(&app, STATION, Some(&phone), &ready).await.0, StatusCode::OK);
+		let (status, listed) = get(&app, "/voice-notes/conveyor?station=ready-for-pickup", Some(&phone)).await;
+		assert_eq!((status, listed["total"].clone()), (StatusCode::OK, json!(1)));
+		assert_eq!(listed["takes"][0]["labels"], json!(["hook"]), "labels carry forward");
+		assert_eq!(get(&app, "/voice-notes/conveyor?station=in-the-oven", Some(&phone)).await.1["total"], json!(0));
+		assert_eq!(get(&app, "/voice-notes/conveyor?station=ready-for-pickup", Some(&other)).await.1["total"], json!(0));
 	}
 
 	/// HF11 (paulgsc/some-ui#2401): the phone reads which of its takes home

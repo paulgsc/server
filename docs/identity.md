@@ -211,7 +211,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
@@ -1237,8 +1237,9 @@ nowhere is marked as such and belongs to review.
     (paulgsc/some-ui#2473). Every other kind is the work and is kept.
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
-    vectors in the meaning index (invariant 35), and its set-aside mark in
-    one transaction, and keeps a copy of its words
+    vectors in the meaning index (invariant 35), its set-aside mark and its
+    moves along the conveyor (`studio_take_move`, below) in one
+    transaction, and keeps a copy of its words
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
@@ -1253,7 +1254,23 @@ nowhere is marked as such and belongs to review.
     is a `409` that writes nothing, as is a take or an answer while its kind
     is switched off; `voice_repo::delete::delete` has no other caller. It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line. **Its audio is
+    so neither the audio nor its hash reaches a log line. **A Studio take
+    moves along a conveyor** (paulgsc/some-ui epic #2872, CONVEYOR1; the
+    owner's stations, paulgsc/some-ui#2876: `in-the-oven`, `cooking`,
+    `ready-for-pickup`, `picked-up`, `canned`), and each move is a row of
+    `studio_take_move` beside the note, never a change to it: the take's id,
+    the station it left and reached, when, the owner's labels (at most 8 of
+    32 characters) and a comment of at most 280 characters if any, and on a
+    pickup the issue it was filed as (`<owner>/<repo>#<n>`). Those labels and
+    that comment are the one free text it holds, the owner's own words about
+    their own take, never what was said in it. It is append-only (its
+    trigger aborts an `UPDATE`), written only by `POST
+    /voice-notes/:id/station` (`voice_repo::conveyor::advance`) for a
+    `studio` take the subject holds that is no idea's answer, from the
+    station the take is at, and its span skips every argument. Its rows go
+    with the account (the sweep and their own trigger) and with their take
+    when My data deletes it, whose receipt then says `conveyor history`
+    went. **Its audio is
     read back by one route, for Rust Rounds notes and Studio takes only**
     (`voice_repo::PLAYED_BACK`; the owner's D4 on paulgsc/some-ui#2237,
     2026-10-29: home gives a note's audio back to the phone, for refine cards
