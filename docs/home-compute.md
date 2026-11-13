@@ -31,9 +31,12 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    resumes from its step cache under the same id. Held by
    `render-calls.test.sh`'s pause and stop cases (L4c, #708). Seeing the
    steps that were paid twice is L7 (#712, **Planned**).
-4. **A collision never becomes a recorded result.** A verdict of time, a
-   lost runner or a hearing's deadline taken while the box was contended is
-   nobody's, and is asked again ("The contention guard", L1 #706, #822).
+4. **A collision never becomes a recorded result, within a bound.** A
+   verdict of time, a lost runner or a hearing's deadline taken while the
+   box was contended is nobody's, and is asked again, at most `NOBODYS` (3)
+   times in a row for one program or note; after that it is judged as on a
+   calm box, so a box that never calms cannot hold the queue ("The
+   contention guard", L1 #706, #822).
 5. **The caps fit home's RAM, checked on the box at deploy.** **Planned**,
    #709: home's RAM is in neither repo yet. Today the sum of every
    container's cap is not checked against anything.
