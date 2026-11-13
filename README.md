@@ -202,13 +202,14 @@ its key: nothing is retyped and there is no `.env` (#614).
     of the deployment, not a switch.
   - _Family:_ every variable of every binary's `Config`, the shared groups'
     (`app_config::CLASSES`), and every `${...}` compose reads but `make`'s and
-    the release's images; a new variable, a reclassed one, one that moves out.
+    the release's images (`release::variable` of each compose service); a new variable, a reclassed one, one that moves out.
   - _Proof:_ `app_config::schema` refuses to write a schema with a variable
     that has no class, two, or no reason (each binary's
     `the_checked_in_schema_is_this_config`, `cargo test`), so the class is in
     `infra/env/<binary>.json`. `envctl check` (`Lint`'s `Env schema`,
     `apps/envctl/src/classes.rs`) fails any variable classed policy or source,
-    any deployment `bool`, and any compose variable that
+    any deployment `bool` (for compose, which declares no kinds, any name ending
+    `_ENABLED`), and any compose variable that
     `infra/env-classes.json`'s `compose` does not class, unless `infra/env-classes.json` lists it: as moving,
     with the issue that moves it, or as a confirmed deployment switch. That
     file only shrinks: an entry that no longer holds fails until it is

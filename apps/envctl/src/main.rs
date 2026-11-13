@@ -562,6 +562,7 @@ fn check(repo: &Path, schemas: &[Schema], base_classes: Option<&Path>) -> Result
 	}
 	problems.extend(release::line_problems(&raw));
 	let compose_variables = compose::read(repo)?;
+	let images = compose::services(&raw).into_iter().map(|(service, _)| release::variable(service)).collect();
 	problems.extend(conform::problems(schemas, &compose_variables, &raw, &roles));
 	let base = base_classes
 		.map(|path| {
@@ -570,7 +571,7 @@ fn check(repo: &Path, schemas: &[Schema], base_classes: Option<&Path>) -> Result
 				.and_then(|text| classes::Exceptions::parse(&text))
 		})
 		.transpose()?;
-	problems.extend(classes::problems(schemas, &compose_variables, &classes::Exceptions::load(repo)?, base.as_ref()));
+	problems.extend(classes::problems(schemas, &compose_variables, &images, &classes::Exceptions::load(repo)?, base.as_ref()));
 	let tracked = Process::new("git").args(["ls-files", "-z"]).current_dir(repo).output().context("running git ls-files")?;
 	if !tracked.status.success() {
 		bail!("git ls-files failed: {}", String::from_utf8_lossy(&tracked.stderr).trim());

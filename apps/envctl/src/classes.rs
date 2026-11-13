@@ -18,7 +18,7 @@
 //! new policy value cannot land as env, and an old one cannot stay once its
 //! lever lands, both at the PR.
 
-use crate::{compose::ComposeVariables, preflight::FROM_MAKE, release, schema::Class, schema::Kind, schema::Schema};
+use crate::{compose::ComposeVariables, preflight::FROM_MAKE, schema::Class, schema::Kind, schema::Schema};
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::Deserialize;
@@ -116,9 +116,18 @@ impl Read<'_> {
 /// deployment `bool` not listed as a switch, every compose variable with no
 /// class, every exception that no longer holds, and, given the base branch's
 /// copy, every exception it did not have; each by app and name.
-pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables, exceptions: &Exceptions, base: Option<&Exceptions>) -> Vec<String> {
+///
+/// `images` are the release's variables, one per compose service
+/// (`release::variable`), which `release.json` sets and nothing classes.
+pub(crate) fn problems(
+	schemas: &[Schema],
+	compose_variables: &ComposeVariables,
+	images: &BTreeSet<String>,
+	exceptions: &Exceptions,
+	base: Option<&Exceptions>,
+) -> Vec<String> {
 	let mut problems = Vec::new();
-	let read = read(schemas, compose_variables, exceptions, &mut problems);
+	let read = read(schemas, compose_variables, images, exceptions, &mut problems);
 	problems.extend(read.iter().filter_map(|variable| class_problem(variable, exceptions)));
 	problems.extend(entry_problems(&read, exceptions, base));
 	problems
@@ -127,7 +136,13 @@ pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables,
 /// Every variable the schemas and compose read, but `make`'s and the
 /// release's; a compose variable with no class, or a class for one no
 /// compose file reads, goes to `problems`.
-fn read<'a>(schemas: &'a [Schema], compose_variables: &'a ComposeVariables, exceptions: &'a Exceptions, problems: &mut Vec<String>) -> Vec<Read<'a>> {
+fn read<'a>(
+	schemas: &'a [Schema],
+	compose_variables: &'a ComposeVariables,
+	images: &BTreeSet<String>,
+	exceptions: &'a Exceptions,
+	problems: &mut Vec<String>,
+) -> Vec<Read<'a>> {
 	let mut read: Vec<Read> = schemas
 		.iter()
 		.flat_map(|schema| {
@@ -140,7 +155,7 @@ fn read<'a>(schemas: &'a [Schema], compose_variables: &'a ComposeVariables, exce
 		})
 		.collect();
 	for name in compose_variables.keys() {
-		if FROM_MAKE.contains(&name.as_str()) || release::is_variable(name) {
+		if FROM_MAKE.contains(&name.as_str()) || images.contains(name) {
 			continue;
 		}
 		match exceptions.compose.iter().find(|known| &known.variable == name) {
@@ -148,7 +163,9 @@ fn read<'a>(schemas: &'a [Schema], compose_variables: &'a ComposeVariables, exce
 				app: COMPOSE_APP,
 				variable: name,
 				class: known.class,
-				switch: false,
+				// Compose's variables have no kind: a name that reads as a
+				// switch is held as one.
+				switch: name.ends_with("_ENABLED"),
 			}),
 			None => problems.push(format!("compose reads {name}, which has no class: add it to {FILE}'s compose, with why (ENV-CLASS)")),
 		}
@@ -242,6 +259,8 @@ fn entry_problems(read: &[Read], exceptions: &Exceptions, base: Option<&Exceptio
 }
 
 #[cfg(test)]
+// `${...}` is compose's syntax under test here, not a format argument.
+#[allow(clippy::literal_string_with_formatting_args)]
 mod tests {
 	use super::{problems, Exceptions};
 	use crate::{
@@ -251,7 +270,11 @@ mod tests {
 			Class, Kind, Variable,
 		},
 	};
-	use std::path::Path;
+	use std::{collections::BTreeSet, path::Path};
+
+	fn images() -> BTreeSet<String> {
+		BTreeSet::from(["IMAGE_X".to_owned()])
+	}
 
 	fn classed(name: &str, kind: Kind, class: Class) -> Variable {
 		Variable { class, ..var(name, kind) }
@@ -274,7 +297,7 @@ mod tests {
 			],
 		);
 		assert_eq!(
-			problems(&[probe], &variables(&[]), &exceptions(NONE), None),
+			problems(&[probe], &variables(&[]), &BTreeSet::new(), &exceptions(NONE), None),
 			[
 				"probe LIMIT is classed policy, and the environment holds deployment constants only: make it a lever (file_host's settings) (ENV-CLASS, README.md, \"Configuration\")",
 				"probe TICK is classed source, and the environment holds deployment constants only: make it a const (ENV-CLASS, README.md, \"Configuration\")",
@@ -286,15 +309,15 @@ mod tests {
 	fn a_moving_variable_waits_on_its_issue_and_its_entry_goes_when_it_moves() {
 		let listed = exceptions(r#"{"compose": [], "moving": [{"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "o/r#1"}], "switches": []}"#);
 		let reading = schema("probe", vec![classed("LIMIT", Kind::U32, Class::Policy)]);
-		assert!(problems(&[reading], &variables(&[]), &listed, None).is_empty());
+		assert!(problems(&[reading], &variables(&[]), &BTreeSet::new(), &listed, None).is_empty());
 		let moved = schema("probe", vec![]);
 		assert_eq!(
-			problems(&[moved], &variables(&[]), &listed, None),
+			problems(&[moved], &variables(&[]), &BTreeSet::new(), &listed, None),
 			["infra/env-classes.json lists probe LIMIT as moving, and it is no longer read or no longer classed policy: drop the entry"]
 		);
 		let reclassed = schema("probe", vec![classed("LIMIT", Kind::U32, Class::Source)]);
 		assert_eq!(
-			problems(&[reclassed], &variables(&[]), &listed, None),
+			problems(&[reclassed], &variables(&[]), &BTreeSet::new(), &listed, None),
 			["infra/env-classes.json lists probe LIMIT as moving policy, and it is classed source"]
 		);
 	}
@@ -303,13 +326,13 @@ mod tests {
 	fn a_deployment_bool_is_a_switch_the_owner_confirmed() {
 		let probe = schema("probe", vec![classed("ON", Kind::Bool, Class::Deployment)]);
 		assert_eq!(
-			problems(std::slice::from_ref(&probe), &variables(&[]), &exceptions(NONE), None),
+			problems(std::slice::from_ref(&probe), &variables(&[]), &BTreeSet::new(), &exceptions(NONE), None),
 			["probe ON is a bool classed deployment: a switch is runtime policy unless the owner confirms it a fact of the deployment (infra/env-classes.json's switches)"]
 		);
 		let confirmed = exceptions(r#"{"compose": [], "moving": [], "switches": [{"app": "probe", "variable": "ON", "issue": "o/r#2"}]}"#);
-		assert!(problems(&[probe], &variables(&[]), &confirmed, None).is_empty());
+		assert!(problems(&[probe], &variables(&[]), &BTreeSet::new(), &confirmed, None).is_empty());
 		let gone = schema("probe", vec![classed("ON", Kind::Bool, Class::Policy)]);
-		let found = problems(&[gone], &variables(&[]), &confirmed, None);
+		let found = problems(&[gone], &variables(&[]), &BTreeSet::new(), &confirmed, None);
 		assert!(found.iter().any(|problem| problem.contains("no longer a bool classed deployment")), "{found:?}");
 	}
 
@@ -321,7 +344,7 @@ mod tests {
 			r#"{"compose": [], "moving": [{"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "o/r#1"}, {"app": "probe", "variable": "ZONE", "class": "policy", "issue": "o/r#3"}], "switches": []}"#,
 		);
 		assert_eq!(
-			problems(&[probe], &variables(&[]), &head, Some(&base)),
+			problems(&[probe], &variables(&[]), &BTreeSet::new(), &head, Some(&base)),
 			["infra/env-classes.json lists probe ZONE, which the base branch's does not: the exceptions only shrink, so a new variable is a deployment constant or is not env"],
 			"a reclassed entry may stay; a new one may not"
 		);
@@ -334,7 +357,7 @@ mod tests {
 			r#"{"compose": [], "moving": [{"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "soon"}, {"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "o/r#1"}], "switches": []}"#,
 		);
 		assert_eq!(
-			problems(&[probe], &variables(&[]), &listed, None),
+			problems(&[probe], &variables(&[]), &BTreeSet::new(), &listed, None),
 			[
 				"infra/env-classes.json's probe LIMIT names no issue as owner/repo#number",
 				"infra/env-classes.json lists probe LIMIT twice"
@@ -352,7 +375,7 @@ mod tests {
 			r#"{"compose": [{"variable": "STORAGE", "class": "deployment", "why": "A path."}, {"variable": "GONE", "class": "deployment", "why": "Was read."}, {"variable": "NEW_PATH", "class": "policy", "why": "x"}], "moving": [], "switches": []}"#,
 		);
 		assert_eq!(
-			problems(&[], &read, &classed, None),
+			problems(&[], &read, &images(), &classed, None),
 			[
 				"infra/env-classes.json classes compose's GONE, which no compose file reads: drop it",
 				"compose NEW_PATH is classed policy, and the environment holds deployment constants only: make it a lever (file_host's settings) (ENV-CLASS, README.md, \"Configuration\")",
@@ -360,10 +383,29 @@ mod tests {
 			"make's REPO_ROOT and the release's IMAGE_X need none"
 		);
 		assert_eq!(
-			problems(&[], &read, &exceptions(NONE), None),
+			problems(&[], &read, &images(), &exceptions(NONE), None),
 			[
 				"compose reads STORAGE, which has no class: add it to infra/env-classes.json's compose, with why (ENV-CLASS)",
 				"compose reads NEW_PATH, which has no class: add it to infra/env-classes.json's compose, with why (ENV-CLASS)",
+			]
+		);
+	}
+
+	/// The review of #836: compose's variables have no kind, so a name that
+	/// reads as a switch is held to the bool guard, and only the release's
+	/// own `IMAGE_*` go unclassed.
+	#[test]
+	fn a_compose_switch_and_a_stray_image_variable_are_held() {
+		let read = variables(&[(
+			"a.yml".to_owned(),
+			"    environment:\n      - X=${FEED_ENABLED:-false}\n      - Q=${IMAGE_QUALITY:-hi}\n".to_owned(),
+		)]);
+		let classed = exceptions(r#"{"compose": [{"variable": "FEED_ENABLED", "class": "deployment", "why": "x"}], "moving": [], "switches": []}"#);
+		assert_eq!(
+			problems(&[], &read, &images(), &classed, None),
+			[
+				"compose reads IMAGE_QUALITY, which has no class: add it to infra/env-classes.json's compose, with why (ENV-CLASS)",
+				"compose FEED_ENABLED is a bool classed deployment: a switch is runtime policy unless the owner confirms it a fact of the deployment (infra/env-classes.json's switches)",
 			]
 		);
 	}
@@ -376,7 +418,10 @@ mod tests {
 		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 		let schemas = crate::schema::load(&repo.join("infra/env")).unwrap();
 		let compose_variables = crate::compose::read(&repo).unwrap();
-		let found = problems(&schemas, &compose_variables, &Exceptions::load(&repo).unwrap(), None);
+		// The release names every service that starts from an image.
+		let release = crate::release::read(&repo, "home").unwrap().unwrap();
+		let images = release.variables().into_keys().collect();
+		let found = problems(&schemas, &compose_variables, &images, &Exceptions::load(&repo).unwrap(), None);
 		assert!(found.is_empty(), "{found:#?}");
 	}
 }
