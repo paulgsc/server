@@ -25,7 +25,8 @@
 //!   the box's CPU was contended is kept as nothing, so it never uses up one
 //!   of the note's [`ATTEMPTS`]; the pass stops, and the next hears the note
 //!   again. One note is excused at most [`crate::contention::NOBODYS`] times in a
-//!   row, then kept as it ended.
+//!   row, then kept as it ended, and the pass stops there too, so the next
+//!   pass starts with that note and no other note's streak is replaced.
 
 use super::engine::{Cancelled, Hear, Heard};
 use crate::auth::DeletionLock;
@@ -146,13 +147,21 @@ pub async fn run_once_telling<H: Hear>(
 		let took = started.elapsed();
 		let seen = window.close(guard.gauge.as_ref());
 		pass.unreadable += usize::from(seen.unreadable());
+		// A deadline judged anyway still leaves its note waiting (it has
+		// attempts left), and the next pass hears it first: going on to
+		// another note now would start that one's streak, which the older
+		// note's next excuse would then replace. So the pass stops after it.
+		let mut judged_anyway = false;
 		if matches!(attempted.outcome, Outcome::Deadline) && seen.cpu_contended() {
 			match guard.streak.excuse((note.subject.clone(), note.note_id.clone())) {
 				Excuse::Nobodys => {
 					pass.excused += 1;
 					break;
 				}
-				Excuse::JudgedAnyway => pass.judged_anyway += 1,
+				Excuse::JudgedAnyway => {
+					pass.judged_anyway += 1;
+					judged_anyway = true;
+				}
 			}
 		}
 		let kind = attempted.outcome.kind();
@@ -173,6 +182,9 @@ pub async fn run_once_telling<H: Hear>(
 		}
 		if indexed == Indexed::Kept {
 			pass.indexed += 1;
+		}
+		if judged_anyway {
+			break;
 		}
 	}
 	Ok(pass)
@@ -367,6 +379,42 @@ mod tests {
 		}
 		let done = guarded(&pool, &fake, &mut guard, &cancel).await;
 		assert_eq!((done.excused, done.judged_anyway, done.kept), (0, 1, vec!["deadline"]), "judged anyway");
+	}
+
+	/// Two notes that keep reaching their deadlines on a box that stays
+	/// busy. A pass that judges one anyway stops there, so every pass hears
+	/// one note: the oldest still waiting, until its attempts are used up,
+	/// and only then the next. No run of excuses between two kept attempts
+	/// is longer than `NOBODYS`, so neither note's streak is replaced by the
+	/// other's (paulgsc/server#822, review).
+	#[tokio::test]
+	async fn a_pass_stops_after_a_deadline_judged_anyway() {
+		let pool = pool().await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"slow").await;
+		note(&pool, A, "later", "2026-10-25T02:00:00.000Z", b"slow").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let (mut guard, _) = fake::guard(State::Busy);
+		let mut excused_in_a_row = 0;
+		let mut kept = 0;
+		while kept < 2 * ATTEMPTS {
+			let before = fake.heard().len();
+			let done = guarded(&pool, &fake, &mut guard, &cancel).await;
+			assert_eq!(fake.heard().len() - before, 1, "every pass hears one note: {done:?}");
+			if done.judged_anyway == 1 {
+				assert_eq!(done.kept, ["deadline"]);
+				excused_in_a_row = 0;
+				kept += 1;
+			} else {
+				assert_eq!((done.excused, done.kept.len()), (1, 0));
+				excused_in_a_row += 1;
+			}
+			assert!(excused_in_a_row <= NOBODYS, "{excused_in_a_row} excuses in a row");
+			let older = rows(&pool).await.iter().filter(|row| row.1 == "older").count();
+			let later = rows(&pool).await.iter().filter(|row| row.1 == "later").count();
+			assert!(later == 0 || older == usize::try_from(ATTEMPTS).unwrap(), "the later note waits until the older is done");
+		}
+		assert!(guarded(&pool, &fake, &mut guard, &cancel).await.kept.is_empty(), "both used up their attempts");
 	}
 
 	async fn guarded(pool: &SqlitePool, fake: &Arc<Fake>, guard: &mut Guard<(String, String)>, cancel: &CancellationToken) -> Pass {
