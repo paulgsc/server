@@ -248,6 +248,26 @@ async fn a_seq_never_falls_below_what_the_phone_saw() {
 }
 
 #[tokio::test]
+async fn a_home_that_follows_no_games_offers_nothing_it_kept_before() {
+	let (early, early_at) = live_after(12);
+	let home = Home::new(early_at + TimeDelta::seconds(5)).await;
+	keep(&home.db, Fetched::Scoreboard, &board(), early_at - TimeDelta::minutes(30)).await;
+	keep(&home.db, Fetched::Summary(GAME), &early, early_at + TimeDelta::seconds(5)).await;
+	let Ok(wire::Inbound::Hello(said)) = wire::read(&hello(None).to_string()) else {
+		panic!()
+	};
+	let state = offer::state(&home.db, &said, early_at + TimeDelta::seconds(5), false).await.unwrap();
+	assert!(!state.following);
+	assert!(state.games.is_empty() && state.offer.is_none(), "the feed is off: what it kept before is stale");
+}
+
+#[test]
+fn a_hello_leaves_room_for_a_safe_next_seq() {
+	assert!(wire::read(&hello(Some(wire::MAX_SAFE_INTEGER - 1)).to_string()).is_ok());
+	assert!(wire::read(&hello(Some(wire::MAX_SAFE_INTEGER)).to_string()).is_err(), "no safe seq comes after it");
+}
+
+#[tokio::test]
 async fn a_frame_home_cannot_read_closes_the_socket_saying_why() {
 	let home = Home::new(at("2026-10-23T00:20:00Z")).await;
 	let mut phone = Phone::open(&home.live, &home.db, &home.session);

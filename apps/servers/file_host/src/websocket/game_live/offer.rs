@@ -22,9 +22,20 @@ pub const TEAM: &str = "SF";
 /// only as far as `now` (SE2). A game the scoreboard names without both teams
 /// and a kickoff cannot be offered, so it is not listed.
 ///
+/// With the feed off (`following` false) it is empty, whatever was kept
+/// before.
+///
 /// # Errors
 /// Any storage failure.
 pub async fn state(db: &SqlitePool, hello: &Hello, now: DateTime<Utc>, following: bool) -> Result<State, sqlx::Error> {
+	// With the feed off, what it kept before is stale: offer nothing from it.
+	if !following {
+		return Ok(State {
+			following,
+			games: Vec::new(),
+			offer: None,
+		});
+	}
 	let as_of = now.to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut conn = db.acquire().await?;
 	let week = game_feed_repo::week(&mut conn, &as_of).await?.unwrap_or_default();
