@@ -189,7 +189,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"voice_note",
-		"the owner's voice notes sent home by the phone (paulgsc/server#460), game bites, Studio takes, soundbites, grammar-lens takes and LeetType spoken answers included, each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
+		"the owner's voice notes sent home by the phone (paulgsc/server#460), game bites, Studio takes, soundbites, grammar-lens takes, LeetType spoken answers, Rust Rounds notes and interview takes included, each described: what it was said for and which one, when it was recorded and reached home, its container, size and hash; see docs/identity.md invariant 23",
 	),
 	(
 		"voice_note_audio",

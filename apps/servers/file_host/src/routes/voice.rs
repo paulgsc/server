@@ -18,8 +18,9 @@
 //!                                      keeps it (idempotent, the first
 //!                                      mark stands)
 //! GET /voice-notes/:id/audio          → { id, contentType, sha256, audio }:
-//!                                      a Rust Rounds note's or a Studio
-//!                                      take's audio as base64, to a paired
+//!                                      a Rust Rounds note's, a Studio
+//!                                      take's or an interview take's audio
+//!                                      as base64, to a paired
 //!                                      phone, with its SHA-256 as the ETag
 //!                                      (`304` on `If-None-Match`), or a
 //!                                      JSON 404
