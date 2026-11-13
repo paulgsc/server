@@ -34,6 +34,29 @@ pub(crate) struct Variable {
 	pub(crate) help: String,
 	pub(crate) required_when: Option<Condition>,
 	pub(crate) bounds: Option<Bounds>,
+	/// What kind of value it is (ENV-CLASS, #617): a schema without one does
+	/// not load, and [`crate::classes`] fails any but a deployment constant.
+	pub(crate) class: Class,
+	pub(crate) why: String,
+}
+
+/// `app_config::schema::Class`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Class {
+	Deployment,
+	Policy,
+	Source,
+}
+
+impl Class {
+	pub(crate) const fn name(self) -> &'static str {
+		match self {
+			Self::Deployment => "deployment",
+			Self::Policy => "policy",
+			Self::Source => "source",
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -94,7 +117,7 @@ pub(crate) fn load(directory: &Path) -> Result<Vec<Schema>> {
 #[cfg(test)]
 pub(crate) mod fixture {
 	//! Schemas for the other modules' tests.
-	use super::{Bounds, Condition, Kind, Schema, Variable};
+	use super::{Bounds, Class, Condition, Kind, Schema, Variable};
 
 	pub(crate) fn var(name: &str, kind: Kind) -> Variable {
 		Variable {
@@ -109,6 +132,8 @@ pub(crate) mod fixture {
 			help: format!("{name}'s help."),
 			required_when: None,
 			bounds: None,
+			class: Class::Deployment,
+			why: format!("{name}'s reason."),
 		}
 	}
 

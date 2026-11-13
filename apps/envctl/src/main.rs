@@ -14,6 +14,7 @@
 #![allow(clippy::disallowed_macros)]
 
 mod caps;
+mod classes;
 mod compose;
 mod conform;
 mod deliver;
@@ -102,8 +103,14 @@ enum Command {
 		role: String,
 	},
 	/// Without a key: each labelled compose service reads only its own
-	/// decrypted file, and every file under deploy/ is encrypted.
-	Check,
+	/// decrypted file, every file under deploy/ is encrypted, and every
+	/// variable is a deployment constant or on its way out (ENV-CLASS).
+	Check {
+		/// The base branch's `infra/env-classes.json`, which the checkout's
+		/// may not outgrow (CI passes it).
+		#[arg(long)]
+		base_classes: Option<PathBuf>,
+	},
 	/// Write nix/modules/generated/*.nix, or with --check fail when one
 	/// differs (#408).
 	Nix {
@@ -431,7 +438,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			print!("{}", preflight::render_list(&schemas, &compose::read(&repo)?, &stated));
 			Ok(ExitCode::SUCCESS)
 		}
-		Command::Check => check(&repo, &schemas),
+		Command::Check { base_classes } => check(&repo, &schemas, base_classes.as_deref()),
 		Command::Nix { check } => nix(&repo, &schemas, check),
 		Command::Prune { role, app, page, names } => {
 			let Some(schema) = schemas.iter().find(|schema| schema.binary == app) else {
@@ -506,7 +513,7 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 /// Conformance without a key (ENV3, #616): every problem in the deployment
 /// files, compose's wiring, the binaries' schemas and the tracked files, by
 /// name. Nothing is decrypted, and no value is read.
-fn check(repo: &Path, schemas: &[Schema]) -> Result<ExitCode> {
+fn check(repo: &Path, schemas: &[Schema], base_classes: Option<&Path>) -> Result<ExitCode> {
 	let raw = compose::config(repo).context("docker compose config failed, so no service was checked")?;
 	let mut roles = Vec::new();
 	let mut problems = Vec::new();
@@ -554,7 +561,17 @@ fn check(repo: &Path, schemas: &[Schema]) -> Result<ExitCode> {
 		roles.push(conform::Role { name: role, files });
 	}
 	problems.extend(release::line_problems(&raw));
-	problems.extend(conform::problems(schemas, &compose::read(repo)?, &raw, &roles));
+	let compose_variables = compose::read(repo)?;
+	let images = compose::services(&raw).into_iter().map(|(service, _)| release::variable(service)).collect();
+	problems.extend(conform::problems(schemas, &compose_variables, &raw, &roles));
+	let base = base_classes
+		.map(|path| {
+			std::fs::read_to_string(path)
+				.with_context(|| format!("reading {}", path.display()))
+				.and_then(|text| classes::Exceptions::parse(&text))
+		})
+		.transpose()?;
+	problems.extend(classes::problems(schemas, &compose_variables, &images, &classes::Exceptions::load(repo)?, base.as_ref()));
 	let tracked = Process::new("git").args(["ls-files", "-z"]).current_dir(repo).output().context("running git ls-files")?;
 	if !tracked.status.success() {
 		bail!("git ls-files failed: {}", String::from_utf8_lossy(&tracked.stderr).trim());
@@ -585,7 +602,7 @@ fn check(repo: &Path, schemas: &[Schema]) -> Result<ExitCode> {
 		println!("{problem}");
 	}
 	if problems.is_empty() {
-		println!("every deployment file is sops-encrypted and names only what its binary or compose reads; each labelled service reads only its own file; every configured binary has its schema; no plain-text env file is tracked.");
+		println!("every deployment file is sops-encrypted and names only what its binary or compose reads; each labelled service reads only its own file; every configured binary has its schema; no plain-text env file is tracked; every variable is a deployment constant or on its way out.");
 	} else {
 		println!("{} problem(s), named by variable and file only (ENV3, #616).", problems.len());
 	}
