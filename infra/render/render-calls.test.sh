@@ -418,7 +418,7 @@ gone() {
 gone_or_say() {
   within gone "$1" && return 0
   echo "  still there, pid $1: $(cat "/proc/$1/stat" 2> /dev/null || echo gone by now)"
-  echo "  its command line: $(tr '\0' ' ' < "/proc/$1/cmdline" 2> /dev/null)"
+  echo "  its command line: $(tr '\0' ' ' 2> /dev/null < "/proc/$1/cmdline")"
   echo "  the fake names as its child now: $(cat "$FAKE/child" 2> /dev/null)"
   return 1
 }
