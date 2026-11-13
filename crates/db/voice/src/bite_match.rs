@@ -72,6 +72,21 @@ pub async fn bites_of_game(conn: &mut SqliteConnection, game: &str) -> Result<Ve
 		.collect()
 }
 
+/// How many bites were said about `game`: what the reconciler's worker
+/// compares to see whether a finished game has new ones.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn bites_in_game(conn: &mut SqliteConnection, game: &str) -> Result<i64, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"SELECT COUNT(*) AS "n!: i64" FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
+		   WHERE n.of_kind = 'game' AND n.of_ref = ?1"#,
+		game
+	)
+	.fetch_one(&mut *conn)
+	.await
+}
+
 /// How a bite was matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {

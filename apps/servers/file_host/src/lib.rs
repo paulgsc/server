@@ -299,6 +299,8 @@ impl AppState {
 ///   or on by the operator's lever;
 /// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
 ///   which games are live;
+/// - the bite reconciler (`reconcile`), every ten minutes, matching the
+///   game bites of each game gone final to their plays; on with the feed;
 /// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`;
 ///   always on, its metrics (`metrics::call_weeks`) also saying what the
 ///   render worker has made of each week;
@@ -313,6 +315,7 @@ pub fn start_polls(state: &AppState) {
 	transcribe::start(state);
 	rust_rounds::start(state);
 	game_feed::start(state);
+	reconcile::start(state);
 	call_weeks::start(state);
 	pd_fills::start(state);
 	previews::start(state);

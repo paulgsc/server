@@ -205,3 +205,32 @@ only. Its messages are `websocket/game_live/wire.rs` (version 1), and
   another game is Playoff Delta's reading, which home does not make per week
   yet; any other game is read as one that cannot move SF.
 
+
+## The bite reconciler (GWB7)
+
+`src/reconcile.rs` (paulgsc/some-ui#2081) matches each game bite to the play it
+was about. It is **its own task**, not part of the feed's worker, so GF4 holds
+as written: the feed reads and writes no person's data, and the reconciler,
+which reads bites and writes `bite_match`, is a separate worker (call C160,
+2026-11-13, the owner's "Let's just go with the recommended").
+
+- **When.** On with the feed. Every `reconcile::TICK` (10 minutes) it reads
+  the newest scoreboard kept, and reconciles each game whose newest summary
+  is final, unless it already did with as many bites as the game has now. A
+  bite said after the final is matched at the next tick. GWB8 calls
+  `reconcile::reconcile` itself before the bundle.
+- **How.** A bite's time on home's clock is its `started_at` plus its
+  `clock_offset_ms`. `scenario_engine::plays_that_were` gives every play the
+  bite's scenario's rule says was one (the rule "just happened" uses, SE3,
+  replayed over the whole log), and the match is the nearest at or before
+  that time, within `reconcile::WINDOW` (90 s, the broadcast's delay plus
+  the time to start talking, to be tuned on real Sundays). Otherwise the bite
+  is kept and marked: `unmatched`, `not-a-play` (pregame, the two-minute
+  drill, the final, the owner's own) or `no-scenario` (said first, not
+  mapped).
+- **A said-first proposal** (`reconcile::propose`, for the shot writer,
+  GWB9) is a `bite_mapping` row only if the scenario is in home's set and
+  `scenario_engine::could_be` at the bite's time holds it; a refused one adds
+  nothing, so the bite stays unmapped, never mislabelled.
+- **Append-only.** A pass adds a `bite_match` row only for a bite whose match
+  changed; a reader takes a bite's newest. Logs carry counts only.

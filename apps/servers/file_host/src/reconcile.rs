@@ -24,11 +24,13 @@
 //! Logs carry counts and kinds only: never a bite's strip, a play's text or
 //! whose bite it was (docs/identity.md).
 
-use crate::websocket::game_live::offer::game_at;
+use crate::{websocket::game_live::offer::game_at, AppState};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use game_scenarios::{Scenario, CATALOG_VERSION};
 use scenario_engine::{about_a_play, could_be, plays_that_were, Was, Watching, ENGINE_VERSION};
 use sqlx::SqlitePool;
+use std::{collections::HashMap, time::Duration};
+use tracing::{error, info};
 use voice_repo::{
 	bite_match::{self, GameBite, Mapping, Match, Method},
 	VoiceError,
@@ -48,6 +50,90 @@ pub struct Reconciled {
 	pub matched: usize,
 	/// Rows added: bites whose match changed or was new.
 	pub added: usize,
+}
+
+/// How often the worker looks for games gone final. A bite is matched
+/// within this of its game's final, or of reaching home after it.
+pub const TICK: Duration = Duration::from_secs(600);
+
+/// Start the worker, when the deployment follows games: with the feed off no
+/// game goes final at home, and nothing is matched (GWB8 still calls
+/// [`reconcile`] itself).
+///
+/// The worker is its own task, apart from the game feed's, so the feed still
+/// reads and writes no person's data (`docs/game-feed.md`, GF4; call C160 on
+/// paulgsc/server's GWB7 PR).
+pub fn start(state: &AppState) {
+	if state.game_feed.is_none() {
+		info!("the game feed is not enabled; the bite reconciler does not run");
+		return;
+	}
+	let cancel = state.core.cancel_token.clone();
+	let db = state.core.shared_db.clone();
+	tokio::spawn(async move {
+		info!(tick_secs = TICK.as_secs(), "bite reconciler started");
+		let mut done = HashMap::new();
+		let mut ticker = tokio::time::interval(TICK);
+		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+		loop {
+			tokio::select! {
+				() = cancel.cancelled() => {
+					info!("bite reconciler cancelled");
+					return;
+				}
+				_ = ticker.tick() => match pass(&db, &mut done, chrono::Utc::now()).await {
+					Ok(Pass { games: 0, .. }) => {}
+					Ok(passed) => info!(games = passed.games, bites = passed.bites, matched = passed.matched, added = passed.added, "bite reconciler pass"),
+					Err(_) => error!(error = "storage", "bite reconciler pass failed"),
+				},
+			}
+		}
+	});
+}
+
+/// What one worker pass did, in counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Pass {
+	/// Games reconciled.
+	pub games: usize,
+	pub bites: usize,
+	pub matched: usize,
+	pub added: usize,
+}
+
+/// One worker pass: each game of the newest week home kept whose newest
+/// summary says it is final is reconciled, unless it was already, with as
+/// many bites as it has now. `done` holds each game's bite count at its last
+/// reconcile; a restart reconciles again, which adds nothing unchanged.
+///
+/// # Errors
+/// Any storage failure; games reconciled before it keep their rows.
+pub async fn pass(db: &SqlitePool, done: &mut HashMap<String, i64>, now: DateTime<Utc>) -> Result<Pass, VoiceError> {
+	let as_of = now.to_rfc3339_opts(SecondsFormat::Millis, true);
+	let mut due = Vec::new();
+	{
+		let mut conn = db.acquire().await?;
+		let week = game_feed_repo::week(&mut conn, &as_of).await?.unwrap_or_default();
+		for game in week.games {
+			if !game_feed_repo::holds_final(&mut conn, &game.id).await? {
+				continue;
+			}
+			let bites = bite_match::bites_in_game(&mut conn, &game.id).await?;
+			if done.get(&game.id) != Some(&bites) {
+				due.push((game.id, bites));
+			}
+		}
+	}
+	let mut passed = Pass::default();
+	for (game, bites) in due {
+		let reconciled = reconcile(db, &game, now).await?;
+		passed.games += 1;
+		passed.bites += reconciled.bites;
+		passed.matched += reconciled.matched;
+		passed.added += reconciled.added;
+		done.insert(game, bites);
+	}
+	Ok(passed)
 }
 
 /// When `bite` started, on home's clock: the phone's time plus home's clock
@@ -193,13 +279,14 @@ pub async fn propose(db: &SqlitePool, game: &str, subject: &str, note_id: &str, 
 
 #[cfg(test)]
 mod tests {
-	use super::{nearest, propose, reconcile, Proposal, Reconciled, WINDOW};
+	use super::{nearest, pass, propose, reconcile, Pass, Proposal, Reconciled, WINDOW};
 	use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 	use game_feed_repo::{Fetched, Response};
 	use nfl_feed::summary::Play;
 	use scenario_engine::Was;
 	use serde_json::{json, Value};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+	use std::collections::HashMap;
 	use voice_repo::bite_match::{newest_match, Method};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -391,5 +478,46 @@ mod tests {
 		assert_eq!(mappings().await.unwrap(), 1);
 		reconcile(&db, GAME, now).await.unwrap();
 		assert_eq!(matched(&db, "later").await, (Method::Nearest, Some(play.id.clone()), Some(20)), "matched under its mapping");
+	}
+
+	#[tokio::test]
+	async fn the_worker_reconciles_a_final_game_again_only_when_it_has_new_bites() {
+		let db = pool().await;
+		let plays = plays();
+		let play = third_long(&plays);
+		let t = wall(&play);
+		keep(&db, Fetched::Scoreboard, &board(), at("2026-10-22T23:00:00Z")).await;
+		keep(&db, Fetched::Summary(GAME), &live_through(&play), t + TimeDelta::seconds(5)).await;
+		bite(&db, "first", Some("in.third-long"), "offered", t + TimeDelta::seconds(30), Some(0)).await;
+		let mut done = HashMap::new();
+		assert_eq!(pass(&db, &mut done, t + TimeDelta::minutes(1)).await.unwrap(), Pass::default(), "not final yet");
+
+		let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+		keep(&db, Fetched::Summary(GAME), FINAL, end).await;
+		let first = pass(&db, &mut done, end).await.unwrap();
+		assert_eq!(
+			first,
+			Pass {
+				games: 1,
+				bites: 1,
+				matched: 1,
+				added: 1
+			}
+		);
+		assert_eq!(pass(&db, &mut done, end + TimeDelta::minutes(10)).await.unwrap(), Pass::default(), "nothing new");
+
+		bite(&db, "after", Some("post.result"), "offered", end + TimeDelta::minutes(2), None).await;
+		let again = pass(&db, &mut done, end + TimeDelta::minutes(20)).await.unwrap();
+		assert_eq!(
+			again,
+			Pass {
+				games: 1,
+				bites: 2,
+				matched: 1,
+				added: 1
+			},
+			"only the new bite adds a row"
+		);
+		assert_eq!(matched(&db, "after").await, (Method::NotAPlay, None, None));
 	}
 }
