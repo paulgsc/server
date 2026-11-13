@@ -43,7 +43,9 @@
 //!                                      best first, or else those whose
 //!                                      words hold every term, `by` saying
 //!                                      which, to a paired phone
-//!                                      (paulgsc/some-ui#2590, ST32)
+//!                                      (paulgsc/some-ui#2590, ST32), each
+//!                                      take saying its conveyor `station`
+//!                                      and `stationAt` (null for an answer)
 //! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
 //!                                      notes of each kind home keeps,
 //!                                      their bytes, how many were set

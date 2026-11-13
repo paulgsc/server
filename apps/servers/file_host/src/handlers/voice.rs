@@ -1042,6 +1042,12 @@ mod tests {
 		assert_eq!(listed["takes"][0]["labels"], json!(["hook"]), "labels carry forward");
 		assert_eq!(get(&app, "/voice-notes/conveyor?station=in-the-oven", Some(&phone)).await.1["total"], json!(0));
 		assert_eq!(get(&app, "/voice-notes/conveyor?station=ready-for-pickup", Some(&other)).await.1["total"], json!(0));
+		let library = get(&app, "/voice-notes/takes", Some(&phone)).await.1;
+		assert_eq!(
+			(library["takes"][0]["station"].clone(), library["takes"][0]["stationAt"].clone()),
+			(json!("ready-for-pickup"), json!("2026-11-13T10:00:00.000Z")),
+			"the take library says where each take is"
+		);
 	}
 
 	/// HF11 (paulgsc/some-ui#2401): the phone reads which of its takes home
@@ -1358,10 +1364,11 @@ mod tests {
 			json!({
 				"takes": [
 					{ "id": "t2", "ref": "library:t2", "recordedAt": "2026-11-04T18:21:00.000Z", "storedAt": all["takes"][0]["storedAt"],
-						"size": TAKE.len(), "setAsideAt": null, "heard": null },
+						"size": TAKE.len(), "setAsideAt": null, "heard": null, "station": "in-the-oven", "stationAt": null },
 					{ "id": "t1", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
 						"size": TAKE.len(), "setAsideAt": null,
-						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" } }
+						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" },
+						"station": "in-the-oven", "stationAt": null }
 				],
 				"total": 2, "matched": null, "by": "newest"
 			}),
@@ -1441,7 +1448,11 @@ mod tests {
 		);
 		let mut keys: Vec<&String> = found["takes"][0].as_object().unwrap().keys().collect();
 		keys.sort();
-		assert_eq!(keys, ["heard", "id", "recordedAt", "ref", "setAsideAt", "size", "storedAt"], "no vector");
+		assert_eq!(
+			keys,
+			["heard", "id", "recordedAt", "ref", "setAsideAt", "size", "station", "stationAt", "storedAt"],
+			"no vector"
+		);
 		let (_, listed) = get(&app, "/voice-notes/takes", Some(&phone)).await;
 		assert_eq!((&listed["by"], &listed["total"]), (&json!("newest"), &json!(2)));
 	}
