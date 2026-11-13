@@ -152,9 +152,12 @@ groups:
       - alert: GameFeedStale
         # GA4: the feed wakes every 5 s whether or not a game is due, so two
         # minutes without a wake is a task that stopped, not a quiet week.
+        # Not gated on game_feed_enabled: the worker always runs and stamps
+        # every wake, paused or not, and only a live worker writes that gauge,
+        # so a worker that died while paused would leave it at 0 and hide its
+        # own death from the alert.
         expr: |
           (time() - max(game_feed_last_attempt_timestamp_seconds)) > 120
-          and on() max(game_feed_enabled) == 1
         labels:
           objective: GA4
           says: "The game feed has not woken for two minutes."

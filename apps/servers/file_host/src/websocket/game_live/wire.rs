@@ -296,7 +296,8 @@ impl Offer {
 /// What home has for the phone now, before it is numbered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
-	/// Whether home follows games at all (`GAME_FEED_ENABLED`).
+	/// Whether home follows games at all: the operator's switch
+	/// (`settings::GameFeed`, `PUT /api/v1/admin/settings/game-feed`).
 	pub following: bool,
 	/// The week's games, as the newest scoreboard home kept says.
 	pub games: Vec<Game>,

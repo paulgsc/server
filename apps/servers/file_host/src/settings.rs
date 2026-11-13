@@ -60,6 +60,33 @@ impl Namespace for RustRounds {
 	const NAME: &'static str = "rust-rounds";
 }
 
+/// Following the NFL games of the week (paulgsc/some-ui#2076, GWB2).
+///
+/// On, the game feed (`game_feed`) fetches what its schedule says is due
+/// each pass, and the phone's live game day (`/ws/game-week`) offers what it
+/// kept; paused, the feed fetches nothing and keeps what it has, and every
+/// offer says `following: false` with no games. **On by default**: the owner
+/// wants the games followed unless paused, so with nothing set, home follows.
+///
+/// It replaced `GAME_FEED_ENABLED` (owner, 2026-11-13): whether home follows
+/// the games is policy, not a deployment constant, as `RUST_ROUNDS_ENABLED`
+/// was before it ([`RustRounds`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GameFeed {
+	pub following: bool,
+}
+
+impl Default for GameFeed {
+	fn default() -> Self {
+		Self { following: true }
+	}
+}
+
+impl Namespace for GameFeed {
+	const NAME: &'static str = "game-feed";
+}
+
 /// A namespace the routes serve, erased to JSON.
 pub struct Entry {
 	pub name: &'static str,
@@ -87,7 +114,7 @@ fn accept<N: Namespace>(body: &[u8]) -> Result<String, String> {
 }
 
 /// Every lever home has. A namespace not here is a `404`.
-pub const NAMESPACES: &[Entry] = &[entry::<RustRounds>()];
+pub const NAMESPACES: &[Entry] = &[entry::<RustRounds>(), entry::<GameFeed>()];
 
 /// The namespace named `name`, if home has one.
 #[must_use]
@@ -129,7 +156,7 @@ pub async fn read<N: Namespace>(db: &SqlitePool) -> Result<Standing<N>, ReadErro
 
 #[cfg(test)]
 mod tests {
-	use super::{namespace, read, ReadError, RustRounds, NAMESPACES};
+	use super::{namespace, read, GameFeed, ReadError, RustRounds, NAMESPACES};
 	use admin_setting_repo::SetBy;
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -146,6 +173,17 @@ mod tests {
 		assert!(RustRounds::default().recording);
 		let entry = namespace("rust-rounds").unwrap();
 		assert_eq!((entry.default)(), serde_json::json!({ "recording": true }));
+	}
+
+	#[test]
+	fn the_game_feed_follows_by_default() {
+		assert!(GameFeed::default().following);
+		let entry = namespace("game-feed").unwrap();
+		assert_eq!((entry.default)(), serde_json::json!({ "following": true }));
+		assert_eq!((entry.accept)(br#"{"following":false}"#).unwrap(), r#"{"following":false}"#);
+		for refused in [&br#"{"following":"no"}"#[..], br#"{"recording":false}"#, b"{}"] {
+			assert!((entry.accept)(refused).is_err(), "{}", String::from_utf8_lossy(refused));
+		}
 	}
 
 	#[test]

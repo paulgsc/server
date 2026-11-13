@@ -25,6 +25,10 @@
 //!   if the phone would see anything new. A [`TICK`] does the same for what
 //!   moves with the clock alone (the kickoff countdown, a play leaving "just
 //!   happened", pregame opening).
+//! - *Following:* each offer reads the operator's switch
+//!   (`settings::GameFeed`, on by default) once. Paused, it says
+//!   `following: false` and lists no games, and the next [`TICK`] after a
+//!   change sends it, since the phone would see something new.
 //! - *Clock:* each `ping` carries the phone's clock and is answered with
 //!   home's, so the phone keeps the offset with each bite.
 //!
@@ -55,6 +59,7 @@ pub mod wire;
 use crate::{
 	auth::AuthContext,
 	net::{AdmissionKey, Peer},
+	settings::{self, GameFeed},
 	subject::Paired,
 	AppState, FileHostError,
 };
@@ -114,7 +119,6 @@ pub struct GameLive {
 struct Inner {
 	fed: watch::Sender<u64>,
 	seq: AtomicU64,
-	following: bool,
 	guard: ConnectionGuard,
 	cancel: CancellationToken,
 	clock: Box<dyn Fn() -> DateTime<Utc> + Send + Sync>,
@@ -126,20 +130,20 @@ struct Inner {
 const SEQ_AHEAD: u64 = 10 * 365 * 24 * 60 * 60 * 1000;
 
 impl GameLive {
-	/// `following` is whether the game feed runs (`GAME_FEED_ENABLED`): with
-	/// it off, every offer says so and lists no games.
+	/// The shared half. Whether home follows the games is not held here: each
+	/// offer reads the operator's switch (`settings::GameFeed`), so a pause
+	/// reaches every open socket at its next tick.
 	#[must_use]
-	pub fn new(following: bool, guard: ConnectionGuard, cancel: CancellationToken) -> Self {
-		Self::with_clock(following, guard, cancel, Box::new(Utc::now))
+	pub fn new(guard: ConnectionGuard, cancel: CancellationToken) -> Self {
+		Self::with_clock(guard, cancel, Box::new(Utc::now))
 	}
 
-	fn with_clock(following: bool, guard: ConnectionGuard, cancel: CancellationToken, clock: Box<dyn Fn() -> DateTime<Utc> + Send + Sync>) -> Self {
+	fn with_clock(guard: ConnectionGuard, cancel: CancellationToken, clock: Box<dyn Fn() -> DateTime<Utc> + Send + Sync>) -> Self {
 		let boot = u64::try_from(clock().timestamp_millis()).unwrap_or(0);
 		Self {
 			inner: Arc::new(Inner {
 				fed: watch::Sender::new(0),
 				seq: AtomicU64::new(boot),
-				following,
 				guard,
 				cancel,
 				clock,
@@ -328,7 +332,16 @@ where
 			() = live.inner.cancel.cancelled() => break Close::GoingAway,
 		}
 		let (Some(force), Some(said)) = (make, hello.as_ref()) else { continue };
-		let Ok(state) = offer::state(&db, said, live.now(), live.inner.following).await else {
+		// The operator's switch, once an offer: paused, the offer says
+		// `following: false` and lists no games.
+		let following = match settings::read::<GameFeed>(&db).await {
+			Ok(standing) => standing.value.following,
+			Err(err) => {
+				error!(error = %err, "game day offer skipped: the game feed's following setting could not be read");
+				continue;
+			}
+		};
+		let Ok(state) = offer::state(&db, said, live.now(), following).await else {
 			error!(error = "storage", "game day offer failed");
 			continue;
 		};
