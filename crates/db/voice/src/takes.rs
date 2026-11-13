@@ -11,7 +11,9 @@
 //! library is all of them; the `ref` says which, as the phone named it.
 //!
 //! - **Reads only, per subject.** One statement over `voice_note`,
-//!   `voice_note_set_aside` and `voice_transcript`, filtered on the subject.
+//!   `voice_note_set_aside`, `voice_transcript`, and `studio_take_move` and
+//!   `idea_answer` for where each take is on the conveyor
+//!   ([`crate::conveyor`]), filtered on the subject.
 //!   It reads no audio: playing a take is `GET /voice-notes/:id/audio`'s
 //!   (`crate::audio_head`, `crate::audio_body`).
 //! - **The words are the ones `GET /voice-notes/:id/heard` answers**
@@ -37,7 +39,7 @@
 //! - **Its one caller** is `file_host`'s `handlers::voice`
 //!   (`GET /api/v1/voice-notes/takes`).
 
-use crate::{meaning, transcript::Transcript, Of, VoiceError};
+use crate::{conveyor::Station, meaning, transcript::Transcript, Of, VoiceError};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 use std::collections::HashMap;
@@ -129,6 +131,15 @@ pub struct Take {
 	pub set_aside_at: Option<String>,
 	/// What home heard in it; null while home has not heard it yet.
 	pub heard: Option<Transcript>,
+	/// Where the take is on the conveyor ([`crate::conveyor`]); null for an
+	/// idea's answer or a take let go of, which are not on it.
+	pub station: Option<Station>,
+	/// When its newest move put it there; null in the oven, or for an
+	/// idea's answer or a take let go of.
+	pub station_at: Option<String>,
+	/// Its newest move's number, 0 in the oven, what a move of it names;
+	/// null off the conveyor.
+	pub station_seq: Option<i64>,
 }
 
 /// The library's answer.
@@ -165,9 +176,13 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 		          note.size AS "size!: i64", aside.set_aside_at AS "set_aside_at?: String",
 		          heard.outcome AS "outcome?: String", heard.text AS "text?: String",
 		          heard.language AS "language?: String", heard.model AS "model?: String",
-		          heard.heard_at AS "heard_at?: String"
+		          heard.heard_at AS "heard_at?: String",
+		          moved.to_station AS "to_station?: String", moved.moved_at AS "moved_at?: String", moved.seq AS "seq?: i64",
+		          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id) AS "answers!: bool"
 		   FROM voice_note AS note
 		   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
+		   LEFT JOIN studio_take_move AS moved ON moved.subject_id = note.subject_id AND moved.note_id = note.note_id
+		     AND moved.seq = (SELECT MAX(later.seq) FROM studio_take_move AS later WHERE later.subject_id = note.subject_id AND later.note_id = note.note_id)
 		   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
 		     SELECT hearing.rowid FROM voice_transcript AS hearing
 		     WHERE hearing.subject_id = note.subject_id AND hearing.note_id = note.note_id
@@ -198,6 +213,10 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 			_ => None,
 		};
 		let (words, heard) = heard.map_or((false, None), |(words, heard)| (words, Some(heard)));
+		// An idea's answer and a take let go of are not on the conveyor, as
+		// `conveyor` holds them.
+		let on_conveyor = crate::delete::deletable(studio, &row.of_ref, row.answers) == Some(crate::delete::Deletable::StudioTake) && row.set_aside_at.is_none();
+		let (station, station_at, station_seq) = on_the_conveyor(on_conveyor, row.to_station.as_deref(), row.moved_at, row.seq)?;
 		all.push((
 			words,
 			Take {
@@ -208,6 +227,9 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 				size: row.size,
 				set_aside_at: row.set_aside_at,
 				heard,
+				station,
+				station_at,
+				station_seq,
 			},
 		));
 	}
@@ -245,6 +267,21 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 	})
 }
 
+/// A take's station, when its newest move put it there and that move's
+/// number, each `None` off the conveyor.
+type OnConveyor = (Option<Station>, Option<String>, Option<i64>);
+
+/// A take's station, when its newest move put it there and that move's
+/// number, if it is `on` the conveyor: in the oven, at none and 0 with no
+/// move (`to` the newest move's station).
+fn on_the_conveyor(on: bool, to: Option<&str>, at: Option<String>, seq: Option<i64>) -> Result<OnConveyor, VoiceError> {
+	if !on {
+		return Ok((None, None, None));
+	}
+	let station = to.map_or(Ok(Station::InTheOven), |to| Station::parse(to).ok_or(VoiceError::Unreadable))?;
+	Ok((Some(station), at, Some(seq.unwrap_or(0))))
+}
+
 /// Where in `all` (each take, and whether a model heard words in it) the
 /// takes `search` finds by meaning are, best first, ties newest first; or
 /// `None` when it cannot search by meaning: no asked vector, one with no
@@ -275,8 +312,8 @@ async fn by_meaning(conn: &mut SqliteConnection, subject: &str, search: &Search,
 #[cfg(test)]
 mod tests {
 	use super::{library, By, Search, MAX_SEARCH_CHARS, NEWEST};
-	use crate::set_aside::set_aside;
 	use crate::transcript::Transcript;
+	use crate::{conveyor::Station, set_aside::set_aside};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -381,6 +418,64 @@ mod tests {
 		assert_eq!(all.takes[0].heard, None, "not heard yet");
 		assert_eq!(all.takes[1].heard.as_ref().map(|heard| heard.text.as_str()), Some(""), "heard, and silent");
 		assert_eq!(all.takes[1].set_aside_at.as_deref(), Some("2026-11-02T11:00:00.000Z"), "set aside, and still listed");
+		let stations: Vec<_> = all.takes.iter().map(|take| (take.station, take.station_at.as_deref(), take.station_seq)).collect();
+		assert_eq!(
+			stations,
+			[(Some(Station::InTheOven), None, Some(0)), (None, None, None), (Some(Station::InTheOven), None, Some(0))],
+			"an idea's answer is not on the conveyor"
+		);
+		sqlx::query(
+			"INSERT INTO studio_take_move (subject_id, note_id, seq, from_station, to_station, moved_at, labels, comment, issue, stored_at)
+			 VALUES (?1, 'scene', 1, 'in-the-oven', 'cooking', '2026-11-03T00:00:00.000Z', NULL, NULL, NULL, 'now'),
+			        (?1, 'scene', 2, 'cooking', 'canned', '2026-11-04T00:00:00.000Z', NULL, NULL, NULL, 'now')",
+		)
+		.bind(A)
+		.execute(&mut *conn)
+		.await
+		.unwrap();
+		let scene = library(&mut conn, A, None).await.unwrap().takes.remove(2);
+		assert_eq!(
+			(scene.station, scene.station_at.as_deref(), scene.station_seq),
+			(Some(Station::Canned), Some("2026-11-04T00:00:00.000Z"), Some(2)),
+			"its newest move"
+		);
+
+		// A scene's take that moved, then was named as an idea's answer, and
+		// one that moved, then was let go of, are off the conveyor too.
+		sqlx::query(
+			"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at)
+			 VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
+		)
+		.bind(A)
+		.execute(&mut *conn)
+		.await
+		.unwrap();
+		sqlx::query("INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'scene', NULL)")
+			.bind(A)
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		sqlx::query(
+			"INSERT INTO studio_take_move (subject_id, note_id, seq, from_station, to_station, moved_at, labels, comment, issue, stored_at)
+			 VALUES (?1, 'loose', 1, 'in-the-oven', 'cooking', '2026-11-04T00:00:00.000Z', NULL, NULL, NULL, 'now')",
+		)
+		.bind(A)
+		.execute(&mut *conn)
+		.await
+		.unwrap();
+		set_aside(&mut conn, A, "loose", "2026-11-05T00:00:00.000Z", "2026-11-05T00:00:01.000Z").await.unwrap();
+		let off: Vec<_> = library(&mut conn, A, None)
+			.await
+			.unwrap()
+			.takes
+			.into_iter()
+			.map(|take| (take.station, take.station_at, take.station_seq))
+			.collect();
+		assert_eq!(
+			off,
+			[(None, None, None), (None, None, None), (None, None, None)],
+			"named as an answer, or let go of, after it moved"
+		);
 		assert_eq!(
 			all.takes[2].heard,
 			Some(Transcript {

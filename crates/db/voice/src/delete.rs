@@ -19,7 +19,8 @@
 //!   paulgsc/some-ui#2265 and in that repo's `docs/discard-sites.md`.
 //! - **What goes:** the note, its audio, what home heard in it (every
 //!   transcript, its words and the take's vectors in the meaning index,
-//!   which are made from them) and its set-aside mark, in one transaction.
+//!   which are made from them), its set-aside mark and its moves along the
+//!   conveyor ([`crate::conveyor`]), in one transaction.
 //!   **What stays:** a copy of its words already filed for the Jobs mailbox
 //!   (the mailbox keeps a name's body for good), the record that Drive
 //!   holds it, the idea an answer belongs to (`idea_answer` still names the
@@ -61,6 +62,8 @@ pub const RECORDING: &str = "recording";
 pub const WORDS: &str = "words";
 /// The owner's Let go mark on it.
 pub const SET_ASIDE_MARK: &str = "set-aside mark";
+/// Every move the owner made of it along the conveyor ([`crate::conveyor`]).
+pub const CONVEYOR_HISTORY: &str = "conveyor history";
 /// Its words, filed for the Jobs mailbox.
 pub const MAILBOX_COPY: &str = "mailbox copy";
 /// The build-journal session's word that Drive holds it.
@@ -227,6 +230,11 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 		.execute(&mut *conn)
 		.await?
 		.rows_affected();
+	// Its moves along the conveyor are about the take, so they go with it.
+	let moved = sqlx::query!("DELETE FROM studio_take_move WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.execute(&mut *conn)
+		.await?
+		.rows_affected();
 	sqlx::query!("DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
 		.await?;
@@ -254,6 +262,9 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 	}
 	if marked > 0 {
 		went.push(SET_ASIDE_MARK.to_owned());
+	}
+	if moved > 0 {
+		went.push(CONVEYOR_HISTORY.to_owned());
 	}
 	let mut stayed = Vec::new();
 	if filed {
@@ -336,7 +347,9 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 
 #[cfg(test)]
 mod tests {
-	use super::{delete, receipt, receipts, Deletable, Deleted, Kept, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, WORDS};
+	use super::{
+		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, WORDS,
+	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -476,6 +489,14 @@ mod tests {
 		note(&pool, A, "take", "studio").await;
 		note(&pool, B, "take", "studio").await;
 		everything_beside(&pool, A, "take").await;
+		run(
+			&pool,
+			"INSERT INTO studio_take_move (subject_id, note_id, seq, from_station, to_station, moved_at, labels, comment, issue, stored_at)
+			 VALUES (?1, ?2, 1, 'in-the-oven', 'cooking', 'then', NULL, NULL, NULL, 'now')",
+			A,
+			"take",
+		)
+		.await;
 
 		assert_eq!(gone(&pool, B, "nope", ON).await, Deleted::NotHeld);
 		let Deleted::Gone(first) = gone(&pool, A, "take", ON).await else {
@@ -483,7 +504,7 @@ mod tests {
 		};
 		assert_eq!(first.of, "studio");
 		assert_eq!((first.recorded_at.as_str(), first.size, first.deleted_at.as_str()), ("2026-11-01T10:00:00.000Z", 120, NOW));
-		assert_eq!(first.went, [RECORDING, WORDS, SET_ASIDE_MARK]);
+		assert_eq!(first.went, [RECORDING, WORDS, SET_ASIDE_MARK, CONVEYOR_HISTORY]);
 		assert_eq!(first.stayed, [MAILBOX_COPY, DRIVE_COPY]);
 		for table in [
 			"voice_note",
@@ -492,6 +513,7 @@ mod tests {
 			"voice_transcript_word",
 			"voice_note_set_aside",
 			"voice_note_meaning",
+			"studio_take_move",
 		] {
 			assert_eq!(rows(&pool, table, A, "take").await, 0, "{table}");
 		}

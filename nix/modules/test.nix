@@ -122,5 +122,7 @@ in
     # Makefile and the modules' text to the same.
     (expect "the deploy runs no python" (!(lib.any (package: lib.hasPrefix "python" (lib.getName package)) deployUnit.path)
         && !(lib.hasInfix "python" (deployUnit.serviceConfig.ExecStartPre + deployUnit.serviceConfig.ExecStart))))
+    # HD1: a deploy that hangs is stopped after 30 minutes (#782).
+    (expect "a hung deploy is stopped at 30 minutes" (deployUnit.serviceConfig.TimeoutStartSec == "30min"))
     (expect "nothing runs on a timer" (!(deploy.config.systemd.timers ? home-deploy)))
   ]

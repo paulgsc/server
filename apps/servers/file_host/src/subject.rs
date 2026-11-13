@@ -81,6 +81,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	("intervention_log", "what the waker decided and when"),
 	(
+		"interview_week_draft",
+		"the owner's current draft of each week of mock interview not yet final (paulgsc/some-ui#2935, IW4): which questions they answered and which teleprompter cards they read, each with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home; replaced by each later send before the week's deadline, and gone once the week is final. See docs/identity.md invariant 28",
+	),
+	(
+		"interview_week_final",
+		"each week of mock interview as it stood at its deadline (paulgsc/some-ui#2935, IW4), the owner's draft then: which questions they answered and which teleprompter cards they read, each with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home. See docs/identity.md invariant 28",
+	),
+	(
 		"jobs_event",
 		"the owner's Jobs log (paulgsc/some-ui `apps/www/src/lib/jobs`), every event: picks taken, passed or archived and why, why the owner fits one taken, how applying went, outcomes, postings found by hand, as written, and when each was recorded and reached home; see docs/identity.md",
 	),
@@ -218,6 +226,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	(
 		"voice_note_deletion",
 		"a receipt for each of the owner's voice notes the owner deleted for good from My data on the phone (paulgsc/some-ui#2477): the note's id and kind, when it was recorded, reached home and was deleted, its size, and what went and what stayed in fixed words; never what was said; see docs/identity.md invariant 23",
+	),
+	(
+		"studio_take_move",
+		"each move the owner made of a Studio take along the conveyor (paulgsc/some-ui epic #2872, CONVEYOR1): the take's id, the station it left and the one it reached, when, the owner's labels and a short comment if any, and the issue a pickup filed it as; the take itself is a voice note; see docs/identity.md invariant 23",
 	),
 	(
 		"drama_prompt",
