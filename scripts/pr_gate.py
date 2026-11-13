@@ -23,16 +23,20 @@ write what they see, pending or decided:
   re-run of the gate. Other apps' checks reach no workflow here (GitHub fires
   no `check_run` for a head GitHub Actions runs on), so its schedule
   (`--sweep`, every 15 minutes) sends each open pull request whose gate is
-  still unfinished back to be judged again (`workflow_dispatch`): the
-  backstop for a check still running when the last workflow finished, or an
-  event GitHub dropped;
+  still unfinished back to be judged again (`workflow_dispatch`), for a
+  check still running when the last workflow finished, or an event GitHub
+  dropped. Best effort: GitHub runs few of those slots here (#814);
 - each pull-request workflow's last job, `Tell PR gate`, which dispatches
   `--event` for its head when its run's actor is `github-actions[bot]`:
   GitHub fires no `workflow_run` for such a run (a pull request the image bot
   pushed), and `workflow_dispatch` is the one event a GITHUB_TOKEN may fire
-  (#772). A dispatched `--event` first waits, briefly, for runs whose only
-  unfinished job is that one (`settle`). Every pull-request workflow must have
-  the job, needing every other job, or the gate fails.
+  (#772). A dispatched `--event` first waits (`settle`), briefly, for runs
+  whose only unfinished job is that one, and then, once no pull-request
+  workflow is still at work, for what tells no one when it finishes:
+  CodeQL's `dynamic` run (no `workflow_run` for that actor either) and other
+  apps' check runs, until each ends or is RUN_LIMIT_SECONDS old (#814).
+  Every pull-request workflow must have the job, needing every other job, or
+  the gate fails.
 
 Both share one concurrency group per head commit, so their writes land in the
 order they read. GitHub runs the base branch's `gate-verdict.yml`, not the
@@ -118,7 +122,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -940,26 +944,69 @@ def telling(jobs: list[dict[str, Any]]) -> bool:
 	return any(j.get("name") == TELL_NAME for j in jobs) and all(j.get("name") == TELL_NAME for j in unfinished)
 
 
-def settle(api: Api, head_sha: str, sleep: Any = time.sleep, clock: Any = time.monotonic) -> list[int]:
-	"""A run's `tell_gate` job dispatches this verdict as its last step, so the run is still in progress for
-	the seconds that job takes to end. Wait, up to SETTLE_SECONDS, for every run on `head_sha` that is only
-	telling the gate, so the verdict reads it finished. Waits on nothing else: a run still doing work tells the
-	gate itself when it ends. Returns the ids of the runs still telling when it stopped waiting."""
+def started(item: dict[str, Any]) -> datetime | None:
+	"""When a run (its latest attempt) or a check run started; None when unknown."""
+	begin = item.get("started_at") or item.get("run_started_at") or item.get("created_at")
+	try:
+		return datetime.fromisoformat(str(begin).replace("Z", "+00:00"))
+	except ValueError:
+		return None
+
+
+def silent(api: Api, head_sha: str, dynamic_runs: list[dict[str, Any]], now: datetime) -> list[str]:
+	"""What is still running on `head_sha` that will tell no verdict when it finishes (#814): CodeQL's
+	`dynamic` run, which has no tell_gate, and other apps' check runs (code scanning's `CodeQL`), for which
+	GitHub fires no event here. Each is listed until it is RUN_LIMIT_SECONDS old, when the gate fails it
+	anyway; one whose start is unknown is not listed, so nothing is waited on without a bound."""
+	checks = api.pages(f"commits/{head_sha}/check-runs?filter=latest", "check_runs", limit=5)
+	others = [c for c in checks if ((c.get("app") or {}).get("slug")) != "github-actions" and c.get("status") != "completed"]
+	quiet = []
+	for item, label in [*((r, f"run {r['id']} ({r.get('name')})") for r in dynamic_runs), *((c, f"check run {c.get('name')}") for c in others)]:
+		begin = started(item)
+		if begin is not None and (now - begin).total_seconds() < RUN_LIMIT_SECONDS:
+			quiet.append(label)
+	return quiet
+
+
+def settle(api: Api, head_sha: str, sleep: Any = time.sleep, clock: Any = time.monotonic, now: Any = None) -> list[int]:
+	"""Before a dispatched verdict judges `head_sha`, wait for what would otherwise finish after it with
+	nothing to judge the head again:
+
+	- a run whose only unfinished job is `tell_gate`: that job dispatches this verdict as its last step, so
+	  the run is still in progress for the seconds it takes to end. Up to SETTLE_SECONDS.
+	- once no pull-request run is still at work (each of those tells the gate itself when it ends), the
+	  checks that tell no one (`silent`): on a bot-pushed head, CodeQL's analysis often outlasts every
+	  workflow (#814). Until each finishes or is RUN_LIMIT_SECONDS old, when the gate fails it anyway.
+
+	Returns the ids of the runs still telling when it stopped waiting."""
+	now = now or (lambda: datetime.now(timezone.utc))
 	deadline = clock() + SETTLE_SECONDS
+	gave_up = False
 	while True:
 		listed = api.pages(f"actions/runs?head_sha={head_sha}", "workflow_runs", limit=5)
-		waiting = []
+		told, working, dynamic = [], [], []
 		for run in listed:
 			if run.get("head_sha") != head_sha or run.get("status") == "completed" or run.get("event") not in AWAITED_EVENTS or run.get("path") in GATE_FILES:
 				continue
-			if telling(api.pages(f"actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs", "jobs", limit=5)):
-				waiting.append(run["id"])
-		if not waiting or clock() >= deadline:
-			if waiting:
-				print(f"still telling the gate after {SETTLE_SECONDS} s, judged as unfinished: runs {waiting}")
-			return waiting
-		print(f"waiting for runs {waiting} to finish telling the gate")
-		sleep(SETTLE_POLL_SECONDS)
+			if run.get("event") == "dynamic":
+				dynamic.append(run)
+			elif telling(api.pages(f"actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs", "jobs", limit=5)):
+				told.append(run["id"])
+			else:
+				working.append(run["id"])
+		late = clock() >= deadline
+		if told and late and not gave_up:
+			print(f"still telling the gate after {SETTLE_SECONDS} s, judged as unfinished: runs {told}")
+			gave_up = True
+		quiet = [] if working else silent(api, head_sha, dynamic, now())
+		if (not told or late) and not quiet:
+			return told
+		if told and not late:
+			print(f"waiting for runs {told} to finish telling the gate")
+			sleep(SETTLE_POLL_SECONDS)
+		else:
+			print(f"no workflow is still at work; waiting for what tells no one when it finishes: {'; '.join(quiet)}")
+			sleep(POLL_SECONDS)
 
 
 def event_gate(api: Api, head_sha: str, numbers: list[int], dispatched: bool = False) -> int:
@@ -1233,6 +1280,45 @@ def self_test() -> int:
 			return super().pages(path, key, limit)
 
 	same("settle gives up at its bound", settle(Stuck(), head, sleep=slept.append, clock=lambda: next(times)), [20])  # type: ignore[arg-type]
+
+
+	# #814: on a bot-pushed head, CodeQL often finishes after every workflow, and tells no one. Once nothing
+	# else is at work, a dispatched verdict waits for it (and other apps' check runs) up to RUN_LIMIT_SECONDS.
+	t0 = datetime(2026, 11, 12, 5, 5, 17, tzinfo=timezone.utc)
+
+	class Quiet:
+		"""lint.yml done; CodeQL's dynamic run and code scanning's check unfinished for `polls` readings."""
+
+		def __init__(self, polls: int, working: bool = False, begun: str | None = "2026-11-12T05:05:17Z", check: bool = False) -> None:
+			self.polls, self.working, self.begun, self.check, self.reads = polls, working, begun, check, 0
+
+		def pages(self, path: str, key: str | None, limit: int = 30) -> list[Any]:
+			if path.startswith("actions/runs?"):
+				self.reads += 1
+				done = self.reads > self.polls
+				codeql = run(30, "dynamic/github-code-scanning/codeql", status="completed" if done or self.check else "in_progress", conclusion=None, event="dynamic", name="CodeQL", run_started_at=self.begun)
+				found = [run(20, "lint.yml"), codeql]
+				if self.working:
+					found.append(run(21, "test.yml", status="in_progress", conclusion=None))
+				return found
+			if path.startswith("actions/runs/21/"):
+				return [job("rust_ci", None, "in_progress"), job("Tell PR gate", None, "queued")]
+			if path.startswith("commits/"):
+				done = self.reads > self.polls
+				status = "completed" if done or not self.check else "in_progress"
+				return [{"name": "CodeQL", "status": status, "started_at": self.begun, "app": {"slug": "github-code-scanning"}}]
+			raise AssertionError(f"unexpected read {path}")
+
+	def quiet_settle(fake: Quiet, minutes: float) -> tuple[list[int], int, list[float]]:
+		naps: list[float] = []
+		got = settle(fake, head, sleep=naps.append, clock=lambda: 0.0, now=lambda: t0 + timedelta(minutes=minutes))  # type: ignore[arg-type]
+		return got, fake.reads, naps
+
+	same("settle waits for CodeQL once nothing else works", quiet_settle(Quiet(2), 9), ([], 3, [POLL_SECONDS, POLL_SECONDS]))
+	same("settle waits for another app's check run", quiet_settle(Quiet(1, check=True), 9), ([], 2, [POLL_SECONDS]))
+	same("settle leaves CodeQL to a run still at work", quiet_settle(Quiet(5, working=True), 9), ([], 1, []))
+	same("settle stops at CodeQL's own hour", quiet_settle(Quiet(5), 61), ([], 1, []))
+	same("settle waits on nothing it cannot bound", quiet_settle(Quiet(5, begun=None), 9), ([], 1, []))
 
 	if failures:
 		print("::error::pr_gate.py's own tests failed:")

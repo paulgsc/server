@@ -11,22 +11,29 @@
 #
 # Other apps' checks (code scanning's `CodeQL` check run) have no event that
 # reaches a workflow here: GitHub fires no `check_run` for a commit whose
-# check suite is GitHub Actions', which every pull request head here is. So a
-# workflow finishing is what judges them, and the schedule is the backstop for
-# one still unfinished when the last workflow finishes, or for any event
-# GitHub drops: every 15 minutes, `sweep` sends each open pull request whose
-# PR gate is unfinished back here (`workflow_dispatch`) to be judged again.
-# It judges nothing itself, so every write still happens inside the head
-# commit's concurrency group.
+# check suite is GitHub Actions', which every pull request head here is. On a
+# human's pull request, CodeQL's `dynamic` run finishing judges them. The
+# schedule sweeps for a check still unfinished when the last workflow
+# finished, or any event GitHub drops: every 15 minutes, `sweep` sends each
+# open pull request whose PR gate is unfinished back here
+# (`workflow_dispatch`) to be judged again. It judges nothing itself, so every
+# write still happens inside the head commit's concurrency group. The schedule
+# is best effort, not a bound: GitHub skips most of its slots here (7 runs in
+# its whole history by 2026-11-12, hours apart), so nothing relies on it.
 #
 # A run whose actor is github-actions[bot] (a pull request the image bot
 # pushed) fires no `workflow_run` at all when it finishes: events a
-# GITHUB_TOKEN causes start no workflow, `workflow_dispatch` aside. So each
-# pull-request workflow ends with a `Tell PR gate` job, run only for that
-# actor, that dispatches this workflow with `pr` and `head_sha` (#772). That
-# job's run is still finishing when the verdict starts, so a dispatched
-# verdict first waits (seconds; at most 3 minutes) for runs whose only
-# unfinished job is `Tell PR gate`, and for nothing else.
+# GITHUB_TOKEN causes start no workflow. That includes CodeQL's `dynamic`
+# run. So each pull-request workflow ends with a `Tell PR gate` job, run only
+# for that actor, that dispatches this workflow with `pr` and `head_sha`
+# (#772). A dispatched verdict first waits (scripts/pr_gate.py's `settle`):
+# - for runs whose only unfinished job is `Tell PR gate` (still finishing the
+#   dispatch; seconds, at most 3 minutes);
+# - once no pull-request workflow is still at work, for what tells no one when
+#   it finishes: CodeQL's `dynamic` run and other apps' check runs (#814),
+#   until each finishes or is an hour old, when the gate fails it anyway. On
+#   server#813, the minutes CodeQL's Rust analysis outlasted the rest.
+# Nothing else: a run still at work tells the gate itself.
 #
 # Cost of the backstop: 96 sweep runs a day, one job of about 10 s each
 # (GitHub bills each as one minute: 96 runner-minutes a day at most), plus
@@ -89,7 +96,9 @@ jobs:
     concurrency:
       group: pr-gate-${{ github.event.workflow_run.head_sha || inputs.head_sha || github.run_id }}
       cancel-in-progress: false
-    timeout-minutes: 10
+    # Seconds, normally. A dispatched verdict may wait for CodeQL up to the
+    # hour the gate allows any run (#814); this is the backstop past that.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
         with:

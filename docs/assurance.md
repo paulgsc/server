@@ -88,9 +88,11 @@ mean something this reader does not know.
 workflows, some filtered by path. A job cannot `needs` a job in another workflow, so the gate
 reads the head commit through the API and writes its verdict as a check run named `PR gate`.
 
-**No runner waits (#762).** The gate used to be one job that polled the other checks for up to an
-hour, holding a runner from the pool both repositories share. Now two short jobs judge the head
-commit once each, and write what they see, pending or decided:
+**No runner waits (#762), but one (#814).** The gate used to be one job that polled the other checks
+for up to an hour, holding a runner from the pool both repositories share. Now two short jobs judge
+the head commit once each, and write what they see, pending or decided. The one wait left is a
+dispatched verdict's, on a bot-pushed head, for a check that will tell no one when it finishes, and
+only once nothing else is at work (below): there the alternative is a gate nobody decides.
 
 - `gate.yml`'s `PR gate (open)`, on the pull request's own events (a push, or a label that re-runs
   `routes.yml`), turns the gate pending at once;
@@ -100,8 +102,10 @@ commit once each, and write what they see, pending or decided:
 - `gate-verdict.yml`'s `PR gate (sweep)`, every 15 minutes, sends each open pull request whose gate
   is still unfinished back to `PR gate (verdict)` (`workflow_dispatch`). Other apps' checks (code
   scanning's `CodeQL`) reach no workflow here, since GitHub fires no `check_run` for a head GitHub
-  Actions runs on, so this is what judges one that finishes after the last workflow, and any event
-  GitHub drops. It judges nothing itself, so every write stays inside the head's concurrency group.
+  Actions runs on, so this judges one that finishes after the last workflow, and any event GitHub
+  drops. It judges nothing itself, so every write stays inside the head's concurrency group. **It is
+  best effort, not a bound:** GitHub's scheduler skips most of its slots here (7 runs in its whole
+  history by 2026-11-12, the last three 5 to 7 hours apart), so no path counts on it.
   It costs 96 runs a day of about 10 s each, plus one ~15 s judging job per gate still unfinished.
   To sweep now, run `PR gate verdict` by hand (Actions → Run workflow) with its inputs empty; with
   `pr` and `head_sha` it judges that one head instead (#772).
@@ -114,8 +118,13 @@ commit once each, and write what they see, pending or decided:
   token cannot dispatch; the sweep judges those), sends the head to `PR gate (verdict)`
   through `workflow_dispatch`, the one event that token may fire. Its run is still finishing when
   the verdict starts, so a dispatched verdict first waits, up to 3 minutes (seconds, in practice),
-  for each run on the head whose only unfinished job is `Tell PR gate`, and for nothing else: a run
-  still at work tells the gate itself. Everyone else's runs skip the job. The gate fails a pull
+  for each run on the head whose only unfinished job is `Tell PR gate`. Then, if no pull-request
+  run is still at work, it waits for what tells no one when it finishes (#814): CodeQL's `dynamic`
+  run, whose finish fires no `workflow_run` for that actor either and which no `tell_gate` can
+  follow, and other apps' check runs, until each finishes or is an hour old (the gate fails it
+  then anyway). On server#813 CodeQL's Rust analysis ended two minutes after every workflow, and
+  the gate sat pending 25 minutes until someone swept by hand. A run still at work is never waited
+  on: it tells the gate itself. Everyone else's runs skip the job. The gate fails a pull
   request whose workflow lacks it or whose `needs` leaves a job out.
 
 They share one concurrency group per head commit, so the writes land in the order they were read.
@@ -167,11 +176,10 @@ leaves out, and the script's self-test fails a name listed there that no workflo
 - A fork's pull request gets a read-only token on `pull_request`, so `PR gate (open)` cannot write;
   `PR gate (verdict)` finds the pull request by its head branch and writes the verdict.
 - A check that finishes after the last workflow, and that no event reports, is judged at the next
-  sweep: up to 15 minutes late, and pending, never green, until then. On a bot-pushed head that
-  includes CodeQL's `dynamic` run, which no `tell_gate` can follow; it starts at the push, not at
-  the approval the other runs wait for (below), so it has usually finished long before them.
-  GitHub's scheduler also skips many slots here (three runs in 13 hours on 2026-11-10), so "the
-  next sweep" can be hours: that is why the bot path does not lean on it.
+  sweep: pending, never green, until then. GitHub's scheduler skips most sweep slots here (three
+  runs in 13 hours on 2026-11-10), so "the next sweep" can be hours: that is why the bot path does
+  not lean on it, and a dispatched verdict waits for CodeQL instead (#814). On a human's pull
+  request CodeQL's `dynamic` run fires `workflow_run`, so its finish judges the gate itself.
 - A pull request the image bot (`detect.yml`'s `stage`, `GITHUB_TOKEN`) opens or pushes gets its
   `pull_request` runs in an approval-required state (`action_required`): someone with write access
   approves them (**Approve workflows to run**), or pushes to the branch, whose runs are then theirs
