@@ -411,6 +411,18 @@ gone() {
   [ -z "$state" ] || [ "$state" = Z ]
 }
 
+# `within gone`, and when the process outlives the wait, what it is: its
+# stat line (state and parent), its command line, and which child the fake
+# recorder names now. The stop case's child has outlived a kill on a busy
+# runner without a zombie in sight (#825); the next time says why.
+gone_or_say() {
+  within gone "$1" && return 0
+  echo "  still there, pid $1: $(cat "/proc/$1/stat" 2> /dev/null || echo gone by now)"
+  echo "  its command line: $(tr '\0' ' ' < "/proc/$1/cmdline" 2> /dev/null)"
+  echo "  the fake names as its child now: $(cat "$FAKE/child" 2> /dev/null)"
+  return 1
+}
+
 job_state_is() {
   grep -qx "state=$1" "$ROOT/renders/call-worker/job.state" 2> /dev/null
 }
@@ -589,8 +601,8 @@ id=$(cat "$ROOT/renders/call-worker/job")
 recorder=$(cat "$FAKE/pid") child=$(cat "$FAKE/child")
 : > "$SCRATCH/saw"
 lane_says stop
-check "a stop kills the recorder" within gone "$recorder"
-check "and what the recorder started" within gone "$child"
+check "a stop kills the recorder" gone_or_say "$recorder"
+check "and what the recorder started" gone_or_say "$child"
 check "the job says it waits" within job_state_is waiting
 kept=$(steps_made)
 check "a stop keeps the finished steps" test "$kept" -eq 2
