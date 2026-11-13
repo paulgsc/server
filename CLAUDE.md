@@ -165,8 +165,9 @@ bounded by `BATCH` and the pass deadline alone — no mechanism-specific cap, cu
 checks. For identity, peer addresses and anything logged or stored about a person it is
 `docs/identity.md`, "Privacy invariants" — including that `SubjectId` is the only identity and a
 `PeerKey`/`ClientId` never is. For anything that runs on home or changes what a service
-takes of it (a new service, a cap, a worker loop), it is `docs/home-compute.md`: every service
-has a class, and its class sets who is killed first. For which images home runs and how they move
+takes of it (a new service, a cap, a worker loop), it is `docs/home-compute.md`, "Invariants":
+one batch job at a time, interactive work first, no clock; every service has a class, and its
+class sets who is killed first. For which images home runs and how they move
 (compose `image:` lines, `deploy/home/release.json`, the image publish and release workflows), it
 is `docs/release.md`, "Invariants": one source, reconciled rather than carried, by digest. Those sections are the source of truth;
 this list is only a pointer to them. If the change

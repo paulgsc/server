@@ -65,12 +65,19 @@ log's timeout plays in the half.
 ## The next snap is not in the log
 
 The log holds each play as it stood at its own snap, so the snap still to
-come is not in it, and `nfl_feed` does not read ESPN's live `situation` yet.
-`Game::situation` carries it; without one, the engine offers nothing that
-needs the down (third and long, fourth down, red zone, the opening drive, a
-play call, a field goal try) and the strip leaves possession and the down
-out. A replay, which knows the next play, passes `Situation::before(next)`.
-GWB4 reads the live one.
+come is not in it. `Game::situation` carries it; without one, the engine
+offers nothing that needs the down (third and long, fourth down, red zone,
+the opening drive, a play call, a field goal try) and the strip leaves
+possession and the down out.
+
+Live, it is ESPN's: `game_feed_repo::situation(conn, game, now)` reads it
+from the newest summary home kept (`nfl_feed::situation`, paulgsc/server#570),
+and `Situation::from(&live)` converts it. ESPN marks no team between a
+kickoff or a score and the next snap, and then neither does the situation,
+so the down rules wait for the snap after. A replay, which knows the next
+play, passes `Situation::before(next)`. ESPN's timeouts left are carried by
+`nfl_feed` but not read here: the two-minute line still counts them from the
+log's timeout plays.
 
 ## Invariants
 

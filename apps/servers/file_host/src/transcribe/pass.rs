@@ -20,9 +20,17 @@
 //!   (`voice_repo::meaning::unindexed`), each in its own transaction under
 //!   the deletion hold. Embedding is a lookup per token, so neither holds a
 //!   transaction longer than its write.
+//! - **A busy box is nobody's fault** (L1, paulgsc/server#706). Each hearing
+//!   is bracketed by a [`crate::contention::Window`]: a `deadline` reached while
+//!   the box's CPU was contended is kept as nothing, so it never uses up one
+//!   of the note's [`ATTEMPTS`]; the pass stops, and the next hears the note
+//!   again. One note is excused at most [`crate::contention::NOBODYS`] times in a
+//!   row, then kept as it ended, and the pass stops there too, so the next
+//!   pass starts with that note and no other note's streak is replaced.
 
 use super::engine::{Cancelled, Hear, Heard};
 use crate::auth::DeletionLock;
+use crate::contention::{Excuse, Guard, Window};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,6 +54,15 @@ pub struct Pass {
 	pub indexed: usize,
 	/// The server began shutting down during the pass.
 	pub cancelled: bool,
+	/// Deadlines the box's contention excused: kept as nothing, and the pass
+	/// stopped there.
+	pub excused: usize,
+	/// Deadlines contention would have excused, kept anyway: their note was
+	/// excused [`crate::contention::NOBODYS`] times in a row already.
+	pub judged_anyway: usize,
+	/// Hearings whose window could not read the box's counters: kept as
+	/// before the guard.
+	pub unreadable: usize,
 }
 
 /// Hears up to [`BATCH`] waiting notes with `hear`, each by `per_note`,
@@ -55,16 +72,18 @@ pub struct Pass {
 /// # Errors
 /// A storage failure, which ends the pass; the attempts and vectors kept
 /// before it stay kept, and the next pass carries on from them.
+#[allow(clippy::too_many_arguments)] // run_once_telling's, less whom to tell
 pub async fn run_once<H: Hear>(
 	db: &SqlitePool,
 	hear: &Arc<H>,
 	meaning: Option<&dyn Embed>,
 	deletion: &DeletionLock,
 	per_note: Duration,
+	guard: &mut Guard<(String, String)>,
 	cancel: &CancellationToken,
 	now: &(dyn Fn() -> String + Sync),
 ) -> Result<Pass, VoiceError> {
-	run_once_telling(db, hear, meaning, deletion, per_note, cancel, now, &|| {}).await
+	run_once_telling(db, hear, meaning, deletion, per_note, guard, cancel, now, &|| {}).await
 }
 
 /// [`run_once`], calling `heard` as soon as each note heard is kept.
@@ -82,6 +101,7 @@ pub async fn run_once_telling<H: Hear>(
 	meaning: Option<&dyn Embed>,
 	deletion: &DeletionLock,
 	per_note: Duration,
+	guard: &mut Guard<(String, String)>,
 	cancel: &CancellationToken,
 	now: &(dyn Fn() -> String + Sync),
 	heard: &(dyn Fn() + Sync),
@@ -106,6 +126,7 @@ pub async fn run_once_telling<H: Hear>(
 		// Gone since the list was read: it went with its account.
 		let Some(audio) = audio else { continue };
 		let started = Instant::now();
+		let window = Window::open(guard.gauge.as_ref());
 		let attempt = {
 			let (hear, cancel) = (Arc::clone(hear), cancel.clone());
 			let deadline = started + per_note;
@@ -124,6 +145,25 @@ pub async fn run_once_telling<H: Hear>(
 			},
 		};
 		let took = started.elapsed();
+		let seen = window.close(guard.gauge.as_ref());
+		pass.unreadable += usize::from(seen.unreadable());
+		// A deadline judged anyway still leaves its note waiting (it has
+		// attempts left), and the next pass hears it first: going on to
+		// another note now would start that one's streak, which the older
+		// note's next excuse would then replace. So the pass stops after it.
+		let mut judged_anyway = false;
+		if matches!(attempted.outcome, Outcome::Deadline) && seen.cpu_contended() {
+			match guard.streak.excuse((note.subject.clone(), note.note_id.clone())) {
+				Excuse::Nobodys => {
+					pass.excused += 1;
+					break;
+				}
+				Excuse::JudgedAnyway => {
+					pass.judged_anyway += 1;
+					judged_anyway = true;
+				}
+			}
+		}
 		let kind = attempted.outcome.kind();
 		let attempt = Attempt {
 			model: hear.model(),
@@ -142,6 +182,9 @@ pub async fn run_once_telling<H: Hear>(
 		}
 		if indexed == Indexed::Kept {
 			pass.indexed += 1;
+		}
+		if judged_anyway {
+			break;
 		}
 	}
 	Ok(pass)
@@ -197,6 +240,7 @@ async fn catch_up(db: &SqlitePool, embed: &dyn Embed, deletion: &DeletionLock) -
 mod tests {
 	use super::{run_once, Pass, ATTEMPTS, BATCH};
 	use crate::auth::DeletionLock;
+	use crate::contention::{fake, fake::State, Guard, NOBODYS};
 	use crate::transcribe::engine::{Cancelled, Hear, Heard};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 	use std::sync::{Arc, Mutex};
@@ -295,10 +339,98 @@ mod tests {
 		tx.commit().await.unwrap();
 	}
 
+	fn calm() -> Guard<(String, String)> {
+		fake::guard(State::Calm).0
+	}
+
+	/// A note that runs to its deadline on a contended box is nobody's: no
+	/// attempt is kept, so none of its `ATTEMPTS` is used, the pass stops
+	/// there, and the next hears it again. One note is excused at most
+	/// `NOBODYS` times in a row; on a calm box its deadline is its own.
+	#[tokio::test]
+	async fn a_deadline_on_a_contended_box_uses_up_no_attempt() {
+		let pool = pool().await;
+		note(&pool, A, "n1", "2026-10-25T01:00:00.000Z", b"slow").await;
+		note(&pool, A, "n2", "2026-10-25T02:00:00.000Z", b"words").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let (mut guard, gauge) = fake::guard(State::Busy);
+		let done = guarded(&pool, &fake, &mut guard, &cancel).await;
+		assert_eq!((done.excused, done.kept.len()), (1, 0), "nothing kept, and the pass stops at it");
+		assert!(rows(&pool).await.is_empty());
+		gauge.set(State::Calm);
+		let done = guarded(&pool, &fake, &mut guard, &cancel).await;
+		assert_eq!((done.excused, done.kept), (0, vec!["deadline", "heard"]), "on a calm box the deadline is the note's");
+		assert_eq!(fake.heard(), ["slow", "slow", "words"]);
+	}
+
+	/// A box that never calms down cannot hold the queue: one note is
+	/// excused `NOBODYS` times in a row, then its deadline is kept.
+	#[tokio::test]
+	async fn a_note_is_excused_at_most_nobodys_times_in_a_row() {
+		let pool = pool().await;
+		note(&pool, B, "n9", "2026-10-25T01:00:00.000Z", b"slow").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let (mut guard, _) = fake::guard(State::Busy);
+		for _ in 0..NOBODYS {
+			let done = guarded(&pool, &fake, &mut guard, &cancel).await;
+			assert_eq!((done.excused, done.kept.len()), (1, 0));
+		}
+		let done = guarded(&pool, &fake, &mut guard, &cancel).await;
+		assert_eq!((done.excused, done.judged_anyway, done.kept), (0, 1, vec!["deadline"]), "judged anyway");
+	}
+
+	/// Two notes that keep reaching their deadlines on a box that stays
+	/// busy. A pass that judges one anyway stops there, so every pass hears
+	/// one note: the oldest still waiting, until its attempts are used up,
+	/// and only then the next. No run of excuses between two kept attempts
+	/// is longer than `NOBODYS`, so neither note's streak is replaced by the
+	/// other's (paulgsc/server#822, review).
+	#[tokio::test]
+	async fn a_pass_stops_after_a_deadline_judged_anyway() {
+		let pool = pool().await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"slow").await;
+		note(&pool, A, "later", "2026-10-25T02:00:00.000Z", b"slow").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let (mut guard, _) = fake::guard(State::Busy);
+		let mut excused_in_a_row = 0;
+		let mut kept = 0;
+		while kept < 2 * ATTEMPTS {
+			let before = fake.heard().len();
+			let done = guarded(&pool, &fake, &mut guard, &cancel).await;
+			assert_eq!(fake.heard().len() - before, 1, "every pass hears one note: {done:?}");
+			if done.judged_anyway == 1 {
+				assert_eq!(done.kept, ["deadline"]);
+				excused_in_a_row = 0;
+				kept += 1;
+			} else {
+				assert_eq!((done.excused, done.kept.len()), (1, 0));
+				excused_in_a_row += 1;
+			}
+			assert!(excused_in_a_row <= NOBODYS, "{excused_in_a_row} excuses in a row");
+			let older = rows(&pool).await.iter().filter(|row| row.1 == "older").count();
+			let later = rows(&pool).await.iter().filter(|row| row.1 == "later").count();
+			assert!(later == 0 || older == usize::try_from(ATTEMPTS).unwrap(), "the later note waits until the older is done");
+		}
+		assert!(guarded(&pool, &fake, &mut guard, &cancel).await.kept.is_empty(), "both used up their attempts");
+	}
+
+	async fn guarded(pool: &SqlitePool, fake: &Arc<Fake>, guard: &mut Guard<(String, String)>, cancel: &CancellationToken) -> Pass {
+		run_once(pool, fake, None, &DeletionLock::default(), Duration::from_millis(30), guard, cancel, &|| {
+			String::from("2026-10-25T16:00:00.000Z")
+		})
+		.await
+		.unwrap()
+	}
+
 	async fn pass(pool: &SqlitePool, fake: &Arc<Fake>, per_note: Duration, cancel: &CancellationToken) -> Pass {
-		run_once(pool, fake, None, &DeletionLock::default(), per_note, cancel, &|| String::from("2026-10-25T16:00:00.000Z"))
-			.await
-			.unwrap()
+		run_once(pool, fake, None, &DeletionLock::default(), per_note, &mut calm(), cancel, &|| {
+			String::from("2026-10-25T16:00:00.000Z")
+		})
+		.await
+		.unwrap()
 	}
 
 	async fn rows(pool: &SqlitePool) -> Vec<(String, String, i64, String, Option<String>)> {
@@ -326,6 +458,7 @@ mod tests {
 			None,
 			&DeletionLock::default(),
 			Duration::from_secs(60),
+			&mut calm(),
 			&cancel,
 			&|| String::from("2026-10-25T16:00:00.000Z"),
 			// What was kept when it was told: the transcript is already there.
@@ -403,7 +536,8 @@ mod tests {
 			Pass {
 				kept: vec!["heard"],
 				indexed: 0,
-				cancelled: true
+				cancelled: true,
+				..Pass::default()
 			}
 		);
 		assert_eq!(fake.heard(), ["words", "stop"]);
@@ -464,6 +598,7 @@ mod tests {
 			None,
 			&DeletionLock::default(),
 			Duration::from_secs(60),
+			&mut calm(),
 			&CancellationToken::new(),
 			&|| String::from("now"),
 		)
@@ -493,7 +628,7 @@ mod tests {
 		let fake = Fake::new(&cancel);
 		let model = crate::meaning::tests::fixture();
 
-		let done = run_once(&pool, &fake, Some(&model), &DeletionLock::default(), Duration::from_secs(60), &cancel, &|| {
+		let done = run_once(&pool, &fake, Some(&model), &DeletionLock::default(), Duration::from_secs(60), &mut calm(), &cancel, &|| {
 			String::from("now")
 		})
 		.await
@@ -528,7 +663,9 @@ mod tests {
 		let lock = DeletionLock::default();
 		let mut indexed = Vec::new();
 		for _ in 0..3 {
-			let done = run_once(&pool, &fake, Some(&model), &lock, Duration::from_secs(60), &cancel, &now).await.unwrap();
+			let done = run_once(&pool, &fake, Some(&model), &lock, Duration::from_secs(60), &mut calm(), &cancel, &now)
+				.await
+				.unwrap();
 			assert!(done.kept.is_empty(), "nothing left to hear");
 			indexed.push(done.indexed);
 		}
@@ -548,7 +685,7 @@ mod tests {
 		let cancel = CancellationToken::new();
 		let fake = Fake::new(&cancel);
 		let model = crate::meaning::tests::fixture();
-		let done = run_once(&pool, &fake, Some(&model), &DeletionLock::default(), Duration::from_secs(60), &cancel, &|| {
+		let done = run_once(&pool, &fake, Some(&model), &DeletionLock::default(), Duration::from_secs(60), &mut calm(), &cancel, &|| {
 			String::from("now")
 		})
 		.await

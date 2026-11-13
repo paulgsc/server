@@ -661,6 +661,24 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
     runner was lost while holding it, and the next toolchain asks again.
     A machine fault the runner can see before the program ran, its start
     included, is `unavailable`, never a loss (RX3).
+    **The contention guard narrows that tolerance** (L1,
+    paulgsc/server#706; `crate::contention`, and `docs/home-compute.md`,
+    "The contention guard"). Each program's ask is bracketed by a reading
+    of the host's `/proc/pressure/cpu` `some` total and `/proc/vmstat`'s
+    `oom_kill`. A recording that ran out of time (`stopped`, `time`) while
+    some task waited for a CPU for at least a tenth of the ask, or a loss
+    while that was so or while the kernel killed anything for memory, is
+    **nobody's**: nothing is kept (no run, no drop row, so it never counts
+    toward `DROPS`), the pass stops as `contended`, which is no error (an
+    INFO line, and `contention_outcomes_total{worker="rust_rounds",
+    what="excused"}`), and the next pass asks again. One program is excused
+    at most `contention::NOBODYS` (3) times in a row, then judged by the
+    table above (`what="judged_anyway"`, a WARN), so a box that never calms
+    down cannot hold the queue. A recording kept from a contended ask has
+    its run's `milliseconds` marked `contended: true` in the stored
+    recording (`what="marked"`); the phone reads `RustcRun`, which carries
+    no time. A reading that fails is no evidence: judged as before the
+    guard (`what="unreadable"`).
   - _Falsified by_ a loss kept for anything but `Dropped` or `TimedOut` on a
     program's ask, anything kept for an outage, `unavailable`, `peer` or
     `wrong-toolchain`, a `refused` kept for any reason but `malformed` or
@@ -677,6 +695,10 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
     `a_stored_rounds_programs_are_recorded_by_the_runner_in_one_pass`,
     `a_refused_program_is_kept_as_that_and_the_queue_moves_on`,
     `an_outage_keeps_nothing_and_every_program_waits`,
+    `a_time_verdict_on_a_contended_box_is_nobodys`,
+    `a_loss_while_the_box_is_contended_or_killing_is_nobodys`,
+    `a_program_is_excused_at_most_nobodys_times_in_a_row`,
+    `a_time_measured_on_a_contended_box_is_marked`,
     `a_program_that_loses_the_runner_is_kept_as_that` and
     `a_toolchain_changed_mid_pass_keeps_nothing`.
 - **RP4: every pass is bounded by `BATCH` and the pass deadline, and

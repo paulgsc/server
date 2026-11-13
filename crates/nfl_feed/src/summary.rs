@@ -4,8 +4,13 @@
 //! and, while a game is live, `drives.current`. A play in both is read once,
 //! from the later place. Plays come out ordered by ESPN's sequence number,
 //! then by id, so the same bytes always give the same list.
+//!
+//! While the game is live, the newest play's `end` and the header's marks
+//! also give the snap to come ([`Situation`]). It is kept beside the plays,
+//! never in a [`Play`]: a play is what the log compares, and the snap to come
+//! changes with every play.
 
-use crate::{int, object, text, FeedError, Status, Weather};
+use crate::{int, object, situation::Situation, text, FeedError, Status, Weather};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -18,6 +23,8 @@ pub struct Summary {
 	/// Before kickoff only: a final game's summary carries none.
 	pub weather: Option<Weather>,
 	pub plays: Vec<Play>,
+	/// The snap to come, while the game is live.
+	pub situation: Option<Situation>,
 	/// Plays with no id, which the log cannot key: left out, counted.
 	pub skipped: usize,
 }
@@ -83,17 +90,24 @@ pub fn parse(body: &[u8]) -> Result<Summary, FeedError> {
 		..Summary::default()
 	};
 	let mut plays: BTreeMap<String, Play> = BTreeMap::new();
+	// The newest play as ESPN sent it, by the order the list is sorted in;
+	// of a play in two places, the later.
+	let mut newest: Option<(Option<i64>, String, &Value)> = None;
 	for drive in drive_list {
 		let drive_team = text(&drive["team"]["abbreviation"]);
-		for play in drive["plays"].as_array().map_or(&[][..], Vec::as_slice) {
-			match read_play(play, &teams, drive_team.as_ref()) {
+		for raw in drive["plays"].as_array().map_or(&[][..], Vec::as_slice) {
+			match read_play(raw, &teams, drive_team.as_ref()) {
 				Some(play) => {
+					if newest.as_ref().is_none_or(|(sequence, id, _)| (play.sequence, &play.id) >= (*sequence, id)) {
+						newest = Some((play.sequence, play.id.clone(), raw));
+					}
 					plays.insert(play.id.clone(), play);
 				}
 				None => summary.skipped += 1,
 			}
 		}
 	}
+	summary.situation = Situation::from_summary(competition, &summary.status, newest.map(|(_, _, raw)| raw));
 	summary.plays = plays.into_values().collect();
 	summary.plays.sort_by(|a, b| (a.sequence, &a.id).cmp(&(b.sequence, &b.id)));
 	Ok(summary)
