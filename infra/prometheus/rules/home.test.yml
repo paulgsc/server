@@ -377,10 +377,8 @@ tests:
         values: '30x40'
       - series: 'nudge_waker_last_attempt_timestamp_seconds{job="file_host"}'
         values: '0x40'
-      - series: 'game_feed_enabled{job="file_host"}'
-        values: '0x40'
       - series: 'game_feed_last_attempt_timestamp_seconds{job="file_host"}'
-        values: '0x40'
+        values: '0+60x40'
     alert_rule_test:
       - eval_time: 30m
         alertname: MailboxPollerStale
@@ -461,11 +459,13 @@ tests:
               objective: NW2
               says: "The study nudge waker has not started a pass within its interval, its deadline and a minute."
 
-  - name: a game feed that is on and stopped waking is stale after two minutes
+  # Paused or following: the worker always runs and stamps every wake, so a
+  # paused feed (game_feed_enabled 0) that stops waking is stale too.
+  - name: a game feed that stopped waking is stale after two minutes, even paused
     interval: 1m
     input_series:
       - series: 'game_feed_enabled{job="file_host"}'
-        values: '1x10'
+        values: '0x10'
       - series: 'game_feed_last_attempt_timestamp_seconds{job="file_host"}'
         values: '0x10'
     alert_rule_test:

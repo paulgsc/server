@@ -272,9 +272,9 @@ async fn pause(db: &SqlitePool) {
 }
 
 #[tokio::test]
-/// Each offer reads the switch: the worker delivers the pause at the
-/// socket's next `TICK`; `fed` stands in for it here, so the test does not
-/// wait 5 s.
+/// Each offer reads the switch: a paused worker tells no socket, and the
+/// socket's own next `TICK` sends the pause; `fed` stands in for that tick
+/// here, so the test does not wait 5 s.
 async fn an_open_socket_reads_the_pause_at_its_next_offer() {
 	let (early, early_at) = live_after(12);
 	let home = Home::new(early_at + TimeDelta::seconds(5)).await;
