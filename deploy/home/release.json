@@ -1,5 +1,5 @@
 {
-  "serial": 3,
+  "serial": 4,
   "server_commit": "f870c6de8bc28ba35683f8c605f659faa7a07858",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:latest"},
@@ -11,7 +11,6 @@
     "nats": {"image": "nats:latest"},
     "nats-exporter": {"image": "natsio/prometheus-nats-exporter:latest"},
     "node_exporter": {"image": "prom/node-exporter:latest"},
-    "ollama": {"image": "ollama/ollama:latest"},
     "orchestrator": {"image": "pgathondu/orchestrator:249470f9481783dcc993ad3c8003254e51b629f0@sha256:b901ec7ece7c818b481ac7e2023ba5cccf576d0ca70de76dabc0bb51178d46e5"},
     "process-exporter": {"image": "ncabatoff/process-exporter:latest"},
     "prometheus": {"image": "prom/prometheus:latest"},

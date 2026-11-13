@@ -19,9 +19,9 @@
 # check accepts "unscraped" but never accepts "unaccounted for".
 #
 # `hoist_set` marks membership in the M5 hoist set as defined by epic #136:
-# file_host, redis, nats, orchestrator, tabsched-pipeline, ollama. Everything
-# else here is observability-stack infrastructure or a UI, not a sizing
-# candidate.
+# file_host, redis, nats, orchestrator, tabsched-pipeline, ollama (ollama
+# left home on 2026-11-13, #705 D3). Everything else here is
+# observability-stack infrastructure or a UI, not a sizing candidate.
 
 services:
   # ── hoist set (epic #136) ──────────────────────────────────────────────
@@ -47,11 +47,6 @@ services:
     scrape:
       job: orchestrator
       target: orchestrator-service:9464
-  - service: ollama
-    container_name: tabsched-ollama
-    hoist_set: true
-    scrape:
-      reason: 'unmeasured — the single largest declared consumer in the stack; [HM-COVER] C2 (#144) is the story that adds this job, not landed yet'
 
   # The weekly call's speaker (paulgsc/some-ui#2635, ST36).
   - service: kokoro
