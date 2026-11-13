@@ -472,7 +472,8 @@ home, home sends no request anywhere (the owner's ask, 2026-11-10):
    serves: it must update; pulling cannot help), `wanted` (a deploy was asked
    for now), `in_flight`, `cooldown` and `unavailable` (ask again after
    `retry_after_s`), `refused` (`needs` past the ceiling) or `cannot_request`
-   (no `${STORAGE}/deploy`, as under `make dev`).
+   (the marker could not be written: `${STORAGE}/deploy` could not be made
+   or written, as under `make dev`).
 3. **The trigger.** For `wanted`, `file_host` writes `${STORAGE}/deploy/wanted`.
    A systemd path unit (`nixosModules.home-deploy`) starts
    `envctl deploy --on-demand ${STORAGE}/deploy` (built as the checkout's
@@ -491,8 +492,9 @@ home, home sends no request anywhere (the owner's ask, 2026-11-10):
    is refused, so a forged or mistyped one starts no pull at all; and no
    epoch at or below the running one is ever a reason to pull.
 5. **Loud.** `DeployFailed` (a deploy rolled back or failed in the last
-   hour) and `DeployStuck` (a marker 30 minutes unanswered) reach the owner
-   like home's other alerts (`infra/prometheus/rules/home.yml`). The STORAGE
+   hour), `DeployStuck` (a marker 30 minutes unanswered) and
+   `DeployCannotRequest` (an ask whose marker could not be written, in the
+   last hour) reach the owner like home's other alerts (`infra/prometheus/rules/home.yml`). The STORAGE
    dashboard's Deploy row draws the pattern's footprint: asks by answer,
    runs by outcome, pulls per 6 hours against Docker Hub's limit and their
    projection, bytes pulled, and the backups against the disk.
