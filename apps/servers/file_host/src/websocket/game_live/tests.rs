@@ -156,12 +156,17 @@ struct Home {
 
 impl Home {
 	async fn new(at: DateTime<Utc>) -> Self {
+		Self::following(at, true).await
+	}
+
+	/// A home whose game feed is on (`following`) or off.
+	async fn following(at: DateTime<Utc>, following: bool) -> Self {
 		let db = pool().await;
 		let auth = AuthContext::for_tests(db.clone(), 100);
 		let (headers, _) = paired(&auth, &db).await;
 		let clock = Arc::new(Mutex::new(at));
 		let read = clock.clone();
-		let live = GameLive::with_clock(true, ConnectionGuard::new(), CancellationToken::new(), Box::new(move || *read.lock().unwrap()));
+		let live = GameLive::with_clock(following, ConnectionGuard::new(), CancellationToken::new(), Box::new(move || *read.lock().unwrap()));
 		Self {
 			db,
 			live,
@@ -238,9 +243,11 @@ async fn stepping_a_replayed_game_moves_the_offer_and_a_reconnect_lands_on_the_c
 
 #[tokio::test]
 async fn a_seq_never_falls_below_what_the_phone_saw() {
-	let home = Home::new(at("2026-10-23T00:20:00Z")).await;
+	let now = at("2026-10-23T00:20:00Z");
+	let home = Home::new(now).await;
 	let mut phone = Phone::open(&home.live, &home.db, &home.session);
-	let ahead = 9_000_000_000_000;
+	// A seq home sent before its clock went back a year.
+	let ahead = u64::try_from((now + TimeDelta::days(365)).timestamp_millis()).unwrap();
 	phone.say(&hello(Some(ahead)));
 	let offer = phone.hear_json().await;
 	assert_eq!(offer["seq"], json!(ahead + 1), "a home whose clock went back still numbers past the phone");
@@ -250,21 +257,31 @@ async fn a_seq_never_falls_below_what_the_phone_saw() {
 #[tokio::test]
 async fn a_home_that_follows_no_games_offers_nothing_it_kept_before() {
 	let (early, early_at) = live_after(12);
-	let home = Home::new(early_at + TimeDelta::seconds(5)).await;
+	let home = Home::following(early_at + TimeDelta::seconds(5), false).await;
 	keep(&home.db, Fetched::Scoreboard, &board(), early_at - TimeDelta::minutes(30)).await;
 	keep(&home.db, Fetched::Summary(GAME), &early, early_at + TimeDelta::seconds(5)).await;
-	let Ok(wire::Inbound::Hello(said)) = wire::read(&hello(None).to_string()) else {
-		panic!()
-	};
-	let state = offer::state(&home.db, &said, early_at + TimeDelta::seconds(5), false).await.unwrap();
-	assert!(!state.following);
-	assert!(state.games.is_empty() && state.offer.is_none(), "the feed is off: what it kept before is stale");
+	let mut phone = Phone::open(&home.live, &home.db, &home.session);
+	phone.say(&hello(None));
+	let offer = phone.hear_json().await;
+	assert_eq!(
+		(offer["following"].clone(), offer["games"].clone(), offer["offer"].clone()),
+		(json!(false), json!([]), Value::Null),
+		"the feed is off: what it kept before is stale"
+	);
 }
 
-#[test]
-fn a_hello_leaves_room_for_a_safe_next_seq() {
-	assert!(wire::read(&hello(Some(wire::MAX_SAFE_INTEGER - 1)).to_string()).is_ok());
-	assert!(wire::read(&hello(Some(wire::MAX_SAFE_INTEGER)).to_string()).is_err(), "no safe seq comes after it");
+#[tokio::test]
+async fn a_lastseq_no_home_could_have_sent_closes_the_socket_and_moves_no_seq() {
+	let home = Home::new(at("2026-10-23T00:20:00Z")).await;
+	let mut phone = Phone::open(&home.live, &home.db, &home.session);
+	phone.say(&hello(Some(wire::MAX_SAFE_INTEGER - 1)));
+	let Message::Close(Some(frame)) = phone.hear().await else { panic!() };
+	assert_eq!(frame.reason.as_ref(), "unreadable");
+
+	let mut next = Phone::open(&home.live, &home.db, &home.session);
+	next.say(&hello(None));
+	let offer = next.hear_json().await;
+	assert!(offer["seq"].as_u64().unwrap() < 1u64 << 42, "the shared seq stayed near the clock: {offer}");
 }
 
 #[tokio::test]

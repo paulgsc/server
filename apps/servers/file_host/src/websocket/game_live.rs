@@ -117,6 +117,10 @@ struct Inner {
 	clock: Box<dyn Fn() -> DateTime<Utc> + Send + Sync>,
 }
 
+/// How far past now's ms a phone's `lastSeq` may be: ten years of offers
+/// beyond one a second, and still about 2^41, far from 2^53.
+const SEQ_AHEAD: u64 = 10 * 365 * 24 * 60 * 60 * 1000;
+
 impl GameLive {
 	/// `following` is whether the game feed runs (`GAME_FEED_ENABLED`): with
 	/// it off, every offer says so and lists no games.
@@ -143,6 +147,16 @@ impl GameLive {
 	/// now.
 	pub fn fed(&self) {
 		self.inner.fed.send_modify(|count| *count = count.wrapping_add(1));
+	}
+
+	/// Whether `seen` is a `seq` some home could have sent by now: seqs start
+	/// at a boot's clock in ms and rise by one per offer, so none is more than
+	/// [`SEQ_AHEAD`] past now's ms. A phone's floor joins the shared counter,
+	/// so this bound is what keeps every later `seq` far below
+	/// `wire::MAX_SAFE_INTEGER`, however many sockets come after it.
+	fn could_have_sent(&self, seen: Option<u64>) -> bool {
+		let now = u64::try_from(self.now().timestamp_millis()).unwrap_or(0);
+		seen.is_none_or(|seen| seen <= now.saturating_add(SEQ_AHEAD))
 	}
 
 	/// The next `seq`: larger than every one before it, and than `seen`.
@@ -280,6 +294,9 @@ where
 					None | Some(Err(_) | Ok(Message::Close(_))) => return "the phone left",
 					Some(Ok(Message::Text(text))) => match wire::read(&text) {
 						Ok(Inbound::Hello(said)) => {
+							if !live.could_have_sent(said.last_seq) {
+								break Close::Unreadable;
+							}
 							hello = Some(said);
 							make = Some(true);
 						}

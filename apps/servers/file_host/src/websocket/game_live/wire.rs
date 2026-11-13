@@ -173,7 +173,7 @@ pub fn read(text: &str) -> Result<Inbound, Close> {
 				.then(|| FixedOffset::east_opt(fields.utc_offset_minutes * 60))
 				.flatten()
 				.ok_or(Close::Unreadable)?;
-			let readable = fields.last_seq.is_none_or(|seq| seq < MAX_SAFE_INTEGER)
+			let readable = fields.last_seq.is_none_or(|seq| seq <= MAX_SAFE_INTEGER)
 				&& fields.game_id.as_deref().is_none_or(game_id)
 				&& fields.watching.len() <= MAX_WATCHING
 				&& fields.watching.keys().all(|id| game_id(id));
