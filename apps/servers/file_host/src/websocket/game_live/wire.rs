@@ -47,6 +47,8 @@ const MAX_OFFSET_MINUTES: i32 = 18 * 60;
 pub struct Hello {
 	/// The newest `seq` the phone has seen, if any. Home's next offer has a
 	/// larger one, even across a restart of home.
+	/// One more than ten years of ms past home's clock closes the socket
+	/// `4400 unreadable` (`game_live`'s module doc).
 	pub last_seq: Option<u64>,
 	pub mode: Mode,
 	/// The game the phone is on; `None` before one is picked.

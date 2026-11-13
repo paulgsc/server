@@ -30,7 +30,10 @@
 //!
 //! Every offer's `seq` is larger than any before it on this home, across
 //! sockets and restarts: [`GameLive`] starts it at the boot time in
-//! milliseconds, and never below the phone's own `lastSeq`.
+//! milliseconds, and never below the phone's own `lastSeq`. A `lastSeq` no
+//! home could have sent, more than ten years of ms past home's clock, closes
+//! the socket `4400 unreadable`: a phone holding one says hello again with
+//! none.
 //!
 //! **Who may open it** (docs/identity.md, "Pairing a phone"): a paired
 //! phone's session only ([`crate::subject::Paired`]); a browser's is `403`
@@ -117,8 +120,9 @@ struct Inner {
 	clock: Box<dyn Fn() -> DateTime<Utc> + Send + Sync>,
 }
 
-/// How far past now's ms a phone's `lastSeq` may be: ten years of offers
-/// beyond one a second, and still about 2^41, far from 2^53.
+/// How far past now's ms a phone's `lastSeq` may be: ten years of ms, so a
+/// home whose clock went back up to ten years still numbers past the phone,
+/// and the shared counter stays about 2^41, far from 2^53.
 const SEQ_AHEAD: u64 = 10 * 365 * 24 * 60 * 60 * 1000;
 
 impl GameLive {
