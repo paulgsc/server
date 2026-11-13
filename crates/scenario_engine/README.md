@@ -35,7 +35,7 @@ catalog order.
 | Moment | Scenarios | On offer now when | "Just happened" from a play that |
 | --- | --- | --- | --- |
 | `pregame` | `pre.stakes`, `pre.weather`, `pre.injury-report`, `pre.venue` | the mode's window is open and no play is in the log (stakes only with a side wanted) | |
-| `kickoff` | `pre.coin-toss` | 15 min before kickoff until the first snap | is the opening kickoff |
+| `kickoff` | `pre.coin-toss` | 15 min before kickoff until the opening kickoff is in the log | is the opening kickoff |
 | `opening-drive` | `in.first-drive` | the team with the ball is on its first possession of the game | ends a team's first possession |
 | `lead-change` | `in.fell-behind` | the latest score put the side wanted behind, or back ahead, and at most 3 snaps followed | is that score |
 | `third-and-long` | `in.third-long` | 3rd down, 7 or more to go | was snapped on one: converted or stopped |
