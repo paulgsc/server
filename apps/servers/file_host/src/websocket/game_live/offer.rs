@@ -58,8 +58,9 @@ pub async fn state(db: &SqlitePool, hello: &Hello, now: DateTime<Utc>, following
 	})
 }
 
-/// The engine's view of `game_id` as of `at`, as [`state`] makes it: the
-/// newest scoreboard kept by then lists the game, and its newest summary
+/// The engine's view of `game_id` as of `at`, as [`state`] makes it.
+///
+/// The newest scoreboard kept by then lists the game, and its newest summary
 /// kept by then, if any, gives the status and the snap to come. `None` when
 /// that scoreboard does not list it with both teams and a kickoff.
 ///

@@ -72,7 +72,7 @@ pub fn start(state: &AppState) {
 	let db = state.core.shared_db.clone();
 	tokio::spawn(async move {
 		info!(tick_secs = TICK.as_secs(), "bite reconciler started");
-		let mut done = HashMap::new();
+		let mut done = Done::default();
 		let mut ticker = tokio::time::interval(TICK);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		loop {
@@ -91,6 +91,11 @@ pub fn start(state: &AppState) {
 	});
 }
 
+/// Each game the worker reconciled since it started, with its bite count
+/// then.
+#[derive(Debug, Clone, Default)]
+pub struct Done(HashMap<String, i64>);
+
 /// What one worker pass did, in counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Pass {
@@ -101,14 +106,16 @@ pub struct Pass {
 	pub added: usize,
 }
 
-/// One worker pass: each game of the newest week home kept whose newest
-/// summary says it is final is reconciled, unless it was already, with as
-/// many bites as it has now. `done` holds each game's bite count at its last
-/// reconcile; a restart reconciles again, which adds nothing unchanged.
+/// One worker pass.
+///
+/// Each game of the newest week home kept whose newest summary says it is
+/// final is reconciled, unless it was already, with as many bites as it has
+/// now. `done` holds each game's bite count at its last reconcile; a restart
+/// reconciles again, which adds nothing unchanged.
 ///
 /// # Errors
 /// Any storage failure; games reconciled before it keep their rows.
-pub async fn pass(db: &SqlitePool, done: &mut HashMap<String, i64>, now: DateTime<Utc>) -> Result<Pass, VoiceError> {
+pub async fn pass(db: &SqlitePool, done: &mut Done, now: DateTime<Utc>) -> Result<Pass, VoiceError> {
 	let as_of = now.to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut due = Vec::new();
 	{
@@ -119,7 +126,7 @@ pub async fn pass(db: &SqlitePool, done: &mut HashMap<String, i64>, now: DateTim
 				continue;
 			}
 			let bites = bite_match::bites_in_game(&mut conn, &game.id).await?;
-			if done.get(&game.id) != Some(&bites) {
+			if done.0.get(&game.id) != Some(&bites) {
 				due.push((game.id, bites));
 			}
 		}
@@ -131,7 +138,7 @@ pub async fn pass(db: &SqlitePool, done: &mut HashMap<String, i64>, now: DateTim
 		passed.bites += reconciled.bites;
 		passed.matched += reconciled.matched;
 		passed.added += reconciled.added;
-		done.insert(game, bites);
+		done.0.insert(game, bites);
 	}
 	Ok(passed)
 }
@@ -489,7 +496,7 @@ mod tests {
 		keep(&db, Fetched::Scoreboard, &board(), at("2026-10-22T23:00:00Z")).await;
 		keep(&db, Fetched::Summary(GAME), &live_through(&play), t + TimeDelta::seconds(5)).await;
 		bite(&db, "first", Some("in.third-long"), "offered", t + TimeDelta::seconds(30), Some(0)).await;
-		let mut done = HashMap::new();
+		let mut done = Done::default();
 		assert_eq!(pass(&db, &mut done, t + TimeDelta::minutes(1)).await.unwrap(), Pass::default(), "not final yet");
 
 		let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);

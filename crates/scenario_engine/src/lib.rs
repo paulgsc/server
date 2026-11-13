@@ -263,14 +263,14 @@ pub struct Was {
 /// the final and the owner's own scenarios are about a stretch of the game,
 /// so no play is ever one of them.
 #[must_use]
-pub fn about_a_play(scenario: Scenario) -> bool {
+pub const fn about_a_play(scenario: Scenario) -> bool {
 	rules::about_a_play(scenario.entry().moment)
 }
 
 /// Every play of `game` in `log`, as of `now`, that `scenario`'s rule says
-/// was one, in ESPN's order.
+/// was one.
 ///
-/// It is the rule "just happened" uses (SE3), with no window and no count, so
+/// In ESPN's order. It is the rule "just happened" uses (SE3), with no window and no count, so
 /// a bite can be matched to any play of its game. Each play is read at its
 /// latest version seen by `now` (SE2): replayed after the final, a play a
 /// flag wiped out is not a third and long that was stopped.
@@ -286,8 +286,9 @@ pub fn plays_that_were(game: &Game, log: &[Entry], now: DateTime<Utc>, scenario:
 		.collect()
 }
 
-/// Every scenario that could have been happening in `game` at `now`, in the
-/// catalog's order: each one whose rule fits then, and each one a play home
+/// Every scenario that could have been happening in `game` at `now`.
+///
+/// In the catalog's order: each one whose rule fits then, and each one a play home
 /// first saw within Full mode's window was, with no mode's count applied.
 ///
 /// The reconciler (GWB7) accepts a scenario proposed for a bite said first
