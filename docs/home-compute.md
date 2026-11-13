@@ -330,6 +330,34 @@ A container's own `mem_limit` is separate: past it, the kernel kills the
 largest process *inside that container*, whatever the host has free. The
 order above decides only when the host as a whole runs out.
 
+### The caps check
+
+`make up` runs on home, so it can read home's `MemTotal`
+(`apps/envctl/src/caps.rs`, L3 #709). It sums the cap of every service
+`up` starts and warns when the sum is above `MemTotal`. A service's cap is
+its `mem_limit`, or else its `deploy.resources.limits.memory`, times its
+`scale` or `deploy.replicas`. A service under `profiles:` counts only when
+`COMPOSE_PROFILES` turns one of them on (`*` turns on all). Sizes are read
+as compose reads them (`1.5g`, `512MiB`, `1t`, `.5g`); a cap of 0 is no cap,
+as Docker takes it. The warning names the three largest caps,
+which bind first, with each one's class (read from its `oom_score_adj`, as
+above). It also warns of any service whose cap or class it can't read, such
+as a `${…}` value, rather than leave it out unsaid.
+
+Every service counts at its cap, batch included. The batch caps are its
+peak: the render's 4 GiB and the speaker's 3 GiB are the lane's declared
+peak plus what the speaker keeps between renders. The room the lane's floor
+holds for interactive work is already inside the interactive caps. So no
+headroom is added on top for the lane. Nothing is set aside yet for what
+runs outside compose either: the kernel, dockerd, systemd and `home-deploy`.
+How much to reserve for them is decided with the refusal below, from home's
+published facts.
+
+It warns and never refuses. **Planned** (#709): a refusal, once home's
+facts are published nightly (part 1) and #705's D3 decides whether
+`ollama`'s 8 GiB counts. The caps total 30.38 GiB with `ollama`, and 22.38
+GiB without it.
+
 ## What a kill costs
 
 | Killed | What it costs | What retries it | What says so |
