@@ -165,13 +165,10 @@ impl GameLive {
 
 	/// The next `seq`: larger than every one before it, and than `seen`.
 	fn next_seq(&self, seen: Option<u64>) -> u64 {
-		let floor = seen.unwrap_or(0);
-		let previous = self
-			.inner
-			.seq
-			.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |seq| Some(seq.max(floor).saturating_add(1)))
-			.unwrap_or_else(|seq| seq);
-		previous.max(floor).saturating_add(1)
+		// Raise the counter to the phone's floor, then take the next one: each
+		// seq is above the floor and above every seq taken before it.
+		self.inner.seq.fetch_max(seen.unwrap_or(0), Ordering::SeqCst);
+		self.inner.seq.fetch_add(1, Ordering::SeqCst).saturating_add(1)
 	}
 
 	fn now(&self) -> DateTime<Utc> {
