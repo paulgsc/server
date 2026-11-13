@@ -17,6 +17,20 @@
 //!                                      note go; home sets it aside and
 //!                                      keeps it (idempotent, the first
 //!                                      mark stands)
+//! GET /voice-notes/:id/station        → { id, station, seq, labels,
+//!                                      history }:
+//!                                      where the take is on the conveyor
+//!                                      and every move, oldest first
+//!                                      (paulgsc/some-ui epic #2872)
+//! POST /voice-notes/:id/station       → { change, take }: moves the take
+//!                                      if the body (`{ seq, from, to, at,
+//!                                      labels?, comment?, issue? }`) names
+//!                                      its newest move and station, else a
+//!                                      409 naming them; moves are ordered
+//!                                      by number, never by a clock
+//! GET /voice-notes/conveyor?station=  → { station, takes, total }: the
+//!                                      takes at a station, newest move
+//!                                      first, at most 100
 //! GET /voice-notes/:id/audio          → { id, contentType, sha256, audio }:
 //!                                      a note's audio as base64, any kind
 //!                                      (My data plays them), to a paired
@@ -31,7 +45,10 @@
 //!                                      best first, or else those whose
 //!                                      words hold every term, `by` saying
 //!                                      which, to a paired phone
-//!                                      (paulgsc/some-ui#2590, ST32)
+//!                                      (paulgsc/some-ui#2590, ST32), each
+//!                                      take saying its conveyor `station`,
+//!                                      `stationAt` and `stationSeq` (null off
+//!                                      the conveyor)
 //! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
 //!                                      notes of each kind home keeps,
 //!                                      their bytes, how many were set
@@ -62,7 +79,9 @@
 //! gets them from home rather than from a recognizer on the phone. The
 //! set-aside mark (paulgsc/some-ui#2372, MIC2; the owner's D3 on epic #2368:
 //! Let go sets a take aside and keeps it) is `voice_repo::set_aside`'s, its
-//! own table beside the note, so no note is rewritten.
+//! own table beside the note, so no note is rewritten. So is the conveyor
+//! (paulgsc/some-ui epic #2872, CONVEYOR1): each move of a Studio take is a
+//! row of `voice_repo::conveyor`'s, and the newest says where it is.
 //!
 //! The audio read is the one route that gives a note's bytes back, for a
 //! note of any kind, to its own subject's paired phone (`voice_repo::PLAYED_BACK`
@@ -119,6 +138,9 @@ where
 		.get("/voice-notes/on-drive", handlers::get_on_drive)
 		.get("/voice-notes/:id/heard", handlers::get_heard)
 		.put("/voice-notes/:id/set-aside", handlers::put_set_aside)
+		.get("/voice-notes/:id/station", handlers::get_station)
+		.post("/voice-notes/:id/station", handlers::post_station)
+		.get("/voice-notes/conveyor", handlers::get_conveyor)
 		.get("/voice-notes/:id/audio", handlers::get_audio)
 		.get("/voice-notes/kept", handlers::get_kept)
 		.get("/voice-notes/takes", handlers::get_takes)
@@ -131,7 +153,7 @@ where
 fn cors(config: &Config) -> CorsLayer {
 	allowlisted_cors_with_credentials(
 		config,
-		vec![Method::GET, Method::PUT, Method::DELETE, Method::OPTIONS],
+		vec![Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS],
 		vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION, IF_NONE_MATCH],
 	)
 	.expose_headers([ETAG])
