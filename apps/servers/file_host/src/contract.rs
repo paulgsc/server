@@ -23,7 +23,7 @@
 //!   and pulling cannot help it.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 2;
+pub const CONTRACT_EPOCH: u32 = 3;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
@@ -34,7 +34,7 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// FNV-1a over the sorted `METHOD full_path` lines of every route this build
 /// serves, as [`route_fingerprint`] computes it. A route change fails `the_fingerprint_is_this_route_surface`,
 /// whose message names the new value, until this and the epoch are updated.
-pub const ROUTE_FINGERPRINT: &str = "ca2a28802c154bff";
+pub const ROUTE_FINGERPRINT: &str = "1a1232f30eac0fd9";
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;
