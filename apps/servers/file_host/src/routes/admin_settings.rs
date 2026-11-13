@@ -15,7 +15,8 @@
 //!
 //! The namespaces, their fields and their defaults are `settings`'
 //! (`settings::NAMESPACES`): `rust-rounds` (`{ recording }`, on by default)
-//! is the first. An unset setting reads as its default, with `isDefault`
+//! was the first, and `game-feed` (`{ following }`, on by default) the
+//! second. An unset setting reads as its default, with `isDefault`
 //! true and no revision, who or when.
 //!
 //! **Trust model:** an operator only, as the lesson CRM's routes
