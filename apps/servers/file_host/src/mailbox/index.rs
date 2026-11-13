@@ -80,6 +80,9 @@
 //! **The Rust Rounds essay routine's index** is [`rust`]'s: each final week's
 //! record, the pass making a week final once its deadline has passed, put
 //! only when a record changes.
+//!
+//! **The interview essay routine's index** is [`interview`]'s: each final
+//! interview week's record, built the same way (paulgsc/some-ui#2935, IW4).
 
 use chrono::{DateTime, NaiveDate, Utc};
 use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
@@ -92,10 +95,12 @@ use std::sync::{Mutex, PoisonError};
 use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
 
 pub mod call;
+pub mod interview;
 pub mod reflections;
 pub mod rust;
 
 pub(super) use call::put_call_index;
+pub(super) use interview::put_interview_index;
 pub(super) use reflections::put_reflections_index;
 pub(super) use rust::put_rust_index;
 
@@ -803,6 +808,7 @@ pub struct LastIndexes {
 	pub reflections: LastIndex,
 	pub call: LastIndex,
 	pub rust: LastIndex,
+	pub interview: LastIndex,
 }
 
 /// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),

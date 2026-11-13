@@ -389,8 +389,8 @@ fn before(now: &str, back: std::time::Duration) -> Option<String> {
 /// It reads each of [`READS`] after `subject`'s cursor and keeps what checks out, then
 /// hands the mailbox what the phone filed and it has not answered, then puts
 /// each routine's index if what it counts moved since `last_index` (making
-/// each of the newest Rust Rounds weeks past its deadline final first,
-/// `index::rust`), then, with
+/// each of the newest Rust Rounds and interview weeks past its deadline
+/// final first, `index::rust` and `index::interview`), then, with
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
@@ -445,7 +445,8 @@ pub async fn run_once<T: MailboxTransport>(
 		let reflections = super::index::put_reflections_index(db, mailbox, subject, &last_index.reflections, now, &mut outcome).await;
 		let call = super::index::put_call_index(db, mailbox, subject, &last_index.call, now, &mut outcome).await;
 		let rust = super::index::put_rust_index(db, mailbox, subject, deletion, &last_index.rust, now, &mut outcome).await;
-		jobs.and(reflections).and(call).and(rust)
+		let interview = super::index::put_interview_index(db, mailbox, subject, deletion, &last_index.interview, now, &mut outcome).await;
+		jobs.and(reflections).and(call).and(rust).and(interview)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
