@@ -76,10 +76,11 @@ pub struct Variable {
 	pub why: Option<String>,
 }
 
-/// What kind of value a variable holds (ENV4, #617; the owner's principles on
-/// #613). Only a [`Class::Deployment`] belongs in the environment: `envctl
-/// check` fails any other that is not on its way out
-/// (`infra/env-classes.json`).
+/// What kind of value a variable holds (ENV4, #617).
+///
+/// Only a [`Class::Deployment`] belongs in the environment (the owner's
+/// principles on #613): `envctl check` fails any other that is not on its
+/// way out (`infra/env-classes.json`).
 #[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum Class {

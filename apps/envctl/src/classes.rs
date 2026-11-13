@@ -101,9 +101,15 @@ impl Exceptions {
 /// One variable the stack reads, with its class.
 struct Read<'a> {
 	app: &'a str,
-	name: &'a str,
+	variable: &'a str,
 	class: Class,
 	switch: bool,
+}
+
+impl Read<'_> {
+	fn is(&self, app: &str, variable: &str) -> bool {
+		self.app == app && self.variable == variable
+	}
 }
 
 /// Every variable that is not a deployment constant and is not moving, every
@@ -112,12 +118,22 @@ struct Read<'a> {
 /// copy, every exception it did not have; each by app and name.
 pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables, exceptions: &Exceptions, base: Option<&Exceptions>) -> Vec<String> {
 	let mut problems = Vec::new();
+	let read = read(schemas, compose_variables, exceptions, &mut problems);
+	problems.extend(read.iter().filter_map(|variable| class_problem(variable, exceptions)));
+	problems.extend(entry_problems(&read, exceptions, base));
+	problems
+}
+
+/// Every variable the schemas and compose read, but `make`'s and the
+/// release's; a compose variable with no class, or a class for one no
+/// compose file reads, goes to `problems`.
+fn read<'a>(schemas: &'a [Schema], compose_variables: &'a ComposeVariables, exceptions: &'a Exceptions, problems: &mut Vec<String>) -> Vec<Read<'a>> {
 	let mut read: Vec<Read> = schemas
 		.iter()
 		.flat_map(|schema| {
 			schema.variables.iter().map(|variable| Read {
 				app: &schema.binary,
-				name: &variable.name,
+				variable: &variable.name,
 				class: variable.class,
 				switch: variable.kind == Kind::Bool,
 			})
@@ -130,7 +146,7 @@ pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables,
 		match exceptions.compose.iter().find(|known| &known.variable == name) {
 			Some(known) => read.push(Read {
 				app: COMPOSE_APP,
-				name,
+				variable: name,
 				class: known.class,
 				switch: false,
 			}),
@@ -144,33 +160,42 @@ pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables,
 			problems.push(format!("{FILE} gives compose's {} no reason for its class", known.variable));
 		}
 	}
-	for variable in &read {
-		let moving = exceptions.moving.iter().find(|entry| entry.app == variable.app && entry.variable == variable.name);
-		let switch = exceptions.switches.iter().any(|entry| entry.app == variable.app && entry.variable == variable.name);
-		match (variable.class, moving) {
-			(Class::Deployment, _) if variable.switch && !switch => problems.push(format!(
-				"{} {} is a bool classed deployment: a switch is runtime policy unless the owner confirms it a fact of the deployment ({FILE}'s switches)",
-				variable.app, variable.name
-			)),
-			(Class::Deployment, _) => {}
-			(class, None) => problems.push(format!(
-				"{} {} is classed {}, and the environment holds deployment constants only: make it {} (ENV-CLASS, README.md, \"Configuration\")",
-				variable.app,
-				variable.name,
-				class.name(),
-				if class == Class::Policy { "a lever (file_host's settings)" } else { "a const" }
-			)),
-			(class, Some(entry)) if entry.class != class => problems.push(format!(
-				"{FILE} lists {} {} as moving {}, and it is classed {}",
-				variable.app,
-				variable.name,
-				entry.class.name(),
-				class.name()
-			)),
-			(_, Some(_)) => {}
-		}
+	read
+}
+
+/// What is wrong with `variable` being read from the environment, if
+/// anything.
+fn class_problem(variable: &Read, exceptions: &Exceptions) -> Option<String> {
+	let moving = exceptions.moving.iter().find(|entry| variable.is(&entry.app, &entry.variable));
+	let switch = exceptions.switches.iter().any(|entry| variable.is(&entry.app, &entry.variable));
+	match (variable.class, moving) {
+		(Class::Deployment, _) if variable.switch && !switch => Some(format!(
+			"{} {} is a bool classed deployment: a switch is runtime policy unless the owner confirms it a fact of the deployment ({FILE}'s switches)",
+			variable.app, variable.variable
+		)),
+		(class, None) if class != Class::Deployment => Some(format!(
+			"{} {} is classed {}, and the environment holds deployment constants only: make it {} (ENV-CLASS, README.md, \"Configuration\")",
+			variable.app,
+			variable.variable,
+			class.name(),
+			if class == Class::Policy { "a lever (file_host's settings)" } else { "a const" }
+		)),
+		(class, Some(entry)) if class != Class::Deployment && entry.class != class => Some(format!(
+			"{FILE} lists {} {} as moving {}, and it is classed {}",
+			variable.app,
+			variable.variable,
+			entry.class.name(),
+			class.name()
+		)),
+		_ => None,
 	}
-	let held = |app: &str, name: &str, wanted: &dyn Fn(&Read) -> bool| read.iter().any(|variable| variable.app == app && variable.name == name && wanted(variable));
+}
+
+/// Every exception that no longer holds, is listed twice or names no issue,
+/// and, given the base branch's copy, every one it did not have.
+fn entry_problems(read: &[Read], exceptions: &Exceptions, base: Option<&Exceptions>) -> Vec<String> {
+	let mut problems = Vec::new();
+	let held = |app: &str, name: &str, wanted: &dyn Fn(&Read) -> bool| read.iter().any(|variable| variable.is(app, name) && wanted(variable));
 	for entry in &exceptions.moving {
 		if !held(&entry.app, &entry.variable, &|variable| variable.class != Class::Deployment) {
 			problems.push(format!(
