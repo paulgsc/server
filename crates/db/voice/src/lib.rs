@@ -814,9 +814,20 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 ///   2026-11-13, on paulgsc/some-ui#2473 (issuecomment-6861770728), MY-DATA).
 ///
 /// So every kind is played back, and still only to the note's own subject's
-/// paired phone; the list stays so a kind added later is not played back
-/// until someone says why it should be.
-pub const PLAYED_BACK: [Of; 9] = Of::ALL;
+/// paired phone. The kinds are listed one by one, not taken from every
+/// [`Of`], so a kind added later is not played back until someone lists it
+/// and says why.
+pub const PLAYED_BACK: [Of; 9] = [
+	Of::Reflection,
+	Of::Jobs,
+	Of::Scene,
+	Of::Game,
+	Of::Studio,
+	Of::Soundbite,
+	Of::Lens,
+	Of::Leetype,
+	Of::RustRound,
+];
 
 /// What home holds of a note's audio short of its bytes: its container and
 /// their SHA-256, enough to answer a read that already has them.

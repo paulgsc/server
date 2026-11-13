@@ -1451,7 +1451,7 @@ nowhere is marked as such and belongs to review.
     tables, for the length of one decode. Neither the text, its words nor
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
     output is discarded, and a pass logs only how many attempts of each kind
-    it kept. The text leaves home in three ways only. One is a transcript
+    it kept. The text leaves home in five ways only. One is a transcript
     filed for the Jobs mailbox (invariant 19), for the routines to read, and since
     paulgsc/server#577 that file carries that model's words too, each with
     its time, how sure the model was and its language (`words`). Another,
@@ -1467,7 +1467,13 @@ nowhere is marked as such and belongs to review.
     argument. The third, since paulgsc/server#645 (ST26), is the same
     reading of each `studio` note an idea's answer names, inside
     `GET /ideas` and `GET /ideas/:id` (invariant 32), to the note's own
-    subject only, by the same `voice_repo::transcript::heard`. The words
+    subject only, by the same `voice_repo::transcript::heard`. The fourth,
+    since paulgsc/some-ui#2590 (ST32), is the take library,
+    `GET /voice-notes/takes`, each `studio` take's words by the same choice
+    of hearing (above). The fifth, since MY-DATA (paulgsc/some-ui#2473,
+    2026-11-13), is `GET /voice-notes/kept?of=`: the first words of that
+    same reading, about 80 characters of each listed note of any kind, with
+    its `duration_ms`, to the caller's own paired phone (above). The words
     are readable by no route yet, and the audio leaves home only through
     `GET /voice-notes/:id/audio`, to its own subject's paired phone (above). A probability is not text, so
     it may reach a metric, never a log line.
@@ -1492,7 +1498,8 @@ nowhere is marked as such and belongs to review.
     `mailbox_repo`'s
     `a_studio_take_or_a_rust_round_notes_transcript_is_filed_like_any_note`
     and `handlers::voice`'s
-    `a_paired_phone_reads_its_own_rust_round_notes_audio_back`, and for Drive's
+    `a_paired_phone_reads_its_own_rust_round_notes_audio_back` and
+    `a_paired_phone_plays_its_studio_take_and_every_other_kind_from_home`, and for Drive's
     word `voice_repo::on_drive`'s
     `only_the_subjects_own_studio_takes_a_list_names_are_recorded_once`,
     `no_row_is_ever_updated_and_rows_leave_with_the_account`,
@@ -1520,7 +1527,9 @@ nowhere is marked as such and belongs to review.
     `home_counts_each_kind_its_room_and_what_was_set_aside_for_its_subject_only`,
     `what_reached_home_is_summed_by_the_week_it_arrived` and
     `a_kinds_newest_notes_come_first_and_stop_at_the_cap` and
-    `a_note_is_listed_as_deletable_only_when_its_kind_is_switched_on`, and
+    `a_note_is_listed_as_deletable_only_when_its_kind_is_switched_on`,
+    `what_was_heard_is_cut_at_the_last_space_within_the_limit` and
+    `each_note_says_how_long_it_ran_and_what_home_heard_first`, and
     `handlers::voice`'s `a_paired_phone_reads_what_home_keeps_of_its_own_notes`,
     and for My data's delete `voice_repo::delete`'s
     `the_receipt_table_holds_exactly_its_described_columns`,
