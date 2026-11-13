@@ -357,8 +357,12 @@ pub struct Kept {
 /// page (paulgsc/some-ui#2476, MY-DATA MD2): how many of each kind, their
 /// room, how many were set aside and since when, what reached home each
 /// week, and, when `of` names a kind, that kind's newest notes, with the
-/// one `note` names when it is older (`voice_repo::kept`). It answers descriptions only: no audio, no `ref`,
-/// nothing said.
+/// one `note` names when it is older (`voice_repo::kept`). Each note says
+/// how long it ran and the first words home heard in it, the ones
+/// [`get_heard`] answers, cut at about `voice_repo::kept::HEARD_CHARS`
+/// characters, so the owner can tell what they would delete (MY-DATA,
+/// 2026-11-13). What was said goes only to the caller's own paired phone. It
+/// answers no audio and no `ref`.
 ///
 /// Read in one transaction, so its parts agree. The query is read as its pairs, so `of` or `note`
 /// said twice is refused as an unknown kind is; other keys are ignored.
@@ -1344,11 +1348,13 @@ mod tests {
 	}
 
 	/// The kept read answers the caller's own notes, by kind and week, and a
-	/// kind's newest with `of`; descriptions only. Counting is
+	/// kind's newest with `of`, each with how long it ran and the first words
+	/// home heard once it heard them. Counting and cutting are
 	/// `voice_repo::kept`'s tests.
 	#[tokio::test]
 	async fn a_paired_phone_reads_what_home_keeps_of_its_own_notes() {
 		let state = state().await;
+		let pool = state.pool.clone();
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let browser = session(&state, A, Carrier::Cookie).await;
 		let other = session(&state, B, Carrier::Bearer).await;
@@ -1374,7 +1380,19 @@ mod tests {
 		listed.as_object_mut().unwrap().remove("storedAt");
 		assert_eq!(
 			listed,
-			json!({ "id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null, "deletable": false })
+			json!({
+				"id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null, "deletable": false,
+				"durationMs": null, "heard": null, "heardCut": false
+			})
+		);
+		hear(&pool, A, "n1", "ggml-small-q5_1.bin", said("a small idea", "en"), "2026-10-25T16:05:00.000Z").await;
+		let (status, body) = get(&app, "/voice-notes/kept?of=reflection", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		let said_of = |key: &str| body["notes"][0][key].clone();
+		assert_eq!(
+			(said_of("durationMs"), said_of("heard"), said_of("heardCut")),
+			(json!(1_200), json!("a small idea"), json!(false)),
+			"{body}"
 		);
 
 		let (status, body) = get(&app, "/voice-notes/kept", Some(&other)).await;

@@ -1290,10 +1290,17 @@ nowhere is marked as such and belongs to review.
     the owner deleted from it each week, both a deleted note's read from its
     receipt; and, with `of`, that kind's newest notes (at most 50), and the
     one `note` names when it is that kind's and older, each with its id,
-    `recorded_at`, `stored_at`, `size` and set-aside time
-    (`voice_repo::kept`, its one caller `handlers::voice`). It reads no
-    audio, no `ref`, no bite and no transcript, and its span skips every
-    argument. Its name, like `on-drive`'s, is never a note's id
+    `recorded_at`, `stored_at`, `size` and set-aside time, and, from the
+    ending `GET /voice-notes/:id/heard` answers (the same choice of hearing),
+    the note's `duration_ms` once heard or found silent and the first words
+    heard, cut at the last space within about 80 characters
+    (`voice_repo::kept::HEARD_CHARS`), with whether they were cut, so the
+    owner can tell what they would delete (MY-DATA, paulgsc/some-ui#2918,
+    2026-11-13) (`voice_repo::kept`, its one caller `handlers::voice`). What
+    was said goes only to the caller's own paired phone, as `/heard` already
+    gives it to its own subject. It reads no audio, no `ref`, no bite and
+    no word's time, and its span skips every argument, so no word reaches a
+    log line. Its name, like `on-drive`'s, is never a note's id
     (`voice_repo::is_note_id`). `GET /voice-notes/takes`
     (paulgsc/some-ui#2590, ST32; docs/take-library.md), a `Paired` phone's
     (a browser's session is a `403`), is the take library: the caller's own

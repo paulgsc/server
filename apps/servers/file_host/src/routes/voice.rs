@@ -38,8 +38,10 @@
 //!                                      aside and since when, what reached
 //!                                      home each week, and with `of` that
 //!                                      kind's newest notes, each saying
-//!                                      whether My data may delete it, to a
-//!                                      paired phone (paulgsc/some-ui#2476)
+//!                                      whether My data may delete it, how
+//!                                      long it ran and the first words
+//!                                      home heard, to a paired phone
+//!                                      (paulgsc/some-ui#2476)
 //! DELETE /voice-notes/:id             → { receipt }: deletes the note for
 //!                                      good, from a paired phone's My
 //!                                      data, only of a kind the owner
