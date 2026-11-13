@@ -18,11 +18,12 @@ use serde_json::Value;
 use std::{collections::BTreeSet, sync::LazyLock};
 
 /// Names a role's `compose.sops.env` may still set after the service that
-/// read them left, because only the owner's key can rewrite that file. Each
+/// read them left, because only the owner's key can rewrite that file
+/// (preflight still warns, naming the edit). Each
 /// is a `sops edit` the owner owes, and leaves once no role sets it: a test
 /// fails on an entry no checked-in role sets any more, so this list cannot
 /// outlive the edit. ollama left home on 2026-11-13 (#705, D3).
-const RETIRED: &[&str] = &["OLLAMA_MODELS_PATH"];
+pub(crate) const RETIRED: &[&str] = &["OLLAMA_MODELS_PATH"];
 
 static COMPOSE_OWN: LazyLock<Regex> = LazyLock::new(|| crate::dotenv::regex(r"^(COMPOSE_\w+|DOCKER_\w+)$"));
 static RECIPIENT: LazyLock<Regex> = LazyLock::new(|| crate::dotenv::regex(r"^sops_(age|pgp|kms|gcp_kms|azure_kv|hc_vault)__list_\d+__map_"));
