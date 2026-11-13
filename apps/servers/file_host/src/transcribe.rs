@@ -47,7 +47,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use voice_repo::meaning::Embed;
 
 // The transcriber's engineering values: source constants, not variables
@@ -165,6 +165,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 		interactive: state.interactive.clone(),
 	});
 	crate::metrics::transcribe::record_started();
+	crate::metrics::contention::record("transcribe", crate::metrics::contention::Counts::default());
 	// A note heard is a transcript on its way to the mailbox: wake its pass
 	// as each is kept, rather than leave it for the backstop (MBP2).
 	let outbox = <crate::mailbox::Outbox as axum::extract::FromRef<AppState>>::from_ref(state);
@@ -173,6 +174,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 		info!(interval_secs = context.interval.as_secs(), "voice-note transcriber started");
 		let mut ticker = tokio::time::interval(context.interval);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+		let mut guard = crate::contention::Guard::host();
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
@@ -185,7 +187,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 					// Each transcript heard wakes the mailbox's pass as soon as
 					// it is kept, not when the batch ends (MBP2).
 					let filed = || outbox.filed();
-					let result = pass::run_once_telling(&db, &engine, meaning, &context.deletion, context.deadline, &cancel, &crate::mailbox::pass::now, &filed).await;
+					let result = pass::run_once_telling(&db, &engine, meaning, &context.deletion, context.deadline, &mut guard, &cancel, &crate::mailbox::pass::now, &filed).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
 				}
@@ -197,6 +199,24 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 /// The pass's one log line, when it did anything: the kind of each attempt,
 /// counted. Never a note's text, audio, id or subject.
 pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
+	if let Ok(done) = result {
+		let guard = crate::metrics::contention::Counts {
+			excused: done.excused,
+			judged_anyway: done.judged_anyway,
+			marked: 0,
+			unreadable: done.unreadable,
+		};
+		crate::metrics::contention::record("transcribe", guard);
+		if done.excused > 0 {
+			info!("voice-note transcription gave way: a note ran to its deadline while the box was contended, so it is nobody's and heard again next pass");
+		}
+		if done.judged_anyway > 0 {
+			warn!(
+				judged_anyway = done.judged_anyway,
+				"voice-note transcription kept a deadline reached on a contended box: its note was excused as many times in a row as the guard allows"
+			);
+		}
+	}
 	match result {
 		Ok(done) if done.kept.is_empty() && done.indexed == 0 => {}
 		Ok(done) => {

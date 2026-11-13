@@ -12,6 +12,7 @@ pub mod cache;
 pub mod call_weeks;
 pub mod clips;
 pub mod config;
+pub mod contention;
 pub mod contract;
 pub mod db;
 pub mod deploy;

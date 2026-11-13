@@ -596,6 +596,7 @@ mod tests {
 					exit_code: Some(0),
 					signal: None,
 					milliseconds: 1,
+					contended: false,
 				}),
 			};
 			Ok(Answer::Recorded {
@@ -633,6 +634,7 @@ mod tests {
 			&Arc::new(Prints),
 			Duration::from_secs(600),
 			crate::rust_rounds::pass::Waits::SERVER,
+			&mut crate::contention::fake::guard(crate::contention::fake::State::Calm).0,
 			&CancellationToken::new(),
 			&|| String::from("now"),
 		)
@@ -721,6 +723,7 @@ mod tests {
 			&Arc::new(Prints),
 			Duration::from_secs(600),
 			crate::rust_rounds::pass::Waits::SERVER,
+			&mut crate::contention::fake::guard(crate::contention::fake::State::Calm).0,
 			&CancellationToken::new(),
 			&|| String::from("now"),
 		)
@@ -774,6 +777,7 @@ mod tests {
 			&Arc::new(Prints),
 			Duration::from_secs(600),
 			crate::rust_rounds::pass::Waits::SERVER,
+			&mut crate::contention::fake::guard(crate::contention::fake::State::Calm).0,
 			&CancellationToken::new(),
 			&|| String::from("now"),
 		)
