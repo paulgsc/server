@@ -42,43 +42,115 @@ impl Class {
 	}
 }
 
-/// One service's memory cap, None where it declares none.
+/// One service's memory cap, all its replicas together; None where it
+/// declares none or none envctl can read. Its class, None where its
+/// `oom_score_adj` can't be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Cap {
 	pub(crate) service: String,
 	pub(crate) bytes: Option<u64>,
-	pub(crate) class: Class,
+	pub(crate) class: Option<Class>,
 }
 
-/// Compose's byte size: a number of bytes, or one with a `b`, `k`, `m` or
-/// `g` unit (binary, any case, `kb`/`mb`/`gb` alike). None when it is
-/// neither, as an uninterpolated `${…}` is.
+/// Compose's byte size, as compose itself reads one (go-units'
+/// `RAMInBytes`): a number, a decimal one too, then an optional space and
+/// unit `k`, `m`, `g`, `t` or `p` (binary, any case), with an optional `i`
+/// and `b` after it, or `b` alone. None for anything else, as an
+/// uninterpolated `${…}` is.
 fn bytes(text: &str) -> Option<u64> {
 	let text = text.trim().to_ascii_lowercase();
-	let text = text.strip_suffix('b').filter(|rest| rest.ends_with(['k', 'm', 'g'])).unwrap_or(&text);
-	let (number, unit) = match text.char_indices().last()? {
-		(at, 'k') => (&text[..at], 1u64 << 10),
-		(at, 'm') => (&text[..at], 1 << 20),
-		(at, 'g') => (&text[..at], 1 << 30),
-		(at, 'b') => (&text[..at], 1),
-		_ => (text, 1),
+	let text = text.strip_suffix('b').unwrap_or(&text);
+	let text = text.strip_suffix('i').filter(|rest| rest.ends_with(['k', 'm', 'g', 't', 'p'])).unwrap_or(text);
+	let (number, shift) = match text.chars().last()? {
+		'k' => (&text[..text.len() - 1], 10),
+		'm' => (&text[..text.len() - 1], 20),
+		'g' => (&text[..text.len() - 1], 30),
+		't' => (&text[..text.len() - 1], 40),
+		'p' => (&text[..text.len() - 1], 50),
+		_ => (text, 0),
 	};
-	number.trim().parse::<u64>().ok()?.checked_mul(unit)
+	let number = number.strip_suffix(' ').unwrap_or(number);
+	if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') || number.starts_with('.') || number.ends_with('.') {
+		return None;
+	}
+	if let Ok(whole) = number.parse::<u64>() {
+		return whole.checked_mul(1 << shift);
+	}
+	let decimal = number.parse::<f64>().ok()?;
+	#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+	// a size with a fraction, truncated to bytes as compose truncates it
+	let sized = (decimal * (1u64 << shift) as f64) as u64;
+	Some(sized)
 }
 
-/// Each service's cap and class, from compose's uninterpolated config.
-pub(crate) fn caps(raw: &Value) -> Vec<Cap> {
+/// A whole number compose may give as a number or as text.
+fn whole(value: &Value) -> Option<i64> {
+	match value {
+		Value::Number(number) => number.as_i64(),
+		Value::String(text) => text.trim().parse().ok(),
+		_ => None,
+	}
+}
+
+/// A size compose may give as a number of bytes or as text.
+fn size(value: &Value) -> Option<u64> {
+	match value {
+		Value::Number(number) => number.as_u64(),
+		Value::String(text) => bytes(text),
+		_ => None,
+	}
+}
+
+/// One replica's cap: `mem_limit`, or else `deploy.resources.limits.memory`.
+/// None when the one it has can't be read, or it has neither.
+fn replica_cap(service: &Value) -> Option<u64> {
+	service
+		.get("mem_limit")
+		.filter(|value| !value.is_null())
+		.map_or_else(|| service.pointer("/deploy/resources/limits/memory").filter(|value| !value.is_null()).and_then(size), size)
+}
+
+/// How many of it `up` starts: `scale`, or else `deploy.replicas`, or one.
+/// None when the one it has can't be read.
+fn replicas(service: &Value) -> Option<u64> {
+	service
+		.get("scale")
+		.filter(|value| !value.is_null())
+		.or_else(|| service.pointer("/deploy/replicas").filter(|value| !value.is_null()))
+		.map_or(Some(1), |value| whole(value).and_then(|count| u64::try_from(count).ok()))
+}
+
+/// Each service `up` starts, with its cap and class, from compose's
+/// uninterpolated config. A service under `profiles:` is left out unless
+/// one of them is in `active` (`COMPOSE_PROFILES`), as `up` leaves it.
+pub(crate) fn caps(raw: &Value, active: &[&str]) -> Vec<Cap> {
 	compose::services(raw)
 		.into_iter()
+		.filter(|(_, service)| {
+			service
+				.get("profiles")
+				.and_then(Value::as_array)
+				.filter(|profiles| !profiles.is_empty())
+				.is_none_or(|profiles| profiles.iter().filter_map(Value::as_str).any(|profile| active.contains(&profile)))
+		})
 		.map(|(name, service)| Cap {
 			service: name.to_owned(),
-			bytes: match service.get("mem_limit") {
-				Some(Value::Number(number)) => number.as_u64(),
-				Some(Value::String(text)) => bytes(text),
-				_ => None,
-			},
-			class: Class::of(service.get("oom_score_adj").and_then(Value::as_i64).unwrap_or(0)),
+			bytes: replica_cap(service).zip(replicas(service)).and_then(|(cap, count)| cap.checked_mul(count)),
+			class: service
+				.get("oom_score_adj")
+				.filter(|value| !value.is_null())
+				.map_or(Some(Class::of(0)), |value| whole(value).map(Class::of)),
 		})
+		.collect()
+}
+
+/// The profiles `COMPOSE_PROFILES` names, comma-separated.
+pub(crate) fn profiles(compose_profiles: Option<&str>) -> Vec<&str> {
+	compose_profiles
+		.unwrap_or_default()
+		.split(',')
+		.map(str::trim)
+		.filter(|profile| !profile.is_empty())
 		.collect()
 }
 
@@ -95,19 +167,31 @@ fn gib(bytes: u64) -> String {
 	format!("{gib:.2} GiB")
 }
 
-/// What `make up` warns of: a service with no cap, and every cap together
-/// above `mem_total`, naming the largest caps, which bind first.
+fn class_name(class: Option<Class>) -> &'static str {
+	class.map_or("class unread: its oom_score_adj is not a number", Class::name)
+}
+
+/// What `make up` warns of: a service whose cap or class can't be read,
+/// and every cap together above `mem_total`, naming the largest caps,
+/// which bind first.
 ///
 /// Every service at its cap, the batch class's too: its caps are its peak
 /// (the render's 4 GiB and the speaker's 3 GiB are the lane's declared peak
 /// and what the speaker keeps between renders), and the interactive room the
 /// lane's floor holds is already inside the interactive caps.
 pub(crate) fn warnings(caps: &[Cap], mem_total: Option<u64>) -> Vec<String> {
-	let mut warnings: Vec<String> = caps
-		.iter()
-		.filter(|cap| cap.bytes.is_none())
-		.map(|cap| format!("service {} ({}) declares no mem_limit, so home's caps can't be summed whole", cap.service, cap.class.name()))
-		.collect();
+	let mut warnings: Vec<String> = Vec::new();
+	for cap in caps {
+		if cap.bytes.is_none() {
+			warnings.push(format!(
+				"service {} ({}) has no memory cap envctl can read, so home's caps can't be summed whole",
+				cap.service,
+				class_name(cap.class)
+			));
+		} else if cap.class.is_none() {
+			warnings.push(format!("service {} has an oom_score_adj envctl can't read, so its class is unknown", cap.service));
+		}
+	}
 	let Some(mem_total) = mem_total else {
 		warnings.push("this machine's MemTotal could not be read from /proc/meminfo, so home's caps were not checked".to_owned());
 		return warnings;
@@ -116,16 +200,16 @@ pub(crate) fn warnings(caps: &[Cap], mem_total: Option<u64>) -> Vec<String> {
 	if total <= mem_total {
 		return warnings;
 	}
-	let mut largest: Vec<&Cap> = caps.iter().filter(|cap| cap.bytes.is_some()).collect();
-	largest.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.service.cmp(&b.service)));
+	let mut largest: Vec<(&Cap, u64)> = caps.iter().filter_map(|cap| cap.bytes.map(|bytes| (cap, bytes))).collect();
+	largest.sort_by(|(a, a_bytes), (b, b_bytes)| b_bytes.cmp(a_bytes).then_with(|| a.service.cmp(&b.service)));
 	let mut said = format!(
 		"the services' memory caps total {}, above this machine's MemTotal of {} by {}: home can run out before any service reaches its cap. The largest:",
 		gib(total),
 		gib(mem_total),
 		gib(total - mem_total)
 	);
-	for cap in largest.iter().take(3) {
-		let _ = write!(said, " {} {} ({}),", cap.service, gib(cap.bytes.unwrap_or(0)), cap.class.name());
+	for (cap, bytes) in largest.iter().take(3) {
+		let _ = write!(said, " {} {} ({}),", cap.service, gib(*bytes), class_name(cap.class));
 	}
 	said.pop();
 	said.push_str(". Only a warning until home's facts are published and #705's D3 decides on ollama (#709)");
@@ -144,21 +228,33 @@ mod tests {
 		Cap {
 			service: service.to_owned(),
 			bytes,
-			class,
+			class: Some(class),
 		}
 	}
 
+	fn cap_of<'a>(caps: &'a [Cap], name: &str) -> &'a Cap {
+		caps.iter().find(|cap| cap.service == name).unwrap()
+	}
+
 	#[test]
-	fn compose_sizes_read_as_binary_bytes() {
+	fn compose_sizes_read_as_compose_reads_them() {
 		assert_eq!(bytes("4G"), Some(4 * G));
 		assert_eq!(bytes("512m"), Some(512 << 20));
 		assert_eq!(bytes("128MB"), Some(128 << 20));
+		assert_eq!(bytes("512MiB"), Some(512 << 20));
 		assert_eq!(bytes("1kb"), Some(1024));
 		assert_eq!(bytes("100b"), Some(100));
 		assert_eq!(bytes("2048"), Some(2048));
-		assert_eq!(bytes("${CAP}"), None);
+		assert_eq!(bytes("1.5g"), Some(1_610_612_736));
+		assert_eq!(bytes("0.5G"), Some(G / 2));
+		assert_eq!(bytes("1t"), Some(1 << 40));
+		assert_eq!(bytes("1p"), Some(1 << 50));
+		assert_eq!(bytes("2 g"), Some(2 * G));
+		assert_eq!(bytes("${CAP:-1G}"), None);
 		assert_eq!(bytes(""), None);
 		assert_eq!(bytes("g"), None);
+		assert_eq!(bytes(".5g"), None);
+		assert_eq!(bytes("1x"), None);
 	}
 
 	#[test]
@@ -168,18 +264,50 @@ mod tests {
 			"rust-runner": {"mem_limit": "1G", "oom_score_adj": 0},
 			"metabase": {"mem_limit": "2G", "oom_score_adj": 500},
 			"render": {"mem_limit": "4G", "oom_score_adj": 800},
-			"ollama": {"mem_limit": "8G", "oom_score_adj": 900},
-			"bare": {}
+			"ollama": {"mem_limit": "8G", "oom_score_adj": "900"},
+			"bare": {"mem_limit": "1G"},
+			"unread": {"mem_limit": "1G", "oom_score_adj": "${ADJ:-900}"}
 		}});
-		let caps = caps(&raw);
-		let class_of = |name: &str| caps.iter().find(|cap| cap.service == name).unwrap().class;
-		assert_eq!(class_of("file-host"), Class::Protected);
-		assert_eq!(class_of("rust-runner"), Class::Interactive);
-		assert_eq!(class_of("metabase"), Class::Tooling);
-		assert_eq!(class_of("render"), Class::Batch);
-		assert_eq!(class_of("ollama"), Class::Batch);
-		assert_eq!(class_of("bare"), Class::Interactive);
-		assert_eq!(caps.iter().find(|cap| cap.service == "bare").unwrap().bytes, None);
+		let caps = caps(&raw, &[]);
+		assert_eq!(cap_of(&caps, "file-host").class, Some(Class::Protected));
+		assert_eq!(cap_of(&caps, "rust-runner").class, Some(Class::Interactive));
+		assert_eq!(cap_of(&caps, "metabase").class, Some(Class::Tooling));
+		assert_eq!(cap_of(&caps, "render").class, Some(Class::Batch));
+		assert_eq!(cap_of(&caps, "ollama").class, Some(Class::Batch));
+		assert_eq!(cap_of(&caps, "bare").class, Some(Class::Interactive));
+		assert_eq!(cap_of(&caps, "unread").class, None);
+	}
+
+	#[test]
+	fn a_cap_is_mem_limit_or_the_deploy_limit_times_its_replicas() {
+		let raw = json!({"services": {
+			"both": {"mem_limit": "1G", "deploy": {"resources": {"limits": {"memory": "1G"}}}},
+			"deploy-only": {"deploy": {"resources": {"limits": {"memory": "2G"}}}},
+			"scaled": {"mem_limit": "1G", "scale": 3},
+			"replicated": {"mem_limit": "1G", "deploy": {"replicas": 2}},
+			"uninterpolated": {"mem_limit": "${CAP:-1G}"},
+			"none": {}
+		}});
+		let caps = caps(&raw, &[]);
+		assert_eq!(cap_of(&caps, "both").bytes, Some(G));
+		assert_eq!(cap_of(&caps, "deploy-only").bytes, Some(2 * G));
+		assert_eq!(cap_of(&caps, "scaled").bytes, Some(3 * G));
+		assert_eq!(cap_of(&caps, "replicated").bytes, Some(2 * G));
+		assert_eq!(cap_of(&caps, "uninterpolated").bytes, None);
+		assert_eq!(cap_of(&caps, "none").bytes, None);
+	}
+
+	#[test]
+	fn a_service_under_a_profile_counts_only_when_the_profile_is_on() {
+		let raw = json!({"services": {
+			"always": {"mem_limit": "1G"},
+			"extra": {"mem_limit": "1G", "profiles": ["extra"]}
+		}});
+		let names = |active: &[&str]| caps(&raw, active).into_iter().map(|cap| cap.service).collect::<Vec<_>>();
+		assert_eq!(names(&[]), ["always"]);
+		assert_eq!(names(&profiles(Some("other, extra"))), ["always", "extra"]);
+		assert!(profiles(None).is_empty());
+		assert!(profiles(Some(" , ")).is_empty());
 	}
 
 	#[test]
@@ -215,11 +343,19 @@ mod tests {
 	}
 
 	#[test]
-	fn an_uncapped_service_and_an_unread_mem_total_are_said() {
-		let caps = [cap("bare", None, Class::Interactive)];
+	fn an_unread_cap_or_class_and_an_unread_mem_total_are_said() {
+		let caps = [
+			cap("bare", None, Class::Interactive),
+			Cap {
+				service: "unread".to_owned(),
+				bytes: Some(G),
+				class: None,
+			},
+		];
 		let said = warnings(&caps, None);
-		assert_eq!(said.len(), 2);
-		assert!(said[0].starts_with("service bare (interactive) declares no mem_limit"));
-		assert!(said[1].contains("MemTotal could not be read"));
+		assert_eq!(said.len(), 3, "{said:?}");
+		assert!(said[0].starts_with("service bare (interactive) has no memory cap envctl can read"));
+		assert!(said[1].starts_with("service unread has an oom_score_adj envctl can't read"));
+		assert!(said[2].contains("MemTotal could not be read"));
 	}
 }

@@ -370,7 +370,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			}
 			// Only `up` runs on the box it deploys, so only its MemTotal is home's.
 			let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
-			for warning in caps::warnings(&caps::caps(&raw), meminfo.as_deref().and_then(caps::mem_total)) {
+			for warning in caps::warnings(
+				&caps::caps(&raw, &caps::profiles(deployment.compose.get("COMPOSE_PROFILES").map(String::as_str))),
+				meminfo.as_deref().and_then(caps::mem_total),
+			) {
 				println!("warning: {warning}");
 			}
 			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, &compose::read(&repo)?)
