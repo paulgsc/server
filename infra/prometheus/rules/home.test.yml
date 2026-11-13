@@ -615,7 +615,7 @@ tests:
         alertname: DeployFailed
         exp_alerts:
           - exp_labels:
-              objective: AV1
+              objective: HD2
               says: "Home's on-demand deploy rolled back or failed in the last hour: `journalctl -u home-deploy` says why. If it names a missing or refused variable, the image needs a newer checkout on home."
       - eval_time: 80m
         alertname: DeployFailed
@@ -647,7 +647,7 @@ tests:
         alertname: DeployStuck
         exp_alerts:
           - exp_labels:
-              objective: AV1
+              objective: HD2
               says: "A client has needed a newer server for 30 minutes and home's deploy has not answered: check `systemctl status home-deploy.path home-deploy`."
 
   - name: a marker the deploy answers in minutes is not DeployStuck
@@ -658,6 +658,41 @@ tests:
     alert_rule_test:
       - eval_time: 35m
         alertname: DeployStuck
+        exp_alerts: []
+
+  - name: an ask home could not record is DeployCannotRequest for the hour after
+    interval: 1m
+    input_series:
+      - series: 'compat_checks_total{job="file_host",result="cannot_request"}'
+        values: '0x10 1x80'
+      - series: 'compat_checks_total{job="file_host",result="wanted"}'
+        values: '0x10 1x80'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DeployCannotRequest
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DeployCannotRequest
+        exp_alerts:
+          - exp_labels:
+              objective: HD2
+              says: "A client needed a newer server in the last hour, but home could not write the deploy request (/compat answered cannot_request): check that the deploy folder on home's storage exists and file_host can write it; `journalctl` for file_host names the error."
+      - eval_time: 80m
+        alertname: DeployCannotRequest
+        exp_alerts: []
+
+  - name: asks home recorded or did not need are not DeployCannotRequest
+    interval: 1m
+    input_series:
+      - series: 'compat_checks_total{job="file_host",result="cannot_request"}'
+        values: '0x60'
+      - series: 'compat_checks_total{job="file_host",result="wanted"}'
+        values: '0x10 1x10 2x40'
+      - series: 'compat_checks_total{job="file_host",result="none"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DeployCannotRequest
         exp_alerts: []
 
   - name: the call weeks worker that stopped stamping is stale past 2 hours (CW2)
