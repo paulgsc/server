@@ -36,6 +36,7 @@ use preflight::Deployment;
 use schema::Schema;
 use serde_json::Value;
 use std::{
+	collections::BTreeSet,
 	path::{Path, PathBuf},
 	process::{Command as Process, ExitCode},
 	sync::{
@@ -276,6 +277,22 @@ fn deployment(repo: &Path, role: &str, raw: &Value, env_dir: &Path, sops_program
 	})
 }
 
+/// The variables the release sets, for `list`: from compose, else from the
+/// role's release.json, else none. Only a listing reads it, so a release
+/// that is missing or unreadable (which `check` refuses) is read as none.
+fn listed_release(repo: &Path, role: &str, raw: Option<&Value>) -> BTreeSet<String> {
+	raw.map_or_else(
+		|| {
+			release::read(repo, role)
+				.ok()
+				.flatten()
+				.map(|release| release.variables().into_keys().collect())
+				.unwrap_or_default()
+		},
+		release::set_by_release,
+	)
+}
+
 fn check_preflight(repo: &Path, schemas: &[Schema], raw: &Value, deployment: &Deployment) -> Result<bool> {
 	let report = preflight::preflight(schemas, &compose::read(repo)?, raw, deployment);
 	print!("{}", preflight::render(&report, &deployment.role));
@@ -418,11 +435,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			}
 			// What compose's own environment: gives a labelled service is set
 			// too, by compose. Without compose, the files alone say.
-			if let Ok(raw) = compose::config(&repo) {
-				for (_, service) in compose::services(&raw) {
-					if let Some(binary) = compose::labels(service).get(compose::LABEL) {
-						set.entry(binary.clone()).or_default().extend(compose::own_environment(service).into_keys());
-					}
+			let raw = compose::config(&repo).ok();
+			for (_, service) in raw.iter().flat_map(compose::services) {
+				if let Some(binary) = compose::labels(service).get(compose::LABEL) {
+					set.entry(binary.clone()).or_default().extend(compose::own_environment(service).into_keys());
 				}
 			}
 			let has = |map: &IndexMap<String, Vec<String>>, reader: &str, name: &str| map.get(reader).is_some_and(|names| names.iter().any(|known| known == name));
@@ -435,7 +451,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 					preflight::Stated::Absent
 				}
 			};
-			print!("{}", preflight::render_list(&schemas, &compose::read(&repo)?, &stated));
+			print!(
+				"{}",
+				preflight::render_list(&schemas, &compose::read(&repo)?, &listed_release(&repo, &role, raw.as_ref()), &stated)
+			);
 			Ok(ExitCode::SUCCESS)
 		}
 		Command::Check { base_classes } => check(&repo, &schemas, base_classes.as_deref()),
@@ -562,7 +581,7 @@ fn check(repo: &Path, schemas: &[Schema], base_classes: Option<&Path>) -> Result
 	}
 	problems.extend(release::line_problems(&raw));
 	let compose_variables = compose::read(repo)?;
-	let images = compose::services(&raw).into_iter().map(|(service, _)| release::variable(service)).collect();
+	let images = release::set_by_release(&raw);
 	problems.extend(conform::problems(schemas, &compose_variables, &raw, &roles));
 	let base = base_classes
 		.map(|path| {

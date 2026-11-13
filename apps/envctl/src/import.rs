@@ -127,8 +127,9 @@ pub(crate) fn compose_values(raw: &Value, containers: &[Value]) -> (Plain, Vec<S
 	// all of them are weighed before any is left out, since two uses can
 	// declare different defaults (file-host's RUST_LOG and orchestrator's).
 	let mut seen: IndexMap<String, Vec<(String, Option<String>)>> = IndexMap::new();
+	let released = release::set_by_release(raw);
 	let mut observe = |name: &str, value: String, default: Option<&str>| {
-		if !FROM_MAKE.contains(&name) && !release::is_variable(name) {
+		if !FROM_MAKE.contains(&name) && !released.contains(name) {
 			seen.entry(name.to_owned()).or_default().push((value, default.map(str::to_owned)));
 		}
 	};
@@ -497,10 +498,11 @@ pub(crate) fn run(repo: &Path, schemas: &[Schema], role: &str, named: &[String],
 	// mechanism: reading compose's variables back is best effort).
 	let unread: std::collections::BTreeSet<String> = compose::services(&raw).into_iter().flat_map(|(_, service)| compose::unread_uses(service)).collect();
 	let mut unverified = Vec::new();
+	let released = release::set_by_release(&raw);
 	for variable in compose_variables.values() {
 		// Only what no running container showed: one seen on its default runs
 		// on that, whatever an edited .env says now (Codex on #622).
-		if FROM_MAKE.contains(&variable.name.as_str()) || release::is_variable(&variable.name) || compose_found.contains_key(&variable.name) || observed.contains(&variable.name) {
+		if FROM_MAKE.contains(&variable.name.as_str()) || released.contains(&variable.name) || compose_found.contains_key(&variable.name) || observed.contains(&variable.name) {
 			continue;
 		}
 		match env.get(&variable.name) {
@@ -631,6 +633,20 @@ mod tests {
 		let (found, conflicts, observed) = compose_values(&defaults_differ, &both_default);
 		assert_eq!((found, conflicts), (Plain::new(), Vec::new()), "every use on its own default");
 		assert!(observed.contains("LOG"), "and so .env is not asked for it");
+	}
+
+	/// A service's own image variable is the release's and never imported;
+	/// another `IMAGE_` name is compose's, like any other (#837).
+	#[test]
+	fn only_the_release_s_variables_are_left_to_the_release() {
+		let raw = json!({"services": {"app": {
+			"image": "${IMAGE_APP:?x}",
+			"environment": ["TAG=${IMAGE_APP:-x}", "QUALITY=${IMAGE_QUALITY:-hi}"],
+		}}});
+		let app = container("app", &["TAG=pinned", "QUALITY=lo"], &json!([]));
+		let (found, conflicts, observed) = compose_values(&raw, &[app]);
+		assert_eq!(found, plain(&[("IMAGE_QUALITY", "lo")]));
+		assert!(conflicts.is_empty() && !observed.contains("IMAGE_APP"), "{observed:?}");
 	}
 
 	#[test]
