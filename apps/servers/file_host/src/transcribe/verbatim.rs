@@ -19,11 +19,11 @@
 //!   whoever reads one (the mailbox body's `model`) knows which it has. A
 //!   changed prompt takes a new [`NAME`], and its notes are heard again beside
 //!   the old rows, never mixed with them.
-//! - **[`FILLERS`] is the closed list the essay counts.** It is written
-//!   here, where the prompt is built to keep its words, and copied by the
-//!   interview week's measured faults in paulgsc/some-ui (IW3,
-//!   `packages/ui/interview-week`), which names this file. A change to it is
-//!   a change to both.
+//! - **[`FILLERS`] is the closed list the essay counts**, owned by the
+//!   interview week's measured faults in paulgsc/some-ui (IW3, call C265)
+//!   and copied here, where [`PROMPT`] is written to show the decoder every
+//!   one of them. A change to it is made there first, then here, with a new
+//!   [`NAME`].
 //! - **English runs only.** Each run of speech is heard in its own language
 //!   (ST23); the prompt is English, and handed to a Korean run it would pull
 //!   the run toward English. A Korean run in an interview take is heard as
@@ -33,20 +33,21 @@
 /// changed [`PROMPT`] or [`FILLERS`] takes the next number.
 pub const NAME: &str = "verbatim-1";
 
-/// The fillers the interview essay counts, lowercase: a word is one when,
-/// lowercased and with the punctuation at either end trimmed off, it is one
-/// of these ([`is_filler`]).
+// Copy of paulgsc/some-ui packages/ui/interview-week/src/lib/faults/fillers.json
+// (C265, #2934), which owns the list; change it there first.
+/// The fillers the interview essay counts: vocalised hesitations only,
+/// matched as some-ui's measures match them ([`fillers_in`]).
 ///
-/// Only sounds that are never anything but a filler. "Like", "you know",
-/// "I mean" and "so" are often fillers too, and [`PROMPT`] has them so their
-/// filler uses are kept, but each is also an ordinary word, and telling which
-/// is a judgment, not a count, so the essay leaves it to the model's half.
-pub const FILLERS: [&str; 8] = ["um", "uh", "er", "erm", "ah", "hmm", "mm", "uhm"];
+/// "Like", "you know", "I mean" and "so" are often fillers too, and
+/// [`PROMPT`] has them so their filler uses are kept, but each is also an
+/// ordinary word, and telling which is a judgment, not a count, so the essay
+/// leaves it to the model's half.
+pub const FILLERS: [&str; 13] = ["um", "umm", "uh", "uhh", "uhm", "er", "erm", "ah", "ahh", "hm", "hmm", "mm", "mhm"];
 
 /// What the decoder reads before an interview take's English speech: a
 /// verbatim transcript's style, with every one of [`FILLERS`] in it.
-pub const PROMPT: &str = "Um, so, uh, I was... I mean, like, you know, I was, um, working on the, uh, the server. Hmm. Er, erm, \
-                          mm, ah, well, uhm, so yeah, I, I think, uh, that was it.";
+pub const PROMPT: &str = "Um, so, uh, I was... I mean, like, you know, I was, umm, working on the, uhh, the server. Hmm. Er, erm, \
+                          mm, ah, well, uhm, so yeah, I, I think, ahh, hm, mhm, uh, that was it.";
 
 /// The language [`PROMPT`] is written in, and the only one it is given to.
 pub const LANGUAGE: &str = "en";
@@ -58,20 +59,25 @@ pub fn key(model: &str) -> String {
 	[model, "+", NAME].concat()
 }
 
-/// Whether `word`, as Whisper wrote it, is one of [`FILLERS`].
+/// How many of [`FILLERS`] `word`, as Whisper wrote it, holds.
+///
+/// Matched as paulgsc/some-ui's measures match: lowercased, apostrophes dropped, then
+/// each run of letters and digits matched whole. "Um," and "uh..." are one
+/// each, and "uh-huh" is one, its "uh".
 #[must_use]
-pub fn is_filler(word: &str) -> bool {
-	FILLERS.contains(&bare(word).as_str())
+pub fn fillers_in(word: &str) -> usize {
+	runs(word).iter().filter(|run| FILLERS.contains(&run.as_str())).count()
 }
 
-/// `word` lowercased, the punctuation at either end trimmed off.
-fn bare(word: &str) -> String {
-	word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+/// `word`'s runs of letters and digits, lowercased, apostrophes dropped.
+fn runs(word: &str) -> Vec<String> {
+	let kept: String = word.chars().filter(|c| !matches!(c, '\'' | '\u{2019}')).flat_map(char::to_lowercase).collect();
+	kept.split(|c: char| !c.is_alphanumeric()).filter(|run| !run.is_empty()).map(str::to_owned).collect()
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{bare, is_filler, key, FILLERS, NAME, PROMPT};
+	use super::{fillers_in, key, runs, FILLERS, NAME, PROMPT};
 
 	#[test]
 	fn a_verbatim_transcription_is_kept_under_the_model_and_the_prompt() {
@@ -89,18 +95,20 @@ mod tests {
 	fn the_prompt_has_every_filler_it_keeps() {
 		let said: Vec<&str> = PROMPT.split_whitespace().collect();
 		for filler in FILLERS {
-			assert!(said.iter().any(|word| bare(word) == filler), "{filler}");
+			assert!(said.iter().any(|word| runs(word).iter().any(|run| run == filler)), "{filler}");
 		}
 		assert!(!PROMPT.contains('\0'));
 	}
 
 	#[test]
-	fn a_filler_is_one_whatever_its_case_and_punctuation() {
-		for word in ["um", "Um,", "uh...", "Hmm.", "\"mm\"", "Erm?", "UHM"] {
-			assert!(is_filler(word), "{word}");
+	fn a_filler_is_counted_whatever_its_case_and_punctuation() {
+		for word in ["um", "Um,", "uh...", "Hmm.", "\"mm\"", "Erm?", "UHM", "Mhm.", "uh-huh", "\u{2019}umm"] {
+			assert_eq!(fillers_in(word), 1, "{word}");
 		}
+		assert_eq!(fillers_in("um-uh"), 2, "each run on its own");
+		assert_eq!(fillers_in("Mm-hmm"), 2, "as some-ui counts it: its mm, then its hmm");
 		for word in ["umbrella", "like", "so", "I", "", "...", "humm", "ahead"] {
-			assert!(!is_filler(word), "{word}");
+			assert_eq!(fillers_in(word), 0, "{word}");
 		}
 	}
 

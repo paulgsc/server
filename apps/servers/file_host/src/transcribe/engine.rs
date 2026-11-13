@@ -835,7 +835,7 @@ mod tests {
 	#[test]
 	#[ignore = "needs the whisper models and espeak-ng"]
 	fn verbatim_keeps_fillers_the_plain_decode_drops() {
-		use crate::transcribe::verbatim::is_filler;
+		use crate::transcribe::verbatim::fillers_in;
 		#[allow(clippy::disallowed_methods)] // A test's own switch, as INSTA_UPDATE is, not configuration (#484).
 		let models = PathBuf::from(std::env::var("TRANSCRIBE_TEST_MODELS").unwrap());
 		let whisper = Whisper::load(&models.join("ggml-small-q5_1.bin"), &models.join("ggml-silero-v5.1.2.bin"), 2).unwrap();
@@ -888,10 +888,11 @@ mod tests {
 			else {
 				panic!("not heard");
 			};
-			(words.iter().filter(|word| is_filler(&word.text)).count(), text)
+			(words.iter().map(|word| fillers_in(&word.text)).sum::<usize>(), text)
 		};
 		let (plain, verbatim) = (fillers(Decode::Plain), fillers(Decode::Verbatim));
-		// Seven said. Run by hand (IW2's PR): plain kept 4, verbatim 6.
+		// Seven said. Run by hand (IW2's PR): plain kept 4, verbatim 5, and one more
+		// it wrote as "err", which the list does not have.
 		assert!(verbatim.0 > plain.0, "plain {plain:?}, verbatim {verbatim:?}");
 	}
 
