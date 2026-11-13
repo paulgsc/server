@@ -4,7 +4,7 @@
 //! check").
 //!
 //! It warns and never refuses, until home's facts are published (#709,
-//! part 1) and the owner decides whether `ollama` counts (#705, D3).
+//! part 1).
 
 use crate::compose;
 use serde_json::Value;
@@ -212,7 +212,7 @@ pub(crate) fn warnings(caps: &[Cap], mem_total: Option<u64>) -> Vec<String> {
 		let _ = write!(said, " {} {} ({}),", cap.service, gib(*bytes), class_name(cap.class));
 	}
 	said.pop();
-	said.push_str(". Only a warning until home's facts are published and #705's D3 decides on ollama (#709)");
+	said.push_str(". Only a warning until home's facts are published (#709)");
 	warnings.push(said);
 	warnings
 }
@@ -275,7 +275,7 @@ mod tests {
 			"rust-runner": {"mem_limit": "1G", "oom_score_adj": 0},
 			"metabase": {"mem_limit": "2G", "oom_score_adj": 500},
 			"render": {"mem_limit": "4G", "oom_score_adj": 800},
-			"ollama": {"mem_limit": "8G", "oom_score_adj": "900"},
+			"kokoro": {"mem_limit": "3G", "oom_score_adj": "800"},
 			"bare": {"mem_limit": "1G"},
 			"unread": {"mem_limit": "1G", "oom_score_adj": "${ADJ:-900}"}
 		}});
@@ -284,7 +284,7 @@ mod tests {
 		assert_eq!(cap_of(&caps, "rust-runner").class, Some(Class::Interactive));
 		assert_eq!(cap_of(&caps, "metabase").class, Some(Class::Tooling));
 		assert_eq!(cap_of(&caps, "render").class, Some(Class::Batch));
-		assert_eq!(cap_of(&caps, "ollama").class, Some(Class::Batch));
+		assert_eq!(cap_of(&caps, "kokoro").class, Some(Class::Batch));
 		assert_eq!(cap_of(&caps, "bare").class, Some(Class::Interactive));
 		assert_eq!(cap_of(&caps, "unread").class, None);
 	}
@@ -341,7 +341,7 @@ mod tests {
 	fn caps_above_mem_total_name_the_largest_first() {
 		let caps = [
 			cap("nats", Some(G / 2), Class::Protected),
-			cap("ollama", Some(8 * G), Class::Batch),
+			cap("metabase", Some(8 * G), Class::Tooling),
 			cap("render", Some(4 * G), Class::Batch),
 			cap("file-host", Some(4 * G), Class::Protected),
 		];
@@ -349,7 +349,7 @@ mod tests {
 		assert_eq!(said.len(), 1);
 		assert!(said[0].contains("total 16.50 GiB, above this machine's MemTotal of 16.00 GiB by 0.50 GiB"), "{}", said[0]);
 		assert!(
-			said[0].contains("The largest: ollama 8.00 GiB (batch), file-host 4.00 GiB (protected), render 4.00 GiB (batch)."),
+			said[0].contains("The largest: metabase 8.00 GiB (tooling), file-host 4.00 GiB (protected), render 4.00 GiB (batch)."),
 			"{}",
 			said[0]
 		);

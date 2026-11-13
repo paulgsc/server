@@ -89,9 +89,11 @@ pub(crate) fn preflight(schemas: &[Schema], compose_variables: &ComposeVariables
 	}
 	for name in deployment.compose.keys() {
 		if !compose_variables.contains_key(name) && !COMPOSE_OWN.is_match(name) && !FROM_MAKE.contains(&name.as_str()) {
-			report
-				.warnings
-				.push(format!("{compose_file} sets {name}, which no compose file reads (renamed or retired?)"));
+			report.warnings.push(if crate::conform::RETIRED.contains(&name.as_str()) {
+				format!("{compose_file} still sets {name}, which is retired: remove it with `sops edit`, and from envctl's RETIRED in the same commit")
+			} else {
+				format!("{compose_file} sets {name}, which no compose file reads (renamed or retired?)")
+			});
 		}
 	}
 	let mut seen = BTreeSet::new();
@@ -355,7 +357,7 @@ mod tests {
 	fn every_gap_is_named_at_once_and_no_value_is_shown() {
 		let deployment = Deployment {
 			role: "home".into(),
-			compose: plain(&[("ENV_DIR", "/run/user/1/server"), ("UNUSED", SECRET)]),
+			compose: plain(&[("ENV_DIR", "/run/user/1/server"), ("UNUSED", SECRET), (crate::conform::RETIRED[0], SECRET)]),
 			apps: IndexMap::from([(
 				"probe".to_owned(),
 				Some(plain(&[
@@ -374,6 +376,11 @@ mod tests {
 		let shown = render(&report, "home");
 		assert!(!shown.contains(SECRET), "the preflight printed a value");
 		assert!(shown.contains("deploy/home/compose.sops.env sets UNUSED, which no compose file reads"), "{shown}");
+		let retired = format!(
+			"deploy/home/compose.sops.env still sets {}, which is retired: remove it with `sops edit`",
+			crate::conform::RETIRED[0]
+		);
+		assert!(shown.contains(&retired), "the owner's edit is named: {shown}");
 		assert!(shown.contains("deploy/home/probe.sops.env sets OLD, which probe does not read"), "{shown}");
 		assert!(shown.contains("sets TOKEN, and compose's own environment:"), "{shown}");
 		assert!(!shown.contains("OTEL_BSP"), "the OTel SDK's own variables reach the container: {shown}");

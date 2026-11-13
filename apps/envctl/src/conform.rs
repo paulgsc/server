@@ -17,6 +17,14 @@ use regex::Regex;
 use serde_json::Value;
 use std::{collections::BTreeSet, sync::LazyLock};
 
+/// Names a role's `compose.sops.env` may still set after the service that
+/// read them left, because only the owner's key can rewrite that file
+/// (preflight still warns, naming the edit). Each
+/// is a `sops edit` the owner owes, and leaves once no role sets it: a test
+/// fails on an entry no checked-in role sets any more, so this list cannot
+/// outlive the edit. ollama left home on 2026-11-13 (#705, D3).
+pub(crate) const RETIRED: &[&str] = &["OLLAMA_MODELS_PATH"];
+
 static COMPOSE_OWN: LazyLock<Regex> = LazyLock::new(|| crate::dotenv::regex(r"^(COMPOSE_\w+|DOCKER_\w+)$"));
 static RECIPIENT: LazyLock<Regex> = LazyLock::new(|| crate::dotenv::regex(r"^sops_(age|pgp|kms|gcp_kms|azure_kv|hc_vault)__list_\d+__map_"));
 
@@ -120,6 +128,9 @@ pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables,
 			let names = sops::names(text);
 			if app == sops::COMPOSE {
 				for name in names {
+					if RETIRED.contains(&name.as_str()) && !compose_variables.contains_key(&name) {
+						continue;
+					}
 					if !compose_variables.contains_key(&name) && !COMPOSE_OWN.is_match(&name) && !FROM_MAKE.contains(&name.as_str()) {
 						problems.push(format!("{file} sets {name}, which no compose file reads"));
 					}
@@ -196,7 +207,7 @@ pub(crate) fn configured_binaries(metadata: &Value) -> Vec<String> {
 // `${...}` is compose's syntax under test here, not a format argument.
 #[allow(clippy::literal_string_with_formatting_args)]
 mod tests {
-	use super::{configured_binaries, plain_env_file, problems, sops_problems, Role};
+	use super::{configured_binaries, plain_env_file, problems, sops_problems, Role, RETIRED};
 	use crate::{
 		compose::{variables, LABEL},
 		schema::{
@@ -303,6 +314,33 @@ mod tests {
 			found, expected,
 			"dev runs no compose: it needs no ghost file, and states WIRE itself; OTEL_BSP_* is the SDK's own"
 		);
+	}
+
+	#[test]
+	fn a_retired_compose_name_is_allowed_only_while_a_role_still_sets_it() {
+		let role = |names: &[&str]| Role {
+			name: "home".into(),
+			files: vec![("compose".into(), encrypted(names))],
+		};
+		let raw = json!({"services": {}});
+		assert!(problems(&[], &variables(&[]), &raw, &[role(RETIRED)]).is_empty(), "the owner's sops edit is still owed");
+		assert_eq!(
+			problems(&[], &variables(&[]), &raw, &[role(&["GONE"])]),
+			["deploy/home/compose.sops.env sets GONE, which no compose file reads"],
+			"only a retired name is let through"
+		);
+		// Once the owner's edit lands, its entry goes with it.
+		let deploy = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy");
+		let mut set = std::collections::BTreeSet::new();
+		for role in std::fs::read_dir(&deploy).unwrap() {
+			let compose = role.unwrap().path().join(format!("{}{}", crate::sops::COMPOSE, crate::sops::SUFFIX));
+			if let Ok(text) = std::fs::read_to_string(compose) {
+				set.extend(crate::sops::names(&text));
+			}
+		}
+		for name in RETIRED {
+			assert!(set.contains(*name), "no role's compose file sets {name} any more: drop it from RETIRED");
+		}
 	}
 
 	#[test]
