@@ -1,7 +1,7 @@
 # NE at CHI, 2026-10-22 (401873010), read through SF wanting CHI, Standard mode.
 # Moments on offer before the snap: 52 of 52; the most specific first: 52 of 52.
 # Events in just happened 20 s after home saw them: 50 of 51.
-before 40187301063 | 14:53 left in the 1st | NE has the ball | 1st and 10 at the NE 31 | No score yet | now: [Coin toss: CHI kicks off, NE receives] [Opening drive: NE's first drive, 1st and 10 at the NE 31] [Run or throw: NE, 1st and 10 at the NE 31] | just: [Coin toss: CHI kicks off, NE receives, 37 seconds ago]
+before 40187301063 | 14:53 left in the 1st | NE has the ball | 1st and 10 at the NE 31 | No score yet | now: [Opening drive: NE's first drive, 1st and 10 at the NE 31] [Run or throw: NE, 1st and 10 at the NE 31] | just: [Coin toss: CHI kicks off, NE receives, 37 seconds ago]
 before 40187301086 | 14:49 left in the 1st | NE has the ball | 2nd and 10 at the NE 31 | No score yet | now: [Opening drive: NE's first drive, 2nd and 10 at the NE 31] [Run or throw: NE, 2nd and 10 at the NE 31] | just: [Coin toss: CHI kicks off, NE receives, a minute ago]
 before 401873010116 | 14:16 left in the 1st | NE has the ball | 1st and 10 at midfield | No score yet | now: [Opening drive: NE's first drive, 1st and 10 at midfield] [Run or throw: NE, 1st and 10 at midfield] | just:
 after  401873010116 | 14:16 left in the 1st | NE has the ball | 1st and 20 at the NE 40 | No score yet | now: [Opening drive: NE's first drive, 1st and 20 at the NE 40] [Run or throw: NE, 1st and 20 at the NE 40] | just: [Penalty: Flag on NE, offensive holding, 28 seconds ago]
