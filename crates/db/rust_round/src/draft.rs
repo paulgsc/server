@@ -309,13 +309,17 @@ pub async fn finalize(conn: &mut SqliteConnection, kind: Kind, subject: &str, we
 		return Ok(false);
 	};
 	// A final is kept for good and read on every record, so a draft that no
-	// longer reads as its kind's send is left a draft, the error said, rather
-	// than written where it could never be read or taken back.
-	match kind {
-		Kind::RustRounds => serde_json::from_str::<crate::sent::Sent>(&held.body).map(drop),
-		Kind::Interview => serde_json::from_str::<crate::interview::Sent>(&held.body).map(drop),
+	// longer reads as its kind's send is left a draft and nothing is written:
+	// not an error, so a caller finalizing every due week (My data's kept
+	// count) still answers. Its readers say it, as a draft past `due`
+	// (`mailbox::index`'s `draft_after_due`) or a body that does not read.
+	let reads = match kind {
+		Kind::RustRounds => serde_json::from_str::<crate::sent::Sent>(&held.body).is_ok(),
+		Kind::Interview => serde_json::from_str::<crate::interview::Sent>(&held.body).is_ok(),
+	};
+	if !reads {
+		return Ok(false);
 	}
-	.map_err(|err| sqlx::Error::Decode(Box::new(err)))?;
 	// The draft's `sent_at` is its send's `at`, as `put_draft` wrote it.
 	if instant_order(&held.sent_at, due) == Some(Ordering::Greater) {
 		// Dropped only once it is the final: a draft nothing could make final

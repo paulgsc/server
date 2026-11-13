@@ -1844,7 +1844,9 @@ nowhere is marked as such and belongs to review.
     id and when it was recorded, those passed over, when Send was pressed
     and when it reached home) is a draft until the deadline
     (`interview_week_draft`) and final at it (`interview_week_final`), by
-    the same rules, kept once in `rust_round_repo::draft`. Both are the
+    the same rules, kept once in `rust_round_repo::draft`, for both kinds of
+    week: a draft that no longer reads as its kind's send is never made
+    final, and stays a draft for a person to read. Both are the
     subject's, read only by them (`GET /interview-weeks/:id/record`), never
     audio, and deleted only with the account; the final is never updated. A
     final week's record reaches the subject's own mailbox as

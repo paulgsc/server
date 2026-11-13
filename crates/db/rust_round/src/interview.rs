@@ -398,6 +398,14 @@ mod tests {
 		let held: Stored<Sent> = standing(&mut conn, "a", "2026-w47").await.unwrap().unwrap();
 		assert_eq!((held.sent, held.draft), (later, false));
 		assert!(!finalize(&mut conn, Kind::Interview, "a", "2026-w47", DUE, AFTER).await.unwrap(), "once");
+		// A draft that no longer reads as a send is left a draft: no final, no error.
+		sqlx::query("INSERT INTO interview_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES ('a', '2026-w46', ?1, '{\"week\":1}', ?1)")
+			.bind(OPEN)
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		assert!(!finalize(&mut conn, Kind::Interview, "a", "2026-w46", DUE, AFTER).await.unwrap());
+		assert!(!is_final(&mut conn, Kind::Interview, "a", "2026-w46").await.unwrap(), "left a draft");
 		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('a', 'a')")
 			.execute(&mut *conn)
 			.await
