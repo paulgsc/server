@@ -1380,7 +1380,11 @@ nowhere is marked as such and belongs to review.
     speech; or why not: `unreadable`, `too_long`, `deadline`, `failed`), the
     audio's length, how long it took and when. A model that has heard a note
     or found it silent never hears it again (a partial unique index), and
-    one that fails on a note stops after three attempts; a better model adds
+    one that fails on a note stops after three attempts (a `deadline`
+    reached while home's CPU was contended is no attempt: nothing is kept
+    and the note is heard again, at most three times in a row before it is
+    kept as it ended; paulgsc/server#706, `docs/home-compute.md`, "The
+    contention guard"); a better model adds
     rows of its own and replaces none, and a reader takes the newest that
     heard something. A heard attempt also keeps each word it heard, with
     when the word began and ended in milliseconds from the note's start

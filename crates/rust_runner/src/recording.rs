@@ -167,6 +167,7 @@ impl Recorder {
 			exit_code,
 			signal,
 			milliseconds: u64::try_from(finished.elapsed.as_millis()).unwrap_or(u64::MAX),
+			contended: false,
 		};
 		Ok(self.recording(key, outcome, note, compile, Some(run)))
 	}

@@ -19,10 +19,16 @@
 //! - **RP4: bounded by [`BATCH`] and the pass deadline alone.** A pass takes
 //!   at most `BATCH` programs. It asks the toolchain only if that ask and one
 //!   program's fit before its deadline, and a program only if its wait fits.
+//!
+//! Each program's ask is bracketed by a [`crate::contention::Window`] (L1,
+//! paulgsc/server#706): a verdict of time, or a lost runner, taken while the
+//! box was contended is nobody's (RP3's "or nobody's"), and a run's
+//! `milliseconds` measured then is marked `contended`.
 
+use crate::contention::{Excuse, Guard, Window};
 use rust_round_repo::{Ended, Kept, Lost, Waiting};
 use rust_rounds_wire::protocol::{exchange, AskError, Refusal, Request, Response, ASK_TIMEOUT, CLIENT_TIMEOUT};
-use rust_rounds_wire::recording::{key, release, RustcRun, Why};
+use rust_rounds_wire::recording::{key, release, Recording, RustcRun, Why};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -110,6 +116,10 @@ pub enum Stop {
 	Lost(Lost),
 	/// Less than one program's wait was left before the pass's deadline.
 	Deadline,
+	/// A program ran out of time, or the runner was lost holding it, while
+	/// the box was contended: nobody's, kept as nothing, and asked again
+	/// next pass ([`crate::contention`]). Not an error.
+	Contended,
 }
 
 impl Stop {
@@ -126,6 +136,7 @@ impl Stop {
 			Self::Lost(Lost::Dropped) => "runner_dropped",
 			Self::Lost(Lost::TimedOut) => "runner_timed_out",
 			Self::Deadline => "pass_deadline",
+			Self::Contended => "contended",
 		}
 	}
 }
@@ -143,6 +154,16 @@ pub struct Pass {
 	pub lost: usize,
 	/// Programs kept as `runner-lost`, at their last allowed loss.
 	pub gave_up: usize,
+	/// Outcomes the box's contention excused: nobody's, kept as nothing.
+	pub excused: usize,
+	/// Outcomes contention would have excused, kept anyway: their program
+	/// was excused [`crate::contention::NOBODYS`] times in a row already.
+	pub judged_anyway: usize,
+	/// Recordings kept with their run's time marked `contended`.
+	pub marked: usize,
+	/// Asks whose window could not read the box's counters: judged as
+	/// before the guard.
+	pub unreadable: usize,
 	/// Why it ended early, if it did.
 	pub stopped: Option<Stop>,
 	/// The server began shutting down during the pass.
@@ -151,12 +172,12 @@ pub struct Pass {
 
 impl Pass {
 	/// Whether the pass's stop is an error, logged and counted: every stop
-	/// but no runner on this machine, and a deadline reached after at least
-	/// one program was asked about.
+	/// but no runner on this machine, contention, and a deadline reached
+	/// after at least one program was asked about.
 	#[must_use]
 	pub const fn failed(&self) -> bool {
 		match self.stopped {
-			None | Some(Stop::NoRunner) => false,
+			None | Some(Stop::NoRunner | Stop::Contended) => false,
 			Some(Stop::Deadline) => self.asked == 0,
 			Some(_) => true,
 		}
@@ -191,6 +212,15 @@ async fn ask<R: Runner>(runner: &Arc<R>, request: Request, timeout: Duration) ->
 /// | is not on this machine (no socket, at the toolchain ask) | nothing | stops: [`Stop::NoRunner`], not an error |
 /// | answered something else, or a recording under another toolchain | nothing | stops: [`Stop::Invalid`] |
 ///
+/// The contention guard comes first ([`crate::contention`], L1): a recording that
+/// ran out of time (`stopped`, `time`) while the CPU was contended, or a
+/// loss (`Dropped`, `TimedOut`) while the CPU was contended or the kernel
+/// killed anything for memory, is nobody's: nothing is kept, and the pass
+/// stops with [`Stop::Contended`]. `guard`'s streak excuses one program at
+/// most [`crate::contention::NOBODYS`] times in a row; after that it is judged by
+/// the table. A recording kept from a contended window has its run's time
+/// marked `contended`.
+///
 /// The toolchain ask keeps nothing whatever happens: any failure is an
 /// outage. A stopped pass leaves the rest waiting, and the next starts from
 /// the first program waiting.
@@ -203,6 +233,7 @@ pub async fn run_once<R: Runner>(
 	runner: &Arc<R>,
 	deadline: Duration,
 	waits: Waits,
+	guard: &mut Guard<i64>,
 	cancel: &CancellationToken,
 	now: &(dyn Fn() -> String + Sync),
 ) -> Result<Pass, sqlx::Error> {
@@ -239,8 +270,31 @@ pub async fn run_once<R: Runner>(
 			toolchain: toolchain.clone(),
 			source: program.source.clone(),
 		};
-		let stop = match ask(runner, request, waits.record).await {
-			Ok(Response::Recorded { recording, .. }) if recording.toolchain == toolchain => {
+		let window = Window::open(guard.gauge.as_ref());
+		let answer = ask(runner, request, waits.record).await;
+		let seen = window.close(guard.gauge.as_ref());
+		pass.unreadable += usize::from(seen.unreadable());
+		let excusable = match &answer {
+			Ok(Response::Recorded { recording, .. }) if recording.toolchain == toolchain => seen.cpu_contended() && ran_out_of_time(recording),
+			Err(AskError::Dropped(_) | AskError::TimedOut) => seen.anything(),
+			_ => false,
+		};
+		if excusable {
+			match guard.streak.excuse(program.seq) {
+				Excuse::Nobodys => {
+					pass.excused += 1;
+					pass.stopped = Some(Stop::Contended);
+					break;
+				}
+				Excuse::JudgedAnyway => pass.judged_anyway += 1,
+			}
+		}
+		let stop = match answer {
+			Ok(Response::Recorded { mut recording, .. }) if recording.toolchain == toolchain => {
+				if let Some(run) = recording.run.as_mut().filter(|_| seen.cpu_contended()) {
+					run.contended = true;
+					pass.marked += 1;
+				}
 				// What the phone reads is derived here from the recording,
 				// not taken from the runner's word (RX4).
 				// Disallowed for tracing; this is the record itself, stored.
@@ -280,6 +334,12 @@ pub async fn run_once<R: Runner>(
 		break;
 	}
 	Ok(pass)
+}
+
+/// Whether a recording ended at a wall-clock ceiling: the run's, or
+/// rustc's compile timeout. What the phone reads as `stopped`, `time`.
+fn ran_out_of_time(recording: &Recording) -> bool {
+	matches!(recording.rustc_run(), RustcRun::Stopped { why: Why::Time, .. })
 }
 
 const fn stopped(mut pass: Pass, stop: Stop) -> Pass {
@@ -337,6 +397,7 @@ async fn lose(db: &SqlitePool, toolchain: &str, program: &Waiting, how: Lost, pa
 #[cfg(test)]
 mod tests {
 	use super::{run_once, Pass, Runner, Stop, Waits, BATCH, DROPS};
+	use crate::contention::{self, fake, fake::State, Guard};
 	use rust_round_repo::round::read;
 	use rust_round_repo::Lost;
 	use rust_rounds_wire::protocol::{AskError, Refusal, Request, Response};
@@ -370,6 +431,8 @@ mod tests {
 		Unavailable,
 		/// Answers something that is not an answer.
 		Garble,
+		/// Records it as run to its wall-clock ceiling and killed.
+		Slow,
 	}
 
 	/// The runner, in memory: it records what it is asked, and does with
@@ -417,6 +480,7 @@ mod tests {
 				exit_code: Some(0),
 				signal: None,
 				milliseconds: 1,
+				contended: false,
 			}),
 		}
 	}
@@ -429,7 +493,7 @@ mod tests {
 			})
 		};
 		match act {
-			Act::Record => Ok(Response::Toolchain { toolchain: toolchain.to_owned() }),
+			Act::Record | Act::Slow => Ok(Response::Toolchain { toolchain: toolchain.to_owned() }),
 			Act::Refuse => refused(Refusal::TooLarge),
 			Act::Drop => Err(AskError::Dropped(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))),
 			Act::Hang => {
@@ -457,8 +521,14 @@ mod tests {
 				});
 			}
 			match (self.act)(source) {
-				Act::Record => {
-					let recording = recording(&toolchain, source);
+				act @ (Act::Record | Act::Slow) => {
+					let mut recording = recording(&toolchain, source);
+					if matches!(act, Act::Slow) {
+						recording.outcome = Outcome::BudgetExceeded;
+						if let Some(run) = recording.run.as_mut() {
+							(run.exit_code, run.signal) = (None, Some(9));
+						}
+					}
 					// The runner's word for what the phone reads, which the
 					// pass must not take (RX4): it derives it.
 					Ok(Response::Recorded {
@@ -505,9 +575,108 @@ mod tests {
 	};
 
 	async fn pass_within<R: Runner>(pool: &SqlitePool, runner: &Arc<R>, deadline: Duration, waits: Waits) -> Pass {
-		run_once(pool, runner, deadline, waits, &CancellationToken::new(), &|| String::from("2026-10-31T01:00:00.000Z"))
+		let (mut guard, _) = fake::guard(State::Calm);
+		guarded(pool, runner, deadline, waits, &mut guard).await
+	}
+
+	async fn guarded<R: Runner>(pool: &SqlitePool, runner: &Arc<R>, deadline: Duration, waits: Waits, guard: &mut Guard<i64>) -> Pass {
+		run_once(pool, runner, deadline, waits, guard, &CancellationToken::new(), &|| {
+			String::from("2026-10-31T01:00:00.000Z")
+		})
+		.await
+		.unwrap()
+	}
+
+	/// A pass with the server's waits, against `guard`'s box.
+	async fn pass_on<R: Runner>(pool: &SqlitePool, runner: &Arc<R>, guard: &mut Guard<i64>) -> Pass {
+		guarded(pool, runner, Waits::SERVER.least_deadline() + MINUTE, Waits::SERVER, guard).await
+	}
+
+	/// Each kept recording, as stored.
+	async fn recordings(pool: &SqlitePool) -> Vec<Option<String>> {
+		sqlx::query_scalar("SELECT recording FROM rust_round_run ORDER BY source_seq")
+			.fetch_all(pool)
 			.await
 			.unwrap()
+	}
+
+	async fn drops(pool: &SqlitePool) -> i64 {
+		sqlx::query_scalar("SELECT COUNT(*) FROM rust_round_drop").fetch_one(pool).await.unwrap()
+	}
+
+	/// A program that runs out of time on a contended box is nobody's:
+	/// nothing is kept, the pass stops without an error, and the next pass
+	/// asks it again. On a calm box the same answer is the program's.
+	#[tokio::test]
+	async fn a_time_verdict_on_a_contended_box_is_nobodys() {
+		let pool = pool().await;
+		round(&pool, "r-01", &["slow", "after"]).await;
+		let fake = Fake::new(|source| if source == "slow" { Act::Slow } else { Act::Record });
+		let (mut guard, gauge) = fake::guard(State::Busy);
+		let done = pass_on(&pool, &fake, &mut guard).await;
+		assert_eq!((done.excused, done.recorded, done.stopped), (1, 0, Some(Stop::Contended)));
+		assert!(!done.failed(), "contention is no error");
+		assert!(runs(&pool).await.is_empty(), "nothing is kept, so it waits");
+		gauge.set(State::Calm);
+		let done = pass_on(&pool, &fake, &mut guard).await;
+		assert_eq!((done.excused, done.recorded, done.stopped), (0, 2, None));
+		assert_eq!(fake.asked(), ["slow", "slow", "after"], "asked again, first");
+		let kept = runs(&pool).await;
+		assert!(kept[0].4.contains(r#""why":"time""#), "on a calm box it is the program's: {kept:?}");
+	}
+
+	/// A runner lost while the box is contended, or while the kernel kills
+	/// for memory, is no loss of the program's: no drop is kept, so it never
+	/// counts toward `DROPS`. On a calm box it is a loss.
+	#[tokio::test]
+	async fn a_loss_while_the_box_is_contended_or_killing_is_nobodys() {
+		for (state, excused) in [(State::Busy, true), (State::Killing, true), (State::Calm, false), (State::Unreadable, false)] {
+			let pool = pool().await;
+			round(&pool, "r-01", &["drops"]).await;
+			let fake = Fake::new(|source| if source.is_empty() { Act::Record } else { Act::Drop });
+			let (mut guard, _) = fake::guard(state);
+			let done = pass_on(&pool, &fake, &mut guard).await;
+			if excused {
+				assert_eq!((done.excused, done.lost, done.stopped), (1, 0, Some(Stop::Contended)), "{state:?}");
+				assert_eq!(drops(&pool).await, 0, "{state:?}");
+			} else {
+				assert_eq!((done.excused, done.lost, done.stopped), (0, 1, Some(Stop::Lost(Lost::Dropped))), "{state:?}");
+				assert_eq!(drops(&pool).await, 1, "{state:?}");
+			}
+			assert_eq!(done.unreadable, usize::from(state == State::Unreadable), "{state:?}");
+		}
+	}
+
+	/// A box that never calms down cannot hold the queue: one program is
+	/// excused `NOBODYS` times in a row, then judged, its time marked.
+	#[tokio::test]
+	async fn a_program_is_excused_at_most_nobodys_times_in_a_row() {
+		let pool = pool().await;
+		round(&pool, "r-01", &["slow"]).await;
+		let fake = Fake::new(|_| Act::Slow);
+		let (mut guard, _) = fake::guard(State::Busy);
+		for _ in 0..contention::NOBODYS {
+			assert_eq!(pass_on(&pool, &fake, &mut guard).await.stopped, Some(Stop::Contended));
+		}
+		let done = pass_on(&pool, &fake, &mut guard).await;
+		assert_eq!((done.excused, done.judged_anyway, done.recorded, done.marked), (0, 1, 1, 1));
+		let stored = recordings(&pool).await;
+		assert!(stored[0].as_deref().unwrap().contains(r#""contended":true"#), "{stored:?}");
+	}
+
+	/// A recording that fits its ceilings on a contended box is kept, its
+	/// time marked; on a calm box it carries no mark at all.
+	#[tokio::test]
+	async fn a_time_measured_on_a_contended_box_is_marked() {
+		for (state, marked) in [(State::Busy, true), (State::Killing, false), (State::Calm, false)] {
+			let pool = pool().await;
+			round(&pool, "r-01", &["fn main() {}"]).await;
+			let (mut guard, _) = fake::guard(state);
+			let done = pass_on(&pool, &Fake::new(|_| Act::Record), &mut guard).await;
+			assert_eq!((done.recorded, done.marked, done.excused), (1, usize::from(marked), 0), "{state:?}");
+			let stored = recordings(&pool).await;
+			assert_eq!(stored[0].as_deref().unwrap().contains("contended"), marked, "{state:?}: {stored:?}");
+		}
 	}
 
 	/// A pass with the server's waits and a deadline of a few minutes.
