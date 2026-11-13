@@ -286,14 +286,13 @@ pub async fn propose(db: &SqlitePool, game: &str, subject: &str, note_id: &str, 
 
 #[cfg(test)]
 mod tests {
-	use super::{nearest, pass, propose, reconcile, Pass, Proposal, Reconciled, WINDOW};
+	use super::{nearest, pass, propose, reconcile, Done, Pass, Proposal, Reconciled, WINDOW};
 	use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 	use game_feed_repo::{Fetched, Response};
 	use nfl_feed::summary::Play;
 	use scenario_engine::Was;
 	use serde_json::{json, Value};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
-	use std::collections::HashMap;
 	use voice_repo::bite_match::{newest_match, Method};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
