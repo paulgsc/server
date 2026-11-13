@@ -426,14 +426,15 @@ gone() {
 }
 
 # `within gone`, and when the process outlives the wait, what it is: its
-# stat line (state and parent), its command line, and which child the fake
-# recorder names now. The stop case's child has outlived a kill on a busy
-# runner without a zombie in sight (#825); the next time says why.
+# stat line (state and parent), its command line, and the children the fake
+# recorder names now. Kept from #825, whose cause was a pid read as empty.
 gone_or_say() {
   within gone "$1" && return 0
+  case $1 in '' | *[!0-9]*) echo "  no pid to look at: [$1]"; return 1 ;; esac
   echo "  still there, pid $1: $(cat "/proc/$1/stat" 2> /dev/null || echo gone by now)"
   echo "  its command line: $(tr '\0' ' ' 2> /dev/null < "/proc/$1/cmdline")"
-  echo "  the fake names as its child now: $(cat "$FAKE/child" 2> /dev/null)"
+  echo "  the fake names as its child now: $(cat "$FAKE/child" 2> /dev/null)," \
+    "as its held child: $(cat "$FAKE/held-child" 2> /dev/null)"
   return 1
 }
 
