@@ -29,10 +29,23 @@
 //!   play's text.
 //! - **It backs off** on a 429, any other refusal, an unreadable body or no
 //!   answer, exponentially and to at most 15 minutes.
+//!
+//! **Always started; the operator pauses it.** Whether home follows the
+//! games is a lever, `settings::GameFeed` (on by default), set from the web
+//! app (`PUT /api/v1/admin/settings/game-feed`), not an environment
+//! variable: `GAME_FEED_ENABLED` is gone (owner, 2026-11-13). Each pass reads
+//! it once, first, so an idle wake's only I/O is that one indexed read.
+//! Paused, the pass fetches nothing and keeps what it has: no row is touched
+//! and the schedule waits, so the first pass after it is turned back on
+//! fetches whatever is due by then, the scoreboard included. Pausing and
+//! resuming are logged once, when the worker first sees them; a switch it
+//! cannot read is an error, and that pass is skipped rather than run on a
+//! guess.
 
 pub mod pass;
 
-use crate::{AppState, Config};
+use crate::settings::{self, GameFeed};
+use crate::AppState;
 use std::time::Duration;
 use tracing::{error, info};
 
@@ -71,8 +84,7 @@ const _: () = {
 /// How long one request may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Everything the worker needs, or `None` when the deployment has not turned
-/// the feed on.
+/// Everything the worker needs.
 #[derive(Clone)]
 pub struct GameFeedContext {
 	pub fetch: pass::ReqwestFetch,
@@ -80,30 +92,56 @@ pub struct GameFeedContext {
 }
 
 impl GameFeedContext {
-	/// The feed's context once, at startup. Off is fine and logged.
+	/// The feed's context once, at startup.
 	///
 	/// # Errors
-	/// `GAME_FEED_ENABLED` with an HTTP client that does not build.
-	pub fn from_config(config: &Config) -> anyhow::Result<Option<Self>> {
-		if !config.game_feed_enabled {
-			info!("the game feed is not enabled; home follows no NFL game");
-			return Ok(None);
-		}
-		let cadence = CADENCE;
+	/// An HTTP client that does not build.
+	pub fn new() -> anyhow::Result<Self> {
 		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-		Ok(Some(Self {
+		Ok(Self {
 			fetch: pass::ReqwestFetch::new(client),
-			cadence,
-		}))
+			cadence: CADENCE,
+		})
 	}
 }
 
-/// Start the worker if the deployment turned it on, and say which on
-/// `game_feed_enabled` either way.
+/// Start the worker. It always runs; the operator's switch pauses its passes.
 pub fn start(state: &AppState) {
-	crate::metrics::game_feed::record_enabled(state.game_feed.is_some());
-	if let Some(context) = state.game_feed.clone() {
-		spawn(state, context);
+	spawn(state, state.game_feed.clone());
+}
+
+/// What the worker last said about the switch, so a pause or a resume is
+/// logged once, when it is first seen, not every pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Seen {
+	/// Whether it was last paused; `None` before the first pass read it.
+	paused: Option<bool>,
+}
+
+/// A move of the switch a pass should say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Change {
+	Paused,
+	Resumed,
+}
+
+impl Seen {
+	/// The switch as this pass read it: `Paused` or `Resumed` when it moved
+	/// (the first pass says `Paused` only if it starts paused).
+	pub(crate) const fn switch(&mut self, paused: bool) -> Option<Change> {
+		let was = self.paused.replace(paused);
+		match (was, paused) {
+			(Some(false) | None, true) => Some(Change::Paused),
+			(Some(true), false) => Some(Change::Resumed),
+			(Some(false) | None, false) | (Some(true), true) => None,
+		}
+	}
+}
+
+fn say(change: Change) {
+	match change {
+		Change::Paused => info!("the game feed is paused by the operator: home fetches nothing and keeps what it has"),
+		Change::Resumed => info!("the game feed is on again: home follows the games of the week from the scoreboard"),
 	}
 }
 
@@ -124,6 +162,7 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 		let mut schedule = pass::Schedule::new(chrono::Utc::now());
 		let mut ticker = tokio::time::interval(TICK);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+		let mut seen = Seen::default();
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
@@ -132,6 +171,29 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 				}
 				_ = ticker.tick() => {
 					crate::metrics::game_feed::record_pass_started();
+					// The switch, once a pass (`settings::GameFeed`).
+					let switch = match settings::read::<GameFeed>(&db).await {
+						Ok(standing) => standing.value,
+						Err(err) => {
+							crate::metrics::instruments::record_error("game_feed", "setting");
+							// A switch that does not read is home's storage failing, as
+							// a pass that ends on it is (`GameFeedFailing`).
+							crate::metrics::game_feed::record_pass(None, schedule.followed(chrono::Utc::now()));
+							error!(error = %err, "game feed pass skipped: its following setting could not be read");
+							continue;
+						}
+					};
+					crate::metrics::game_feed::record_enabled(switch.following);
+					if let Some(change) = seen.switch(!switch.following) {
+						say(change);
+					}
+					// Paused: nothing fetched, and the schedule and every
+					// kept row stay as they are. A paused pass follows no
+					// game and has not failed.
+					if !switch.following {
+						crate::metrics::game_feed::record_pass(Some(&pass::Pass::default()), 0);
+						continue;
+					}
 					let result = pass::run_once(&db, &context.fetch, &mut schedule, context.cadence, &chrono::Utc::now).await;
 					crate::metrics::game_feed::record_pass(result.as_ref().ok(), schedule.followed(chrono::Utc::now()));
 					// What the pass kept is the phone's offer to make
@@ -153,5 +215,21 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 		Ok(done) if done.fetched.is_empty() => {}
 		Ok(done) => info!(fetched = ?done.fetched, added = done.added, "game feed pass"),
 		Err(_) => error!(error = "storage", "game feed pass failed"),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Change, Seen};
+
+	#[test]
+	fn the_switch_is_said_when_it_moves_and_not_every_pass() {
+		let mut seen = Seen::default();
+		assert_eq!(seen.switch(false), None, "on from the start says nothing");
+		assert_eq!(seen.switch(false), None);
+		assert_eq!(seen.switch(true), Some(Change::Paused));
+		assert_eq!(seen.switch(true), None);
+		assert_eq!(seen.switch(false), Some(Change::Resumed));
+		assert_eq!(Seen::default().switch(true), Some(Change::Paused), "paused from the start is said once");
 	}
 }

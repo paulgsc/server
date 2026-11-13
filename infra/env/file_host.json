@@ -424,19 +424,6 @@
       "bounds": null
     },
     {
-      "name": "GAME_FEED_ENABLED",
-      "group": "NFL game feed",
-      "required": false,
-      "default": "false",
-      "kind": "bool",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Whether home follows the games of the week at all",
-      "required_when": null,
-      "bounds": null
-    },
-    {
       "name": "NATS_URL",
       "group": "NATS",
       "required": true,

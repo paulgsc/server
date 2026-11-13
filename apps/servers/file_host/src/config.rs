@@ -375,16 +375,6 @@ pub struct Config {
 	#[arg(long, env = "MEANING_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Take library meaning index")]
 	pub meaning_enabled: bool,
 
-	// ── The NFL game feed ─────────────────────────────────────────────────────
-	//
-	// See `game_feed`. Home follows the games of the week through ESPN's public
-	// site API and keeps every response and the play log read from them. Off
-	// unless `GAME_FEED_ENABLED`; on, the server refuses to start with a cadence
-	// out of range.
-	/// Whether home follows the games of the week at all.
-	#[arg(long, env = "GAME_FEED_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "NFL game feed")]
-	pub game_feed_enabled: bool,
-
 	// ── Shared with the other binaries (`app_config`) ─────────────────────────
 	/// `NATS_URL`. The container sets it (`infra/compose/file_host.yml`).
 	#[command(flatten)]
@@ -441,7 +431,9 @@ fn parse_timezone(name: &str) -> Result<String, Box<dyn std::error::Error + Send
 /// The retired transcriber's `WHISPER_*` three (#407), and
 /// `OTEL_SERVICE_NAME`, which the binary's own name replaced (#617), and
 /// `RUST_ROUNDS_ENABLED`, which the operator's recording switch replaced
-/// (`settings::RustRounds`, paulgsc/some-ui#2357). Startup
+/// (`settings::RustRounds`, paulgsc/some-ui#2357), and `GAME_FEED_ENABLED`,
+/// which the operator's following switch replaced (`settings::GameFeed`).
+/// Startup
 /// warns with their names, so a stale deployment file is never silent
 /// (#476).
 ///
@@ -455,10 +447,17 @@ pub fn retired_variables_set() -> Vec<&'static str> {
 
 /// [`retired_variables_set`] over `var`, which reads one variable.
 fn retired_variables_in(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
-	["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME", "RUST_ROUNDS_ENABLED"]
-		.into_iter()
-		.filter(|name| var(name).is_some())
-		.collect()
+	[
+		"WHISPER_MODELS_PATH",
+		"WHISPER_MODEL",
+		"WHISPER_THREADS",
+		"OTEL_SERVICE_NAME",
+		"RUST_ROUNDS_ENABLED",
+		"GAME_FEED_ENABLED",
+	]
+	.into_iter()
+	.filter(|name| var(name).is_some())
+	.collect()
 }
 
 #[cfg(test)]
@@ -471,7 +470,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 18] = [
+	const REFUSED: [(&str, &str); 17] = [
 		("RUST_LOG", "info,=[bad"),
 		("RATE_LIMIT", "-1"),
 		("RATE_LIMIT", "0"),
@@ -488,7 +487,6 @@ mod tests {
 		("MAILBOX_ARCHIVE_DAYS", "90d"),
 		("TRANSCRIBE_ENABLED", "on"),
 		("MEANING_ENABLED", "on"),
-		("GAME_FEED_ENABLED", "on"),
 		("NUDGE_TIMEZONE", "America/Denvr"),
 	];
 	// The URLs, keys and paths are checked by what uses them, which refuses
@@ -534,13 +532,20 @@ mod tests {
 		let stale = |name: &str| {
 			matches!(
 				name,
-				"WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" | "OTEL_SERVICE_NAME" | "RUST_ROUNDS_ENABLED"
+				"WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" | "OTEL_SERVICE_NAME" | "RUST_ROUNDS_ENABLED" | "GAME_FEED_ENABLED"
 			)
 			.then(String::new)
 		};
 		assert_eq!(
 			retired_variables_in(stale),
-			["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME", "RUST_ROUNDS_ENABLED"]
+			[
+				"WHISPER_MODELS_PATH",
+				"WHISPER_MODEL",
+				"WHISPER_THREADS",
+				"OTEL_SERVICE_NAME",
+				"RUST_ROUNDS_ENABLED",
+				"GAME_FEED_ENABLED"
+			]
 		);
 	}
 

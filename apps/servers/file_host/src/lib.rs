@@ -138,8 +138,9 @@ pub struct AppState {
 	/// Rust Rounds' recorder: always started, paused or on by the operator's
 	/// lever (`settings::RustRounds`), each pass.
 	pub rust_rounds: rust_rounds::RustRoundsContext,
-	/// `None` unless `GAME_FEED_ENABLED`: home follows no NFL game.
-	pub game_feed: Option<game_feed::GameFeedContext>,
+	/// The game feed: always started, paused or following by the operator's
+	/// lever (`settings::GameFeed`), each pass.
+	pub game_feed: game_feed::GameFeedContext,
 	pub call_weeks: call_weeks::CallWeeksContext,
 	/// Interactive work in progress (a note being heard, a program being
 	/// recorded), held by those workers and read by the batch lane, which
@@ -190,8 +191,8 @@ impl AppState {
 		let pipeline_publisher = Arc::new(JetStreamPublisher::from_client(client));
 
 		let ws = WebSocketFsm::new();
-		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
-		let game_live = websocket::game_live::GameLive::new(game_feed.is_some(), core.connection_guard.clone(), cancel_token.clone());
+		let game_feed = game_feed::GameFeedContext::new()?;
+		let game_live = websocket::game_live::GameLive::new(core.connection_guard.clone(), cancel_token.clone());
 
 		let realtime = RealtimeContext {
 			ws,
@@ -298,9 +299,10 @@ impl AppState {
 ///   its socket to record each stored program; always started, and paused
 ///   or on by the operator's lever;
 /// - the game feed (`game_feed`), of ESPN's public API, at a cadence set by
-///   which games are live;
+///   which games are live; always started, and paused or following by the
+///   operator's lever;
 /// - the bite reconciler (`reconcile`), every ten minutes, matching the
-///   game bites of each game gone final to their plays; on with the feed;
+///   game bites of each game gone final to their plays; always started;
 /// - the call's weeks (`call_weeks`), read hourly from `paulgsc/testing`;
 ///   always on, its metrics (`metrics::call_weeks`) also saying what the
 ///   render worker has made of each week;

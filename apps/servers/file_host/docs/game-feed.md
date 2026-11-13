@@ -22,8 +22,10 @@ offers: see "The phone's live game day" below.
 
 ## The worker
 
-Off unless `GAME_FEED_ENABLED=true`. It wakes every 5 s and fetches only what
-its schedule says is due, so an idle wake does no I/O:
+Always started, and following or paused by the operator's switch (see
+"Turning it on"). It wakes every 5 s, reads the switch, and fetches only what
+its schedule says is due, so an idle wake's only I/O is that one indexed
+read:
 
 - **The scoreboard** (`/scoreboard`, the current week) every
   `game_feed::CADENCE.scoreboard` (600), to learn the week's games, their
@@ -109,18 +111,33 @@ row did not come back.
 
 ## Turning it on
 
-`deploy/home/file_host.sops.env` states `GAME_FEED_ENABLED`, so home never
-reads the code default (README.md, "Every file states every variable of its
-binary"). Turning the feed on is an edit of that file with a key `.sops.yaml`
-names, which no agent session holds. On the box, in the checkout:
+Whether home follows the games is the operator's switch, not a deployment
+variable: the admin setting `game-feed`, `{ "following": true }` by default
+(`settings::GameFeed`), set from the web app's home switches beside Rust
+Rounds' (`PUT /api/v1/admin/settings/game-feed`, operator only;
+`routes::admin_settings`). With nothing set, home follows. It replaced
+`GAME_FEED_ENABLED` (owner, 2026-11-13): following the games is policy, so it
+moves without a sops edit or a restart, as Rust Rounds' recording did
+(paulgsc/server#716). A file that still sets the variable is named at startup
+(`config::retired_variables_set`).
 
-```bash
-git pull && sops set deploy/home/file_host.sops.env '["GAME_FEED_ENABLED"]' '"true"' && make home-deploy && make up
-```
+- **Each pass reads it once, first.** A change takes effect at the next wake,
+  within 5 s.
+- **Paused, the feed fetches nothing and keeps what it has.** No row is
+  touched (GF2 holds) and the schedule waits; the first pass after it is
+  turned back on fetches whatever is due by then, the scoreboard first, so it
+  catches up as a restart does.
+- **Said once.** Pausing and resuming are each logged once, at `INFO`, when
+  the worker first sees them, not every pass.
+- **A switch it cannot read skips the pass,** at `ERROR`
+  (`operation_errors_total{operation="game_feed", error_type="setting"}`),
+  rather than fetch on a guess. A stored value the namespace no longer parses
+  is such a failure, never read as the default.
 
-Then commit the file, so main says what home runs (README.md, "Deploying to
-home", for what each step does). `game_feed_enabled` reads 1 on the GAME FEED
-dashboard once it has. Still open, and not blocking it (paulgsc/server#534):
+`game_feed_enabled` is the switch as the last pass read it: 1 following, 0
+paused, on the GAME FEED dashboard. A paused pass follows no game
+(`game_feed_games_followed` 0) and has not failed; a switch that cannot be
+read sets `game_feed_pass_failing`, as a storage failure does. Still open, and not blocking it (paulgsc/server#534):
 no retry budget (GA2), a completed game whose summary never reads final is
 fetched without bound (GA3), and no response size limit. The worker's class is
 `file-host`'s (`docs/home-compute.md`).
@@ -198,9 +215,12 @@ only. Its messages are `websocket/game_live/wire.rs` (version 1), and
   below the `lastSeq` the phone says it saw.
 - **Clocks.** A `ping` carries the phone's clock and is answered with home's,
   so each bite keeps the offset (`game_bite.clock_offset_ms`, GW5).
-- **Off is off.** With `GAME_FEED_ENABLED` unset the socket still opens, and
-  every offer says `following: false` with no games, so the phone can say home
-  follows none rather than look away from home.
+- **Paused is off.** Each offer reads the operator's switch once. Paused,
+  the socket still opens, and every offer says `following: false` with no
+  games, so the phone can say home follows none rather than look away from
+  home. A change reaches an open socket at its next tick or pass, since the
+  phone would see something new. A switch that cannot be read sends no offer
+  that time, as a storage failure does.
 - **SF reads only its own game** as one it wants won. Which side it wants in
   another game is Playoff Delta's reading, which home does not make per week
   yet; any other game is read as one that cannot move SF.
@@ -214,7 +234,8 @@ as written: the feed reads and writes no person's data, and the reconciler,
 which reads bites and writes `bite_match`, is a separate worker (call C160,
 2026-11-13, the owner's "Let's just go with the recommended").
 
-- **When.** On with the feed. Every `reconcile::TICK` (10 minutes) it reads
+- **When.** Always started, as the feed is; with the feed paused no new game
+  goes final at home, so a pass finds little. Every `reconcile::TICK` (10 minutes) it reads
   the newest scoreboard kept, and reconciles each game whose newest summary
   is final, unless it already did with as many bites as the game has now. A
   bite said after the final is matched at the next tick. GWB8 calls
