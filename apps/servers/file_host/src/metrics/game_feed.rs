@@ -21,7 +21,9 @@ const KINDS: [&str; 9] = [
 	"transport",
 ];
 
-/// Whether this deployment runs the feed: 1 or 0, set once at boot.
+/// Whether home follows the games: the operator's switch
+/// (`settings::GameFeed`) as the last pass read it, 1 or 0. Not set until a
+/// pass has read it.
 pub fn record_enabled(enabled: bool) {
 	metrics::gauge!("game_feed_enabled").set(if enabled { 1.0 } else { 0.0 });
 }

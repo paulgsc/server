@@ -56,18 +56,16 @@ pub struct Reconciled {
 /// within this of its game's final, or of reaching home after it.
 pub const TICK: Duration = Duration::from_secs(600);
 
-/// Start the worker, when the deployment follows games: with the feed off no
-/// game goes final at home, and nothing is matched (GWB8 still calls
-/// [`reconcile`] itself).
+/// Start the worker. It always runs, as the feed does.
+///
+/// With the feed paused (`settings::GameFeed`) no new game goes final at
+/// home, so a pass finds little, but a bite of a game home already kept final
+/// is still matched (GWB8 also calls [`reconcile`] itself).
 ///
 /// The worker is its own task, apart from the game feed's, so the feed still
 /// reads and writes no person's data (`docs/game-feed.md`, GF4; call C160 on
 /// paulgsc/server's GWB7 PR).
 pub fn start(state: &AppState) {
-	if state.game_feed.is_none() {
-		info!("the game feed is not enabled; the bite reconciler does not run");
-		return;
-	}
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
 	tokio::spawn(async move {

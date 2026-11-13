@@ -132,12 +132,6 @@
    "variable": "MEANING_ENABLED",
    "class": "policy",
    "issue": "paulgsc/server#617"
-  },
-  {
-   "app": "file_host",
-   "variable": "GAME_FEED_ENABLED",
-   "class": "policy",
-   "issue": "paulgsc/server#617"
   }
  ],
  "switches": [

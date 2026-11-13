@@ -58,7 +58,7 @@ local series(title, description, targets, unit) = {
 {
   following: stat(
     'FOLLOWING',
-    'Whether this home follows the games at all (GAME_FEED_ENABLED). OFF is a choice, not a fault.',
+    'Whether this home follows the games at all: the operator\'s game-feed switch, as the last pass read it. OFF is a choice, not a fault.',
     { expr: 'game_feed_enabled' },
     'none',
     [{ color: 'green', value: null }],

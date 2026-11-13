@@ -484,21 +484,6 @@
       "why": "Whether takes are indexed by meaning, paused or resumed while running: a switch (proposed on #617, 2026-11-13)."
     },
     {
-      "name": "GAME_FEED_ENABLED",
-      "group": "NFL game feed",
-      "required": false,
-      "default": "false",
-      "kind": "bool",
-      "values": [],
-      "delimiter": null,
-      "secret": false,
-      "help": "Whether home follows the games of the week at all",
-      "required_when": null,
-      "bounds": null,
-      "class": "policy",
-      "why": "Whether home follows the games, paused or resumed while running: a switch (owner, 2026-11-13)."
-    },
-    {
       "name": "NATS_URL",
       "group": "NATS",
       "required": true,
