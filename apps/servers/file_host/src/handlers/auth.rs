@@ -1172,6 +1172,8 @@ mod tests {
 		"INSERT INTO rust_week_sent (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w46', 'now', '{}', 'now')",
 		"INSERT INTO rust_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w47', 'now', '{}', 'now')",
 		"INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w46', 'now', '{}', 'now')",
+		"INSERT INTO interview_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w48', 'now', '{}', 'now')",
+		"INSERT INTO interview_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w47', 'now', '{}', 'now')",
 		"INSERT INTO rust_week_paste (subject_id, week_id, at, text, note_id, received_at) VALUES (?1, '2026-w46', 'now', 'e', NULL, 'now')",
 		"INSERT INTO rust_essay_video_link (subject_id, week_id, youtube_id, recorded_at) VALUES (?1, '2026-w46', 'dQw4w9WgXcQ', 'now')",
 		"INSERT INTO rust_essay_video_deletion (subject_id, week_id, step, cause, youtube_id, note_id, size, deleted_at) VALUES (?1, '2026-w46', 'video', 'let-go', 'dQw4w9WgXcQ', NULL, 1, 'now')",
