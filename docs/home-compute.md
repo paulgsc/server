@@ -316,9 +316,8 @@ How much to reserve for them is decided with the refusal below, from home's
 published facts.
 
 It warns and never refuses. **Planned** (#709): a refusal, once home's
-facts are published nightly (part 1) and #705's D3 decides whether
-`ollama`'s 8 GiB counts. The caps total 30.38 GiB with `ollama`, and 22.38
-GiB without it.
+facts are published nightly (part 1). The caps total 22.38 GiB; `ollama`'s
+8 GiB left with it (#705, D3).
 
 ## What a kill costs
 
