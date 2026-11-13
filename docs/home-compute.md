@@ -9,6 +9,41 @@ they share it. Epic #705 (LANE) is the design and its record.
 What this doc declares is true as written. **Planned** marks what is not
 built yet, with its issue.
 
+## Invariants
+
+These hold for everything that runs on home. A change that would break one is
+raised on its issue before it is built (CLAUDE.md, "Drift is loud"). Each one
+says what holds it, or **Planned** with its issue where nothing does yet.
+
+1. **At most one batch job runs on home at a time, across every kind.** The
+   render worker is the one batch worker. It runs one job at a time and
+   names it in `<lane>/job`, one file for every kind (the call, Playoff
+   Delta, previews, essays, clip walks), and the lane admits one job per
+   run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
+   second batch worker joins this lane, never one of its own (L5,
+   some-ui#2084).
+2. **Interactive work never waits behind batch work.** While a voice note
+   is heard or a Rust Rounds program recorded, the lane pauses the render or
+   does not start it (LA1), and `render` and `kokoro` take a quarter of
+   the default CPU weight. Held by LA1's tests and the worker's pause case.
+3. **A yield is never a failure, and resumed work never pays twice for a
+   step it kept.** A pause or a stop leaves no `failed.log`, and the job
+   resumes from its step cache under the same id. Held by
+   `render-calls.test.sh`'s pause and stop cases (L4c, #708). Seeing the
+   steps that were paid twice is L7 (#712, **Planned**).
+4. **A collision never becomes a recorded result.** A verdict of time, a
+   lost runner or a hearing's deadline taken while the box was contended is
+   nobody's, and is asked again ("The contention guard", L1 #706, which
+   lands with #822).
+5. **The caps fit home's RAM, checked on the box at deploy.** **Planned**,
+   #709: home's RAM is in neither repo yet. Today the sum of every
+   container's cap, ollama's 8 GiB included, is not checked against
+   anything.
+6. **No schedule starts batch work.** The render worker looks for work
+   every minute, but only the lane's `run` starts a job: room, not a clock
+   (the owner, 2026-11-07). Held by the worker's "no render starts on a
+   missing or stale decision" cases.
+
 ## Classes: who is low priority, and what that means
 
 Every service is in one class. A new service picks one in the same change
