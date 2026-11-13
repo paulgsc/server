@@ -746,7 +746,8 @@ mod tests {
 		let pool = pool().await;
 		let over = AT_STATION + 2;
 		for n in 0..over {
-			take(&pool, A, &format!("t{n:03}"), &format!("2026-11-12T00:00:{:02}.{n:03}Z", n % 60)).await;
+			let n = n.to_string();
+			take(&pool, A, &(String::from("t") + &n), &(String::from("2026-11-12T00:00:00.000Z#") + &n)).await;
 		}
 		let (takes, total) = listed(&pool, A, Station::InTheOven).await;
 		assert_eq!((i64::try_from(takes.len()).unwrap(), total), (AT_STATION, over));

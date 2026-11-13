@@ -489,9 +489,10 @@ pub async fn put_set_aside(subject: SubjectId, State(db): State<SqlitePool>, Pat
 	}
 }
 
-/// `GET /voice-notes/:id/station`: where the caller's Studio take `id` is on
-/// the conveyor, its labels, and every move that put it there, oldest first
-/// (paulgsc/some-ui epic #2872, CONVEYOR1; `voice_repo::conveyor`). A take
+/// `GET /voice-notes/:id/station`: where the caller's Studio take `id` is.
+///
+/// On the conveyor, with its labels and every move that put it there, oldest
+/// first (paulgsc/some-ui epic #2872, CONVEYOR1; `voice_repo::conveyor`). A take
 /// no move has touched is `in-the-oven`, with no history.
 ///
 /// # Errors
@@ -525,7 +526,9 @@ pub struct Conveyor {
 }
 
 /// `GET /voice-notes/conveyor?station=`: the caller's Studio takes at a
-/// station, for the conveyor page and the routine's pickup
+/// station.
+///
+/// For the conveyor page and the routine's pickup
 /// (`voice_repo::conveyor::at_station`). Read in one transaction, so the
 /// list and the total agree.
 ///
@@ -567,10 +570,11 @@ pub struct TakeMoved {
 /// What a move from a station the take is not at answers with.
 const STALE: &str = "the take is not at the station this move starts from";
 
-/// `POST /voice-notes/:id/station`, the body `{ from, to, at, labels?,
-/// comment?, issue? }`: moves the caller's Studio take `id` along the
-/// conveyor (paulgsc/some-ui epic #2872, CONVEYOR1;
-/// `voice_repo::conveyor::advance`), and answers where it is now.
+/// `POST /voice-notes/:id/station`: moves the caller's Studio take `id`.
+///
+/// The body is `{ from, to, at, labels?, comment?, issue? }`; the take moves
+/// along the conveyor (paulgsc/some-ui epic #2872, CONVEYOR1;
+/// `voice_repo::conveyor::advance`), and the answer is where it is now.
 ///
 /// A move names the station it starts from, and one from a station the take
 /// is not at is a `409` whose `details.station` says where it is, so a phone
@@ -977,7 +981,7 @@ mod tests {
 		let other = session(&state, B, Carrier::Bearer).await;
 		let app = app(state);
 		assert_eq!(put(&app, TAKE_PATH, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
-		let moves = || async { sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM studio_take_move").fetch_one(&pool).await.unwrap() };
+		let written = || async { sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM studio_take_move").fetch_one(&pool).await.unwrap() };
 
 		assert_eq!(get(&app, STATION, None).await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(
@@ -1010,9 +1014,9 @@ mod tests {
 		let (status, refused) = post(&app, STATION, Some(&phone), &json!({ "from": "cooking", "to": "in-the-oven", "at": "soon" })).await;
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 		assert!(refused["error"]["details"]["to"].is_array() && refused["error"]["details"]["at"].is_array(), "{refused}");
-		assert_eq!(moves().await, 0, "nothing refused was written");
+		assert_eq!(written().await, 0, "nothing refused was written");
 
-		let moved = json!({
+		let expected = json!({
 			"id": "t1", "station": "cooking", "labels": ["hook"],
 			"history": [{
 				"seq": 1, "from": "in-the-oven", "to": "cooking", "at": "2026-11-13T09:00:00.000Z",
@@ -1024,16 +1028,16 @@ mod tests {
 			body
 		};
 		let (status, body) = post(&app, STATION, Some(&phone), &first).await;
-		assert_eq!((status, normalised(body)), (StatusCode::OK, json!({ "change": "moved", "take": moved })));
+		assert_eq!((status, normalised(body)), (StatusCode::OK, json!({ "change": "moved", "take": expected })));
 		let (status, body) = post(&app, STATION, Some(&phone), &first).await;
-		assert_eq!((status, normalised(body)), (StatusCode::OK, json!({ "change": "unchanged", "take": moved })), "a retry");
-		assert_eq!(moves().await, 1);
+		assert_eq!((status, normalised(body)), (StatusCode::OK, json!({ "change": "unchanged", "take": expected })), "a retry");
+		assert_eq!(written().await, 1);
 
-		let stale = json!({ "from": "in-the-oven", "to": "canned", "at": "2026-11-13T10:00:00Z" });
-		let (status, refused) = post(&app, STATION, Some(&phone), &stale).await;
+		let behind = json!({ "from": "in-the-oven", "to": "canned", "at": "2026-11-13T10:00:00Z" });
+		let (status, refused) = post(&app, STATION, Some(&phone), &behind).await;
 		assert_eq!(status, StatusCode::CONFLICT);
 		assert_eq!(refused["error"]["details"]["station"], json!(["cooking"]), "{refused}");
-		assert_eq!(moves().await, 1);
+		assert_eq!(written().await, 1);
 
 		let ready = json!({ "from": "cooking", "to": "ready-for-pickup", "at": "2026-11-13T10:00:00Z" });
 		assert_eq!(post(&app, STATION, Some(&phone), &ready).await.0, StatusCode::OK);
