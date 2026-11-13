@@ -102,7 +102,11 @@
 # A container restart keeps the job: <lane>/job.state names it, it runs
 # first, and its work is never removed for WORK_MAX_MB while it waits. The
 # first render after a boot waits for the lane's first run, which is never
-# sooner than its hold-down: home's own services start first.
+# sooner than its hold-down: home's own services start first. A restart the
+# worker was not asked for (no TERM: the container died under the job, an
+# OOM inside it, say) is counted in job.state's `restarts`; at RESTARTS the
+# job is taken as failed, as an exit is, so a render that kills its own
+# container is not resumed first on every restart for good (#740).
 set -uo pipefail
 
 # Policy (paulgsc/some-ui#2635, the owner's caps). The recorder refuses a
@@ -135,6 +139,9 @@ KILL_WAIT=10
 # again, at most PAUSE_FAILS times a job; later, or more often, it failed.
 PAUSE_GRACE=300
 PAUSE_FAILS=3
+# A job left by this many restarts it did not ask for is taken as failed.
+# A stop asked for (a deploy, a reboot: TERM) is no such restart.
+RESTARTS=3
 # The render container's own cgroup, whose memory.peak is the render's.
 CGROUP=/sys/fs/cgroup
 # What the render takes beyond its own container, which its cgroup doesn't
@@ -370,13 +377,14 @@ read_lane() {
 }
 
 # The job job.state names, left by a restart, in LEFT_ID, LEFT_KIND,
-# LEFT_KEY, LEFT_SINCE, LEFT_YIELDS and LEFT_RAN; false when there is none, or it
-# can't be read, or <lane>/job names another.
+# LEFT_KEY, LEFT_SINCE, LEFT_YIELDS, LEFT_RAN and LEFT_RESTARTS; false when
+# there is none, or it can't be read, or <lane>/job names another.
 left_job() {
   local line id=
-  LEFT_ID='' LEFT_KIND='' LEFT_KEY='' LEFT_SINCE='' LEFT_YIELDS='' LEFT_RAN=0
+  LEFT_ID='' LEFT_KIND='' LEFT_KEY='' LEFT_SINCE='' LEFT_YIELDS='' LEFT_RAN=0 LEFT_RESTARTS=0
   [ -r "$LANE/job.state" ] && [ -r "$LANE/job" ] || return 1
-  while IFS= read -r line; do
+  # A last line with no newline is read too.
+  while IFS= read -r line || [ -n "$line" ]; do
     case $line in
       id=*) LEFT_ID=${line#id=} ;;
       kind=*) LEFT_KIND=${line#kind=} ;;
@@ -384,12 +392,13 @@ left_job() {
       since=*) LEFT_SINCE=${line#since=} ;;
       yields=*) LEFT_YIELDS=${line#yields=} ;;
       ran=*) LEFT_RAN=${line#ran=} ;;
+      restarts=*) LEFT_RESTARTS=${line#restarts=} ;;
     esac
   done < "$LANE/job.state"
   read -r id < "$LANE/job"
   fits "$LEFT_ID" && [ "$id" = "$LEFT_ID" ] || return 1
   [[ "$LEFT_SINCE" =~ ^[0-9]{1,12}$ ]] && [[ "$LEFT_YIELDS" =~ ^[0-9]{1,9}$ ]] || return 1
-  [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] || return 1
+  [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] && [[ "$LEFT_RESTARTS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
     call | playoff-delta | preview | rust-essay | clip-walk) return 0 ;;
@@ -420,7 +429,8 @@ new_job_id() {
 # `waiting` for room (before its first run, or after it gave way),
 # `rendering`, or `paused` (frozen while home's interactive work runs);
 # since when; and `ran`, the seconds it has rendered before that, which with
-# `took` (below) makes the page's rough bar.
+# `took` (below) makes the page's rough bar. `restarts` counts the restarts
+# it was left by that the worker was not asked for (RESTARTS).
 job_state() {
   local now
   now=$(date +%s)
@@ -428,16 +438,18 @@ job_state() {
     JOB_RAN=$(( JOB_RAN + now - JOB_STATE_SINCE ))
   fi
   JOB_STATE=$1 JOB_STATE_SINCE=$now
-  put_in "$LANE" job.state "$(printf 'id=%s\nkind=%s\nkey=%s\nsince=%s\nstate=%s\nstate_since=%s\nyields=%s\nran=%s' \
-    "$JOB_ID" "$JOB_KIND" "$JOB_KEY" "$JOB_SINCE" "$1" "$now" "$JOB_YIELDS" "$JOB_RAN")"
+  put_in "$LANE" job.state "$(printf 'id=%s\nkind=%s\nkey=%s\nsince=%s\nstate=%s\nstate_since=%s\nyields=%s\nran=%s\nrestarts=%s' \
+    "$JOB_ID" "$JOB_KIND" "$JOB_KEY" "$JOB_SINCE" "$1" "$now" "$JOB_YIELDS" "$JOB_RAN" "$JOB_RESTARTS")"
 }
 
 # The job for `job`'s `key`: the one a restart left for it, with its id, or
-# a new one.
+# a new one. A restart left it without a TERM (no job.termed) is one more of
+# its `restarts`.
 begin_job() {
-  JOB_KIND=$1 JOB_KEY=$2 JOB_YIELDS=0 JOB_RAN=0 JOB_STATE=''
+  JOB_KIND=$1 JOB_KEY=$2 JOB_YIELDS=0 JOB_RAN=0 JOB_RESTARTS=0 JOB_STATE=''
   if left_job && [ "$LEFT_KIND" = "$1" ] && [ "$LEFT_KEY" = "$2" ]; then
-    JOB_ID=$LEFT_ID JOB_SINCE=$LEFT_SINCE JOB_YIELDS=$LEFT_YIELDS JOB_RAN=$LEFT_RAN
+    JOB_ID=$LEFT_ID JOB_SINCE=$LEFT_SINCE JOB_YIELDS=$LEFT_YIELDS JOB_RAN=$LEFT_RAN JOB_RESTARTS=$LEFT_RESTARTS
+    [ -e "$LANE/job.termed" ] || JOB_RESTARTS=$(( JOB_RESTARTS + 1 ))
     # Left by a restart: whatever it held went with the container.
     LEFT_AFRESH=1
   else
@@ -445,12 +457,13 @@ begin_job() {
     new_job_id || return 1
     JOB_SINCE=$(date +%s)
   fi
+  rm -f "${LANE:?}/job.termed"
   put_in "$LANE" job "$JOB_ID" && job_state waiting
 }
 
 # The job is over: rendered, failed or let go.
 end_job() {
-  rm -f "${LANE:?}/job" "${LANE:?}/job.state" "${LANE:?}/job.progress"
+  rm -f "${LANE:?}/job" "${LANE:?}/job.state" "${LANE:?}/job.progress" "${LANE:?}/job.termed"
 }
 
 # How far the recorder is, for the phone's Renders page (C138), kept whole
@@ -683,6 +696,11 @@ render_episode() {
     echo "the job could not be written to $LANE" | tee -a "$log"
     return 1
   fi
+  if [ "$JOB_RESTARTS" -ge "$RESTARTS" ]; then
+    echo "the $job of $key was left by $JOB_RESTARTS restarts the worker was not asked for (its container died under it); taken as failed" | tee -a "$log"
+    end_job
+    return 1
+  fi
   asked=$(date +%s)
   JOB_PAUSE_FAILS=0
   AFRESH=$LEFT_AFRESH
@@ -865,9 +883,11 @@ resume_left() {
 }
 
 # Stopping the container stops the render; its job stays, and runs first
-# when the worker starts again.
+# when the worker starts again. job.termed says the stop was asked for, so
+# the restart is not one of the job's `restarts`.
 on_term() {
   [ -n "${RECORDER:-}" ] && kill_tree "$RECORDER"
+  [ -n "${LANE:-}" ] && [ -e "$LANE/job" ] && touch "$LANE/job.termed"
   exit 143
 }
 
