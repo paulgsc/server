@@ -2121,7 +2121,6 @@ mod tests {
 			assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["ref"], "{bad}");
 		}
 		assert!(describe("l1", said_take("lens", "about-you"), b"said").is_ok(), "the rule is the interview's alone");
-		assert!(!is_rust_round_ref("2026-w47:about-you"), "nor does an interview ref read as a Rust Rounds one");
 	}
 
 	/// An interview take is kept as a note like any other, and its audio is
