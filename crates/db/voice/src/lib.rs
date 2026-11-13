@@ -848,9 +848,10 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 /// - [`Of::Studio`]: every take, an idea's spoken answer included, is kept
 ///   and played from home (the owner's decision 8 on paulgsc/some-ui#2248,
 ///   2026-11-04; ST32).
-/// - [`Of::Interview`]: a week's takes play back in My data and the week's
-///   essay, as Rust Rounds' do (paulgsc/some-ui#2932, IW1, under the epic
-///   paulgsc/some-ui#2931's decisions of 2026-11-13).
+/// - [`Of::Interview`]: a week's takes play back in My data, to the paired
+///   phone (paulgsc/some-ui#2932, IW1, under the epic paulgsc/some-ui#2931's
+///   decisions of 2026-11-13). An essay's render is not this list's: it
+///   reads `rust-round` takes only (docs/identity.md invariant 23).
 /// - Every other kind: My data plays any recording home keeps to the owner's
 ///   paired phone, so the owner can hear what they would delete (the owner,
 ///   2026-11-13, on paulgsc/some-ui#2473 (issuecomment-6861770728), MY-DATA).
@@ -2089,10 +2090,10 @@ mod tests {
 		assert_eq!(rows(&pool, "voice_note").await + rows(&pool, "voice_note_audio").await, 0, "still leaves with the account");
 	}
 
-	/// Every kind a note is said for, by the name the phone sends, the CHECK
-	/// holds and the mailbox files; and the kinds whose audio home gives back
-	/// (IW1, paulgsc/some-ui#2932, adds `interview` to both; MY-DATA plays
-	/// every kind back).
+	/// Every kind a note is said for, by the name the phone sends and the
+	/// CHECK holds; and the kinds whose audio home gives back, listed by hand
+	/// so a kind added later stays home until it is listed (IW1,
+	/// paulgsc/some-ui#2932, adds `interview` to both).
 	#[test]
 	fn the_kinds_and_the_kinds_played_back_are_pinned() {
 		assert_eq!(
@@ -2102,7 +2103,10 @@ mod tests {
 		for of in Of::ALL {
 			assert_eq!(Of::named(of.as_str()), Some(of));
 		}
-		assert_eq!(PLAYED_BACK, Of::ALL, "every kind plays back, interview included (MY-DATA, IW1)");
+		assert_eq!(
+			PLAYED_BACK.map(Of::as_str),
+			["reflection", "jobs", "scene", "game", "studio", "soundbite", "lens", "leetype", "rust-round", "interview"]
+		);
 	}
 
 	/// IW1 (paulgsc/some-ui#2932): an interview take names the week's
