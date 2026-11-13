@@ -306,6 +306,31 @@ mod tests {
 	}
 
 	#[test]
+	fn every_variable_is_stated_in_every_role_but_compose_wiring() {
+		let probe = schema("probe", vec![var("ON", Kind::Bool), var("URL", Kind::String), var("WIRE", Kind::String)]);
+		let raw = json!({"services": {"app": {
+			"labels": {LABEL: "probe"},
+			"env_file": [{"path": "/r/${ENV_DIR:?x}/probe.env", "required": true}],
+			"environment": ["WIRE=w://wire"],
+		}}});
+		let role = |files: Vec<(&str, String)>| Role {
+			name: "home".into(),
+			files: files.into_iter().map(|(app, text)| (app.to_owned(), text)).collect(),
+		};
+		let unset_url = encrypted(&["ON"]).replace("#ENC", "URL=\n#ENC");
+		let stated = [role(vec![("compose", encrypted(&[])), ("probe", unset_url)])];
+		assert!(
+			problems(std::slice::from_ref(&probe), &variables(&[]), &raw, &stated).is_empty(),
+			"an empty value states it unset"
+		);
+		let forgot = [role(vec![("compose", encrypted(&[])), ("probe", encrypted(&["ON"]))])];
+		assert_eq!(
+			problems(&[probe], &variables(&[]), &raw, &forgot),
+			["deploy/home/probe.sops.env does not state URL: every variable of probe is decided per role (its value, or empty for unset)"]
+		);
+	}
+
+	#[test]
 	fn a_tools_file_may_name_anything_but_must_be_encrypted() {
 		let role = |text: String| Role {
 			name: "home".into(),
