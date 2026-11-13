@@ -518,7 +518,7 @@ fn fresh(lane: Option<&Lane>, now: i64) -> Option<&Lane> {
 /// (#739): the worker is gone, whatever the lane decides. One with no sign
 /// at all is judged by the lane alone (a worker from before #739).
 fn held_by(job: &Job, lane: Option<&Lane>, now: i64) -> Option<HeldBy> {
-	let gone = matches!(job.state, Phase::Rendering | Phase::Paused) && job.alive.is_some_and(|at| now.saturating_sub(at).abs() > ALIVE_STALE);
+	let gone = matches!(job.state, Phase::Rendering | Phase::Paused) && job.alive.is_some_and(|at| now.saturating_sub(at).unsigned_abs() > ALIVE_STALE.unsigned_abs());
 	if gone {
 		return Some(HeldBy::Silent);
 	}

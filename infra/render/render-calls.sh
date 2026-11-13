@@ -650,8 +650,10 @@ attempt() {
     exit "${PIPESTATUS[0]}"
   ) &
   RECORDER=$!
-  job_state rendering
+  # The sign of life first: a stamp left by this job's last run (it waited
+  # for room since) must not be read beside `rendering` as a worker gone.
   ALIVE=0 && alive
+  job_state rendering
   while kill -0 "$RECORDER" 2> /dev/null; do
     sleep "$LANE_POLL"
     kill -0 "$RECORDER" 2> /dev/null || break

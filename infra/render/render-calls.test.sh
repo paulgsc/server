@@ -61,6 +61,8 @@ mkdir -p "$FAKE" "$APP_DIR"
 # next pass unless a case says otherwise.
 LANE_POLL=0.1
 STALE_AFTER=2
+# The sign of life on every look, so a case sees the loop stamp it.
+ALIVE_EVERY=0
 KILL_WAIT=5
 RETRY_AFTER=0
 TMP_BASE=$SCRATCH/tmp
@@ -597,6 +599,11 @@ check "and never a scene's name" sh -c '! grep -q scene-name "$1"' _ "$ROOT/rend
 alive="$ROOT/renders/call-worker/job.alive"
 check "the worker stamps its sign of life with the job's id" grep -qx "id=$(cat "$ROOT/renders/call-worker/job")" "$alive"
 check "and the time, while the job is paused" grep -qx "at=[0-9]\+" "$alive"
+stamped=$(sed -n 's/^at=//p' "$alive")
+alive_moved() {
+  [ "$(sed -n 's/^at=//p' "$alive")" -gt "$stamped" ]
+}
+check "the paused worker's own loop stamps it again" within alive_moved
 held=$(steps_made)
 rm "$FAKE/hold-at"
 sleep 1
