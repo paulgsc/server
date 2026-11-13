@@ -1184,6 +1184,7 @@ mod tests {
 		"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at) VALUES (?1, 't', 'then', 'drive-takes-20261101T000000Z.json', 'now')",
 		"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'n', 'then', 'now')",
 		"INSERT INTO voice_note_meaning (subject_id, note_id, model, vector) VALUES (?1, 'n', 'm', zeroblob(1024))",
+		"INSERT INTO studio_take_move (subject_id, note_id, seq, from_station, to_station, moved_at, labels, comment, issue, stored_at) VALUES (?1, 'n', 1, 'in-the-oven', 'cooking', 'then', '[\"hook\"]', 'c', NULL, 'now')",
 		"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed) VALUES (?1, 'gone', 'studio', 'then', 1, 'then', 'now', '[]', '[]')",
 		"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at) VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
 		"INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'n', NULL)",

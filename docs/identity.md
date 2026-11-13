@@ -211,7 +211,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -1252,8 +1252,9 @@ nowhere is marked as such and belongs to review.
     (paulgsc/some-ui#2473). Every other kind is the work and is kept.
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
-    vectors in the meaning index (invariant 35), and its set-aside mark in
-    one transaction, and keeps a copy of its words
+    vectors in the meaning index (invariant 35), its set-aside mark and its
+    moves along the conveyor (`studio_take_move`, below) in one
+    transaction, and keeps a copy of its words
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
@@ -1268,8 +1269,33 @@ nowhere is marked as such and belongs to review.
     is a `409` that writes nothing, as is a take or an answer while its kind
     is switched off; `voice_repo::delete::delete` has no other caller. It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
-    so neither the audio nor its hash reaches a log line. **Its audio is
-    read back by one route, to its own subject's paired phone only**
+    so neither the audio nor its hash reaches a log line. **A Studio take
+    moves along a conveyor** (paulgsc/some-ui epic #2872, CONVEYOR1; the
+    owner's stations, paulgsc/some-ui#2876: `in-the-oven`, `cooking`,
+    `ready-for-pickup`, `picked-up`, `canned`), and each move is a row of
+    `studio_take_move` beside the note, never a change to it: the take's id,
+    the station it left and reached, when, the owner's labels (at most 8 of
+    32 characters) and a comment of at most 280 characters if any, and on a
+    pickup the issue it was filed as (`<owner>/<repo>#<n>`). Those labels and
+    that comment are the one free text it holds, the owner's own words about
+    their own take, never what was said in it. It is append-only (its
+    trigger aborts an `UPDATE`), written only by `POST
+    /voice-notes/:id/station` (`voice_repo::conveyor::advance`) for a
+    `studio` take the subject holds that is no idea's answer, naming the
+    take's newest move and station (moves are ordered by number, never by a
+    clock: docs/conveyor.md), and its span skips every argument. A take named
+    as an idea's answer, or let go of, after it moved is off the conveyor:
+    no station lists it and it reads and moves as not held, its moves kept.
+    Its rows go with the account (the sweep and their own trigger) and with
+    their take when My data deletes it, whose receipt then says `conveyor
+    history` went; `voice_repo::delete`'s constants are the full list of a
+    receipt's fixed words. *Enforced by* `voice_repo::conveyor`'s tests
+    (`moves_are_ordered_by_number_never_by_a_clock`,
+    `a_take_moves_along_from_where_it_is_and_keeps_every_move`,
+    `a_take_that_becomes_an_answer_or_is_let_go_leaves_the_conveyor`,
+    `no_move_is_ever_updated_and_moves_leave_with_the_account`) and
+    `handlers::voice`'s `the_owner_moves_a_take_along_the_conveyor`. **A
+    note's audio is read back by one route, to its own subject's paired phone only**
     (`voice_repo::PLAYED_BACK`; the owner's D4 on paulgsc/some-ui#2237,
     2026-10-29: home gives a note's audio back to the phone, for refine cards
     and replay; the owner's decision 8 on paulgsc/some-ui#2248,
@@ -1298,7 +1324,10 @@ nowhere is marked as such and belongs to review.
     or a queued video, whether it is a `studio` note and whether it was set
     aside; `PUT /ideas/:id` and `PUT /studio/videos/:video/queued/:rev`
     read both through `voice_repo::set_aside::studio_take_held`, the one
-    rule the two PUTs share;
+    rule the two PUTs share; and the conveyor's routes,
+    `GET`/`POST /voice-notes/:id/station` and `GET /voice-notes/conveyor`,
+    read whether it is a `studio` take of the caller's that answers no idea
+    and was not set aside, and its `ref` and when it was recorded;
     and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12). `GET /voice-notes/kept`
     (paulgsc/some-ui#2476, MY-DATA MD2), a `Paired` phone's (a browser's
@@ -1326,8 +1355,11 @@ nowhere is marked as such and belongs to review.
     (a browser's session is a `403`), is the take library: the caller's own
     subject's `studio` notes, newest recorded first, at most 50
     (`voice_repo::takes::NEWEST`), each with its id, `ref`, `recorded_at`,
-    `stored_at`, `size`, set-aside time and the words
+    `stored_at`, `size`, set-aside time, the words
     `GET /voice-notes/:id/heard` would answer (the same choice of hearing),
+    and its conveyor `station`, `stationAt` and `stationSeq` (from
+    `studio_take_move` and `idea_answer`; null off the conveyor,
+    docs/conveyor.md),
     how many takes it holds, and with `q` (at most 200 characters) the
     takes it found and how many: nearest the asked words' meaning first,
     when the meaning index is on and holds every heard take (invariant 35),
@@ -1585,7 +1617,7 @@ nowhere is marked as such and belongs to review.
     `refusals_name_their_fields_and_notes_stay_apart` and
     `a_game_bite_reaches_home_with_its_metadata`.
     *Not enforced:* that nothing else writes these tables or holds audio,
-    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive' -- '*.rs'` (which matches `voice_note_set_aside` too) shows today
+    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive\|studio_take_move' -- '*.rs'` (which matches `voice_note_set_aside` too) shows today
     and review keeps; and that the temporary directory is removed when a
     decode is killed by the process dying, which only a restart's fresh
     `/tmp` covers.
