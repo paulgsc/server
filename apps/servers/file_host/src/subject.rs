@@ -45,6 +45,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	("aph_settings", "the checkpoints, goals and labels the aph log is read against, every revision"),
 	("auth_session", "hashes of the account's sign-in sessions, and when they expire"),
+	(
+		"bite_mapping",
+		"the scenario home accepted for each of the owner's game bites said first and left for later (paulgsc/some-ui#2081, GWB7): the bite by id, the scenario, what proposed it, the versions it was checked under, and when; see docs/identity.md invariant 23",
+	),
+	(
+		"bite_match",
+		"which play each of the owner's game bites was matched to (paulgsc/some-ui#2081, GWB7): the bite by id, the scenario, ESPN's play id or why none, the seconds between them, the engine's version, and when; see docs/identity.md invariant 23",
+	),
 	("engagement_charge", "engagement model state"),
 	("engagement_gate", "the waker's due index"),
 	(

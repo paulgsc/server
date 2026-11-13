@@ -81,6 +81,7 @@
 //! scouts file naming it is what puts it in front of the routine, and a
 //! mark does not unname it.
 
+pub mod bite_match;
 pub mod delete;
 pub mod kept;
 pub mod meaning;
