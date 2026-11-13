@@ -490,10 +490,7 @@ pub fn is_interview_ref(of_ref: &str) -> bool {
 	if !is_week_id(week) {
 		return false;
 	}
-	match parts.next() {
-		None => is_slug(second) && second != READ,
-		Some(card) => second == READ && is_slug(card),
-	}
+	parts.next().map_or_else(|| is_slug(second) && second != READ, |card| second == READ && is_slug(card))
 }
 
 /// The second part of a teleprompter read's `ref` ([`is_interview_ref`]).

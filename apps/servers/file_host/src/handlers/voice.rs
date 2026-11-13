@@ -1106,11 +1106,17 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		for (id, of_ref) in [("i1", "2026-w47:about-you"), ("i2", "2026-w47:read:home-first")] {
-			let path = format!("/voice-notes/{id}?of=interview&ref={of_ref}&at=2026-11-13T18:20:00Z");
-			let (status, answer) = put(&app, &path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+		for (id, path, audio) in [
+			("i1", "/voice-notes/i1?of=interview&ref=2026-w47:about-you&at=2026-11-13T18:20:00Z", "/voice-notes/i1/audio"),
+			(
+				"i2",
+				"/voice-notes/i2?of=interview&ref=2026-w47:read:home-first&at=2026-11-13T18:20:00Z",
+				"/voice-notes/i2/audio",
+			),
+		] {
+			let (status, answer) = put(&app, path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
 			assert_eq!(status, StatusCode::OK, "{answer}");
-			let (status, body) = get(&app, &format!("/voice-notes/{id}/audio"), Some(&phone)).await;
+			let (status, body) = get(&app, audio, Some(&phone)).await;
 			assert_eq!(status, StatusCode::OK, "{body}");
 			assert_eq!(
 				body,
