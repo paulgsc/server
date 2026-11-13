@@ -5,6 +5,10 @@
 //!   blocking thread by its deadline, and gives each one attempt, so a note
 //!   that fails is retried a pass later, not at once, and at most
 //!   [`ATTEMPTS`] times by one model (`voice_repo::transcript::waiting`).
+//! - **An interview take is heard verbatim** ([`super::verbatim`], IW2):
+//!   decoded with the prompt that keeps fillers, and kept under the model's
+//!   verbatim key, which is the only key it waits on. Every other note is
+//!   decoded and kept as before, under the model's file name.
 //! - **Nothing outlives its account.** The attempt is written under
 //!   `auth::DeletionLock`, and only for a note the subject still holds,
 //!   checked in the transaction that writes (docs/identity.md invariant 9).
@@ -28,7 +32,8 @@
 //!   row, then kept as it ended, and the pass stops there too, so the next
 //!   pass starts with that note and no other note's streak is replaced.
 
-use super::engine::{Cancelled, Hear, Heard};
+use super::engine::{Cancelled, Decode, Hear, Heard};
+use super::verbatim;
 use crate::auth::DeletionLock;
 use crate::contention::{Excuse, Guard, Window};
 use sqlx::SqlitePool;
@@ -36,7 +41,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use voice_repo::meaning::{self, Embed, Indexed};
-use voice_repo::transcript::{self, Attempt, Kept, Outcome};
+use voice_repo::transcript::{self, Attempt, Kept, Keys, Outcome};
 use voice_repo::VoiceError;
 
 /// The most attempts one model makes on one note.
@@ -110,9 +115,14 @@ pub async fn run_once_telling<H: Hear>(
 	if let Some(embed) = meaning {
 		pass.indexed += catch_up(db, embed, deletion).await?;
 	}
+	let verbatim_key = verbatim::key(hear.model());
+	let keys = Keys {
+		plain: hear.model(),
+		verbatim: &verbatim_key,
+	};
 	let waiting = {
 		let mut conn = db.acquire().await?;
-		transcript::waiting(&mut conn, hear.model(), ATTEMPTS, BATCH).await?
+		transcript::waiting(&mut conn, keys, ATTEMPTS, BATCH).await?
 	};
 	for note in waiting {
 		if cancel.is_cancelled() {
@@ -125,12 +135,17 @@ pub async fn run_once_telling<H: Hear>(
 		};
 		// Gone since the list was read: it went with its account.
 		let Some(audio) = audio else { continue };
+		let (decode, model) = if note.verbatim {
+			(Decode::Verbatim, keys.verbatim)
+		} else {
+			(Decode::Plain, keys.plain)
+		};
 		let started = Instant::now();
 		let window = Window::open(guard.gauge.as_ref());
 		let attempt = {
 			let (hear, cancel) = (Arc::clone(hear), cancel.clone());
 			let deadline = started + per_note;
-			tokio::task::spawn_blocking(move || hear.hear(&audio, deadline, &cancel)).await
+			tokio::task::spawn_blocking(move || hear.hear(&audio, decode, deadline, &cancel)).await
 		};
 		let attempted = match attempt {
 			Ok(Ok(done)) => done,
@@ -166,7 +181,7 @@ pub async fn run_once_telling<H: Hear>(
 		}
 		let kind = attempted.outcome.kind();
 		let attempt = Attempt {
-			model: hear.model(),
+			model,
 			engine: hear.engine(),
 			outcome: attempted.outcome,
 			duration_ms: attempted.duration_ms,
@@ -241,7 +256,7 @@ mod tests {
 	use super::{run_once, Pass, ATTEMPTS, BATCH};
 	use crate::auth::DeletionLock;
 	use crate::contention::{fake, fake::State, Guard, NOBODYS};
-	use crate::transcribe::engine::{Cancelled, Hear, Heard};
+	use crate::transcribe::engine::{Cancelled, Decode, Hear, Heard};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 	use std::sync::{Arc, Mutex};
 	use std::time::{Duration, Instant};
@@ -261,6 +276,8 @@ mod tests {
 	/// midway, and anything else is heard as [`SAID`].
 	struct Fake {
 		heard: Mutex<Vec<Vec<u8>>>,
+		/// How each note heard was decoded, in the order heard.
+		decodes: Mutex<Vec<Decode>>,
 		cancel: CancellationToken,
 	}
 
@@ -268,6 +285,7 @@ mod tests {
 		fn new(cancel: &CancellationToken) -> Arc<Self> {
 			Arc::new(Self {
 				heard: Mutex::new(Vec::new()),
+				decodes: Mutex::new(Vec::new()),
 				cancel: cancel.clone(),
 			})
 		}
@@ -286,8 +304,9 @@ mod tests {
 			"whisper.cpp test"
 		}
 
-		fn hear(&self, audio: &[u8], deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, audio: &[u8], decode: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 			self.heard.lock().unwrap().push(audio.to_vec());
+			self.decodes.lock().unwrap().push(decode);
 			let outcome = match audio {
 				b"silence" => Outcome::Silent,
 				b"noise" => Outcome::Unreadable,
@@ -440,6 +459,56 @@ mod tests {
 			.unwrap()
 	}
 
+	/// An interview take of `subject`'s, `id`, stored at `stored_at`, its
+	/// audio `audio`: an answer, as the phone sends one (paulgsc/some-ui#2932,
+	/// IW1).
+	async fn interview(pool: &SqlitePool, subject: &str, id: &str, stored_at: &str, audio: &[u8]) {
+		let said = Said {
+			of: Some(voice_repo::transcript::VERBATIM),
+			of_ref: Some("2026-w47:about-you"),
+			at: Some("2026-11-13T19:00:00Z"),
+			content_type: Some("audio/webm"),
+			bite: SaidBite::default(),
+		};
+		let mut tx = pool.begin().await.unwrap();
+		put_note(&mut tx, subject, &describe(id, said, audio).unwrap(), audio, stored_at).await.unwrap();
+		tx.commit().await.unwrap();
+	}
+
+	/// An interview take, and only an interview take, is decoded with the
+	/// verbatim prompt, and kept under the model's verbatim key; every other
+	/// kind is decoded and kept as before (paulgsc/some-ui#2933, IW2).
+	#[tokio::test]
+	async fn only_an_interview_take_is_heard_verbatim_and_kept_under_its_own_key() {
+		let pool = pool().await;
+		note(&pool, A, "reflection", "2026-11-13T19:00:00.000Z", b"reflection").await;
+		interview(&pool, A, "take", "2026-11-13T19:01:00.000Z", b"take").await;
+		said_for(&pool, A, "studio", "studio", "2026-11-13T19:03:00.000Z", b"studio").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let done = pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		assert_eq!(done.kept, ["heard"; 3]);
+		assert_eq!(fake.heard(), ["reflection", "take", "studio"]);
+		assert_eq!(*fake.decodes.lock().unwrap(), [Decode::Plain, Decode::Verbatim, Decode::Plain]);
+		let keys: Vec<(String, String)> = sqlx::query_as("SELECT note_id, model FROM voice_transcript ORDER BY note_id")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			keys,
+			[
+				("reflection".to_owned(), "ggml-small-q5_1.bin".to_owned()),
+				("studio".to_owned(), "ggml-small-q5_1.bin".to_owned()),
+				("take".to_owned(), "ggml-small-q5_1.bin+verbatim-1".to_owned()),
+			]
+		);
+		assert_eq!(
+			pass(&pool, &fake, Duration::from_secs(60), &cancel).await,
+			Pass::default(),
+			"each heard once, under its own key"
+		);
+	}
+
 	/// Each note heard is told as soon as it is kept, once, and a note that
 	/// was silent or unreadable is not: the mailbox's pass wakes per
 	/// transcript, not when the batch ends (MBP2).
@@ -569,7 +638,7 @@ mod tests {
 		fn engine(&self) -> &'static str {
 			"e"
 		}
-		fn hear(&self, _: &[u8], _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, _: &[u8], _: Decode, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
 			let pool = self.0.clone();
 			tokio::runtime::Handle::current().block_on(async move {
 				sqlx::query("DELETE FROM account").execute(&pool).await.unwrap();

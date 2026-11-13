@@ -25,7 +25,8 @@ This adds:
   many it found, and `by`, which says how the takes were chosen (`newest`,
   `words`, or `meaning`, by the index below).
 - **Playback from home**: `GET /api/v1/voice-notes/:id/audio` answers a
-  `studio` take as it answers a Rust Rounds note (`voice_repo::PLAYED_BACK`).
+  `studio` take as it answers a Rust Rounds note or an interview take
+  (`voice_repo::PLAYED_BACK`).
   The phone lets a take's audio go once home holds it (HOME-FIRST D1), so
   without this a take could be heard only before then. This is also ST24's
   open question (paulgsc/some-ui#2322, "where a take's audio plays from"),

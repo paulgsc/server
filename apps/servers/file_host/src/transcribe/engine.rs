@@ -47,6 +47,22 @@
 //! note itself, so a word's time is from the note's start, where captions
 //! over its audio need it.
 //!
+//! **An interview take is heard verbatim** (paulgsc/some-ui#2933, IW2):
+//! with [`Decode::Verbatim`], each English run's decode starts from
+//! [`super::verbatim::PROMPT`], so its fillers come back as words. Its first
+//! window reads the prompt; later windows read what was heard before them, as
+//! every note's do, with what is left of the prompt until that pushes it out.
+//! **A known limit:** a window whisper.cpp decodes again at a high temperature
+//! (a fallback on a hard stretch) reads no prompt, and every window after it
+//! in that run reads only what was heard from it on, so the prompt is gone
+//! for the rest of the run; so it is for a run's last five seconds. A long,
+//! noisy answer is heard verbatim at its start more surely than at its end.
+//! whisper.cpp's `carry_initial_prompt` would keep the prompt in every window,
+//! a change for a later prompt (`verbatim-2`) once real takes are checked
+//! (IW6).
+//! The prompt is tokenized once, at load. Every other note is
+//! [`Decode::Plain`], decoded exactly as before.
+//!
 //! **Nothing heard is logged.** whisper.cpp's own log goes nowhere
 //! (`whisper_rs::install_logging_hooks` with no log backend), ffmpeg's output
 //! is discarded, and this module returns an outcome, never a message.
@@ -81,6 +97,12 @@ const FFMPEG: &str = "ffmpeg";
 /// How often a running decode is checked against its deadline.
 const DECODE_POLL: Duration = Duration::from_millis(20);
 
+/// The most tokens [`super::verbatim::PROMPT`] may take: whisper.cpp keeps
+/// half its 448-token text context for a prompt, its `<|prev|>` marker
+/// included, and cuts a longer one from the front, which would drop the
+/// prompt's opening fillers.
+const PROMPT_TOKENS: usize = 223;
+
 /// What fetches the models, as `TRANSCRIBE_ENABLED`'s help says it.
 const FETCH: &str = "nix develop .#whisper -c whisper fetch";
 
@@ -97,6 +119,26 @@ impl Heard {
 	}
 }
 
+/// How a note's speech is decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decode {
+	/// As every note always was.
+	Plain,
+	/// With [`super::verbatim::PROMPT`] before each English run, so fillers
+	/// are kept: an interview take's.
+	Verbatim,
+}
+
+impl Decode {
+	/// Whether a run heard in `language` reads the prompt: a verbatim decode's
+	/// English runs only, since the prompt is English
+	/// ([`super::verbatim::LANGUAGE`]).
+	#[must_use]
+	pub fn prompts(self, language: &str) -> bool {
+		self == Self::Verbatim && language == super::verbatim::LANGUAGE
+	}
+}
+
 /// The server is shutting down: the attempt is abandoned, and nothing about
 /// it is kept, since it says nothing about the note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,12 +152,12 @@ pub trait Hear: Send + Sync + 'static {
 	/// What runs it (`whisper.cpp 1.8.3`).
 	fn engine(&self) -> &str;
 
-	/// Hears `audio`, a note's bytes as the phone sent them, by `deadline`.
-	/// Blocking: call it off the async runtime.
+	/// Hears `audio`, a note's bytes as the phone sent them, decoded as
+	/// `decode` says, by `deadline`. Blocking: call it off the async runtime.
 	///
 	/// # Errors
 	/// [`Cancelled`] once `cancel` fires.
-	fn hear(&self, audio: &[u8], deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled>;
+	fn hear(&self, audio: &[u8], decoding: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled>;
 }
 
 /// whisper.cpp with a loaded model, and the VAD model it finds speech with.
@@ -125,6 +167,8 @@ pub struct Whisper {
 	model: String,
 	engine: String,
 	threads: usize,
+	/// [`super::verbatim::PROMPT`], as the model's tokens.
+	verbatim: Vec<whisper_rs::WhisperTokenId>,
 }
 
 impl Whisper {
@@ -136,7 +180,8 @@ impl Whisper {
 	/// A model or VAD model that is not there, is not a file or cannot be
 	/// looked at, a model that does not load or
 	/// is English-only, a VAD model that does not load, a path that is not
-	/// UTF-8, no ffmpeg, or no threads.
+	/// UTF-8, no ffmpeg, no threads, or a verbatim prompt the model cannot
+	/// tokenize.
 	pub fn load(model: &Path, vad_model: &Path, threads: usize) -> anyhow::Result<Self> {
 		whisper_rs::install_logging_hooks();
 		anyhow::ensure!(threads > 0, "the thread count must be at least 1");
@@ -156,6 +201,16 @@ impl Whisper {
 		let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!("transcribe::MODEL does not load as a whisper.cpp model"))?;
 		// The notes mix Korean into English, and an `.en` model garbles it.
 		anyhow::ensure!(context.is_multilingual(), "transcribe::MODEL is an English-only model; it must be multilingual (no `.en`)");
+		// Room for one token per byte, which no tokenization exceeds: whisper-rs
+		// takes only -1 for an error, and would read whisper.cpp's "needs n
+		// tokens" (-n) as a length. The limit is checked after.
+		let verbatim = context
+			.tokenize(super::verbatim::PROMPT, super::verbatim::PROMPT.len() + 1)
+			.map_err(|_| anyhow::anyhow!("transcribe::verbatim::PROMPT does not tokenize in transcribe::MODEL's vocabulary"))?;
+		anyhow::ensure!(
+			verbatim.len() <= PROMPT_TOKENS,
+			"transcribe::verbatim::PROMPT is longer than whisper.cpp keeps of a prompt ({PROMPT_TOKENS} tokens)"
+		);
 		WhisperVadContext::new(vad_path, vad_context(threads)?).map_err(|_| anyhow::anyhow!("transcribe::VAD_MODEL does not load as a whisper.cpp VAD model"))?;
 		let ffmpeg = Command::new(FFMPEG)
 			.arg("-version")
@@ -170,6 +225,7 @@ impl Whisper {
 			model: model.file_name().and_then(OsStr::to_str).unwrap_or(model_path).to_owned(),
 			engine: String::from("whisper.cpp ") + whisper_rs::get_whisper_version(),
 			threads,
+			verbatim,
 		})
 	}
 
@@ -198,7 +254,7 @@ impl Whisper {
 
 	/// What Whisper hears in `speech`, cut from the note at `cuts`, by
 	/// `deadline`.
-	fn transcribe(&self, speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken) -> Result<Outcome, Cancelled> {
+	fn transcribe(&self, speech: &[f32], cuts: &[Cut], decoding: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Outcome, Cancelled> {
 		let failed = |cancel: &CancellationToken| stopped(deadline, cancel).unwrap_or(Ok(Outcome::Failed));
 		let Ok(threads) = i32::try_from(self.threads) else {
 			return Ok(Outcome::Failed);
@@ -260,6 +316,12 @@ impl Whisper {
 			// A time for each token, which [`words`] gathers into words. It times
 			// what was decoded and changes none of it.
 			params.set_token_timestamps(true);
+			// An interview take's English runs read the verbatim prompt first,
+			// so their fillers are kept (IW2); its tokens are what whisper.cpp
+			// makes of an `initial_prompt`, made once at load.
+			if decoding.prompts(&run.language) {
+				params.set_tokens(&self.verbatim);
+			}
 			let watch = Watch { deadline, cancel };
 			// SAFETY: `should_abort` reads its data as a `Watch`, and `watch` lives
 			// on this stack, unmoved, until `full` below returns; `full` is the one
@@ -323,7 +385,7 @@ impl Hear for Whisper {
 		&self.engine
 	}
 
-	fn hear(&self, audio: &[u8], deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+	fn hear(&self, audio: &[u8], decoding: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 		let pcm = match decode(audio, deadline, cancel)? {
 			Decoded::Pcm(pcm) => pcm,
 			Decoded::Unreadable => return Ok(Heard::without_audio(Outcome::Unreadable)),
@@ -344,7 +406,7 @@ impl Hear for Whisper {
 		if Instant::now() >= deadline {
 			return Ok(heard(Outcome::Deadline));
 		}
-		self.transcribe(&speech, &cuts, deadline, cancel).map(heard)
+		self.transcribe(&speech, &cuts, decoding, deadline, cancel).map(heard)
 	}
 }
 
@@ -742,8 +804,10 @@ mod tests {
 	//! a model file, so it is exercised through `pass`'s fake and by hand;
 	//! what `Whisper::load` refuses, short of a real model, is tested here.
 
-	use super::{decode, main_language, plan_runs, sample_at, words, Cut, Decoded, Planned, Run, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE};
-	use std::path::Path;
+	use super::{
+		decode, main_language, plan_runs, sample_at, words, Cut, Decode, Decoded, Hear as _, Heard, Planned, Run, Spoken, Token, Whisper, DECODE_SECONDS, MAX_SECONDS, SAMPLE_RATE,
+	};
+	use std::path::{Path, PathBuf};
 	use std::process::{Command, Stdio};
 	use std::time::{Duration, Instant};
 	use tokio_util::sync::CancellationToken;
@@ -776,6 +840,97 @@ mod tests {
 
 	fn later() -> Instant {
 		Instant::now() + Duration::from_secs(60)
+	}
+
+	/// Only a verbatim decode's English runs read the prompt (IW2).
+	#[test]
+	fn only_a_verbatim_decodes_english_runs_read_the_prompt() {
+		assert!(Decode::Verbatim.prompts("en"));
+		for language in ["ko", "ja", "", "EN"] {
+			assert!(!Decode::Verbatim.prompts(language), "{language}");
+		}
+		for language in ["en", "ko"] {
+			assert!(!Decode::Plain.prompts(language), "{language}");
+		}
+	}
+
+	/// The prompt fits what whisper.cpp keeps of one even at a token per
+	/// byte, so `Whisper::load` cannot refuse it on any model.
+	#[test]
+	fn the_prompt_fits_whisper_cpps_prompt_context() {
+		assert!(crate::transcribe::verbatim::PROMPT.len() <= super::PROMPT_TOKENS);
+	}
+
+	/// A take with audible fillers, heard by the real model both ways
+	/// (paulgsc/some-ui#2933, IW2): the verbatim decode keeps fillers the
+	/// plain one drops. No model runs in CI, so it is ignored there; run it
+	/// with the models fetched (`whisper fetch`) and espeak-ng installed:
+	///
+	/// ```sh
+	/// TRANSCRIBE_TEST_MODELS=/path/to/models \
+	///   cargo test -p file_host verbatim_keeps_fillers -- --ignored --nocapture
+	/// ```
+	#[test]
+	#[ignore = "needs the whisper models and espeak-ng"]
+	fn verbatim_keeps_fillers_the_plain_decode_drops() {
+		use crate::transcribe::verbatim::is_filler;
+		#[allow(clippy::disallowed_methods)] // A test's own switch, as INSTA_UPDATE is, not configuration (#484).
+		let models = PathBuf::from(std::env::var("TRANSCRIBE_TEST_MODELS").unwrap());
+		let whisper = Whisper::load(&models.join("ggml-small-q5_1.bin"), &models.join("ggml-silero-v5.1.2.bin"), 2).unwrap();
+		let dir = tempfile::tempdir().unwrap();
+		let (wav, take) = (dir.path().join("take.wav"), dir.path().join("take.webm"));
+		// Fillers as a person says them: quiet, low and drawn out. espeak-ng
+		// says a written "um" as crisply as any word, which Whisper keeps
+		// either way, so it shows nothing.
+		let soft = |filler: &str| [r#"<prosody volume="x-soft" rate="x-slow" pitch="low">"#, filler, "</prosody>"].concat();
+		let said = [
+			"<speak>",
+			&soft("ummm"),
+			" so ",
+			&soft("uhh"),
+			" I was working on the server, and ",
+			&soft("umm"),
+			" the build was ",
+			&soft("uhhh"),
+			" really slow. ",
+			&soft("hmmm"),
+			" So I ",
+			&soft("err"),
+			" I split the job in two, and ",
+			&soft("uhh"),
+			" that fixed it.</speak>",
+		]
+		.concat();
+		assert!(Command::new("espeak-ng")
+			.args(["-m", "-v", "en-us", "-s", "150", "-w"])
+			.arg(&wav)
+			.arg(&said)
+			.status()
+			.unwrap()
+			.success());
+		let encoded = Command::new("ffmpeg")
+			.args(["-nostdin", "-loglevel", "quiet", "-i"])
+			.arg(&wav)
+			.args(["-c:a", "libopus", "-b:a", "32k", "-f", "webm", "-y"])
+			.arg(&take)
+			.status()
+			.unwrap();
+		assert!(encoded.success());
+		let audio = std::fs::read(&take).unwrap();
+		let fillers = |decoding| {
+			let deadline = Instant::now() + Duration::from_secs(600);
+			let Ok(Heard {
+				outcome: Outcome::Heard { text, words, .. },
+				..
+			}) = whisper.hear(&audio, decoding, deadline, &CancellationToken::new())
+			else {
+				panic!("not heard");
+			};
+			(words.iter().filter(|word| is_filler(&word.text)).count(), text)
+		};
+		let (plain, verbatim) = (fillers(Decode::Plain), fillers(Decode::Verbatim));
+		// Seven said. Run by hand (IW2's PR): plain kept 4, verbatim 6.
+		assert!(verbatim.0 > plain.0, "plain {plain:?}, verbatim {verbatim:?}");
 	}
 
 	#[test]

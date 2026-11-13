@@ -30,9 +30,10 @@
 //! (`voice_repo::delete::receipts`), for My data's list of what was deleted.
 //!
 //! **The one way audio leaves home** (docs/identity.md invariant 23):
-//! [`get_audio`] is the only caller of `voice_repo::audio_head` and
+//! [`get_audio`] is the only route that calls `voice_repo::audio_head` and
 //! `voice_repo::audio_body`, for the kinds `voice_repo::PLAYED_BACK` lists,
-//! and its span skips every argument.
+//! and its span skips every argument (`rust_essays` is their one other
+//! caller, on home's own drive).
 //!
 //! [`get_takes`] is the only reader of the take library
 //! (`voice_repo::takes`): what each Studio take is and the words home heard
@@ -1359,6 +1360,37 @@ mod tests {
 		let (status, body) = get(&app, "/voice-notes/n1/audio", Some(&phone)).await;
 		assert_eq!(status, StatusCode::OK, "a reflection plays back too: {body}");
 		assert_eq!(body["id"], json!("n1"));
+	}
+
+	/// IW1 (paulgsc/some-ui#2932): an interview take, an answer or a
+	/// teleprompter read, is kept and played from home to a paired phone as a
+	/// Rust Rounds note is, and one whose `ref` names neither is a `422`.
+	/// Who may read it is the Rust Rounds test's.
+	#[tokio::test]
+	async fn a_paired_phone_plays_its_interview_takes_from_home() {
+		use base64::{engine::general_purpose::STANDARD, Engine};
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		for (id, path, audio) in [
+			("i1", "/voice-notes/i1?of=interview&ref=2026-w47:about-you&at=2026-11-13T18:20:00Z", "/voice-notes/i1/audio"),
+			(
+				"i2",
+				"/voice-notes/i2?of=interview&ref=2026-w47:read:home-first&at=2026-11-13T18:20:00Z",
+				"/voice-notes/i2/audio",
+			),
+		] {
+			let (status, answer) = put(&app, path, Some(&phone), "audio/webm;codecs=opus", TAKE).await;
+			assert_eq!(status, StatusCode::OK, "{answer}");
+			let (status, body) = get(&app, audio, Some(&phone)).await;
+			assert_eq!(status, StatusCode::OK, "{body}");
+			assert_eq!(
+				body,
+				json!({ "id": id, "contentType": "audio/webm", "sha256": TAKE_SHA256, "audio": STANDARD.encode(TAKE) })
+			);
+		}
+		let (status, refused) = put(&app, "/voice-notes/i3?of=interview&ref=about-you&at=2026-11-13T18:20:00Z", Some(&phone), "audio/webm", TAKE).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
 	}
 
 	/// ST32 (paulgsc/some-ui#2590): the take library lists the caller's

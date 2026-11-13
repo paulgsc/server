@@ -827,8 +827,10 @@ nowhere is marked as such and belongs to review.
       transcript. A note sent again files nothing.
       The poller files each `voice_transcript` row that heard something
       (never a failure or a silence) of a note said for `reflection`, `jobs`,
-      `scene`, `studio` or `rust-round` (a Rust Rounds tutor reads what was
-      said on each card; paulgsc/some-ui#2237), the kinds a routine reads and
+      `scene`, `studio`, `rust-round` (a Rust Rounds tutor reads what was
+      said on each card; paulgsc/some-ui#2237) or `interview` (the interview
+      week's routine reads each answer and read; paulgsc/some-ui#2932), the
+      kinds a routine reads and
       the mailbox's `transcript` folder takes (never a game bite, a soundbite, a
       grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
       and never of a note but a Jobs note the owner set aside before it was
@@ -1125,8 +1127,8 @@ nowhere is marked as such and belongs to review.
 23. **Home holds audio only as voice notes, append-only, and keeps them.**
     `voice_note` describes each voice note the phone sends home
     (paulgsc/server#460): what it was said for (`reflection`, `jobs`,
-    `scene`, `game`, `studio`, `soundbite`, `lens`, `leetype` or
-    `rust-round`) and which one, when the phone recorded it and when it reached
+    `scene`, `game`, `studio`, `soundbite`, `lens`, `leetype`,
+    `rust-round` or `interview`) and which one, when the phone recorded it and when it reached
     home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
     and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
     written in the same transaction. **A game bite is a voice note** (owner,
@@ -1192,7 +1194,19 @@ nowhere is marked as such and belongs to review.
     (`voice_repo::is_rust_round_ref`; any other `ref` is a `422`). It
     carries nothing beside it (`20261102000100_add_rust_round_to_voice_note`),
     is heard by the transcriber like every note, and has its transcript
-    filed for the mailbox like a Studio take's (invariant 19). `voice_note` and `voice_note_audio` are the only place home
+    filed for the mailbox like a Studio take's (invariant 19). **An
+    interview take is a voice note** too (paulgsc/some-ui#2932, IW1, epic
+    paulgsc/some-ui#2931, under the owner's decisions of 2026-11-13): said
+    for `interview`, its `ref` the week's question it answers,
+    `<week>:<question>` such as `2026-w47:about-you`, or the week's
+    teleprompter card it reads, `<week>:read:<card>`
+    (`voice_repo::is_interview_ref`; any other `ref` is a `422`). It carries
+    nothing beside it (`20261113002100_add_interview_to_voice_note`), is
+    heard by the transcriber like every note, has its transcript filed for
+    the mailbox like a Rust Rounds note's (invariant 19), and its audio is
+    read back as a Rust Rounds note's is (below). The essay-render exception
+    below covers `rust-round` takes only; an interview essay's render is not
+    yet one (paulgsc/some-ui#2937, IW6, extends it). `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19), **with one named exception: a Rust Rounds essay's
@@ -1453,7 +1467,14 @@ nowhere is marked as such and belongs to review.
     kept as it ended; paulgsc/server#706, `docs/home-compute.md`, "The
     contention guard"); a better model adds
     rows of its own and replaces none, and a reader takes the newest that
-    heard something. A heard attempt also keeps each word it heard, with
+    heard something. An interview take is heard with a prompt that keeps
+    its fillers ("um", "uh"), which the interview essay counts, and its rows
+    name the model file and the prompt (`ggml-small-q5_1.bin+verbatim-1`) as
+    their model, so the transcriber never takes one for the other: a
+    verbatim hearing never ends a plain one's note, nor a plain one a
+    verbatim one's, and an interview take is only ever heard verbatim;
+    nothing more is kept from it than from any note
+    (paulgsc/some-ui#2933, IW2). A heard attempt also keeps each word it heard, with
     when the word began and ended in milliseconds from the note's start
     (whisper.cpp's per-word times, joined from its tokens and moved from the
     speech the VAD cut out back to the note), and how sure the model was of
