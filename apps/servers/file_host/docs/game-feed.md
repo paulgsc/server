@@ -137,7 +137,9 @@ moves without a sops edit or a restart, as Rust Rounds' recording did
 `game_feed_enabled` is the switch as the last pass read it: 1 following, 0
 paused, on the GAME FEED dashboard. A paused pass follows no game
 (`game_feed_games_followed` 0) and has not failed; a switch that cannot be
-read sets `game_feed_pass_failing`, as a storage failure does. Still open, and not blocking it (paulgsc/server#534):
+read sets `game_feed_pass_failing`, as a storage failure does, and
+`game_feed_enabled` to 1 (the default, following), so `GameFeedFailing`, which
+counts only while home follows, fires on it even from boot or after a pause. Still open, and not blocking it (paulgsc/server#534):
 no retry budget (GA2), a completed game whose summary never reads final is
 fetched without bound (GA3), and no response size limit. The worker's class is
 `file-host`'s (`docs/home-compute.md`).
@@ -218,8 +220,8 @@ only. Its messages are `websocket/game_live/wire.rs` (version 1), and
 - **Paused is off.** Each offer reads the operator's switch once. Paused,
   the socket still opens, and every offer says `following: false` with no
   games, so the phone can say home follows none rather than look away from
-  home. A change reaches an open socket at its next tick or pass, since the
-  phone would see something new. A switch that cannot be read sends no offer
+  home. A change reaches an open socket at its next 5 s tick, since the
+  phone would see something new (a paused pass tells no socket). A switch that cannot be read sends no offer
   that time, as a storage failure does.
 - **SF reads only its own game** as one it wants won. Which side it wants in
   another game is Playoff Delta's reading, which home does not make per week

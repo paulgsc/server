@@ -177,7 +177,11 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 						Err(err) => {
 							crate::metrics::instruments::record_error("game_feed", "setting");
 							// A switch that does not read is home's storage failing, as
-							// a pass that ends on it is (`GameFeedFailing`).
+							// a pass that ends on it is. Its alert (`GameFeedFailing`)
+							// counts only while home follows, so an unread switch
+							// reads as its default, following: else a switch broken
+							// from boot, or after a pause, would fail unseen.
+							crate::metrics::game_feed::record_enabled(GameFeed::default().following);
 							crate::metrics::game_feed::record_pass(None, schedule.followed(chrono::Utc::now()));
 							error!(error = %err, "game feed pass skipped: its following setting could not be read");
 							continue;
