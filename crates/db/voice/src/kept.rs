@@ -90,9 +90,9 @@ pub struct NoteKept {
 	/// My data may offer to delete it: its kind is one the owner switched on
 	/// ([`crate::delete::SWITCHED_ON`]).
 	pub deletable: bool,
-	/// How long it runs, in milliseconds, as home heard it; null while home
-	/// has not heard it (or found it silent), and when its audio was
-	/// unreadable.
+	/// How long it runs, in milliseconds, as home heard it, words or silence;
+	/// null while home has heard it neither as words nor as silence, and when
+	/// its audio was unreadable.
 	pub duration_ms: Option<i64>,
 	/// The first words home heard in it, about [`HEARD_CHARS`] characters;
 	/// null while home has not heard it, and when it was silent or heard only

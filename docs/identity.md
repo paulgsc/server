@@ -1300,7 +1300,7 @@ nowhere is marked as such and belongs to review.
     heard, cut at the last space within about 80 characters
     (`voice_repo::kept::HEARD_CHARS`), with whether they were cut, and
     whether its kind plays back (`PLAYED_BACK`), so the
-    owner can tell what they would delete (MY-DATA, paulgsc/some-ui#2918,
+    owner can tell what they would delete (MY-DATA, paulgsc/some-ui#2473,
     2026-11-13) (`voice_repo::kept`, its one caller `handlers::voice`). What
     was said goes only to the caller's own paired phone, as `/heard` already
     gives it to its own subject. It reads no audio, no `ref`, no bite and
