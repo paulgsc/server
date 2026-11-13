@@ -122,7 +122,7 @@ pub struct Attempt<'a> {
 /// The kind of note heard verbatim, fillers and all (paulgsc/some-ui#2933,
 /// IW2): an interview take, whose "um"s and "uh"s are what the interview
 /// essay counts. Every other kind is heard as it always was.
-pub const VERBATIM: &str = "interview";
+pub const VERBATIM: &str = crate::Of::Interview.as_str();
 
 /// What a model's transcriptions are kept under: one key for the notes
 /// heard as they always were, and another for the [`VERBATIM`] kind's,
@@ -554,32 +554,19 @@ mod tests {
 		.collect()
 	}
 
-	/// An interview take of `subject`'s, `id`, stored at `stored_at`.
-	///
-	/// Written past `voice_note.of_kind`'s CHECK, so this holds whether or
-	/// not the migration that admits `interview` (paulgsc/some-ui#2932, IW1)
-	/// has run: the transcriber decides by the kind's name alone.
+	/// An interview take of `subject`'s, `id`, stored at `stored_at`: an
+	/// answer, as the phone sends one (paulgsc/some-ui#2932, IW1).
 	async fn interview(pool: &SqlitePool, subject: &str, id: &str, stored_at: &str) {
-		let mut conn = pool.acquire().await.unwrap();
-		sqlx::query("PRAGMA ignore_check_constraints = ON").execute(&mut *conn).await.unwrap();
-		sqlx::query(
-			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
-			 VALUES (?1, ?2, ?3, 'week-01:q1', '2026-11-13T19:00:00Z', 'audio/webm', 4, 'sha', ?4)",
-		)
-		.bind(subject)
-		.bind(id)
-		.bind(VERBATIM)
-		.bind(stored_at)
-		.execute(&mut *conn)
-		.await
-		.unwrap();
-		sqlx::query("INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, ?2, x'74616b65')")
-			.bind(subject)
-			.bind(id)
-			.execute(&mut *conn)
-			.await
-			.unwrap();
-		sqlx::query("PRAGMA ignore_check_constraints = OFF").execute(&mut *conn).await.unwrap();
+		let said = Said {
+			of: Some(VERBATIM),
+			of_ref: Some("2026-w47:about-you"),
+			at: Some("2026-11-13T19:00:00Z"),
+			content_type: Some("audio/webm"),
+			bite: SaidBite::default(),
+		};
+		let mut tx = pool.begin().await.unwrap();
+		put_note(&mut tx, subject, &describe(id, said, b"take").unwrap(), b"take", stored_at).await.unwrap();
+		tx.commit().await.unwrap();
 	}
 
 	fn named(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
