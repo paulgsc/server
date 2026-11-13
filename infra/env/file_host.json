@@ -13,7 +13,9 @@
       "secret": false,
       "help": "Rate limit, in requests per minute, per client (`main.rs`'s `rate_limit_middleware` partitions by peer IP). See #215/#231: this field previously declared the right unit but was unread — the limiter's capacity was `max_request_size` (megabytes of upload payload) instead",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Abuse policy, changed while running: a lever (confirmed on #617, 2026-11-01)."
     },
     {
       "name": "TRUSTED_PROXIES",
@@ -26,7 +28,9 @@
       "secret": false,
       "help": "Reverse proxies whose `X-Forwarded-For` names the client: comma-separated addresses, CIDR ranges, or `gateway` (this host's default IPv4 gateway, read from /proc/net/route at start). A request from one of them is keyed (rate limit, WebSocket admission) by the nearest forwarded hop that is not a trusted proxy; from anything else, by its own address, header ignored. Empty by default. Name single proxies, not ranges: anyone trusted can choose its own bucket. Home's Caddy runs on the host, so its requests arrive from the Docker bridge's gateway (`infra/compose/file_host.yml` sets `gateway`)",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Which reverse proxies front this deployment; compose sets home's (`gateway`)."
     },
     {
       "name": "ALLOWED_ORIGINS",
@@ -39,7 +43,9 @@
       "secret": false,
       "help": "Comma-separated list of allowed CORS origins for browser-facing read routes (push and sessions). Other routes deliberately allow any origin (extensions, etc.) and are unaffected by this setting.\n\nRequired: no list is right on every host (#406). Include the HTTPS origin the study app is served from, not only Storybook's `:6006`: service workers, `Notification`, and `PushManager` are all gated on a secure context, so a subscription is posted from an HTTPS origin.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "The origins this deployment's app is served from (kept whole, #617)."
     },
     {
       "name": "REDIS_URL",
@@ -52,7 +58,9 @@
       "secret": false,
       "help": "Redis URL for caching.\n\nRequired: no address is right on every host (#617).",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Wiring: which Redis this deployment reaches."
     },
     {
       "name": "DATABASE_URL",
@@ -65,7 +73,9 @@
       "secret": true,
       "help": "The `SQLite` database, as `sqlite://<path>`.\n\nThe container sets its own (`infra/compose/file_host.yml`), so in `.env` this is `make dev`'s. Pointed at the directory the container mounts, a dev run opens the container's live database.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A per-machine path to this deployment's database."
     },
     {
       "name": "NUDGE_ENABLED",
@@ -78,7 +88,9 @@
       "secret": false,
       "help": "Whether the daily nudge tick runs at all.\n\nWith this off, the `/push` routes still work — a browser can subscribe and a manual send can be triggered — but nothing fires on a schedule. On, the server refuses to start without a usable VAPID pair. A dev run beside the container keeps it off, or a learner is nudged twice.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Whether the nudge sends, paused or resumed while running: a switch (proposed on #617, 2026-11-13)."
     },
     {
       "name": "VAPID_PUBLIC_KEY",
@@ -94,7 +106,9 @@
         "variable": "NUDGE_ENABLED",
         "value": "true"
       },
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Every push subscription is bound to it; the owner's own example (#613)."
     },
     {
       "name": "VAPID_PRIVATE_KEY",
@@ -110,7 +124,9 @@
         "variable": "NUDGE_ENABLED",
         "value": "true"
       },
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A secret, paired with the public key."
     },
     {
       "name": "NUDGE_TIMEZONE",
@@ -123,7 +139,9 @@
       "secret": false,
       "help": "IANA timezone name deciding when a day starts and when quiet hours apply.\n\nDeliberately an `Option` with no default. A container is UTC unless told otherwise, and a silent UTC fallback is how an evening reminder arrives at 3am; leaving this unset is allowed but is logged as the choice it is. A name that is not an IANA zone (`America/Denvr`) stops the server at start (#407); it used to fall back to UTC.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "The quiet hours' zone, which moves with the learner: a lever (confirmed on #617)."
     },
     {
       "name": "NUDGE_QUIET_HOURS_START",
@@ -136,7 +154,9 @@
       "secret": false,
       "help": "Local hour, 0-23, at which nudges stop",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "When nudges stop: a lever (confirmed on #617)."
     },
     {
       "name": "NUDGE_QUIET_HOURS_END",
@@ -149,7 +169,9 @@
       "secret": false,
       "help": "Local hour, 0-23, at which nudges resume. May be less than the start hour; the range wraps midnight. Equal bounds mean no quiet hours at all",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "When nudges resume: a lever (confirmed on #617)."
     },
     {
       "name": "RECOMMENDER_USES_OUTCOMES",
@@ -162,7 +184,9 @@
       "secret": false,
       "help": "Whether the recommender ranks a provisioned session with this subject's outcome history (#289, TEL4). **Off by default, and meant to stay off until someone has looked at real data** — see `docs/study-nudge.md`, \"Outcome stats and the flag that gates them\", for what would justify turning it on. Off, the recommender sees every activity as unplayed, exactly as it did before `activity_outcome` existed",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "A decision made on real data, not a deploy: a lever (confirmed on #617)."
     },
     {
       "name": "APP_BASE_URL",
@@ -175,7 +199,9 @@
       "secret": false,
       "help": "Base URL of the study app, used to build the notification's deep link. Must end with a slash: the client builds `${BASE_URL}sessions/${id}` and the server has to produce the same shape or clicks land on the dashboard.\n\nRequired: no URL is right on every host (#406). The dev host sets `https://nixos.local:5173/`.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "This deployment's app URL, for the nudge's deep link."
     },
     {
       "name": "AUTH_ENABLED",
@@ -188,7 +214,9 @@
       "secret": false,
       "help": "Whether passkey sign-in is on.\n\nOn by default. On, `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGINS` are required and the server will not start without them. `false` is for a run that needs nobody signed in: every ceremony answers `503` and every subject-scoped route `401`. `false` with `WEBAUTHN_RP_ID` set is refused as a contradiction.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Whether this deployment has sign-in at all; as a lever it would lock out the operator who sets it."
     },
     {
       "name": "WEBAUTHN_RP_ID",
@@ -204,7 +232,9 @@
         "variable": "AUTH_ENABLED",
         "value": "true"
       },
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "The domain every passkey is bound to; the owner's own example (#613)."
     },
     {
       "name": "WEBAUTHN_ORIGINS",
@@ -220,7 +250,9 @@
         "variable": "AUTH_ENABLED",
         "value": "true"
       },
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Where this deployment's passkey ceremonies come from."
     },
     {
       "name": "AUTH_SESSION_DAYS",
@@ -233,7 +265,9 @@
       "secret": false,
       "help": "How long a sign-in lasts, in days. It slides: opening the app past the halfway point renews it to a full term",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "How long a sign-in lasts: a lever (confirmed on #617)."
     },
     {
       "name": "AUTH_OPEN_SIGNUP",
@@ -246,7 +280,9 @@
       "secret": false,
       "help": "Whether an account may be created while one already exists. Off (the default), the first account closes sign-up: the box is one person's, and that account is the owner's, which runs the operator routes and is whose copy the Jobs mailbox is kept as, with no subject id set anywhere here. On, for a product where anyone who can reach the server may make an account; then no account is the owner's by itself, and `OPERATOR_SUBJECTS` and `MAILBOX_SUBJECT` say who is who. Sign-in is open either way",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "The deployment's ownership model, not a dial (kept whole, #617)."
     },
     {
       "name": "AUTH_NEW_ACCOUNTS_PER_DAY",
@@ -259,7 +295,9 @@
       "secret": false,
       "help": "How many accounts may be created per UTC day, across the server, with `AUTH_OPEN_SIGNUP` on. A backstop against a flood of empty accounts; the per-client rate limit already bounds any one client",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Sign-up policy: a lever, 0 pausing sign-up (confirmed on #617)."
     },
     {
       "name": "OPERATOR_SUBJECTS",
@@ -272,7 +310,9 @@
       "secret": false,
       "help": "Comma-separated subject ids allowed to use the operator routes: the ones that rewrite, retire and restore what everyone is served (lessons, `leetype` rounds). Whitespace around an entry is trimmed and empty entries are ignored. Unset or empty, the owner's account (the only one) is the operator, and nobody is while the box has no account or several. Set, only the listed subjects are: an override for a deployment with `AUTH_OPEN_SIGNUP` on; see `auth::operator`.\n\nTo find a subject id to list, sign in where you operate from and call any operator route: the refusal is logged at info with your `subject=`.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Who operates is a role held by a subject, granted from the console (confirmed on #617)."
     },
     {
       "name": "MAILBOX_ENABLED",
@@ -285,7 +325,9 @@
       "secret": false,
       "help": "Whether home reads the Jobs mailbox at all. On, the server refuses to start unless `MAILBOX_URL` and `MAILBOX_TOKEN` are set and usable",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Whether home reads the mailbox, paused or resumed while running: a switch (proposed on #617, 2026-11-13)."
     },
     {
       "name": "MAILBOX_URL",
@@ -301,7 +343,9 @@
         "variable": "MAILBOX_ENABLED",
         "value": "true"
       },
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "The address of this deployment's mailbox Worker."
     },
     {
       "name": "MAILBOX_TOKEN",
@@ -317,7 +361,9 @@
         "variable": "MAILBOX_ENABLED",
         "value": "true"
       },
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A secret."
     },
     {
       "name": "MAILBOX_SUBJECT",
@@ -330,7 +376,9 @@
       "secret": false,
       "help": "The subject whose copy the mailbox's files are kept as. Unset, the owner's account (the only one), read at each pass; while the box has no account or several, a pass keeps nothing and says `no_account`. Set, that subject: an override for a deployment with `AUTH_OPEN_SIGNUP` on, its id found as for `OPERATOR_SUBJECTS`",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Whose copy the mailbox's files are kept as, on an open deployment (confirmed on #617)."
     },
     {
       "name": "ROUTINE_SCHEDULE",
@@ -343,7 +391,9 @@
       "secret": false,
       "help": "When each routine that leaves run records in the mailbox is due: `<routine> <HH:MM> <IANA zone>` entries separated by `;`, the routine `jobs` or `reflections`. Empty expects no run. Read only with the mailbox on (`routine_watch`)",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Mirrors the routines' own schedules, which change without a release: a lever (confirmed on #617)."
     },
     {
       "name": "MAILBOX_ARCHIVE_TOKEN",
@@ -356,7 +406,9 @@
       "secret": true,
       "help": "Home's second mailbox token (the Worker's `ARCHIVE_TOKEN`): it moves a file live there long enough home, and puts one back when the routine asks. Unset, nothing is archived. Never logged",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A secret."
     },
     {
       "name": "MAILBOX_ARCHIVE_DAYS",
@@ -382,7 +434,9 @@
             "value": "*"
           }
         ]
-      }
+      },
+      "class": "policy",
+      "why": "How long a file stays live: a lever, clamped to the mailbox's consts (confirmed on #617)."
     },
     {
       "name": "FCM_SERVICE_ACCOUNT_FILE",
@@ -395,7 +449,9 @@
       "secret": false,
       "help": "A Google service account's JSON key, allowed to send through FCM for the app's Firebase project, as the container sees it: the repo's `config/` is mounted at `/app/config`, and a name with `secret` in it stays out of git (`.gitignore`'s `*secret*`), e.g. `/app/config/fcm-service-account-secret.json`. Unset, home tells no phone anything; set to a file that is not such a key, the server refuses to start",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A credential for this deployment's Firebase project."
     },
     {
       "name": "TRANSCRIBE_ENABLED",
@@ -408,7 +464,9 @@
       "secret": false,
       "help": "Whether home transcribes voice notes at all. On, the server refuses to start unless both models load and ffmpeg runs. Get the models with `nix develop .#whisper -c whisper fetch`",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Whether home transcribes, paused or resumed while running: a switch (proposed on #617, 2026-11-13)."
     },
     {
       "name": "MEANING_ENABLED",
@@ -421,7 +479,9 @@
       "secret": false,
       "help": "Whether the take library is searched by meaning. On, the server refuses to start unless the model loads and `TRANSCRIBE_ENABLED` is on. Get the model with `nix develop .#whisper -c whisper fetch`",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Whether takes are indexed by meaning, paused or resumed while running: a switch (proposed on #617, 2026-11-13)."
     },
     {
       "name": "GAME_FEED_ENABLED",
@@ -434,7 +494,9 @@
       "secret": false,
       "help": "Whether home follows the games of the week at all",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "policy",
+      "why": "Whether home follows the games, paused or resumed while running: a switch (owner, 2026-11-13)."
     },
     {
       "name": "NATS_URL",
@@ -447,7 +509,9 @@
       "secret": false,
       "help": "The NATS server to connect to.\n\nRequired: no address is right on every host (#617). Compose's services set theirs; `make dev` takes its role's.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Wiring: which NATS this deployment reaches; compose sets its own, dev its own."
     },
     {
       "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -460,7 +524,9 @@
       "secret": false,
       "help": "The OTLP (gRPC) collector traces are exported to, e.g. `http://otel-collector:4317`. Unset, they are not exported at all: nothing in the compose stack runs a collector, and metrics go through Prometheus (#139, #407)",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "The collector this deployment exports to, if any."
     },
     {
       "name": "ENVIRONMENT",
@@ -473,7 +539,9 @@
       "secret": false,
       "help": "The `service.environment` traces carry",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "The role's own label on its traces."
     },
     {
       "name": "RUST_LOG",
@@ -486,7 +554,9 @@
       "secret": false,
       "help": "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A per-role log level (dev runs at debug without a rebuild); confirmed on #617, 2026-11-01."
     }
   ]
 }

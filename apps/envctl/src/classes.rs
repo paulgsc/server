@@ -1,0 +1,357 @@
+//! ENV-CLASS (#617): the environment holds deployment constants only, and
+//! every variable says which it is.
+//!
+//! Each binary's schema carries every variable's class, which its `Config`
+//! declares (`app_config::schema::Class`; `cargo test` refuses one with
+//! none), and [`FILE`]'s `compose` carries those of the `${...}` variables
+//! compose reads, but `make`'s own ([`FROM_MAKE`]) and the release's images
+//! (`deploy/<role>/release.json`, docs/release.md). A variable of any class but
+//! [`Class::Deployment`] is runtime policy or a source constant read from the
+//! environment: it fails here, unless [`FILE`] lists it as moving, with the
+//! issue that moves it. A `bool` that stays a deployment constant is where
+//! policy has hidden before (`RUST_ROUNDS_ENABLED`, `GAME_FEED_ENABLED`), so
+//! it fails too, unless [`FILE`] lists it as a deployment switch.
+//!
+//! [`FILE`] only shrinks: an entry whose variable has moved fails until it is
+//! dropped, and against the base branch's copy (`--base-classes`, which CI
+//! passes) an entry that names a variable the base did not list fails. So a
+//! new policy value cannot land as env, and an old one cannot stay once its
+//! lever lands, both at the PR.
+
+use crate::{compose::ComposeVariables, preflight::FROM_MAKE, release, schema::Class, schema::Kind, schema::Schema};
+use anyhow::{Context, Result};
+use regex::Regex;
+use serde::Deserialize;
+use std::{collections::BTreeSet, path::Path, sync::LazyLock};
+
+/// The exceptions, relative to the checkout.
+pub(crate) const FILE: &str = "infra/env-classes.json";
+
+/// The app name compose's own `${...}` variables are listed under.
+pub(crate) const COMPOSE_APP: &str = "compose";
+
+static ISSUE: LazyLock<Regex> = LazyLock::new(|| crate::dotenv::regex(r"^[\w.-]+/[\w.-]+#\d+$"));
+
+/// [`FILE`], as checked in.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Exceptions {
+	/// What the file is, for whoever opens it; read by no one here.
+	#[serde(rename = "$comment", default)]
+	_comment: Vec<String>,
+	/// The class of each variable compose reads from its role's
+	/// `compose.sops.env`, which no `Config` declares.
+	pub(crate) compose: Vec<ComposeClass>,
+	/// A variable of another class still read from the environment, on its
+	/// way out.
+	pub(crate) moving: Vec<Moving>,
+	/// A `bool` that is a deployment constant.
+	pub(crate) switches: Vec<Switch>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ComposeClass {
+	pub(crate) variable: String,
+	pub(crate) class: Class,
+	pub(crate) why: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Moving {
+	pub(crate) app: String,
+	pub(crate) variable: String,
+	pub(crate) class: Class,
+	/// The issue whose change removes it from the environment, as
+	/// `owner/repo#number`.
+	pub(crate) issue: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Switch {
+	pub(crate) app: String,
+	pub(crate) variable: String,
+	/// Where the owner confirmed it a deployment constant, or will.
+	pub(crate) issue: String,
+}
+
+impl Exceptions {
+	pub(crate) fn parse(text: &str) -> Result<Self> {
+		serde_json::from_str(text).with_context(|| format!("{FILE} is not {{\"compose\": [...], \"moving\": [...], \"switches\": [...]}}"))
+	}
+
+	pub(crate) fn load(repo: &Path) -> Result<Self> {
+		let path = repo.join(FILE);
+		Self::parse(&std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?)
+	}
+
+	/// Every `(app, variable)` either list names.
+	fn names(&self) -> BTreeSet<(&str, &str)> {
+		self
+			.moving
+			.iter()
+			.map(|entry| (entry.app.as_str(), entry.variable.as_str()))
+			.chain(self.switches.iter().map(|entry| (entry.app.as_str(), entry.variable.as_str())))
+			.collect()
+	}
+}
+
+/// One variable the stack reads, with its class.
+struct Read<'a> {
+	app: &'a str,
+	name: &'a str,
+	class: Class,
+	switch: bool,
+}
+
+/// Every variable that is not a deployment constant and is not moving, every
+/// deployment `bool` not listed as a switch, every compose variable with no
+/// class, every exception that no longer holds, and, given the base branch's
+/// copy, every exception it did not have; each by app and name.
+pub(crate) fn problems(schemas: &[Schema], compose_variables: &ComposeVariables, exceptions: &Exceptions, base: Option<&Exceptions>) -> Vec<String> {
+	let mut problems = Vec::new();
+	let mut read: Vec<Read> = schemas
+		.iter()
+		.flat_map(|schema| {
+			schema.variables.iter().map(|variable| Read {
+				app: &schema.binary,
+				name: &variable.name,
+				class: variable.class,
+				switch: variable.kind == Kind::Bool,
+			})
+		})
+		.collect();
+	for name in compose_variables.keys() {
+		if FROM_MAKE.contains(&name.as_str()) || release::is_variable(name) {
+			continue;
+		}
+		match exceptions.compose.iter().find(|known| &known.variable == name) {
+			Some(known) => read.push(Read {
+				app: COMPOSE_APP,
+				name,
+				class: known.class,
+				switch: false,
+			}),
+			None => problems.push(format!("compose reads {name}, which has no class: add it to {FILE}'s compose, with why (ENV-CLASS)")),
+		}
+	}
+	for known in &exceptions.compose {
+		if !compose_variables.contains_key(&known.variable) {
+			problems.push(format!("{FILE} classes compose's {}, which no compose file reads: drop it", known.variable));
+		} else if known.why.trim().is_empty() {
+			problems.push(format!("{FILE} gives compose's {} no reason for its class", known.variable));
+		}
+	}
+	for variable in &read {
+		let moving = exceptions.moving.iter().find(|entry| entry.app == variable.app && entry.variable == variable.name);
+		let switch = exceptions.switches.iter().any(|entry| entry.app == variable.app && entry.variable == variable.name);
+		match (variable.class, moving) {
+			(Class::Deployment, _) if variable.switch && !switch => problems.push(format!(
+				"{} {} is a bool classed deployment: a switch is runtime policy unless the owner confirms it a fact of the deployment ({FILE}'s switches)",
+				variable.app, variable.name
+			)),
+			(Class::Deployment, _) => {}
+			(class, None) => problems.push(format!(
+				"{} {} is classed {}, and the environment holds deployment constants only: make it {} (ENV-CLASS, README.md, \"Configuration\")",
+				variable.app,
+				variable.name,
+				class.name(),
+				if class == Class::Policy { "a lever (file_host's settings)" } else { "a const" }
+			)),
+			(class, Some(entry)) if entry.class != class => problems.push(format!(
+				"{FILE} lists {} {} as moving {}, and it is classed {}",
+				variable.app,
+				variable.name,
+				entry.class.name(),
+				class.name()
+			)),
+			(_, Some(_)) => {}
+		}
+	}
+	let held = |app: &str, name: &str, wanted: &dyn Fn(&Read) -> bool| read.iter().any(|variable| variable.app == app && variable.name == name && wanted(variable));
+	for entry in &exceptions.moving {
+		if !held(&entry.app, &entry.variable, &|variable| variable.class != Class::Deployment) {
+			problems.push(format!(
+				"{FILE} lists {} {} as moving, and it is no longer read or no longer classed {}: drop the entry",
+				entry.app,
+				entry.variable,
+				entry.class.name()
+			));
+		}
+	}
+	for entry in &exceptions.switches {
+		if !held(&entry.app, &entry.variable, &|variable| variable.switch && variable.class == Class::Deployment) {
+			problems.push(format!(
+				"{FILE} lists {} {} as a deployment switch, and it is no longer a bool classed deployment: drop the entry",
+				entry.app, entry.variable
+			));
+		}
+	}
+	let mut seen = BTreeSet::new();
+	for (app, variable, issue) in exceptions
+		.moving
+		.iter()
+		.map(|entry| (&entry.app, &entry.variable, &entry.issue))
+		.chain(exceptions.switches.iter().map(|entry| (&entry.app, &entry.variable, &entry.issue)))
+	{
+		if !seen.insert((app, variable)) {
+			problems.push(format!("{FILE} lists {app} {variable} twice"));
+		}
+		if !ISSUE.is_match(issue) {
+			problems.push(format!("{FILE}'s {app} {variable} names no issue as owner/repo#number"));
+		}
+	}
+	if let Some(base) = base {
+		let before = base.names();
+		for (app, variable) in exceptions.names() {
+			if !before.contains(&(app, variable)) {
+				problems.push(format!(
+					"{FILE} lists {app} {variable}, which the base branch's does not: the exceptions only shrink, so a new variable is a deployment constant or is not env"
+				));
+			}
+		}
+	}
+	problems
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{problems, Exceptions};
+	use crate::{
+		compose::variables,
+		schema::{
+			fixture::{schema, var},
+			Class, Kind, Variable,
+		},
+	};
+	use std::path::Path;
+
+	fn classed(name: &str, kind: Kind, class: Class) -> Variable {
+		Variable { class, ..var(name, kind) }
+	}
+
+	fn exceptions(text: &str) -> Exceptions {
+		Exceptions::parse(text).unwrap()
+	}
+
+	const NONE: &str = r#"{"compose": [], "moving": [], "switches": []}"#;
+
+	#[test]
+	fn only_a_deployment_constant_is_env() {
+		let probe = schema(
+			"probe",
+			vec![
+				classed("URL", Kind::String, Class::Deployment),
+				classed("LIMIT", Kind::U32, Class::Policy),
+				classed("TICK", Kind::U64, Class::Source),
+			],
+		);
+		assert_eq!(
+			problems(&[probe], &variables(&[]), &exceptions(NONE), None),
+			[
+				"probe LIMIT is classed policy, and the environment holds deployment constants only: make it a lever (file_host's settings) (ENV-CLASS, README.md, \"Configuration\")",
+				"probe TICK is classed source, and the environment holds deployment constants only: make it a const (ENV-CLASS, README.md, \"Configuration\")",
+			]
+		);
+	}
+
+	#[test]
+	fn a_moving_variable_waits_on_its_issue_and_its_entry_goes_when_it_moves() {
+		let listed = exceptions(r#"{"compose": [], "moving": [{"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "o/r#1"}], "switches": []}"#);
+		let reading = schema("probe", vec![classed("LIMIT", Kind::U32, Class::Policy)]);
+		assert!(problems(&[reading], &variables(&[]), &listed, None).is_empty());
+		let moved = schema("probe", vec![]);
+		assert_eq!(
+			problems(&[moved], &variables(&[]), &listed, None),
+			["infra/env-classes.json lists probe LIMIT as moving, and it is no longer read or no longer classed policy: drop the entry"]
+		);
+		let reclassed = schema("probe", vec![classed("LIMIT", Kind::U32, Class::Source)]);
+		assert_eq!(
+			problems(&[reclassed], &variables(&[]), &listed, None),
+			["infra/env-classes.json lists probe LIMIT as moving policy, and it is classed source"]
+		);
+	}
+
+	#[test]
+	fn a_deployment_bool_is_a_switch_the_owner_confirmed() {
+		let probe = schema("probe", vec![classed("ON", Kind::Bool, Class::Deployment)]);
+		assert_eq!(
+			problems(std::slice::from_ref(&probe), &variables(&[]), &exceptions(NONE), None),
+			["probe ON is a bool classed deployment: a switch is runtime policy unless the owner confirms it a fact of the deployment (infra/env-classes.json's switches)"]
+		);
+		let confirmed = exceptions(r#"{"compose": [], "moving": [], "switches": [{"app": "probe", "variable": "ON", "issue": "o/r#2"}]}"#);
+		assert!(problems(&[probe], &variables(&[]), &confirmed, None).is_empty());
+		let gone = schema("probe", vec![classed("ON", Kind::Bool, Class::Policy)]);
+		let found = problems(&[gone], &variables(&[]), &confirmed, None);
+		assert!(found.iter().any(|problem| problem.contains("no longer a bool classed deployment")), "{found:?}");
+	}
+
+	#[test]
+	fn the_exceptions_only_shrink_against_the_base_branch() {
+		let probe = schema("probe", vec![classed("LIMIT", Kind::U32, Class::Policy), classed("ZONE", Kind::String, Class::Policy)]);
+		let base = exceptions(r#"{"compose": [], "moving": [{"app": "probe", "variable": "LIMIT", "class": "source", "issue": "o/r#1"}], "switches": []}"#);
+		let head = exceptions(
+			r#"{"compose": [], "moving": [{"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "o/r#1"}, {"app": "probe", "variable": "ZONE", "class": "policy", "issue": "o/r#3"}], "switches": []}"#,
+		);
+		assert_eq!(
+			problems(&[probe], &variables(&[]), &head, Some(&base)),
+			["infra/env-classes.json lists probe ZONE, which the base branch's does not: the exceptions only shrink, so a new variable is a deployment constant or is not env"],
+			"a reclassed entry may stay; a new one may not"
+		);
+	}
+
+	#[test]
+	fn an_entry_names_its_issue_once() {
+		let probe = schema("probe", vec![classed("LIMIT", Kind::U32, Class::Policy)]);
+		let listed = exceptions(
+			r#"{"compose": [], "moving": [{"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "soon"}, {"app": "probe", "variable": "LIMIT", "class": "policy", "issue": "o/r#1"}], "switches": []}"#,
+		);
+		assert_eq!(
+			problems(&[probe], &variables(&[]), &listed, None),
+			[
+				"infra/env-classes.json's probe LIMIT names no issue as owner/repo#number",
+				"infra/env-classes.json lists probe LIMIT twice"
+			]
+		);
+	}
+
+	#[test]
+	fn every_compose_variable_has_a_class_but_make_s_and_the_release_s() {
+		let read = variables(&[(
+			"a.yml".to_owned(),
+			"      - ${STORAGE:?s}:/data\n      - ${REPO_ROOT:?r}:/r\n    image: ${IMAGE_X:?i}\n      - ${NEW_PATH:?n}:/n\n".to_owned(),
+		)]);
+		let classed = exceptions(
+			r#"{"compose": [{"variable": "STORAGE", "class": "deployment", "why": "A path."}, {"variable": "GONE", "class": "deployment", "why": "Was read."}, {"variable": "NEW_PATH", "class": "policy", "why": "x"}], "moving": [], "switches": []}"#,
+		);
+		assert_eq!(
+			problems(&[], &read, &classed, None),
+			[
+				"infra/env-classes.json classes compose's GONE, which no compose file reads: drop it",
+				"compose NEW_PATH is classed policy, and the environment holds deployment constants only: make it a lever (file_host's settings) (ENV-CLASS, README.md, \"Configuration\")",
+			],
+			"make's REPO_ROOT and the release's IMAGE_X need none"
+		);
+		assert_eq!(
+			problems(&[], &read, &exceptions(NONE), None),
+			[
+				"compose reads STORAGE, which has no class: add it to infra/env-classes.json's compose, with why (ENV-CLASS)",
+				"compose reads NEW_PATH, which has no class: add it to infra/env-classes.json's compose, with why (ENV-CLASS)",
+			]
+		);
+	}
+
+	/// The checked-in file reads, and the checked-in schemas and compose
+	/// files conform to it (CI's `envctl check` runs the same, with the base
+	/// branch's copy).
+	#[test]
+	fn the_checkout_conforms() {
+		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+		let schemas = crate::schema::load(&repo.join("infra/env")).unwrap();
+		let compose_variables = crate::compose::read(&repo).unwrap();
+		let found = problems(&schemas, &compose_variables, &Exceptions::load(&repo).unwrap(), None);
+		assert!(found.is_empty(), "{found:#?}");
+	}
+}

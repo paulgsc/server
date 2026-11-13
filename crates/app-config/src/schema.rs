@@ -17,6 +17,13 @@
 //! A variable is a secret when its `Config` hides its value
 //! (`hide_env_values = true`): `--help` shows no value for it, and nothing
 //! generated from the schema does either.
+//!
+//! Every variable also carries its [`Class`] and why (ENV-CLASS, #617): a
+//! deployment constant, runtime policy or a source constant, declared beside
+//! the `Config` as [`Classed`] in its [`Rules`] (the shared groups' in
+//! [`crate::CLASSES`]). [`schema`] refuses a variable with none, so a new one
+//! cannot be checked in unclassed, and `envctl check` refuses any class but a
+//! deployment constant (README.md, "Configuration").
 
 use clap::{builder::ValueParser, error::ErrorKind, Arg, ArgAction, ArgMatches, Command, Parser};
 use serde::Serialize;
@@ -62,6 +69,39 @@ pub struct Variable {
 	pub required_when: Option<Condition>,
 	/// The least and most it may be, while its conditions hold.
 	pub bounds: Option<Bounds>,
+	/// What kind of value it is (#617). Always set in a [`schema`]: it
+	/// refuses a variable with none.
+	pub class: Option<Class>,
+	/// Why it is of its class, in one line.
+	pub why: Option<String>,
+}
+
+/// What kind of value a variable holds (ENV4, #617; the owner's principles on
+/// #613). Only a [`Class::Deployment`] belongs in the environment: `envctl
+/// check` fails any other that is not on its way out
+/// (`infra/env-classes.json`).
+#[derive(Debug, Serialize, PartialEq, Eq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum Class {
+	/// A fact of one deployment, set once for its life: a secret, an address
+	/// or origin, a per-machine path, what this deployment is. Stays env,
+	/// encrypted.
+	Deployment,
+	/// Changes while the app runs: one of the operator's levers
+	/// (`file_host`'s `settings`), never env.
+	Policy,
+	/// The same in every deployment, changed only by a PR with its reason:
+	/// a `const`, never env.
+	Source,
+}
+
+/// One variable's [`Class`] and why, declared beside the `Config` that
+/// reads it.
+#[derive(Debug, Clone, Copy)]
+pub struct Classed {
+	pub variable: &'static str,
+	pub class: Class,
+	pub why: &'static str,
 }
 
 /// What a binary checks at start that clap cannot see, declared beside its
@@ -70,10 +110,18 @@ pub struct Variable {
 pub struct Rules {
 	pub required_when: &'static [RequiredWhen],
 	pub bounds: &'static [Bound],
+	/// The class of every variable the binary declares itself; the shared
+	/// groups' are [`crate::CLASSES`].
+	pub classes: &'static [Classed],
 }
 
-/// For a binary that declares no [`Rules`].
-pub const NO_RULES: Rules = Rules { required_when: &[], bounds: &[] };
+/// For a binary that declares no [`Rules`]: every variable it reads is one of
+/// the shared groups'.
+pub const NO_RULES: Rules = Rules {
+	required_when: &[],
+	bounds: &[],
+	classes: &[],
+};
 
 /// One variable a binary requires only while another has a value.
 #[derive(Debug, Clone, Copy)]
@@ -145,8 +193,9 @@ pub enum Kind {
 /// # Panics
 ///
 /// When an argument's parser returns a type [`Kind`] does not name (map it
-/// here deliberately rather than describe it wrongly), or a requirement names
-/// a variable `cmd` does not declare.
+/// here deliberately rather than describe it wrongly), a requirement names
+/// a variable `cmd` does not declare, or a variable has no [`Class`], two, or
+/// no reason for its one.
 #[must_use]
 pub fn schema(binary: &str, cmd: &Command, rules: &Rules) -> Schema {
 	let mut variables = variables(cmd);
@@ -195,10 +244,42 @@ pub fn schema(binary: &str, cmd: &Command, rules: &Rules) -> Schema {
 			value: rule.is.to_owned(),
 		});
 	}
+	classify(binary, &mut variables, rules.classes);
 	Schema {
 		binary: binary.to_owned(),
 		about: cmd.get_about().map(ToString::to_string).unwrap_or_default(),
 		variables,
+	}
+}
+
+/// Gives each of `variables` its class from `own` (the binary's) or
+/// [`crate::CLASSES`] (the shared groups'), refusing one with none.
+fn classify(binary: &str, variables: &mut [Variable], own: &[Classed]) {
+	for classed in own {
+		assert!(
+			!crate::CLASSES.iter().any(|shared| shared.variable == classed.variable),
+			"{binary} classes {}, which app_config::CLASSES already does: a shared variable has one class",
+			classed.variable
+		);
+		assert!(
+			variables.iter().any(|variable| variable.name == classed.variable),
+			"{binary} classes {}, which it does not declare (renamed or retired?)",
+			classed.variable
+		);
+	}
+	for variable in variables.iter_mut() {
+		let mut found = own.iter().chain(crate::CLASSES).filter(|classed| classed.variable == variable.name);
+		let Some(classed) = found.next() else {
+			panic!(
+				"{binary}'s {} has no class: declare it in the binary's Rules::classes, as a deployment \
+				 constant, runtime policy or source constant, with why (ENV-CLASS, README.md, \"Configuration\")",
+				variable.name
+			)
+		};
+		assert!(found.next().is_none(), "{binary} classes {} twice", variable.name);
+		assert!(!classed.why.trim().is_empty(), "{binary}'s {} gives no reason for its class", variable.name);
+		variable.class = Some(classed.class);
+		variable.why = Some(classed.why.to_owned());
 	}
 }
 
@@ -241,6 +322,8 @@ fn variable(name: &str, arg: &Arg) -> Variable {
 		help,
 		required_when: None,
 		bounds: None,
+		class: None,
+		why: None,
 	}
 }
 

@@ -1,0 +1,155 @@
+{
+ "$comment": [
+  "ENV-CLASS (#617; README.md, \"Configuration\"): the environment holds deployment constants only.",
+  "`compose`: the class of each ${...} variable compose reads from compose.sops.env, which no Config declares (each binary's are in infra/env/<binary>.json).",
+  "`moving`: a variable classed policy or source that is still read from the environment, with the issue that moves it out.",
+  "`switches`: a bool classed deployment, which the owner confirmed (or is asked to confirm) is a fact of the deployment, not a switch.",
+  "`envctl check` fails a stale entry, and in CI a moving or switches entry the base branch's copy lacks: those two lists only shrink."
+ ],
+ "compose": [
+  {
+   "variable": "STORAGE",
+   "class": "deployment",
+   "why": "Where this machine keeps the stack's data."
+  },
+  {
+   "variable": "DATABASES_DIR",
+   "class": "deployment",
+   "why": "Where this machine keeps the databases."
+  },
+  {
+   "variable": "TRANSCRIBE_MODELS_DIR",
+   "class": "deployment",
+   "why": "Where this machine keeps the transcriber's models."
+  },
+  {
+   "variable": "METABASE_DATA_DIR",
+   "class": "deployment",
+   "why": "Where this machine keeps Metabase's data."
+  },
+  {
+   "variable": "METABASE_SITE_URL",
+   "class": "deployment",
+   "why": "This deployment's Metabase address."
+  },
+  {
+   "variable": "GRAFANA_ROOT_URL",
+   "class": "deployment",
+   "why": "This deployment's Grafana address."
+  },
+  {
+   "variable": "GRAFANA_ADMIN_PASSWORD",
+   "class": "deployment",
+   "why": "A secret."
+  },
+  {
+   "variable": "FILE_HOST_ALERT_SLACK_WEBHOOK_URL",
+   "class": "deployment",
+   "why": "A secret: where this deployment's alerts go."
+  }
+ ],
+ "moving": [
+  {
+   "app": "file_host",
+   "variable": "RATE_LIMIT",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "NUDGE_TIMEZONE",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "NUDGE_QUIET_HOURS_START",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "NUDGE_QUIET_HOURS_END",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "RECOMMENDER_USES_OUTCOMES",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "AUTH_SESSION_DAYS",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "AUTH_NEW_ACCOUNTS_PER_DAY",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "OPERATOR_SUBJECTS",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "ROUTINE_SCHEDULE",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "MAILBOX_ARCHIVE_DAYS",
+   "class": "policy",
+   "issue": "paulgsc/some-ui#2357"
+  },
+  {
+   "app": "file_host",
+   "variable": "NUDGE_ENABLED",
+   "class": "policy",
+   "issue": "paulgsc/server#617"
+  },
+  {
+   "app": "file_host",
+   "variable": "MAILBOX_ENABLED",
+   "class": "policy",
+   "issue": "paulgsc/server#617"
+  },
+  {
+   "app": "file_host",
+   "variable": "TRANSCRIBE_ENABLED",
+   "class": "policy",
+   "issue": "paulgsc/server#617"
+  },
+  {
+   "app": "file_host",
+   "variable": "MEANING_ENABLED",
+   "class": "policy",
+   "issue": "paulgsc/server#617"
+  },
+  {
+   "app": "file_host",
+   "variable": "GAME_FEED_ENABLED",
+   "class": "policy",
+   "issue": "paulgsc/server#617"
+  }
+ ],
+ "switches": [
+  {
+   "app": "file_host",
+   "variable": "AUTH_ENABLED",
+   "issue": "paulgsc/server#617"
+  },
+  {
+   "app": "file_host",
+   "variable": "AUTH_OPEN_SIGNUP",
+   "issue": "paulgsc/server#617"
+  }
+ ]
+}
