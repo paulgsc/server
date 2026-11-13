@@ -19,12 +19,21 @@
 //!   the subject's engagement events before `to`, as `summary`'s last taken
 //!   is. Nothing is held per signal or per week between reads.
 //!
-//! Weeks are ISO weeks in UTC: Monday 00:00 to the next Monday, half-open.
+//! Weeks are ISO weeks on the owner's clock, [`ZONE`]: Monday midnight to
+//! the next Monday midnight, half-open, as some-ui's report writer counts
+//! them (paulgsc/some-ui#2910), so a Sunday evening is never next week. A
+//! week that crosses a clock change is an hour shorter or longer in UTC.
+//! [`Seen`]'s days are that clock's days too.
 
 use crate::EventError;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, SecondsFormat, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, SecondsFormat, Utc, Weekday};
+use chrono_tz::Tz;
 use serde::Serialize;
 use sqlx::SqliteConnection;
+
+/// The clock the weeks and days run on: the owner's, as every other day on
+/// home is (`feeds::renders::HOME_ZONE`, `mailbox::index::JOBS_ZONE`).
+pub const ZONE: Tz = chrono_tz::America::Los_Angeles;
 
 /// An ISO week: `2026-W46`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -99,8 +108,16 @@ impl IsoWeek {
 		Self::instant(self.monday + Duration::weeks(1))
 	}
 
+	/// `day`'s midnight on [`ZONE`]'s clock, in UTC. A midnight that falls
+	/// in a clock change's gap (none does on [`ZONE`], whose changes are at
+	/// 02:00) is read as UTC's, so a week always has edges.
 	fn instant(day: NaiveDate) -> String {
-		DateTime::<Utc>::from_naive_utc_and_offset(day.and_time(chrono::NaiveTime::MIN), Utc).to_rfc3339_opts(SecondsFormat::Millis, true)
+		let midnight = day.and_time(NaiveTime::MIN);
+		midnight
+			.and_local_timezone(ZONE)
+			.earliest()
+			.map_or_else(|| midnight.and_utc(), |local| local.with_timezone(&Utc))
+			.to_rfc3339_opts(SecondsFormat::Millis, true)
 	}
 }
 
@@ -154,8 +171,8 @@ pub struct Week {
 }
 
 /// One affordance over everything home holds before the asked week's end:
-/// the day it was first seen and the day it was last taken (UTC dates, no
-/// time of day).
+/// the day it was first seen and the day it was last taken ([`ZONE`]'s
+/// dates, no time of day).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Seen {
@@ -212,11 +229,9 @@ pub async fn weekly(conn: &mut SqliteConnection, subject: &str, week: IsoWeek, n
 		});
 	}
 
-	let seen = sqlx::query_as!(
-		Seen,
+	let seen = sqlx::query!(
 		r#"SELECT pipeline AS "pipeline!: String", affordance AS "affordance!: String", surface AS "surface!: String",
-			substr(MIN(at), 1, 10) AS "first_day!: String",
-			substr(MAX(CASE WHEN kind = 'taken' THEN at END), 1, 10) AS "last_taken_day: String"
+			MIN(at) AS "first!: String", MAX(CASE WHEN kind = 'taken' THEN at END) AS "last_taken: String"
 		FROM (SELECT at, json_extract(body, '$.pipeline') AS pipeline, json_extract(body, '$.affordance') AS affordance,
 				json_extract(body, '$.surface') AS surface, json_extract(body, '$.kind') AS kind
 			FROM app_event WHERE subject_id = ?1 AND family = 'engagement' AND at < ?2)
@@ -226,9 +241,26 @@ pub async fn weekly(conn: &mut SqliteConnection, subject: &str, week: IsoWeek, n
 		end
 	)
 	.fetch_all(&mut *conn)
-	.await?;
+	.await?
+	.into_iter()
+	.map(|row| {
+		Ok(Seen {
+			pipeline: row.pipeline,
+			affordance: row.affordance,
+			surface: row.surface,
+			first_day: day_of(&row.first)?,
+			last_taken_day: row.last_taken.as_deref().map(day_of).transpose()?,
+		})
+	})
+	.collect::<Result<Vec<_>, EventError>>()?;
 
 	Ok(Weekly { week: week.label(), weeks, seen })
+}
+
+/// The day on [`ZONE`]'s clock of `at`, a stored instant, as `2026-11-12`.
+fn day_of(at: &str) -> Result<String, EventError> {
+	let at = DateTime::parse_from_rfc3339(at).map_err(|_| EventError::Unreadable)?;
+	Ok(at.with_timezone(&ZONE).date_naive().to_string())
 }
 
 /// One week's counts: a range read of `app_event_by_family`.
@@ -265,13 +297,21 @@ mod tests {
 	fn a_week_parses_and_names_itself() {
 		let week = IsoWeek::parse("2026-W46").unwrap();
 		assert_eq!(week.label(), "2026-W46");
-		assert_eq!(week.from(), "2026-11-09T00:00:00.000Z");
-		assert_eq!(week.to(), "2026-11-16T00:00:00.000Z");
+		assert_eq!(week.from(), "2026-11-09T08:00:00.000Z", "Monday midnight in Los Angeles");
+		assert_eq!(week.to(), "2026-11-16T08:00:00.000Z");
 		assert_eq!(week.back(1).label(), "2026-W45");
 		assert_eq!(week.back(13).label(), "2026-W33");
 		assert_eq!(week.year_ago().label(), "2025-W46");
 		assert_eq!(IsoWeek::parse("2026-W01").unwrap().back(1).label(), "2025-W52");
 		assert_eq!(IsoWeek::containing(NaiveDate::from_ymd_opt(2026, 11, 15).unwrap()).label(), "2026-W46");
+	}
+
+	#[test]
+	fn a_week_across_a_clock_change_keeps_its_midnights() {
+		// Daylight time starts on Sunday 2026-03-08.
+		let w10 = IsoWeek::parse("2026-W10").unwrap();
+		assert_eq!((w10.from(), w10.to()), ("2026-03-02T08:00:00.000Z".to_owned(), "2026-03-09T07:00:00.000Z".to_owned()));
+		assert_eq!(super::day_of("2026-11-16T07:59:59.999Z").unwrap(), "2026-11-15", "Sunday evening is Sunday");
 	}
 
 	#[test]
