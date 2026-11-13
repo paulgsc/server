@@ -220,6 +220,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"a receipt for each of the owner's voice notes the owner deleted for good from My data on the phone (paulgsc/some-ui#2477): the note's id and kind, when it was recorded, reached home and was deleted, its size, and what went and what stayed in fixed words; never what was said; see docs/identity.md invariant 23",
 	),
 	(
+		"studio_take_move",
+		"each move the owner made of a Studio take along the conveyor (paulgsc/some-ui epic #2872, CONVEYOR1): the take's id, the station it left and the one it reached, when, the owner's labels and a short comment if any, and the issue a pickup filed it as; the take itself is a voice note; see docs/identity.md invariant 23",
+	),
+	(
 		"drama_prompt",
 		"each next scene's prompt the owner's phone asked for and sent home (paulgsc/some-ui#2179): the prompt's markdown as written, which holds the scene asked for and the last drama's review in the owner's words, its stamp, and when it reached home; see docs/identity.md invariant 31",
 	),

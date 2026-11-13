@@ -24,6 +24,10 @@
 //! - **Nothing heard reaches a log line.** A pass logs the kind of each
 //!   attempt and how many, and how many takes it gave a vector, never a
 //!   note's text, audio, vector, id or subject.
+//! - **Interview takes are heard verbatim** (`verbatim`, paulgsc/some-ui#2933,
+//!   IW2): with a prompt that keeps their fillers, kept under the model's
+//!   verbatim key. Same model, same worker, same class: nothing new runs on
+//!   home.
 //! - **The take library's meaning index is written here** (`meaning`,
 //!   docs/take-library.md), when `MEANING_ENABLED`: a take's vector in the
 //!   transaction that keeps its hearing, and the takes heard before the
@@ -37,12 +41,13 @@
 
 pub mod engine;
 pub mod pass;
+pub mod verbatim;
 
 use crate::auth::DeletionLock;
 use crate::call_weeks::lane::Held;
 use crate::meaning::{MeaningContext, StaticModel};
 use crate::{AppState, Config};
-use engine::{Cancelled, Hear, Heard, Whisper};
+use engine::{Cancelled, Decode, Hear, Heard, Whisper};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -149,9 +154,9 @@ impl<H: Hear> Hear for Held<H> {
 		self.inner.engine()
 	}
 
-	fn hear(&self, audio: &[u8], deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+	fn hear(&self, audio: &[u8], decode: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 		let _hold = self.interactive.hold();
-		self.inner.hear(audio, deadline, cancel)
+		self.inner.hear(audio, decode, deadline, cancel)
 	}
 }
 
@@ -247,7 +252,7 @@ const fn kind(err: &voice_repo::VoiceError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-	use super::{Cancelled, Hear, Heard, Held};
+	use super::{Cancelled, Decode, Hear, Heard, Held};
 	use crate::call_weeks::lane::Interactive;
 	use std::sync::{Arc, Mutex};
 	use std::time::Instant;
@@ -269,7 +274,7 @@ mod tests {
 			"engine"
 		}
 
-		fn hear(&self, _: &[u8], _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, _: &[u8], _: Decode, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
 			self.held.lock().unwrap().push(self.interactive.is_held());
 			Ok(Heard {
 				outcome: Outcome::Silent,
@@ -291,7 +296,7 @@ mod tests {
 		};
 		assert_eq!((engine.model(), engine.engine()), ("model", "engine"));
 		assert!(!interactive.is_held());
-		assert!(engine.hear(b"note", Instant::now(), &CancellationToken::new()).is_ok());
+		assert!(engine.hear(b"note", Decode::Plain, Instant::now(), &CancellationToken::new()).is_ok());
 		assert_eq!(*watch.held.lock().unwrap(), [true]);
 		assert!(!interactive.is_held(), "let go once heard");
 	}

@@ -129,7 +129,8 @@ takes. The identity doc's do, as above.
 Each library read is one statement: it walks the caller's note descriptions
 (`voice_note` by its key, never the audio), keeps the `studio` ones, and reads
 each one's chosen hearing by the transcripts' key, so no other kind's
-transcript is read. It then keeps at most 50. It grows with how many notes the
+transcript is read; its conveyor station (docs/conveyor.md) is its newest move,
+found by `studio_take_move`'s key, and whether an idea's answer names it. It then keeps at most 50. It grows with how many notes the
 owner keeps, never with other subjects', and only the owner's own paired phone
 asks it, once per screen opened or search said. If the owner's other notes
 ever make that walk slow, an index on `voice_note (subject_id, of_kind)` makes
