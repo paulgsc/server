@@ -641,7 +641,7 @@ mod tests {
 		assert_eq!((&record["closed"], &record["sent"]["draft"]), (&json!(true), &json!(false)));
 		let again = call(&app, Method::PUT, "/interview-weeks/2026-w46/sent", Some(&phone), None, &sent("2026-w46", &at, &days(-4))).await;
 		assert_eq!(again.0, StatusCode::UNPROCESSABLE_ENTITY, "a final week takes no send");
-		let finals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interview_week_final").fetch_one(&pool).await.unwrap();
-		assert_eq!(finals, 1);
+		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interview_week_final").fetch_one(&pool).await.unwrap();
+		assert_eq!(kept, 1);
 	}
 }
