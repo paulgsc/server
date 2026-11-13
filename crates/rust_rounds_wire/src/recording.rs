@@ -93,7 +93,8 @@ pub struct RunRecord {
 	/// message is), with a panic header's thread id dropped.
 	pub stderr: String,
 	/// How many bytes it printed to stderr, less the thread ids dropped from
-	/// `stderr`, so the same failure counts the same.
+	/// `stderr`, so the same failure counts the same. Only ids in the kept
+	/// tail are dropped, so a cut stream's count can still vary with them.
 	pub stderr_bytes: u64,
 	/// Whether either stream was longer than its ceiling, so what is kept
 	/// is not all it printed.
