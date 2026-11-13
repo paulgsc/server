@@ -35,7 +35,7 @@ The one SQLite file `file_host` opens (`DATABASE_URL`; on home
 - **Free disk** (`kind` `disk_free`): bytes an unprivileged writer can still
   use on the database's filesystem (`statvfs`: `f_bavail × f_frsize`).
 
-Not counted here: the other volumes on the same disk (the Whisper and Ollama
+Not counted here: the other volumes on the same disk (the Whisper
 models, Metabase), Docker images, and the VPS-fit verdict, which belong to
 #154; the Jobs mailbox's D1 store (some-ui#2204); the phone's own store. Free
 disk is the one figure those can move, so a model download shows up as a drop

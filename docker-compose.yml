@@ -6,7 +6,6 @@ include:
   - path: ./infra/compose/file_host.yml
   - path: ./infra/compose/rust_runner.yml
   - path: ./infra/compose/orchestrator.yml
-  - path: ./infra/compose/ollama.yml
   - path: ./infra/compose/call-render.yml
   - path: ./infra/compose/monitoring.yml
   - path: ./infra/compose/analytics.yml

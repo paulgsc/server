@@ -55,7 +55,7 @@ that adds it.
 | **Protected** | `file-host`, `nats`, `redis`, `prometheus`, `grafana`, `node_exporter`, `cadvisor` | Home's state, and the path that tells the owner what happened: Prometheus evaluates the alerts, Grafana delivers them, node_exporter and cAdvisor count the kills. Killed last. |
 | **Interactive** | `rust-runner`, `orchestrator`, `home-deploy` | Short work someone may be waiting on. The default. Anything that runs inside `file-host` takes its class and adds no service: the voice-note transcriber, which would be interactive on its own, and every worker loop file_host runs. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
-| **Batch**, the lowest | `render`, `kokoro`, `ollama` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
+| **Batch**, the lowest | `render`, `kokoro` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
 
 The lane (below) decides when the batch class may run: a render starts
 only when no interactive work waits and its peak fits, pauses for
@@ -320,13 +320,11 @@ service sets one by its class, in `infra/compose/*.yml`:
 
 | Class | `oom_score_adj` |
 |---|---|
-| Batch | `ollama` 900, `render` 800, `kokoro` 800 |
+| Batch | `render` 800, `kokoro` 800 |
 | Tooling | 500 |
 | Interactive | 0 (`home-deploy` takes systemd's default, which is 0) |
 | Protected | −500 |
 
-`ollama` goes before the render's services: it is the largest when a model
-is loaded, and nothing in this repo or paulgsc/some-ui calls it (#705, D3).
 Protected is −500, not −1000: a protected service that leaks can still be
 killed, rather than taking the whole host down with it.
 
@@ -358,9 +356,8 @@ How much to reserve for them is decided with the refusal below, from home's
 published facts.
 
 It warns and never refuses. **Planned** (#709): a refusal, once home's
-facts are published nightly (part 1) and #705's D3 decides whether
-`ollama`'s 8 GiB counts. The caps total 30.38 GiB with `ollama`, and 22.38
-GiB without it.
+facts are published nightly (part 1). The caps total 22.38 GiB; `ollama`'s
+8 GiB left with it (#705, D3).
 
 ## What a kill costs
 
@@ -368,7 +365,6 @@ GiB without it.
 |---|---|---|---|
 | a process in `render` (ffmpeg, Chromium, the recorder and the stage it serves itself, #718) | the week's attempt fails (one the lane stops is no failure: it resumes, "What the render worker does") | an hour after the failure; every step it finished is in the step cache, so the retry pays only for the step in flight and the stills | `HomeOomKill`, `CallRenderFailed` |
 | `kokoro` | the line being said; the container restarts, and the render's attempt fails on the dropped connection | as above; takes already said are cached | `HomeOomKill`, `CallServiceRestarted`, `CallRenderFailed` |
-| `ollama` | a request in flight; the container restarts | nothing in this repo calls it | `HomeOomKill` |
 | `file-host` | the API and every poll stop until Docker restarts it. A voice note being heard keeps nothing and is heard again (`transcribe/pass.rs`, "A shutdown keeps nothing") | Docker's restart; each poll's first pass runs at start | `HomeOomKill`, `FileHostDown` |
 | `rust-runner` | the program it was running is kept as a loss (`dropped`), and at the second loss of one program it is kept as `runner-lost` for good under that toolchain (`rust_rounds/pass.rs`, `DROPS`). A loss while the kernel killed anything for memory, or while the CPU was contended, is nobody's and keeps nothing ("The contention guard") | Docker's restart; the next pass asks again until `DROPS` | `HomeOomKill`; `contention_outcomes_total{what="excused"}` |
 | `prometheus` | no alert is evaluated until Docker restarts it | Docker's restart | `HomeOomKill` once it is back, if within the hour |
