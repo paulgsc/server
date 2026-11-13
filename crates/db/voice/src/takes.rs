@@ -135,7 +135,7 @@ pub struct Take {
 	/// idea's answer or a take let go of, which are not on it.
 	pub station: Option<Station>,
 	/// When its newest move put it there; null in the oven, or for an
-	/// idea's answer.
+	/// idea's answer or a take let go of.
 	pub station_at: Option<String>,
 }
 
@@ -425,6 +425,39 @@ mod tests {
 			(Some(Station::Canned), Some("2026-11-04T00:00:00.000Z")),
 			"its newest move"
 		);
+
+		// A scene's take that moved, then was named as an idea's answer, and
+		// one that moved, then was let go of, are off the conveyor too.
+		sqlx::query(
+			"INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at)
+			 VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')",
+		)
+		.bind(A)
+		.execute(&mut *conn)
+		.await
+		.unwrap();
+		sqlx::query("INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'scene', NULL)")
+			.bind(A)
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		sqlx::query(
+			"INSERT INTO studio_take_move (subject_id, note_id, seq, from_station, to_station, moved_at, labels, comment, issue, stored_at)
+			 VALUES (?1, 'loose', 1, 'in-the-oven', 'cooking', '2026-11-04T00:00:00.000Z', NULL, NULL, NULL, 'now')",
+		)
+		.bind(A)
+		.execute(&mut *conn)
+		.await
+		.unwrap();
+		set_aside(&mut conn, A, "loose", "2026-11-05T00:00:00.000Z", "2026-11-05T00:00:01.000Z").await.unwrap();
+		let off: Vec<_> = library(&mut conn, A, None)
+			.await
+			.unwrap()
+			.takes
+			.into_iter()
+			.map(|take| (take.station, take.station_at))
+			.collect();
+		assert_eq!(off, [(None, None), (None, None), (None, None)], "named as an answer, or let go of, after it moved");
 		assert_eq!(
 			all.takes[2].heard,
 			Some(Transcript {

@@ -1267,7 +1267,8 @@ nowhere is marked as such and belongs to review.
     trigger aborts an `UPDATE`), written only by `POST
     /voice-notes/:id/station` (`voice_repo::conveyor::advance`) for a
     `studio` take the subject holds that is no idea's answer, from the
-    station the take is at, and its span skips every argument. A take named
+    station the take is at and no earlier than its newest move, and its span
+    skips every argument. A take named
     as an idea's answer, or let go of, after it moved is off the conveyor:
     no station lists it and it reads and moves as not held, its moves kept.
     Its rows go with the account (the sweep and their own trigger) and with

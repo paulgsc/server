@@ -45,7 +45,7 @@
 //!                                      which, to a paired phone
 //!                                      (paulgsc/some-ui#2590, ST32), each
 //!                                      take saying its conveyor `station`
-//!                                      and `stationAt` (null for an answer)
+//!                                      and `stationAt` (null off the conveyor)
 //! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
 //!                                      notes of each kind home keeps,
 //!                                      their bytes, how many were set

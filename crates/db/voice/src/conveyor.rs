@@ -14,8 +14,9 @@
 //!   no row is in the oven. Nothing rewrites a move (the trigger aborts an
 //!   `UPDATE`); a later move is a new row.
 //! - **A move names where it starts.** [`advance`] refuses a move from a
-//!   station the take is not at ([`Advanced::Stale`]), so a phone that has
-//!   not seen a later move cannot skip it. A retry of the take's newest move
+//!   station the take is not at, or made before the take's newest move
+//!   ([`Advanced::Stale`]), so a phone that has not seen a later move cannot
+//!   skip it, and one that sends a move late cannot undo a newer one. A retry of the take's newest move
 //!   is [`Advanced::Unchanged`] and writes nothing.
 //! - **Which moves there are** ([`ask`]): to cooking, ready for pickup or
 //!   canned from any station but itself; to picked up only from ready for
@@ -342,7 +343,11 @@ pub async fn advance(conn: &mut SqliteConnection, subject: &str, note_id: &str, 
 		}
 	}
 	let at = moves.last().map_or(Station::InTheOven, |newest| newest.to);
-	if at != asked.from {
+	// A move older than the take's newest is one a phone sent late, after
+	// the owner moved on: taking it would undo the newer move. Both times
+	// are ISO-8601 UTC to the millisecond, so they order as text.
+	let older = moves.last().is_some_and(|newest| asked.at < newest.at);
+	if at != asked.from || older {
 		return Ok(Advanced::Stale(at));
 	}
 	let seq = moves.last().map_or(1, |newest| newest.seq + 1);
@@ -678,6 +683,14 @@ mod tests {
 		let stale = asked("in-the-oven", "canned", "2026-11-13T08:01:00Z");
 		assert_eq!(go(&pool, A, "t1", &stale).await, Advanced::Stale(Station::Cooking), "a stale phone cannot skip a move");
 
+		let canned = asked("cooking", "canned", "2026-11-13T08:01:30Z");
+		assert!(matches!(go(&pool, A, "t1", &canned).await, Advanced::Moved(_)));
+		assert!(matches!(go(&pool, A, "t1", &asked("canned", "cooking", "2026-11-13T08:01:45Z")).await, Advanced::Moved(_)));
+		assert_eq!(
+			go(&pool, A, "t1", &canned).await,
+			Advanced::Stale(Station::Cooking),
+			"a move sent late cannot undo a newer one"
+		);
 		assert!(matches!(
 			go(&pool, A, "t1", &asked("cooking", "ready-for-pickup", "2026-11-13T08:02:00Z")).await,
 			Advanced::Moved(_)
@@ -700,12 +713,14 @@ mod tests {
 			moves,
 			[
 				(1, Station::InTheOven, Station::Cooking),
-				(2, Station::Cooking, Station::ReadyForPickup),
-				(3, Station::ReadyForPickup, Station::PickedUp)
+				(2, Station::Cooking, Station::Canned),
+				(3, Station::Canned, Station::Cooking),
+				(4, Station::Cooking, Station::ReadyForPickup),
+				(5, Station::ReadyForPickup, Station::PickedUp)
 			]
 		);
 		assert_eq!(picked.history[0].comment.as_deref(), Some("the opener?"));
-		assert_eq!(picked.history[2].issue.as_deref(), Some("paulgsc/some-ui#3000"));
+		assert_eq!(picked.history[4].issue.as_deref(), Some("paulgsc/some-ui#3000"));
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(station(&mut conn, A, "t1").await.unwrap(), Some(picked), "the read is what the move answered");
 	}
