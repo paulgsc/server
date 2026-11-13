@@ -215,7 +215,13 @@ way; CI runs it on every PR.
 - **A restart keeps the job.** `job.state` names it, it runs before any
   other, under the same id, and its work is never removed for the
   `WORK_MAX_MB` cap while it waits. Docker stopping the container kills the
-  recorder's tree and leaves the job.
+  recorder's tree and leaves the job, marked `job.termed`: a stop that was
+  asked for. A restart without that mark (the container died under the job,
+  an OOM inside it, say) is counted in `job.state`'s `restarts`, and at
+  `RESTARTS` (3) the job is taken as failed, as an exit is: `failed.log`,
+  `CallRenderFailed`, and a retry an hour later as a new job. So a render
+  that kills its own container is not resumed first on every restart for
+  good (#740).
 - **The first render after a boot** waits for the lane's first `run`, which
   is never sooner than its hold-down (30 s after file_host starts): home's
   own services start first.
