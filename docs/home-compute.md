@@ -294,6 +294,26 @@ A container's own `mem_limit` is separate: past it, the kernel kills the
 largest process *inside that container*, whatever the host has free. The
 order above decides only when the host as a whole runs out.
 
+### The caps check
+
+`make up` runs on home, so it can read home's `MemTotal`
+(`apps/envctl/src/caps.rs`, L3 #709). It sums every compose service's
+`mem_limit` and warns when the sum is above `MemTotal`. The warning names
+the three largest caps, which bind first, with each one's class (read from
+its `oom_score_adj`, as above). It also warns of any service with no
+`mem_limit`, whose memory can't be counted.
+
+Every service counts at its cap, batch included. The batch caps are its
+peak: the render's 4 GiB and the speaker's 3 GiB are the lane's declared
+peak plus what the speaker keeps between renders. The room the lane's floor
+holds for interactive work is already inside the interactive caps. So no
+headroom is added on top.
+
+It warns and never refuses. **Planned** (#709): a refusal, once home's
+facts are published nightly (part 1) and #705's D3 decides whether
+`ollama`'s 8 GiB counts. The caps total 30.38 GiB with `ollama`, and 22.38
+GiB without it.
+
 ## What a kill costs
 
 | Killed | What it costs | What retries it | What says so |

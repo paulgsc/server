@@ -13,6 +13,7 @@
 // is a hot path the tracing-only convention protects.
 #![allow(clippy::disallowed_macros)]
 
+mod caps;
 mod compose;
 mod conform;
 mod deliver;
@@ -366,6 +367,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			if !check_preflight(&repo, &schemas, &raw, &deployment)? {
 				println!("Nothing was started.");
 				return Ok(ExitCode::FAILURE);
+			}
+			// Only `up` runs on the box it deploys, so only its MemTotal is home's.
+			let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
+			for warning in caps::warnings(&caps::caps(&raw), meminfo.as_deref().and_then(caps::mem_total)) {
+				println!("warning: {warning}");
 			}
 			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, &compose::read(&repo)?)
 		}
