@@ -48,8 +48,11 @@
 //! over its audio need it.
 //!
 //! **An interview take is heard verbatim** (paulgsc/some-ui#2933, IW2):
-//! with [`Decode::Verbatim`], each English run's decode reads
-//! [`super::verbatim::PROMPT`] first, so its fillers come back as words.
+//! with [`Decode::Verbatim`], each English run's decode starts from
+//! [`super::verbatim::PROMPT`], so its fillers come back as words. Its first
+//! window reads the prompt; later windows read what was heard before them, as
+//! every note's do, with what is left of the prompt until that pushes it out,
+//! and a window whisper.cpp decodes again at a high temperature reads none.
 //! The prompt is tokenized once, at load. Every other note is
 //! [`Decode::Plain`], decoded exactly as before.
 //!
@@ -88,8 +91,10 @@ const FFMPEG: &str = "ffmpeg";
 const DECODE_POLL: Duration = Duration::from_millis(20);
 
 /// The most tokens [`super::verbatim::PROMPT`] may take: whisper.cpp keeps
-/// at most half its 448-token text context for a prompt.
-const PROMPT_TOKENS: usize = 224;
+/// half its 448-token text context for a prompt, its `<|prev|>` marker
+/// included, and cuts a longer one from the front, which would drop the
+/// prompt's opening fillers.
+const PROMPT_TOKENS: usize = 223;
 
 /// What fetches the models, as `TRANSCRIBE_ENABLED`'s help says it.
 const FETCH: &str = "nix develop .#whisper -c whisper fetch";
@@ -189,9 +194,16 @@ impl Whisper {
 		let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!("transcribe::MODEL does not load as a whisper.cpp model"))?;
 		// The notes mix Korean into English, and an `.en` model garbles it.
 		anyhow::ensure!(context.is_multilingual(), "transcribe::MODEL is an English-only model; it must be multilingual (no `.en`)");
+		// Room for one token per byte, which no tokenization exceeds: whisper-rs
+		// takes only -1 for an error, and would read whisper.cpp's "needs n
+		// tokens" (-n) as a length. The limit is checked after.
 		let verbatim = context
-			.tokenize(super::verbatim::PROMPT, PROMPT_TOKENS)
-			.map_err(|_| anyhow::anyhow!("transcribe::verbatim::PROMPT does not tokenize in transcribe::MODEL's vocabulary within {PROMPT_TOKENS} tokens"))?;
+			.tokenize(super::verbatim::PROMPT, super::verbatim::PROMPT.len() + 1)
+			.map_err(|_| anyhow::anyhow!("transcribe::verbatim::PROMPT does not tokenize in transcribe::MODEL's vocabulary"))?;
+		anyhow::ensure!(
+			verbatim.len() <= PROMPT_TOKENS,
+			"transcribe::verbatim::PROMPT is longer than whisper.cpp keeps of a prompt ({PROMPT_TOKENS} tokens)"
+		);
 		WhisperVadContext::new(vad_path, vad_context(threads)?).map_err(|_| anyhow::anyhow!("transcribe::VAD_MODEL does not load as a whisper.cpp VAD model"))?;
 		let ffmpeg = Command::new(FFMPEG)
 			.arg("-version")
@@ -823,6 +835,25 @@ mod tests {
 		Instant::now() + Duration::from_secs(60)
 	}
 
+	/// Only a verbatim decode's English runs read the prompt (IW2).
+	#[test]
+	fn only_a_verbatim_decodes_english_runs_read_the_prompt() {
+		assert!(Decode::Verbatim.prompts("en"));
+		for language in ["ko", "ja", "", "EN"] {
+			assert!(!Decode::Verbatim.prompts(language), "{language}");
+		}
+		for language in ["en", "ko"] {
+			assert!(!Decode::Plain.prompts(language), "{language}");
+		}
+	}
+
+	/// The prompt fits what whisper.cpp keeps of one even at a token per
+	/// byte, so `Whisper::load` cannot refuse it on any model.
+	#[test]
+	fn the_prompt_fits_whisper_cpps_prompt_context() {
+		assert!(crate::transcribe::verbatim::PROMPT.len() <= super::PROMPT_TOKENS);
+	}
+
 	/// A take with audible fillers, heard by the real model both ways
 	/// (paulgsc/some-ui#2933, IW2): the verbatim decode keeps fillers the
 	/// plain one drops. No model runs in CI, so it is ignored there; run it
@@ -835,7 +866,7 @@ mod tests {
 	#[test]
 	#[ignore = "needs the whisper models and espeak-ng"]
 	fn verbatim_keeps_fillers_the_plain_decode_drops() {
-		use crate::transcribe::verbatim::fillers_in;
+		use crate::transcribe::verbatim::is_filler;
 		#[allow(clippy::disallowed_methods)] // A test's own switch, as INSTA_UPDATE is, not configuration (#484).
 		let models = PathBuf::from(std::env::var("TRANSCRIBE_TEST_MODELS").unwrap());
 		let whisper = Whisper::load(&models.join("ggml-small-q5_1.bin"), &models.join("ggml-silero-v5.1.2.bin"), 2).unwrap();
@@ -888,11 +919,10 @@ mod tests {
 			else {
 				panic!("not heard");
 			};
-			(words.iter().map(|word| fillers_in(&word.text)).sum::<usize>(), text)
+			(words.iter().filter(|word| is_filler(&word.text)).count(), text)
 		};
 		let (plain, verbatim) = (fillers(Decode::Plain), fillers(Decode::Verbatim));
-		// Seven said. Run by hand (IW2's PR): plain kept 4, verbatim 5, and one more
-		// it wrote as "err", which the list does not have.
+		// Seven said. Run by hand (IW2's PR): plain kept 4, verbatim 6.
 		assert!(verbatim.0 > plain.0, "plain {plain:?}, verbatim {verbatim:?}");
 	}
 

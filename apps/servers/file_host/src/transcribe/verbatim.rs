@@ -7,8 +7,9 @@
 //! style of the text before it, so an initial prompt written the way a
 //! verbatim transcript reads, fillers and false starts included, keeps them
 //! as words. The owner chose this over a second model (2026-11-13): it is the
-//! same model, so nothing new runs on home, and only the decoder's first
-//! window of each run reads [`PROMPT`]'s few dozen tokens more.
+//! same model, so nothing new runs on home; the decoder reads [`PROMPT`]'s
+//! few dozen tokens more, in the first window of each English run and, while
+//! they last in its context, the windows after.
 //!
 //! - **Interview takes only.** A note of `voice_repo::transcript::VERBATIM`'s
 //!   kind is decoded with the prompt, and every other kind exactly as
@@ -36,18 +37,18 @@ pub const NAME: &str = "verbatim-1";
 // Copy of paulgsc/some-ui packages/ui/interview-week/src/lib/faults/fillers.json
 // (C265, #2934), which owns the list; change it there first.
 /// The fillers the interview essay counts: vocalised hesitations only,
-/// matched as some-ui's measures match them ([`fillers_in`]).
+/// matched as some-ui's measures match them ([`is_filler`]).
 ///
 /// "Like", "you know", "I mean" and "so" are often fillers too, and
 /// [`PROMPT`] has them so their filler uses are kept, but each is also an
 /// ordinary word, and telling which is a judgment, not a count, so the essay
 /// leaves it to the model's half.
-pub const FILLERS: [&str; 13] = ["um", "umm", "uh", "uhh", "uhm", "er", "erm", "ah", "ahh", "hm", "hmm", "mm", "mhm"];
+pub const FILLERS: [&str; 14] = ["um", "umm", "uh", "uhh", "uhm", "er", "err", "erm", "ah", "ahh", "hm", "hmm", "mm", "mhm"];
 
 /// What the decoder reads before an interview take's English speech: a
 /// verbatim transcript's style, with every one of [`FILLERS`] in it.
 pub const PROMPT: &str = "Um, so, uh, I was... I mean, like, you know, I was, umm, working on the, uhh, the server. Hmm. Er, erm, \
-                          mm, ah, well, uhm, so yeah, I, I think, ahh, hm, mhm, uh, that was it.";
+                          mm, ah, well, uhm, so yeah, I, I think, ahh, hm, mhm, err, uh, that was it.";
 
 /// The language [`PROMPT`] is written in, and the only one it is given to.
 pub const LANGUAGE: &str = "en";
@@ -59,14 +60,16 @@ pub fn key(model: &str) -> String {
 	[model, "+", NAME].concat()
 }
 
-/// How many of [`FILLERS`] `word`, as Whisper wrote it, holds.
+/// Whether `word`, as Whisper wrote it, is a filler: one at most, however
+/// many it joins.
 ///
-/// Matched as paulgsc/some-ui's measures match: lowercased, apostrophes dropped, then
-/// each run of letters and digits matched whole. "Um," and "uh..." are one
-/// each, and "uh-huh" is one, its "uh".
+/// Matched as paulgsc/some-ui's measures match (C265): lowercased,
+/// apostrophes dropped, split into runs of letters and digits, and a filler
+/// when any run is one of [`FILLERS`]. "Um," and "uh..." are fillers, and so
+/// are "Mm-hmm" and "uh-huh", once each.
 #[must_use]
-pub fn fillers_in(word: &str) -> usize {
-	runs(word).iter().filter(|run| FILLERS.contains(&run.as_str())).count()
+pub fn is_filler(word: &str) -> bool {
+	runs(word).iter().any(|run| FILLERS.contains(&run.as_str()))
 }
 
 /// `word`'s runs of letters and digits, lowercased, apostrophes dropped.
@@ -77,7 +80,7 @@ fn runs(word: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-	use super::{fillers_in, key, runs, FILLERS, NAME, PROMPT};
+	use super::{is_filler, key, runs, FILLERS, NAME, PROMPT};
 
 	#[test]
 	fn a_verbatim_transcription_is_kept_under_the_model_and_the_prompt() {
@@ -101,14 +104,26 @@ mod tests {
 	}
 
 	#[test]
-	fn a_filler_is_counted_whatever_its_case_and_punctuation() {
-		for word in ["um", "Um,", "uh...", "Hmm.", "\"mm\"", "Erm?", "UHM", "Mhm.", "uh-huh", "\u{2019}umm"] {
-			assert_eq!(fillers_in(word), 1, "{word}");
+	fn a_filler_is_one_whatever_its_case_and_punctuation() {
+		for word in [
+			"um",
+			"Um,",
+			"uh...",
+			"Hmm.",
+			"\"mm\"",
+			"Erm?",
+			"UHM",
+			"Mhm.",
+			"err",
+			"\u{2019}umm",
+			"Mm-hmm",
+			"uh-huh",
+			"um,uh",
+		] {
+			assert!(is_filler(word), "{word}");
 		}
-		assert_eq!(fillers_in("um-uh"), 2, "each run on its own");
-		assert_eq!(fillers_in("Mm-hmm"), 2, "as some-ui counts it: its mm, then its hmm");
-		for word in ["umbrella", "like", "so", "I", "", "...", "humm", "ahead"] {
-			assert_eq!(fillers_in(word), 0, "{word}");
+		for word in ["umbrella", "like", "so", "I", "", "...", "humm", "ahead", "errand"] {
+			assert!(!is_filler(word), "{word}");
 		}
 	}
 
