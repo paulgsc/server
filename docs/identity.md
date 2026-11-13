@@ -1275,7 +1275,8 @@ nowhere is marked as such and belongs to review.
     their take when My data deletes it, whose receipt then says `conveyor
     history` went; `voice_repo::delete`'s constants are the full list of a
     receipt's fixed words. *Enforced by* `voice_repo::conveyor`'s tests
-    (`a_take_moves_along_from_where_it_is_and_keeps_every_move`,
+    (`moves_are_ordered_by_number_never_by_a_clock`,
+    `a_take_moves_along_from_where_it_is_and_keeps_every_move`,
     `a_take_that_becomes_an_answer_or_is_let_go_leaves_the_conveyor`,
     `no_move_is_ever_updated_and_moves_leave_with_the_account`) and
     `handlers::voice`'s `the_owner_moves_a_take_along_the_conveyor`. **A
@@ -1327,8 +1328,11 @@ nowhere is marked as such and belongs to review.
     (a browser's session is a `403`), is the take library: the caller's own
     subject's `studio` notes, newest recorded first, at most 50
     (`voice_repo::takes::NEWEST`), each with its id, `ref`, `recorded_at`,
-    `stored_at`, `size`, set-aside time and the words
+    `stored_at`, `size`, set-aside time, the words
     `GET /voice-notes/:id/heard` would answer (the same choice of hearing),
+    and its conveyor `station`, `stationAt` and `stationSeq` (from
+    `studio_take_move` and `idea_answer`; null off the conveyor,
+    docs/conveyor.md),
     how many takes it holds, and with `q` (at most 200 characters) the
     takes it found and how many: nearest the asked words' meaning first,
     when the meaning index is on and holds every heard take (invariant 35),
@@ -1571,7 +1575,7 @@ nowhere is marked as such and belongs to review.
     `refusals_name_their_fields_and_notes_stay_apart` and
     `a_game_bite_reaches_home_with_its_metadata`.
     *Not enforced:* that nothing else writes these tables or holds audio,
-    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive' -- '*.rs'` (which matches `voice_note_set_aside` too) shows today
+    which `git grep -n 'voice_note\|voice_transcript\|game_bite\|studio_take_on_drive\|studio_take_move' -- '*.rs'` (which matches `voice_note_set_aside` too) shows today
     and review keeps; and that the temporary directory is removed when a
     decode is killed by the process dying, which only a restart's fresh
     `/tmp` covers.

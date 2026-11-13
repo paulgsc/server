@@ -11,9 +11,9 @@
 //! library is all of them; the `ref` says which, as the phone named it.
 //!
 //! - **Reads only, per subject.** One statement over `voice_note`,
-//!   `voice_note_set_aside`, `voice_transcript`, and `studio_take_move` for
-//!   where each take is on the conveyor ([`crate::conveyor`]), filtered on
-//!   the subject.
+//!   `voice_note_set_aside`, `voice_transcript`, and `studio_take_move` and
+//!   `idea_answer` for where each take is on the conveyor
+//!   ([`crate::conveyor`]), filtered on the subject.
 //!   It reads no audio: playing a take is `GET /voice-notes/:id/audio`'s
 //!   (`crate::audio_head`, `crate::audio_body`).
 //! - **The words are the ones `GET /voice-notes/:id/heard` answers**

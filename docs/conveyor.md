@@ -16,7 +16,12 @@ picked up by the routine and filed as an issue (paulgsc/some-ui epic #2872, CONV
 Home's half is `voice_repo::conveyor` and the table `studio_take_move`
 (`migrations/20261113000600_create_studio_take_move.up.sql`), served by `file_host`'s
 `handlers::voice`: `GET`/`POST /voice-notes/:id/station` and `GET /voice-notes/conveyor`.
-What it holds about a person is docs/identity.md's, invariant 23.
+What it holds about a person is docs/identity.md's, invariant 23. The three routes take a
+`SubjectId`, as `PUT /voice-notes/:id/set-aside` does: the owner's paired phone or the owner's
+own browser session, so the conveyor page can be either (agreed with the some-ui side for
+CONVEYOR1); the take library and a take's audio stay a paired phone's. Each station list
+answers at most 100 takes, newest first, and how many there are; paging past that is
+paulgsc/server#842.
 
 ## Invariants
 
@@ -29,10 +34,12 @@ What it holds about a person is docs/identity.md's, invariant 23.
    was at; home appends it as the next number only if both are still true, and otherwise
    answers `409` with the take's station and newest number. That is the only way a stale
    phone, a second device, or a move resent late is told apart from a current one. A phone's
-   clock is never compared: a move's `at` is shown, and bounded to at most
-   `voice_repo::conveyor::CLOCK_ALLOWANCE` ahead of home's clock only so a wrong clock cannot
-   pin a take in a list. A station lists its takes by when home stored their newest move
-   (home's clock), never by `at`. (Coordinator's call under the owner's standing "go with the
+   clock is never compared: a move's `at` is only shown (`movedAt`, `stationAt`), and bounded
+   to at most `voice_repo::conveyor::CLOCK_ALLOWANCE` ahead of home's clock so a wrong clock
+   cannot show, or pin a phone's own sort by, a time far ahead. A station lists its takes by
+   when home stored their newest move (home's clock), never by `at`. The oven alone lists by
+   when the phone recorded each take, as the take library does: a take has no move to order
+   by there. (Coordinator's call under the owner's standing "go with the
    recommended", 2026-11-13, after a guard that compared phone clocks was found to wedge a
    take for good on paulgsc/server#839.)
 3. **One rule says which takes are on the conveyor, and every read holds to it.** A `studio`
