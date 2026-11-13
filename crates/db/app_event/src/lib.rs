@@ -18,17 +18,22 @@
 //!   ([`parse_event`]), so nothing typed or said is stored (the owner's C3).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it; nothing reads across subjects.
+//! - **A period read for the weekly report.** [`weekly`] counts one ISO
+//!   week's engagement beside the week before, a quarter ago and a year ago
+//!   (paulgsc/some-ui ENG12, #2700); see `weeks`.
 //! - **No background writer.** The one caller is `file_host`'s
 //!   `handlers::app_events` (`PUT /api/v1/app-events/:id`). A
 //!   `git grep -n app_event -- '*.rs'` shows no other writer.
 
 mod model;
+mod weeks;
 
 use std::collections::BTreeMap;
 
 pub use model::{instant, parse_event, Event, Outcome, Problem, Went, BODY_CEILING, MAX_MS};
 use serde::Serialize;
 use sqlx::SqliteConnection;
+pub use weeks::{weekly, IsoWeek, Role, Seen, Week, WeekUse, Weekly};
 
 /// The most events of a family one summary reads from its window: the
 /// newest. A take a minute, all day, for a month is about 43,000; past this
@@ -646,6 +651,67 @@ mod tests {
 		.map(|place| (place.place, place.left))
 		.collect();
 		assert_eq!(counted, [(String::from("ticket-1"), 2), (String::from("ticket-3"), 1)]);
+	}
+
+	/// The four weeks count only their own events, a week before anything
+	/// was held is not measured, and nothing after the asked week's end
+	/// changes the answer.
+	#[tokio::test]
+	async fn the_weekly_read_counts_four_weeks_and_ignores_what_came_after() {
+		let pool = pool().await;
+		for event in [
+			engaged("w1", "2026-08-12T09:00:00.000Z", "routine-lens", "taken"),
+			engaged("w2", "2026-11-03T09:00:00.000Z", "routine-lens", "offered"),
+			engaged("w3", "2026-11-09T00:00:00.000Z", "routine-lens", "offered"),
+			engaged("w4", "2026-11-09T00:00:01.000Z", "routine-lens", "taken"),
+			engaged("w5", "2026-11-15T23:59:59.999Z", "routine-read-aloud", "passed-over"),
+			engaged("w6", "2026-11-12T09:00:00.000Z", "routine-read-aloud", "left"),
+			engaged("w7", "2026-11-12T09:00:00.000Z", "sentence-feedback", "said"),
+			engaged("w8", "2026-11-16T00:00:00.000Z", "routine-drama", "taken"),
+			outcome("e1", "2026-11-10T09:00:00.000Z", "jobs.pass", "kept", "worked", None),
+		] {
+			put(&pool, A, &event).await.unwrap();
+		}
+		put(&pool, B, &engaged("w9", "2026-11-10T09:00:00.000Z", "routine-drama", "taken")).await.unwrap();
+		let week = super::IsoWeek::parse("2026-W46").unwrap();
+		let read = |now: &'static str| {
+			let pool = pool.clone();
+			async move { super::weekly(&mut pool.acquire().await.unwrap(), A, week, now).await.unwrap() }
+		};
+		let held = read("2026-11-13T12:00:00.000Z").await;
+		assert_eq!(
+			serde_json::to_value(&held).unwrap(),
+			json!({
+				"week": "2026-W46",
+				"weeks": [
+					{ "role": "this", "week": "2026-W46", "from": "2026-11-09T00:00:00.000Z", "to": "2026-11-16T00:00:00.000Z",
+						"complete": false, "measured": true, "affordances": [
+						{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "offered": 1, "taken": 1, "passedOver": 0, "left": 0 },
+						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "offered": 0, "taken": 0, "passedOver": 1, "left": 1 }
+					] },
+					{ "role": "last", "week": "2026-W45", "from": "2026-11-02T00:00:00.000Z", "to": "2026-11-09T00:00:00.000Z",
+						"complete": true, "measured": true, "affordances": [
+						{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "offered": 1, "taken": 0, "passedOver": 0, "left": 0 }
+					] },
+					{ "role": "quarterAgo", "week": "2026-W33", "from": "2026-08-10T00:00:00.000Z", "to": "2026-08-17T00:00:00.000Z",
+						"complete": true, "measured": true, "affordances": [
+						{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "offered": 0, "taken": 1, "passedOver": 0, "left": 0 }
+					] },
+					{ "role": "yearAgo", "week": "2025-W46", "from": "2025-11-10T00:00:00.000Z", "to": "2025-11-17T00:00:00.000Z",
+						"complete": true, "measured": false, "affordances": [] }
+				],
+				"seen": [
+					{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "firstDay": "2026-08-12", "lastTakenDay": "2026-11-09" },
+					{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": null },
+					{ "pipeline": "topik", "affordance": "sentence-feedback", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": null }
+				]
+			}),
+			"the said answer is seen but never counted, w8 is the next week's, and B's drama is B's"
+		);
+		let later = read("2027-01-01T00:00:00.000Z").await;
+		assert!(later.weeks[0].complete);
+		assert_eq!(later.seen, held.seen, "a later ask of the same week reads the same records");
+		assert_eq!(later.weeks[0].affordances, held.weeks[0].affordances);
 	}
 
 	#[tokio::test]
