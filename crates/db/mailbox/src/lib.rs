@@ -859,9 +859,12 @@ pub async fn leetype_file(conn: &mut SqliteConnection, subject: &str, name: &str
 	Ok(file)
 }
 
-/// One week of Rust Rounds home holds (paulgsc/some-ui#2687, RR12), whole:
-/// a `brief` file named `rust-week-<id>.json`, as `rust_round_repo::week`
-/// names it.
+/// One week home holds, whole.
+///
+/// A week of Rust Rounds (paulgsc/some-ui#2687, RR12) is a `brief` file
+/// named `rust-week-<id>.json`, as `rust_round_repo::week` names it; a week
+/// of mock interview (paulgsc/some-ui#2935, IW4) is one named
+/// `interview-week-<id>.json` (`rust_round_repo::interview`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldWeek {
 	/// The id its name gives, `2026-w46`. Whether the body says the same is
@@ -875,7 +878,8 @@ pub struct HeldWeek {
 	pub body: Vec<u8>,
 }
 
-/// Every file `subject` holds under a week's name, newest week first.
+/// Every file `subject` holds under a week of Rust Rounds' name, newest week
+/// first ([`weeks_named`] for `rust-week-`).
 ///
 /// A week is a few KiB and a year holds 52, so all are read: the caller
 /// keeps the ones that read as the week their name says before it counts any.
@@ -883,39 +887,75 @@ pub struct HeldWeek {
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn rust_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<HeldWeek>, MailboxError> {
-	let weeks = sqlx::query_as!(
-		HeldWeek,
-		r#"SELECT substr(name, 11, 8) AS "id!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String", body AS "body!: Vec<u8>"
-		   FROM mailbox_item
-		   WHERE subject_id = ?1 AND folder = 'brief' AND name GLOB 'rust-week-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json'
-		   ORDER BY name DESC"#,
-		subject
-	)
-	.fetch_all(&mut *conn)
-	.await?;
-	Ok(weeks)
+	weeks_named(conn, subject, WeekKind::RustRounds, -1).await
 }
 
-/// The newest `limit` files `subject` holds under a week's name, newest first.
-///
-/// [`rust_weeks`] bounded, for a pass that reads only the latest weeks
-/// (`file_host`'s `mailbox::index::rust`). A week's name sorts by its id, so
-/// the newest are the first by name, read backwards off the primary key's
-/// range of week names (`rust-week-` up to `rust-week-:`, the character after
-/// the digits).
+/// The newest `limit` files `subject` holds under a week of Rust Rounds'
+/// name, newest first: [`rust_weeks`] bounded, for a pass that reads only the
+/// latest weeks (`file_host`'s `mailbox::index::rust`).
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn newest_rust_weeks(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+	weeks_named(conn, subject, WeekKind::RustRounds, limit).await
+}
+
+/// The newest `limit` files `subject` holds under a week of mock interview's
+/// name (paulgsc/some-ui#2935, IW4), newest first; every one for a negative
+/// `limit`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn interview_weeks(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+	weeks_named(conn, subject, WeekKind::Interview, limit).await
+}
+
+/// The kinds of week whose files ride `brief` under a week's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeekKind {
+	/// `rust-week-<id>.json` (`rust_round_repo::week::MAILBOX_PREFIX`).
+	RustRounds,
+	/// `interview-week-<id>.json` (`rust_round_repo::interview::MAILBOX_PREFIX`,
+	/// paulgsc/some-ui#2935).
+	Interview,
+}
+
+impl WeekKind {
+	/// What its files' names start with: lowercase ASCII words each ending
+	/// in `-`, so a byte is a character and no `GLOB` character is in it.
+	const fn prefix(self) -> &'static str {
+		match self {
+			Self::RustRounds => "rust-week-",
+			Self::Interview => "interview-week-",
+		}
+	}
+}
+
+/// The newest `limit` files `subject` holds in `brief` under a week's name,
+/// `<prefix>YYYY-wNN.json`, newest first; every one for a negative `limit`.
+///
+/// A week's name sorts by its id, so the newest are the first by name, read
+/// backwards off the primary key's range of week names (`prefix` up to
+/// `prefix` and `:`, the character after the digits), however many other
+/// files `brief` holds.
+///
+/// # Errors
+/// Any `sqlx` failure.
+async fn weeks_named(conn: &mut SqliteConnection, subject: &str, kind: WeekKind, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+	let prefix = kind.prefix();
+	let pattern = String::from(prefix) + "[0-9][0-9][0-9][0-9]-w[0-9][0-9].json";
+	let first = i64::try_from(prefix.len()).unwrap_or(i64::MAX).saturating_add(1);
 	let weeks = sqlx::query_as!(
 		HeldWeek,
-		r#"SELECT substr(name, 11, 8) AS "id!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String", body AS "body!: Vec<u8>"
+		r#"SELECT substr(name, ?4, 8) AS "id!: String", sha256 AS "sha256!: String", pulled_at AS "pulled_at!: String", body AS "body!: Vec<u8>"
 		   FROM mailbox_item
-		   WHERE subject_id = ?1 AND folder = 'brief' AND name > 'rust-week-' AND name < 'rust-week-:'
-		     AND name GLOB 'rust-week-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json'
+		   WHERE subject_id = ?1 AND folder = 'brief' AND name > ?2 AND name < ?2 || ':' AND name GLOB ?3
 		   ORDER BY name DESC
-		   LIMIT ?2"#,
+		   LIMIT ?5"#,
 		subject,
+		prefix,
+		pattern,
+		first,
 		limit
 	)
 	.fetch_all(&mut *conn)
@@ -1007,7 +1047,8 @@ pub struct WeekFile {
 	pub body: Vec<u8>,
 }
 
-/// `subject`'s week named `name` in `brief`, if home holds it.
+/// `subject`'s week named `name` in `brief`, if home holds it: a week of
+/// Rust Rounds' or of mock interview's, by its whole name.
 ///
 /// # Errors
 /// Any `sqlx` failure.

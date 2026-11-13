@@ -30,13 +30,16 @@
 //!   the deadline: a paste is not a take.
 //! - **Per subject.** Every query takes the subject and filters on it.
 
+use crate::draft::{self, Kind, Stored, WeekSend};
 use crate::round::Problem;
-use crate::week::Week;
+use crate::week::{Week, Window};
 use crate::{instant_order, Change, RoundError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqliteConnection;
 use std::cmp::Ordering;
+
+pub use crate::draft::DraftChange;
 
 /// The most bytes a week sent may hold: four tickets' answers are well
 /// under a KiB.
@@ -56,32 +59,6 @@ const SKEW_MINUTES: i64 = 5;
 
 /// [`RoundError::Rewritten`]'s words for a week sent, for the `409`.
 pub const SENT_TWICE: &str = "home holds another send of this week at this moment; a send is named by its moment, and the phone never reuses one";
-
-/// What [`put_draft`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DraftChange {
-	/// The week's first draft.
-	Added,
-	/// A later send replaced the draft.
-	Replaced,
-	/// The draft is this send already.
-	Unchanged,
-	/// The draft is a later send; nothing was written.
-	Superseded,
-}
-
-impl DraftChange {
-	/// The word the route answers with.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Added => "added",
-			Self::Replaced => "replaced",
-			Self::Unchanged => "unchanged",
-			Self::Superseded => "superseded",
-		}
-	}
-}
 
 /// [`RoundError::Rewritten`]'s words for a paste, for the `409`.
 pub const PASTED_TWICE: &str = "home holds another paste at this moment of this week; a paste is kept as it was";
@@ -113,16 +90,20 @@ pub struct Sent {
 	pub passed: Vec<String>,
 }
 
-/// A week sent, as stored: its draft or its final.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredSent {
-	pub sent: Sent,
-	/// A draft, before the deadline; else the week's final.
-	pub draft: bool,
-	/// The body as stored, re-serialised from [`Sent`].
-	pub text: String,
-	pub received_at: String,
+impl WeekSend for Sent {
+	const KIND: Kind = Kind::RustRounds;
+
+	fn week(&self) -> &str {
+		&self.week
+	}
+
+	fn at(&self) -> &str {
+		&self.at
+	}
 }
+
+/// A week sent, as stored: its draft or its final.
+pub type StoredSent = Stored<Sent>;
 
 /// An error pasted in a week, as the phone keeps it (its `KeptPaste`, less
 /// the week, which the route names).
@@ -154,7 +135,7 @@ pub fn is_note_id(id: &str) -> bool {
 	(1..=64).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
-fn is_instant(at: &str) -> bool {
+pub(crate) fn is_instant(at: &str) -> bool {
 	chrono::DateTime::parse_from_rfc3339(at).is_ok()
 }
 
@@ -166,7 +147,7 @@ fn is_ahead(at: &str, now: &str) -> bool {
 	at > now + chrono::Duration::minutes(SKEW_MINUTES)
 }
 
-fn json_object(body: &[u8], ceiling: usize, ceiling_words: &'static str) -> Result<Value, Vec<Problem>> {
+pub(crate) fn json_object(body: &[u8], ceiling: usize, ceiling_words: &'static str) -> Result<Value, Vec<Problem>> {
 	let problem = |field: &str, why| vec![(field.to_owned(), why)];
 	if body.len() > ceiling {
 		return Err(problem("body", ceiling_words));
@@ -174,6 +155,28 @@ fn json_object(body: &[u8], ceiling: usize, ceiling_words: &'static str) -> Resu
 	match serde_json::from_slice::<Value>(body) {
 		Ok(value @ Value::Object(_)) => Ok(value),
 		_ => Err(problem("body", "is not one JSON object")),
+	}
+}
+
+/// The problems with a send pressed at `at`, of a week open over `window`,
+/// reaching home at `now`, whatever kind of week it is: `at` not an instant,
+/// before the week opens, after its deadline or ahead of `now`; a week with
+/// no deadline; or home's clock past the deadline (the week is final).
+pub(crate) fn sent_in_window(at: &str, window: Option<&Window>, now: &str, problems: &mut Vec<Problem>) {
+	match window {
+		_ if !is_instant(at) => problems.push((String::from("at"), "must be an RFC 3339 instant")),
+		Some(window) if instant_order(at, &window.due) == Some(Ordering::Greater) => {
+			problems.push((String::from("at"), "is after the week's deadline: a take not sent by then doesn't count"));
+		}
+		Some(window) if instant_order(at, &window.opens) == Some(Ordering::Less) => {
+			problems.push((String::from("at"), "is before the week opens"));
+		}
+		None => problems.push((String::from("week"), "has no deadline home can read")),
+		Some(_) if is_ahead(at, now) => problems.push((String::from("at"), "is ahead of home's clock")),
+		Some(_) => {}
+	}
+	if window.is_some_and(|window| instant_order(now, &window.due) == Some(Ordering::Greater)) {
+		problems.push((String::from("week"), "is final: its deadline has passed, and what stood then is the record"));
 	}
 }
 
@@ -194,21 +197,7 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 	if sent.week != week.id {
 		problems.push((String::from("week"), "must be the week in the path"));
 	}
-	match &week.window {
-		_ if !is_instant(&sent.at) => problems.push((String::from("at"), "must be an RFC 3339 instant")),
-		Some(window) if instant_order(&sent.at, &window.due) == Some(Ordering::Greater) => {
-			problems.push((String::from("at"), "is after the week's deadline: a take not sent by then doesn't count"));
-		}
-		Some(window) if instant_order(&sent.at, &window.opens) == Some(Ordering::Less) => {
-			problems.push((String::from("at"), "is before the week opens"));
-		}
-		None => problems.push((String::from("week"), "has no deadline home can read")),
-		Some(_) if is_ahead(&sent.at, now) => problems.push((String::from("at"), "is ahead of home's clock")),
-		Some(_) => {}
-	}
-	if week.window.as_ref().is_some_and(|window| instant_order(now, &window.due) == Some(Ordering::Greater)) {
-		problems.push((String::from("week"), "is final: its deadline has passed, and what stood then is the record"));
-	}
+	sent_in_window(&sent.at, week.window.as_ref(), now, &mut problems);
 	if sent.answers.is_empty() {
 		problems.push((String::from("answers"), "must hold at least one ticket answered"));
 	}
@@ -243,162 +232,50 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 	}
 }
 
-/// Keep `sent` as `subject`'s draft of its week, read by [`read_sent`]
-/// with home's clock no later than the week's deadline; say what was done,
-/// and the draft that stands after it.
+/// Keep `sent` as `subject`'s draft of its week ([`draft::put_draft`]).
 ///
-/// A send is named by its `at`, compared as an instant: a later one replaces
-/// the draft, an earlier one (a late retry) leaves it, and one at the
-/// draft's moment is the same send only if it is the same value (both read
-/// as a [`Sent`], so key order and spacing are no part of it).
-///
-/// The caller refuses the send instead when [`is_final`] says the week is
-/// final, in the same transaction: a final is never written beside a draft.
+/// `sent` is read by [`read_sent`] with home's clock no later than the
+/// week's deadline. It says what was done, and the draft that stands after
+/// it, by the rules every kind of week shares.
 ///
 /// # Errors
-/// [`RoundError::Rewritten`] for another body at the draft's moment, which
-/// writes nothing; [`RoundError::Storage`] for any `sqlx` failure. Run it in
-/// a `BEGIN IMMEDIATE` transaction, with `now` read once its lock is held.
+/// As [`draft::put_draft`].
 pub async fn put_draft(conn: &mut SqliteConnection, subject: &str, sent: &Sent, now: &str) -> Result<(DraftChange, Sent), RoundError> {
-	// Re-serialising a checked value: its own field names and the phone's
-	// strings, nothing more.
-	#[allow(clippy::disallowed_methods)]
-	let text = serde_json::to_string(sent).map_err(|err| RoundError::Storage(sqlx::Error::Decode(Box::new(err))))?;
-	let held = draft(conn, subject, &sent.week).await?;
-	let change = match held {
-		None => DraftChange::Added,
-		Some(held) => match crate::time_order_key(&sent.at).cmp(&crate::time_order_key(&held.sent.at)) {
-			Ordering::Equal if held.sent == *sent => return Ok((DraftChange::Unchanged, held.sent)),
-			Ordering::Equal => return Err(RoundError::Rewritten),
-			Ordering::Less => return Ok((DraftChange::Superseded, held.sent)),
-			Ordering::Greater => DraftChange::Replaced,
-		},
-	};
-	sqlx::query!(
-		"INSERT INTO rust_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, ?2, ?3, ?4, ?5)
-		 ON CONFLICT (subject_id, week_id) DO UPDATE SET sent_at = excluded.sent_at, body = excluded.body, received_at = excluded.received_at",
-		subject,
-		sent.week,
-		sent.at,
-		text,
-		now
-	)
-	.execute(&mut *conn)
-	.await?;
-	Ok((change, sent.clone()))
+	draft::put_draft(conn, subject, sent, now).await
 }
 
-fn stored(body: String, received_at: String, draft: bool) -> Result<StoredSent, sqlx::Error> {
-	let sent = serde_json::from_str(&body).map_err(|err| sqlx::Error::Decode(Box::new(err)))?;
-	Ok(StoredSent {
-		sent,
-		draft,
-		text: body,
-		received_at,
-	})
-}
-
-async fn draft(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<Option<StoredSent>, sqlx::Error> {
-	let row = sqlx::query!("SELECT body, received_at FROM rust_week_draft WHERE subject_id = ?1 AND week_id = ?2", subject, week)
-		.fetch_optional(&mut *conn)
-		.await?;
-	row.map(|row| stored(row.body, row.received_at, true)).transpose()
-}
-
-/// Whether `week` is final for `subject`: home holds its final.
+/// Whether `week` is final for `subject` ([`draft::is_final`]).
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn is_final(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<bool, sqlx::Error> {
-	let held = sqlx::query_scalar!(
-		r#"SELECT EXISTS (SELECT 1 FROM rust_week_final WHERE subject_id = ?1 AND week_id = ?2) AS "held!: bool""#,
-		subject,
-		week
-	)
-	.fetch_one(&mut *conn)
-	.await?;
-	Ok(held)
+	draft::is_final(conn, Kind::RustRounds, subject, week).await
 }
 
 /// `subject`'s send of `week` that stands: its final once it has one, else
-/// its draft, if home holds either. Run [`finalize`] first once the week's
-/// deadline has passed.
-///
-/// Both are read in one statement, so one snapshot: a finalization between
-/// two reads could otherwise move the send out of the draft after the final
-/// was found missing, and the week would read as never sent.
+/// its draft ([`draft::standing`]).
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored body that no longer reads as one.
 pub async fn standing(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<Option<StoredSent>, sqlx::Error> {
-	let row = sqlx::query!(
-		r#"SELECT body AS "body!", received_at AS "received_at!", draft AS "draft!: bool" FROM (
-		       SELECT body, received_at, 0 AS draft FROM rust_week_final WHERE subject_id = ?1 AND week_id = ?2
-		       UNION ALL
-		       SELECT body, received_at, 1 AS draft FROM rust_week_draft WHERE subject_id = ?1 AND week_id = ?2)
-		   ORDER BY draft LIMIT 1"#,
-		subject,
-		week
-	)
-	.fetch_optional(&mut *conn)
-	.await?;
-	row.map(|row| stored(row.body, row.received_at, row.draft)).transpose()
+	draft::standing(conn, subject, week).await
 }
 
-/// The weeks `subject` holds a draft of: one row per week not yet final, by
-/// the key's own range.
+/// The weeks `subject` holds a draft of ([`draft::drafted_weeks`]).
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn drafted_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, sqlx::Error> {
-	sqlx::query_scalar!("SELECT week_id FROM rust_week_draft WHERE subject_id = ?1", subject)
-		.fetch_all(&mut *conn)
-		.await
+	draft::drafted_weeks(conn, Kind::RustRounds, subject).await
 }
 
 /// Make `week`'s standing draft its final once home's clock is past `due`;
-/// whether it wrote one.
-///
-/// It writes the draft to `rust_week_final` as it stands and drops the
-/// draft, in the caller's transaction. Nothing happens before
-/// `due`, nor without a draft. Whenever it runs after `due` it writes the
-/// same final, since no send is taken after it ([`read_sent`]).
+/// whether it wrote one ([`draft::finalize`]).
 ///
 /// # Errors
 /// Any `sqlx` failure. Run it in a `BEGIN IMMEDIATE` transaction.
 pub async fn finalize(conn: &mut SqliteConnection, subject: &str, week: &str, due: &str, now: &str) -> Result<bool, sqlx::Error> {
-	if instant_order(now, due) != Some(Ordering::Greater) {
-		return Ok(false);
-	}
-	let Some(held) = draft(conn, subject, week).await? else {
-		return Ok(false);
-	};
-	let written = if instant_order(&held.sent.at, due) == Some(Ordering::Greater) {
-		false
-	} else {
-		sqlx::query!(
-			"INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, ?2, ?3, ?4, ?5)
-			 ON CONFLICT (subject_id, week_id) DO NOTHING",
-			subject,
-			week,
-			held.sent.at,
-			held.text,
-			held.received_at
-		)
-		.execute(&mut *conn)
-		.await?
-		.rows_affected()
-			== 1
-	};
-	// Dropped only once it is the final: a draft nothing could make final
-	// (one a final already stands beside, or sent after `due`, neither of
-	// which a send can make) is left for a person to read, not lost.
-	if written {
-		sqlx::query!("DELETE FROM rust_week_draft WHERE subject_id = ?1 AND week_id = ?2", subject, week)
-			.execute(&mut *conn)
-			.await?;
-	}
-	Ok(written)
+	draft::finalize(conn, Kind::RustRounds, subject, week, due, now).await
 }
 
 /// Read `body` as a paste made at `at`, the path's moment, with home's
