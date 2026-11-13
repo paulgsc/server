@@ -69,7 +69,8 @@ leave the gate pending with nothing to judge it again.
    fail (`continue-on-error`: deny.yml's advisories) is reported as a
    warning, as its workflow's author chose. A run that took longer than 60
    minutes fails it too, as one unfinished after 60 minutes did when the
-   gate waited.
+   gate waited, and so does a run or check run still unfinished 60 minutes
+   after it started (#814).
 
 **Skipped passes only where its paths did not change.** A whole workflow is
 skipped by its `paths` filter: step 1 reads the same filter, so a run it
@@ -526,6 +527,22 @@ def seconds(run: dict[str, Any]) -> float:
 	return (end - start).total_seconds()
 
 
+def started(item: dict[str, Any]) -> datetime | None:
+	"""When a run (its latest attempt) or a check run started; None when unknown."""
+	begin = item.get("started_at") or item.get("run_started_at") or item.get("created_at")
+	try:
+		return datetime.fromisoformat(str(begin).replace("Z", "+00:00"))
+	except ValueError:
+		return None
+
+
+def overdue(item: dict[str, Any], now: datetime) -> bool:
+	"""Whether an unfinished run or check run started over RUN_LIMIT_SECONDS before `now`; False when its
+	start is unknown."""
+	begin = started(item)
+	return begin is not None and (now - begin).total_seconds() >= RUN_LIMIT_SECONDS
+
+
 def judge(
 	expected: dict[str, str],
 	not_expected: dict[str, str],
@@ -535,13 +552,17 @@ def judge(
 	elapsed: float,
 	files_changed: int,
 	event: bool = False,
+	now: datetime | None = None,
 ) -> Verdict:
 	"""Where every awaited check stands. `jobs` holds the jobs of each completed run, by run id.
 
 	`event`: judged once, by a job that does not wait (--open, --event), so there is no elapsed time:
 	an expected run that is missing stays pending only while something else is unfinished (whose
 	finishing judges again), and a run that took over RUN_LIMIT_SECONDS fails, as a run unfinished
-	that long failed the gate that waited."""
+	that long failed the gate that waited. So does a run or another app's check run still unfinished
+	RUN_LIMIT_SECONDS after it started (by `now`): a dispatched verdict stops waiting for one there
+	(settle), and nothing may judge the head again when it finishes (#814)."""
+	now = now or datetime.now(timezone.utc)
 	v = Verdict(done=True)
 	missing: list[str] = []
 	for path, why in sorted(expected.items()):
@@ -561,6 +582,9 @@ def judge(
 		if path in not_expected:
 			v.warnings.append(f"{label} ran though its trigger reads as not running ({not_expected[path]}): this gate's reading of the filter is wrong, fix scripts/pr_gate.py")
 		if run.get("status") != "completed":
+			if event and overdue(run, now):
+				v.errors.append(f"{label}: {run.get('status')} for over the {RUN_LIMIT_SECONDS // 60} minutes a check may take {run.get('html_url', '')}".rstrip())
+				continue
 			v.done = False
 			v.pending.append(f"{label}: {run.get('status')} {run.get('html_url', '')}".rstrip())
 			continue
@@ -580,7 +604,9 @@ def judge(
 			v.errors.append(f"{label}: run {run.get('conclusion')} {run.get('html_url', '')}".rstrip())
 	for check in sorted(other_checks, key=lambda c: c.get("name", "")):
 		label = f"{check.get('name')} (check run from {((check.get('app') or {}).get('slug')) or 'another app'})"
-		if check.get("status") != "completed":
+		if check.get("status") != "completed" and event and overdue(check, now):
+			v.errors.append(f"{label}: {check.get('status')} for over the {RUN_LIMIT_SECONDS // 60} minutes a check may take {check.get('html_url', '')}".rstrip())
+		elif check.get("status") != "completed":
 			v.done = False
 			v.pending.append(f"{label}: {check.get('status')}")
 		elif check.get("conclusion") not in PASSING:
@@ -944,26 +970,17 @@ def telling(jobs: list[dict[str, Any]]) -> bool:
 	return any(j.get("name") == TELL_NAME for j in jobs) and all(j.get("name") == TELL_NAME for j in unfinished)
 
 
-def started(item: dict[str, Any]) -> datetime | None:
-	"""When a run (its latest attempt) or a check run started; None when unknown."""
-	begin = item.get("started_at") or item.get("run_started_at") or item.get("created_at")
-	try:
-		return datetime.fromisoformat(str(begin).replace("Z", "+00:00"))
-	except ValueError:
-		return None
-
-
 def silent(api: Api, head_sha: str, dynamic_runs: list[dict[str, Any]], now: datetime) -> list[str]:
 	"""What is still running on `head_sha` that will tell no verdict when it finishes (#814): CodeQL's
 	`dynamic` run, which has no tell_gate, and other apps' check runs (code scanning's `CodeQL`), for which
 	GitHub fires no event here. Each is listed until it is RUN_LIMIT_SECONDS old, when the gate fails it
-	anyway; one whose start is unknown is not listed, so nothing is waited on without a bound."""
+	(judge) and the verdict is decided; one whose start is unknown is not listed, so nothing is waited on
+	without a bound."""
 	checks = api.pages(f"commits/{head_sha}/check-runs?filter=latest", "check_runs", limit=5)
 	others = [c for c in checks if ((c.get("app") or {}).get("slug")) != "github-actions" and c.get("status") != "completed"]
 	quiet = []
 	for item, label in [*((r, f"run {r['id']} ({r.get('name')})") for r in dynamic_runs), *((c, f"check run {c.get('name')}") for c in others)]:
-		begin = started(item)
-		if begin is not None and (now - begin).total_seconds() < RUN_LIMIT_SECONDS:
+		if started(item) is not None and not overdue(item, now):
 			quiet.append(label)
 	return quiet
 
@@ -1149,6 +1166,20 @@ def self_test() -> int:
 	same("startup failure (no jobs)", len(verdict(runs={**ok_runs, "lint.yml": run(5, "lint.yml", conclusion="startup_failure")}, jobs={**ok_jobs, 5: []}).errors), 1)
 	running = verdict(runs={**ok_runs, "test.yml": run(8, "test.yml", status="in_progress", conclusion=None)})
 	same("in progress waits", (running.done, running.errors), (False, []))
+	# #814: judged once, a run or another app's check unfinished past the hour fails, since a dispatched
+	# verdict stops waiting for it there and nothing may judge the head again when it finishes.
+	noon = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+	hour_ago = (noon - timedelta(seconds=RUN_LIMIT_SECONDS)).isoformat()
+	minute_ago = (noon - timedelta(minutes=1)).isoformat()
+	stuck = run(30, "dynamic/codeql", status="in_progress", conclusion=None, event="dynamic", run_started_at=hour_ago)
+	same("run unfinished past the hour fails", len(verdict(runs={**ok_runs, "dynamic/codeql": stuck}, event=True, now=noon).errors), 1)
+	same("run unfinished past the hour, waiting gate", verdict(runs={**ok_runs, "dynamic/codeql": stuck}, now=noon).errors, [])
+	young = verdict(runs={**ok_runs, "dynamic/codeql": {**stuck, "run_started_at": minute_ago}}, event=True, now=noon)
+	same("run unfinished within the hour waits", (young.done, young.errors), (False, []))
+	same("run of unknown start waits", verdict(runs={**ok_runs, "dynamic/codeql": {**stuck, "run_started_at": None}}, event=True, now=noon).errors, [])
+	late_check = {**codeql, "status": "in_progress", "conclusion": None, "started_at": hour_ago}
+	same("check run unfinished past the hour fails", len(verdict(other_checks=[late_check], event=True, now=noon).errors), 1)
+	same("check run unfinished within the hour waits", verdict(other_checks=[{**late_check, "started_at": minute_ago}], event=True, now=noon).done, False)
 	missing_early = verdict(runs={"lint.yml": ok_runs["lint.yml"]}, expected={**expected, "routes.yml": "apps/x matches its paths"})
 	same("expected run not there yet", (missing_early.done, missing_early.errors), (False, []))
 	missing_late = verdict(runs={"lint.yml": ok_runs["lint.yml"]}, expected={**expected, "routes.yml": "apps/x matches its paths"}, elapsed=GRACE_SECONDS + 1)

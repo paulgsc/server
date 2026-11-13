@@ -142,7 +142,8 @@ as a re-run job's is.
 3. **The verdict.** It passes once every expected workflow has a run and every awaited run and
    check run concluded `success`, `skipped` or `neutral`. It fails as soon as one concludes
    otherwise, naming the failed jobs, and fails a run that took over 60 minutes (what the waiting
-   gate failed as unfinished after 60). A run
+   gate failed as unfinished after 60), or a run or other app's check run still unfinished 60
+   minutes after it started (#814: a dispatched verdict stops waiting for it there). A run
    is judged by its own conclusion, so a job its workflow lets fail (`continue-on-error`:
    `deny.yml`'s advisories) is a warning, as that workflow's author chose.
 
