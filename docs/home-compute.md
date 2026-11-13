@@ -33,12 +33,10 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    steps that were paid twice is L7 (#712, **Planned**).
 4. **A collision never becomes a recorded result.** A verdict of time, a
    lost runner or a hearing's deadline taken while the box was contended is
-   nobody's, and is asked again ("The contention guard", L1 #706, which
-   lands with #822).
+   nobody's, and is asked again ("The contention guard", L1 #706, #822).
 5. **The caps fit home's RAM, checked on the box at deploy.** **Planned**,
    #709: home's RAM is in neither repo yet. Today the sum of every
-   container's cap, ollama's 8 GiB included, is not checked against
-   anything.
+   container's cap is not checked against anything.
 6. **No schedule starts batch work.** The render worker looks for work
    every minute, but only the lane's `run` starts a job: room, not a clock
    (the owner, 2026-11-07). Held by the worker's "no render starts on a
