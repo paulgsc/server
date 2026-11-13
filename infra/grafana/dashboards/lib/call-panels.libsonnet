@@ -489,6 +489,24 @@ local count(title, description, expr, steps) =
     options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
   },
 
+  laneContention: {
+    title: 'Contention: what the box excused',
+    description: "The contention guard (L1, server#706). A Rust Rounds verdict of time, a lost runner, or a voice note's deadline, taken while the box's CPU was contended (some task waited for a CPU at least a tenth of the time) or while the kernel killed for memory, is nobody's: nothing is kept and it is asked again. Excused: those, over the range. Judged anyway: kept after one program or note was excused 3 times in a row, so a busy box never holds the queue (a WARN each time). Marked: recordings kept with their time marked contended. Unreadable: measurements the guard could not read (no PSI), judged as before it.",
+    type: 'bargauge',
+    datasource: ds,
+    targets: [{
+      expr: 'sort_desc(sum by (worker, what) (increase(contention_outcomes_total[$__range])))',
+      legendFormat: '{{worker}}: {{what}}',
+      instant: true,
+      refId: 'A',
+    }],
+    fieldConfig: {
+      defaults: { unit: 'none', min: 0, decimals: 0, color: { mode: 'continuous-BlPu' } },
+      overrides: [],
+    },
+    options: { displayMode: 'gradient', orientation: 'horizontal', showUnfilled: true, reduceOptions: { calcs: ['lastNotNull'], values: false } },
+  },
+
   laneWork: {
     title: 'Who was working',
     description: 'Interactive work (a voice note being heard, a Rust Rounds program being recorded), batch work in progress (a render job named, or an attempt of the call\'s or Playoff Delta\'s running), and the render job the worker named, if any. When none is, home is at rest: WHO DUNNIT\'s AT REST row measures what that costs.',
