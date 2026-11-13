@@ -106,6 +106,24 @@ without `body`, every row and `response_id` kept and its triggers recreated.
 It aborts if a response's bytes differ from the body its hash names, or if a
 row did not come back.
 
+## Turning it on
+
+`deploy/home/file_host.sops.env` states `GAME_FEED_ENABLED`, so home never
+reads the code default (README.md, "Every file states every variable of its
+binary"). Turning the feed on is an edit of that file with a key `.sops.yaml`
+names, which no agent session holds. On the box, in the checkout:
+
+```bash
+git pull && sops set deploy/home/file_host.sops.env '["GAME_FEED_ENABLED"]' '"true"' && make home-deploy && make up
+```
+
+Then commit the file, so main says what home runs (README.md, "Deploying to
+home", for what each step does). `game_feed_enabled` reads 1 on the GAME FEED
+dashboard once it has. Still open, and not blocking it (paulgsc/server#534):
+no retry budget (GA2), a completed game whose summary never reads final is
+fetched without bound (GA3), and no response size limit. The worker's class is
+`file-host`'s (`docs/home-compute.md`).
+
 ## Metrics
 
 `game_feed_enabled`, `game_feed_last_attempt_timestamp_seconds` (moves on every
