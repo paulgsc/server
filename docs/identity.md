@@ -1267,11 +1267,18 @@ nowhere is marked as such and belongs to review.
     trigger aborts an `UPDATE`), written only by `POST
     /voice-notes/:id/station` (`voice_repo::conveyor::advance`) for a
     `studio` take the subject holds that is no idea's answer, from the
-    station the take is at, and its span skips every argument. Its rows go
-    with the account (the sweep and their own trigger) and with their take
-    when My data deletes it, whose receipt then says `conveyor history`
-    went. **Its audio is
-    read back by one route, for Rust Rounds notes and Studio takes only**
+    station the take is at, and its span skips every argument. A take named
+    as an idea's answer, or let go of, after it moved is off the conveyor:
+    no station lists it and it reads and moves as not held, its moves kept.
+    Its rows go with the account (the sweep and their own trigger) and with
+    their take when My data deletes it, whose receipt then says `conveyor
+    history` went; `voice_repo::delete`'s constants are the full list of a
+    receipt's fixed words. *Enforced by* `voice_repo::conveyor`'s tests
+    (`a_take_moves_along_from_where_it_is_and_keeps_every_move`,
+    `a_take_that_becomes_an_answer_or_is_let_go_leaves_the_conveyor`,
+    `no_move_is_ever_updated_and_moves_leave_with_the_account`) and
+    `handlers::voice`'s `the_owner_moves_a_take_along_the_conveyor`. **A
+    note's audio is read back by one route, for Rust Rounds notes and Studio takes only**
     (`voice_repo::PLAYED_BACK`; the owner's D4 on paulgsc/some-ui#2237,
     2026-10-29: home gives a note's audio back to the phone, for refine cards
     and replay; and the owner's decision 8 on paulgsc/some-ui#2248,
@@ -1296,7 +1303,10 @@ nowhere is marked as such and belongs to review.
     or a queued video, whether it is a `studio` note and whether it was set
     aside; `PUT /ideas/:id` and `PUT /studio/videos/:video/queued/:rev`
     read both through `voice_repo::set_aside::studio_take_held`, the one
-    rule the two PUTs share;
+    rule the two PUTs share; and the conveyor's routes,
+    `GET`/`POST /voice-notes/:id/station` and `GET /voice-notes/conveyor`,
+    read whether it is a `studio` take of the caller's that answers no idea
+    and was not set aside, and its `ref` and when it was recorded;
     and it is deleted with the account by both the sweep and
     the migration's trigger (invariant 12). `GET /voice-notes/kept`
     (paulgsc/some-ui#2476, MY-DATA MD2), a `Paired` phone's (a browser's

@@ -132,7 +132,7 @@ pub struct Take {
 	/// What home heard in it; null while home has not heard it yet.
 	pub heard: Option<Transcript>,
 	/// Where the take is on the conveyor ([`crate::conveyor`]); null for an
-	/// idea's answer, which is not on it.
+	/// idea's answer or a take let go of, which are not on it.
 	pub station: Option<Station>,
 	/// When its newest move put it there; null in the oven, or for an
 	/// idea's answer.
@@ -210,8 +210,9 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 			_ => None,
 		};
 		let (words, heard) = heard.map_or((false, None), |(words, heard)| (words, Some(heard)));
-		// An idea's answer is not on the conveyor, as `conveyor` tells one.
-		let on_conveyor = crate::delete::deletable(studio, &row.of_ref, row.answers) == Some(crate::delete::Deletable::StudioTake);
+		// An idea's answer and a take let go of are not on the conveyor, as
+		// `conveyor` holds them.
+		let on_conveyor = crate::delete::deletable(studio, &row.of_ref, row.answers) == Some(crate::delete::Deletable::StudioTake) && row.set_aside_at.is_none();
 		let station = match (on_conveyor, row.to_station.as_deref()) {
 			(false, _) => None,
 			(true, None) => Some(Station::InTheOven),

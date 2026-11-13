@@ -23,9 +23,13 @@
 //!   never on from picked up.
 //! - **Labels carry forward.** A move's labels are the take's from then on;
 //!   a move without labels leaves them as they were.
-//! - **Only the subject's own Studio takes.** A `studio` note the subject
-//!   holds that is no idea's answer, as [`crate::delete::deletable`] tells a
-//!   take from an answer. Every query takes the subject and filters on it.
+//! - **Only the subject's own Studio takes, and only while they are in
+//!   play.** A `studio` note the subject holds that is no idea's answer, as
+//!   [`crate::delete::deletable`] tells a take from an answer, and that the
+//!   owner has not let go of ([`crate::set_aside`]): a take named as an
+//!   answer, or let go, after it moved leaves every station and every read,
+//!   and its moves stay as they were. Every query takes the subject and
+//!   filters on it.
 //! - **Deleted with the take, never alone.** A take's moves go only with the
 //!   account, or with the take when the owner deletes it for good from My
 //!   data ([`crate::delete`], whose receipt then lists
@@ -33,10 +37,7 @@
 //! - **Written only by `POST /voice-notes/:id/station`** (`file_host`'s
 //!   `handlers::voice`).
 
-use crate::{
-	delete::{deletable, Deletable},
-	instant, VoiceError,
-};
+use crate::{instant, VoiceError};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 
@@ -259,22 +260,27 @@ fn labels_of(stored: Option<&str>) -> Result<Option<Vec<String>>, VoiceError> {
 	stored.map(|text| serde_json::from_str::<Vec<String>>(text).map_err(|_| VoiceError::Unreadable)).transpose()
 }
 
-/// Whether `subject` holds `note_id` as a Studio take: a `studio` note that
-/// no idea's answer names and whose `ref` does not answer one.
+/// Whether `subject` holds `note_id` as a take on the conveyor: a `studio`
+/// note that answers no idea (its `ref` does not, and no idea's answer names
+/// it, as [`crate::delete::deletable`] tells a take from an answer) and that
+/// the owner has not let go of ([`crate::set_aside`]). The station reads
+/// ([`at_station`]) hold every take they list to the same rule.
 async fn holds_take(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<bool, VoiceError> {
-	let Some(note) = sqlx::query!(
-		r#"SELECT note.of_kind, note.of_ref,
-		          EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id) AS "answers!: bool"
-		   FROM voice_note note WHERE note.subject_id = ?1 AND note.note_id = ?2"#,
-		subject,
-		note_id
+	Ok(
+		sqlx::query_scalar!(
+			r#"SELECT EXISTS (
+		     SELECT 1 FROM voice_note note
+		     WHERE note.subject_id = ?1 AND note.note_id = ?2
+		       AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
+		       AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
+		   ) AS "held!: bool""#,
+			subject,
+			note_id
+		)
+		.fetch_one(&mut *conn)
+		.await?,
 	)
-	.fetch_optional(&mut *conn)
-	.await?
-	else {
-		return Ok(false);
-	};
-	Ok(deletable(&note.of_kind, &note.of_ref, note.answers) == Some(Deletable::StudioTake))
 }
 
 async fn history(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Vec<Move>, VoiceError> {
@@ -409,7 +415,13 @@ pub async fn at_station(conn: &mut SqliteConnection, subject: &str, station: Sta
 		r#"SELECT COUNT(*) AS "total!: i64" FROM studio_take_move newest
 		   WHERE newest.subject_id = ?1 AND newest.to_station = ?2
 		     AND newest.seq = (SELECT MAX(later.seq) FROM studio_take_move later WHERE later.subject_id = newest.subject_id AND later.note_id = newest.note_id)
-		     AND EXISTS (SELECT 1 FROM voice_note note WHERE note.subject_id = newest.subject_id AND note.note_id = newest.note_id)"#,
+		     AND EXISTS (
+		       SELECT 1 FROM voice_note note
+		       WHERE note.subject_id = newest.subject_id AND note.note_id = newest.note_id
+		         AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
+		         AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
+		         AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
+		     )"#,
 		subject,
 		name
 	)
@@ -424,6 +436,9 @@ pub async fn at_station(conn: &mut SqliteConnection, subject: &str, station: Sta
 		   JOIN voice_note note ON note.subject_id = newest.subject_id AND note.note_id = newest.note_id
 		   WHERE newest.subject_id = ?1 AND newest.to_station = ?2
 		     AND newest.seq = (SELECT MAX(later.seq) FROM studio_take_move later WHERE later.subject_id = newest.subject_id AND later.note_id = newest.note_id)
+		     AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
+		     AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
 		   ORDER BY newest.moved_at DESC, newest.note_id DESC
 		   LIMIT ?3"#,
 		subject,
@@ -455,6 +470,7 @@ async fn in_the_oven(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec<
 		r#"SELECT COUNT(*) AS "total!: i64" FROM voice_note note
 		   WHERE note.subject_id = ?1 AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
 		     AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
 		     AND NOT EXISTS (SELECT 1 FROM studio_take_move moved WHERE moved.subject_id = note.subject_id AND moved.note_id = note.note_id)"#,
 		subject
 	)
@@ -464,6 +480,7 @@ async fn in_the_oven(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec<
 		r#"SELECT note.note_id, note.of_ref, note.recorded_at FROM voice_note note
 		   WHERE note.subject_id = ?1 AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
 		     AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
 		     AND NOT EXISTS (SELECT 1 FROM studio_take_move moved WHERE moved.subject_id = note.subject_id AND moved.note_id = note.note_id)
 		   ORDER BY note.recorded_at DESC, note.note_id DESC
 		   LIMIT ?2"#,
@@ -766,6 +783,73 @@ mod tests {
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		let left: Vec<String> = sqlx::query_scalar("SELECT subject_id FROM studio_take_move").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B]);
+	}
+
+	/// A take named as an idea's answer, or let go of, after it moved is off
+	/// the conveyor: no station lists it, it reads and moves as not held, and
+	/// its moves are kept.
+	#[tokio::test]
+	async fn a_take_that_becomes_an_answer_or_is_let_go_leaves_the_conveyor() {
+		let pool = pool().await;
+		for id in ["answered", "let-go", "kept"] {
+			take(&pool, A, id, "then").await;
+			go(&pool, A, id, &asked("in-the-oven", "ready-for-pickup", NOW)).await;
+		}
+		take(&pool, A, "fresh-let-go", "then").await;
+		assert_eq!(listed(&pool, A, Station::ReadyForPickup).await.1, 3);
+		sqlx::query("INSERT INTO idea_revision (subject_id, idea_id, revision, created_at, sent_at, title, topic, format, keywords, questions, stored_at) VALUES (?1, 'i', 1, 'then', 'then', 't', 'Studio', 'short', '[]', 1, 'now')")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id, typed) VALUES (?1, 'i', 1, 'what', 'answered', NULL)")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		for id in ["let-go", "fresh-let-go"] {
+			sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, ?2, 'then', 'now')")
+				.bind(A)
+				.bind(id)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+
+		assert_eq!(listed(&pool, A, Station::ReadyForPickup).await, (vec![String::from("kept")], 1));
+		assert_eq!(listed(&pool, A, Station::InTheOven).await, (vec![], 0));
+		let pickup = ask(&Said {
+			from: "ready-for-pickup",
+			to: "picked-up",
+			at: NOW,
+			issue: Some("paulgsc/some-ui#1"),
+			..Said::default()
+		})
+		.unwrap();
+		for id in ["answered", "let-go"] {
+			assert_eq!(go(&pool, A, id, &pickup).await, Advanced::NotHeld, "{id}");
+			let mut conn = pool.acquire().await.unwrap();
+			assert_eq!(station(&mut conn, A, id).await.unwrap(), None, "{id}");
+		}
+		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM studio_take_move").fetch_one(&pool).await.unwrap();
+		assert_eq!(kept, 3, "the moves stay");
+	}
+
+	#[tokio::test]
+	async fn the_migration_round_trips_and_refuses_to_drop_a_record() {
+		const PREVIOUS_MIGRATION: i64 = 20_261_113_000_500;
+		let pool = pool().await;
+		let tables = || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'studio_take_move%'");
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 3, "the table and its two triggers");
+		MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.unwrap();
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 0, "down drops an empty table and its triggers");
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 3, "up recreates them");
+
+		take(&pool, A, "t1", "then").await;
+		go(&pool, A, "t1", &asked("in-the-oven", "cooking", NOW)).await;
+		assert!(MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.is_err(), "down refuses once the record holds a row");
+		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 3, "and leaves it as it was");
 	}
 
 	#[tokio::test]

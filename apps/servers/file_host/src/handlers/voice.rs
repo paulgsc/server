@@ -497,14 +497,16 @@ pub async fn put_set_aside(subject: SubjectId, State(db): State<SqlitePool>, Pat
 ///
 /// # Errors
 /// 401 without a session, 404 for a take the caller's subject does not hold
-/// (another subject's, a note of another kind or an idea's answer
-/// included), and 500 for a storage failure or a move that does not read
+/// on the conveyor (another subject's, a note of another kind, an idea's
+/// answer or a take let go of included), and 500 for a storage failure or a move that does not read
 /// back.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_station_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_station(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<TakeStation>, FileHostError> {
-	let mut conn = db.acquire().await?;
-	let held = voice_repo::conveyor::station(&mut conn, subject.as_str(), &id).await.map_err(refusal)?;
+	// One transaction, so whether the take is held and its moves agree.
+	let mut tx = db.begin().await?;
+	let held = voice_repo::conveyor::station(&mut tx, subject.as_str(), &id).await.map_err(refusal)?;
+	tx.commit().await?;
 	held.map(Json).ok_or(FileHostError::NotFound)
 }
 
