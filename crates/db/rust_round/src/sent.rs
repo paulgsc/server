@@ -232,10 +232,11 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 	}
 }
 
-/// Keep `sent` as `subject`'s draft of its week, read by [`read_sent`]
-/// with home's clock no later than the week's deadline; say what was done,
-/// and the draft that stands after it ([`draft::put_draft`], whose rules
-/// every kind of week shares).
+/// Keep `sent` as `subject`'s draft of its week ([`draft::put_draft`]).
+///
+/// `sent` is read by [`read_sent`] with home's clock no later than the
+/// week's deadline. It says what was done, and the draft that stands after
+/// it, by the rules every kind of week shares.
 ///
 /// # Errors
 /// As [`draft::put_draft`].

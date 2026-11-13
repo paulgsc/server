@@ -170,9 +170,7 @@ pub(crate) async fn finalize(conn: &mut SqliteConnection, subject: &str, week: &
 #[instrument(name = "interview_weeks", skip_all, fields(otel.kind = "server"))]
 pub async fn list_weeks(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<WeekList>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let held = mailbox_repo::weeks_named(&mut conn, paired.subject.as_str(), mailbox_repo::INTERVIEW_WEEK, -1)
-		.await
-		.map_err(mailbox_failure)?;
+	let held = mailbox_repo::interview_weeks(&mut conn, paired.subject.as_str(), -1).await.map_err(mailbox_failure)?;
 	let weeks = held
 		.into_iter()
 		.filter(|held| reads_as_named(&held.id, &held.body).is_some())
@@ -213,7 +211,9 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 }
 
 /// `PUT /interview-weeks/:id/sent`, the body being the phone's send of the
-/// week: the week's draft until its deadline, in a `BEGIN IMMEDIATE`
+/// week.
+///
+/// The week's draft until its deadline, in a `BEGIN IMMEDIATE`
 /// transaction. A send refused because the week is final makes it final
 /// first.
 ///
@@ -574,6 +574,10 @@ mod tests {
 			call(&app, Method::PUT, "/interview-weeks/2026-w47/sent", Some(&phone), None, &first).await.2["change"],
 			json!("unchanged")
 		);
+		let first_at = serde_json::from_slice::<Value>(&first).unwrap()["at"].as_str().unwrap().to_owned();
+		let other = sent("2026-w47", &first_at, &days(-2));
+		let conflict = call(&app, Method::PUT, "/interview-weeks/2026-w47/sent", Some(&phone), None, &other).await;
+		assert_eq!(conflict.0, StatusCode::CONFLICT, "another body at the draft's moment");
 		let later = sent("2026-w47", &days(0), &days(-1));
 		assert_eq!(
 			call(&app, Method::PUT, "/interview-weeks/2026-w47/sent", Some(&phone), None, &later).await.2["change"],
@@ -627,16 +631,16 @@ mod tests {
 		rust_round_repo::draft::put_draft(&mut state.pool.acquire().await.unwrap(), A, &held, &at).await.unwrap();
 		let pool = state.pool.clone();
 		let app = module().into_table_router().with_state(state);
+		// A send refused for the deadline makes the week final first.
+		let refused = call(&app, Method::PUT, "/interview-weeks/2026-w46/sent", Some(&phone), None, &sent("2026-w46", &at, &days(-4))).await;
+		assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "a closed week takes no send");
+		let final_ = rust_round_repo::draft::is_final(&mut pool.acquire().await.unwrap(), rust_round_repo::draft::Kind::Interview, A, "2026-w46").await;
+		assert!(final_.unwrap(), "the refused send made it final");
 		let (status, _, record) = call(&app, Method::GET, "/interview-weeks/2026-w46/record", Some(&phone), None, b"").await;
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!((&record["closed"], &record["sent"]["draft"]), (&json!(true), &json!(false)));
-		assert!(
-			rust_round_repo::draft::is_final(&mut pool.acquire().await.unwrap(), rust_round_repo::draft::Kind::Interview, A, "2026-w46")
-				.await
-				.unwrap()
-		);
-		let refused = call(&app, Method::PUT, "/interview-weeks/2026-w46/sent", Some(&phone), None, &sent("2026-w46", &at, &days(-4))).await;
-		assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "a final week takes no send");
+		let again = call(&app, Method::PUT, "/interview-weeks/2026-w46/sent", Some(&phone), None, &sent("2026-w46", &at, &days(-4))).await;
+		assert_eq!(again.0, StatusCode::UNPROCESSABLE_ENTITY, "a final week takes no send");
 		let finals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interview_week_final").fetch_one(&pool).await.unwrap();
 		assert_eq!(finals, 1);
 	}

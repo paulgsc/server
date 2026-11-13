@@ -1797,6 +1797,26 @@ nowhere is marked as such and belongs to review.
     which the repository's three readers do today
     (`git grep -n rust_round -- 'crates/db/rust_round/src/*.rs'`), and so
     does the count in `storage_repo::kept` (invariant 33).
+    **A week of mock interview** (IW4, paulgsc/some-ui#2935) is kept and
+    read the same way. The week is the routine's, a `brief` file
+    (`interview-week-<id>.json`) served only to its own subject
+    (`GET /interview-weeks[/:id]`). What the owner sent of it (each question
+    answered and each teleprompter card read, its take named by voice-note
+    id and when it was recorded, those passed over, when Send was pressed
+    and when it reached home) is a draft until the deadline
+    (`interview_week_draft`) and final at it (`interview_week_final`), by
+    the same rules, kept once in `rust_round_repo::draft`. Both are the
+    subject's, read only by them (`GET /interview-weeks/:id/record`), never
+    audio, and deleted only with the account; the final is never updated. A
+    final week's record reaches the subject's own mailbox as
+    `index-interview-*` (`mailbox::index::interview`) under the same terms
+    as `index-rust-*`. Not yet counted by `GET /subjects/me/kept` (#844).
+    *Enforced by* `rust_round_repo::interview`'s
+    `a_send_is_a_draft_until_the_deadline_then_final`,
+    `handlers::interview_weeks`' `a_week_reads_back_as_the_routine_put_it_and_only_for_its_subject`
+    and `the_draft_standing_at_the_deadline_is_final_at_the_first_read`,
+    `mailbox::pass`'s `the_interview_index_puts_each_week_final_once_its_deadline_passes`,
+    and the account-deletion test (invariant 12).
 
 29. **The owner's written reflections are append-only, one per id, and only
     their text, session and time reach the mailbox.** `written_reflection`

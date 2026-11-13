@@ -398,7 +398,11 @@ mod tests {
 		let held: Stored<Sent> = standing(&mut conn, "a", "2026-w47").await.unwrap().unwrap();
 		assert_eq!((held.sent, held.draft), (later, false));
 		assert!(!finalize(&mut conn, Kind::Interview, "a", "2026-w47", DUE, AFTER).await.unwrap(), "once");
-		for statement in ["UPDATE interview_week_final SET sent_at = 'x'"] {
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('a', 'a')")
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		for statement in ["UPDATE interview_week_final SET sent_at = 'x'", "DELETE FROM interview_week_final"] {
 			assert!(sqlx::query(statement).execute(&mut *conn).await.is_err(), "{statement}");
 		}
 	}

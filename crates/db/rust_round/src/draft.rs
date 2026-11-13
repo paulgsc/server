@@ -41,7 +41,7 @@ pub enum Kind {
 
 /// A week's send as the phone sends it, checked: what the draft and the
 /// final need of it.
-pub trait WeekSend: Serialize + DeserializeOwned + PartialEq + Clone {
+pub trait WeekSend: Serialize + DeserializeOwned + PartialEq + Clone + Send + Sync {
 	/// Which tables it is kept in.
 	const KIND: Kind;
 	/// The week's id.
@@ -308,6 +308,14 @@ pub async fn finalize(conn: &mut SqliteConnection, kind: Kind, subject: &str, we
 	let Some(held) = draft_row(conn, kind, subject, week).await? else {
 		return Ok(false);
 	};
+	// A final is kept for good and read on every record, so a draft that no
+	// longer reads as its kind's send is left a draft, the error said, rather
+	// than written where it could never be read or taken back.
+	match kind {
+		Kind::RustRounds => serde_json::from_str::<crate::sent::Sent>(&held.body).map(drop),
+		Kind::Interview => serde_json::from_str::<crate::interview::Sent>(&held.body).map(drop),
+	}
+	.map_err(|err| sqlx::Error::Decode(Box::new(err)))?;
 	// The draft's `sent_at` is its send's `at`, as `put_draft` wrote it.
 	if instant_order(&held.sent_at, due) == Some(Ordering::Greater) {
 		// Dropped only once it is the final: a draft nothing could make final

@@ -859,9 +859,11 @@ pub async fn leetype_file(conn: &mut SqliteConnection, subject: &str, name: &str
 	Ok(file)
 }
 
-/// One week of Rust Rounds home holds (paulgsc/some-ui#2687, RR12), whole:
-/// a `brief` file named `rust-week-<id>.json`, as `rust_round_repo::week`
-/// names it, or a week of mock interview (paulgsc/some-ui#2935, IW4), named
+/// One week home holds, whole.
+///
+/// A week of Rust Rounds (paulgsc/some-ui#2687, RR12) is a `brief` file
+/// named `rust-week-<id>.json`, as `rust_round_repo::week` names it; a week
+/// of mock interview (paulgsc/some-ui#2935, IW4) is one named
 /// `interview-week-<id>.json` (`rust_round_repo::interview`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldWeek {
@@ -885,7 +887,7 @@ pub struct HeldWeek {
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn rust_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<HeldWeek>, MailboxError> {
-	weeks_named(conn, subject, RUST_WEEK, -1).await
+	weeks_named(conn, subject, WeekKind::RustRounds, -1).await
 }
 
 /// The newest `limit` files `subject` holds under a week of Rust Rounds'
@@ -895,16 +897,39 @@ pub async fn rust_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Ve
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn newest_rust_weeks(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
-	weeks_named(conn, subject, RUST_WEEK, limit).await
+	weeks_named(conn, subject, WeekKind::RustRounds, limit).await
 }
 
-/// What a week of Rust Rounds' name in `brief` starts with
-/// (`rust_round_repo::week::MAILBOX_PREFIX`).
-pub const RUST_WEEK: &str = "rust-week-";
+/// The newest `limit` files `subject` holds under a week of mock interview's
+/// name (paulgsc/some-ui#2935, IW4), newest first; every one for a negative
+/// `limit`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn interview_weeks(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+	weeks_named(conn, subject, WeekKind::Interview, limit).await
+}
 
-/// What a week of mock interview's name in `brief` starts with
-/// (`rust_round_repo::interview::MAILBOX_PREFIX`, paulgsc/some-ui#2935).
-pub const INTERVIEW_WEEK: &str = "interview-week-";
+/// The kinds of week whose files ride `brief` under a week's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeekKind {
+	/// `rust-week-<id>.json` (`rust_round_repo::week::MAILBOX_PREFIX`).
+	RustRounds,
+	/// `interview-week-<id>.json` (`rust_round_repo::interview::MAILBOX_PREFIX`,
+	/// paulgsc/some-ui#2935).
+	Interview,
+}
+
+impl WeekKind {
+	/// What its files' names start with: lowercase ASCII words each ending
+	/// in `-`, so a byte is a character and no `GLOB` character is in it.
+	const fn prefix(self) -> &'static str {
+		match self {
+			Self::RustRounds => "rust-week-",
+			Self::Interview => "interview-week-",
+		}
+	}
+}
 
 /// The newest `limit` files `subject` holds in `brief` under a week's name,
 /// `<prefix>YYYY-wNN.json`, newest first; every one for a negative `limit`.
@@ -912,13 +937,12 @@ pub const INTERVIEW_WEEK: &str = "interview-week-";
 /// A week's name sorts by its id, so the newest are the first by name, read
 /// backwards off the primary key's range of week names (`prefix` up to
 /// `prefix` and `:`, the character after the digits), however many other
-/// files `brief` holds. `prefix` is one of [`RUST_WEEK`] and
-/// [`INTERVIEW_WEEK`]: a few lowercase words, each ending in `-`, so it holds
-/// no `GLOB` character.
+/// files `brief` holds.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn weeks_named(conn: &mut SqliteConnection, subject: &str, prefix: &str, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+async fn weeks_named(conn: &mut SqliteConnection, subject: &str, kind: WeekKind, limit: i64) -> Result<Vec<HeldWeek>, MailboxError> {
+	let prefix = kind.prefix();
 	let pattern = String::from(prefix) + "[0-9][0-9][0-9][0-9]-w[0-9][0-9].json";
 	let first = i64::try_from(prefix.len()).unwrap_or(i64::MAX).saturating_add(1);
 	let weeks = sqlx::query_as!(

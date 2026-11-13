@@ -1,6 +1,7 @@
-//! Home's bookkeeping for the interview essay routine: each final interview
-//! week's record, put in the mailbox's `index` folder after each pass
-//! (paulgsc/some-ui#2935, IW4), as [`super::rust`] puts Rust Rounds' weeks.
+//! Home's bookkeeping for the interview essay routine (paulgsc/some-ui#2935, IW4).
+//!
+//! Each final interview week's record, put in the mailbox's `index` folder
+//! after each pass, as [`super::rust`] puts Rust Rounds' weeks.
 //!
 //! `{"schema":"some-ui.routine-index/1","routine":"interview","asOf","weeks":[…]}`:
 //! `weeks` is every final week among the [`NEWEST_WEEKS`] newest interview
@@ -123,9 +124,7 @@ pub(in crate::mailbox) async fn put_interview_index<T: MailboxTransport>(
 		return Ok(());
 	};
 	let mut conn = db.acquire().await.map_err(Failure::Storage)?;
-	let held = mailbox_repo::weeks_named(&mut conn, subject, mailbox_repo::INTERVIEW_WEEK, NEWEST_WEEKS)
-		.await
-		.map_err(storage)?;
+	let held = mailbox_repo::interview_weeks(&mut conn, subject, NEWEST_WEEKS).await.map_err(storage)?;
 	let closed: Vec<_> = held
 		.iter()
 		.filter_map(|file| reads_as_named(&file.id, &file.body))
