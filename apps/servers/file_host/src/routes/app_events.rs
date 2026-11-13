@@ -8,6 +8,7 @@
 //! ```text
 //! PUT /app-events/:id        → { change, event }: the body is the event itself
 //! GET /app-events/summary    → { since, families, outcomes, last, partial }: ?days=1..90, default 7
+//! GET /app-events/weeks/:week → { week, weeks, seen }: an ISO week (2026-W46) and its three comparison weeks
 //! ```
 //!
 //! **Trust model:** a subject route, as `routes::studio_log`. Every handler
@@ -42,6 +43,7 @@ where
 {
 	let table = RouteTable::new()
 		.get("/app-events/summary", handlers::get_summary)
+		.get("/app-events/weeks/:week", handlers::get_weekly)
 		.put("/app-events/:id", handlers::put_event);
 
 	Module::versioned("app_events", table).with_cors(cors)

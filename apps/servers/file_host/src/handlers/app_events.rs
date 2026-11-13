@@ -19,7 +19,7 @@
 
 use crate::subject::SubjectId;
 use crate::FileHostError;
-use app_event_repo::{Event, EventError, Summary, REWRITTEN, UNREADABLE};
+use app_event_repo::{Event, EventError, IsoWeek, Summary, Weekly, REWRITTEN, UNREADABLE};
 use axum::{
 	body::Bytes,
 	extract::{Path, Query, State},
@@ -107,6 +107,32 @@ pub async fn get_summary(subject: SubjectId, State(db): State<SqlitePool>, Query
 	let since = (Utc::now() - Duration::days(days)).to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut conn = db.acquire().await?;
 	app_event_repo::summary(&mut conn, subject.as_str(), &since).await.map(Json).map_err(refusal)
+}
+
+/// `GET /app-events/weeks/:week`: the period read behind the weekly
+/// engagement report (paulgsc/some-ui ENG12, #2700).
+///
+/// The caller's engagement over ISO week `:week` (`2026-W46`, Monday midnight
+/// to the next on the owner's clock, `app_event_repo::ZONE`), the week before, the same week a quarter ago and a year
+/// ago, with each affordance's first day and last day taken. Raw counts and
+/// days only: the report's public-safety rule (#2701) is its writer's,
+/// applied after this.
+///
+/// No window cap: each week is one range read of the index, whatever its
+/// age. A week that has not started yet is refused, since it holds nothing.
+///
+/// # Errors
+/// 401 without a session, 422 for a `:week` that is not an ISO week from
+/// 2000 on that has started, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "app_event_weekly", skip_all, fields(otel.kind = "server"))]
+pub async fn get_weekly(subject: SubjectId, State(db): State<SqlitePool>, Path(week): Path<String>) -> Result<Json<Weekly>, FileHostError> {
+	let now = now();
+	let week = IsoWeek::parse(&week)
+		.filter(|week| week.from() <= now)
+		.ok_or_else(|| FileHostError::unprocessable_entity([("week", "an ISO week that has started, as 2026-W46")]))?;
+	let mut conn = db.acquire().await?;
+	app_event_repo::weekly(&mut conn, subject.as_str(), week, &now).await.map(Json).map_err(refusal)
 }
 
 #[cfg(test)]
@@ -224,9 +250,12 @@ mod tests {
 		let app = app(state);
 		let routes: Vec<(Method, String)> = module()
 			.descriptors()
-			.map(|route| (Method::from_bytes(route.method.as_bytes()).unwrap(), route.path.replace(":id", "e1")))
+			.map(|route| {
+				let path = route.path.replace(":id", "e1").replace(":week", "2026-W46");
+				(Method::from_bytes(route.method.as_bytes()).unwrap(), path)
+			})
 			.collect();
-		assert_eq!(routes.len(), 2, "{routes:?}");
+		assert_eq!(routes.len(), 3, "{routes:?}");
 		for (method, path) in routes {
 			assert_eq!(call(&app, method.clone(), &path, None, &json!({})).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 		}
@@ -316,6 +345,46 @@ mod tests {
 		}
 		let (_, summary) = call(&app, Method::GET, "/app-events/summary", Some(&phone), &Value::Null).await;
 		assert_eq!(summary["families"], json!([]), "nothing refused was written");
+	}
+
+	/// The weekly read: this week and the three it is compared with, raw,
+	/// the caller's own; a week not yet started, or not a week, is refused.
+	#[tokio::test]
+	async fn the_weekly_read_answers_four_weeks_of_the_callers_own() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		let taken = json!({
+			"family": "engagement", "id": "g1", "at": "2026-11-10T09:00:00.000Z", "build": null,
+			"kind": "taken", "pipeline": "topik", "affordance": "routine-lens", "surface": "apk"
+		});
+		assert_eq!(call(&app, Method::PUT, &path("g1"), Some(&phone), &taken).await.0, StatusCode::OK);
+
+		let (status, weekly) = call(&app, Method::GET, "/app-events/weeks/2026-W46", Some(&phone), &Value::Null).await;
+		assert_eq!(status, StatusCode::OK, "{weekly}");
+		let roles: Vec<&str> = weekly["weeks"].as_array().unwrap().iter().map(|week| week["role"].as_str().unwrap()).collect();
+		assert_eq!(roles, ["this", "last", "quarterAgo", "yearAgo"]);
+		assert_eq!(
+			weekly["weeks"][0]["affordances"],
+			json!([{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "offered": 0, "taken": 1, "passedOver": 0, "left": 0 }])
+		);
+		assert_eq!(weekly["weeks"][1]["measured"], false, "nothing was held before W46");
+		assert_eq!(weekly["seen"][0]["lastTakenDay"], "2026-11-10", "a day, never a time of day");
+
+		let (_, theirs) = call(&app, Method::GET, "/app-events/weeks/2026-W46", Some(&other), &Value::Null).await;
+		assert_eq!(
+			(theirs["weeks"][0]["affordances"].clone(), theirs["seen"].clone()),
+			(json!([]), json!([])),
+			"B reads none of A's"
+		);
+
+		let next = app_event_repo::IsoWeek::containing(Utc::now().date_naive()).back(-1).label();
+		for week in [next.as_str(), "2026-W54", "2026-46", "1999-W01"] {
+			let (status, answer) = call(&app, Method::GET, &(String::from("/app-events/weeks/") + week), Some(&phone), &Value::Null).await;
+			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{week}: {answer}");
+			assert!(answer["error"]["details"]["week"].is_array(), "{answer}");
+		}
 	}
 
 	/// docs/identity.md invariant 6: nothing a write carries reaches a log

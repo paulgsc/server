@@ -13,6 +13,8 @@ edition.workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+# The owner's clock, which the weekly read's weeks run on (file_host pins the same).
+chrono-tz = "0.10"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite"] }
