@@ -1436,7 +1436,14 @@ nowhere is marked as such and belongs to review.
     kept as it ended; paulgsc/server#706, `docs/home-compute.md`, "The
     contention guard"); a better model adds
     rows of its own and replaces none, and a reader takes the newest that
-    heard something. A heard attempt also keeps each word it heard, with
+    heard something. An interview take is heard with a prompt that keeps
+    its fillers ("um", "uh"), which the interview essay counts, and its rows
+    name the model file and the prompt (`ggml-small-q5_1.bin+verbatim-1`) as
+    their model, so the transcriber never takes one for the other: a
+    verbatim hearing never ends a plain one's note, nor a plain one a
+    verbatim one's, and an interview take is only ever heard verbatim;
+    nothing more is kept from it than from any note
+    (paulgsc/some-ui#2933, IW2). A heard attempt also keeps each word it heard, with
     when the word began and ended in milliseconds from the note's start
     (whisper.cpp's per-word times, joined from its tokens and moved from the
     speech the VAD cut out back to the note), and how sure the model was of
