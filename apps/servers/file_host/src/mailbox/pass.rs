@@ -389,8 +389,8 @@ fn before(now: &str, back: std::time::Duration) -> Option<String> {
 /// It reads each of [`READS`] after `subject`'s cursor and keeps what checks out, then
 /// hands the mailbox what the phone filed and it has not answered, then puts
 /// each routine's index if what it counts moved since `last_index` (making
-/// each of the newest Rust Rounds weeks past its deadline final first,
-/// `index::rust`), then, with
+/// each of the newest Rust Rounds and interview weeks past its deadline
+/// final first, `index::rust` and `index::interview`), then, with
 /// `archiving`, answers the routine's asks and archives what is old.
 ///
 /// The phases are independent: a failure ends its own phase, and the pass
@@ -445,7 +445,8 @@ pub async fn run_once<T: MailboxTransport>(
 		let reflections = super::index::put_reflections_index(db, mailbox, subject, &last_index.reflections, now, &mut outcome).await;
 		let call = super::index::put_call_index(db, mailbox, subject, &last_index.call, now, &mut outcome).await;
 		let rust = super::index::put_rust_index(db, mailbox, subject, deletion, &last_index.rust, now, &mut outcome).await;
-		jobs.and(reflections).and(call).and(rust)
+		let interview = super::index::put_interview_index(db, mailbox, subject, deletion, &last_index.interview, now, &mut outcome).await;
+		jobs.and(reflections).and(call).and(rust).and(interview)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
@@ -3309,6 +3310,79 @@ mod tests {
 		restarted.add(10, "rust-week-2026-w46.json", &week.to_string());
 		assert_eq!(pass_at(&pool, &restarted, "2026-11-16T10:00:00.000Z").await.unwrap().indexed, ["added"]);
 		assert_eq!(rust(&restarted), [put[1].clone()]);
+	}
+
+	/// IW4 (paulgsc/some-ui#2935): an interview week is put as Rust Rounds'
+	/// is, by its own index. The first pass past `due` makes the standing
+	/// draft final and puts the record as `index-interview-*`; nothing
+	/// before, nothing again while it holds. A Rust Rounds week in `brief`
+	/// beside it is no interview week, and the reverse.
+	#[tokio::test]
+	async fn the_interview_index_puts_each_week_final_once_its_deadline_passes() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let interview = |fake: &Fake| -> Vec<serde_json::Value> {
+			let puts = fake.indexes.lock().unwrap();
+			puts
+				.iter()
+				.filter(|(name, _)| name.starts_with("index-interview-"))
+				.map(|(_, body)| serde_json::from_str(body).unwrap())
+				.collect()
+		};
+		let week = serde_json::json!({
+			"schema": "some-ui.interview-week/1", "id": "2026-w47",
+			"opens": "2026-11-16T00:00:00-08:00", "due": "2026-11-22T23:59:00-08:00",
+			"questions": [{ "id": "about-you" }, { "id": "a-conflict" }],
+			"cards": [{ "id": "home-first" }],
+		});
+		fake.add(10, "interview-week-2026-w47.json", &week.to_string());
+		fake.add(
+			11,
+			"rust-week-2026-w47.json",
+			&serde_json::json!({
+				"schema": "some-ui.rust-week/1", "id": "2026-w47",
+				"opens": "2026-11-16T00:00:00-08:00", "due": "2026-11-22T23:59:00-08:00",
+				"tickets": [{ "id": "QM-1", "program": "fn main() {}\n" }],
+			})
+			.to_string(),
+		);
+		pass_at(&pool, &fake, "2026-11-18T17:00:00.000Z").await.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		let held: Vec<String> = mailbox_repo::interview_weeks(&mut conn, OWNER, -1).await.unwrap().into_iter().map(|week| week.id).collect();
+		assert_eq!(held, ["2026-w47"], "only the interview week");
+		let rust: Vec<String> = mailbox_repo::rust_weeks(&mut conn, OWNER).await.unwrap().into_iter().map(|week| week.id).collect();
+		assert_eq!(rust, ["2026-w47"], "only the Rust Rounds week");
+		let sent: rust_round_repo::interview::Sent = serde_json::from_value(serde_json::json!({
+			"week": "2026-w47", "at": "2026-11-18T18:00:00.000Z",
+			"answers": [{ "question": "about-you", "take": "n1", "recordedAt": "2026-11-18T17:30:00.000Z" }],
+			"reads": [{ "card": "home-first", "take": "n2", "recordedAt": "2026-11-18T17:40:00.000Z" }],
+			"passed": ["a-conflict"], "passedReads": [],
+		}))
+		.unwrap();
+		rust_round_repo::draft::put_draft(&mut conn, OWNER, &sent, "2026-11-18T18:00:01.000Z").await.unwrap();
+		drop(conn);
+		pass_at(&pool, &fake, "2026-11-22T20:00:00.000Z").await.unwrap();
+		assert!(interview(&fake).is_empty(), "nothing before the deadline, and never a draft");
+
+		pass_at(&pool, &fake, "2026-11-23T08:15:00.000Z").await.unwrap();
+		let final_ = rust_round_repo::draft::is_final(&mut pool.acquire().await.unwrap(), rust_round_repo::draft::Kind::Interview, OWNER, "2026-w47")
+			.await
+			.unwrap();
+		assert!(final_, "the pass made the week final; no read of it was needed");
+		let put = interview(&fake);
+		assert_eq!(put.len(), 1);
+		assert_eq!(put[0]["routine"], serde_json::json!("interview"));
+		let held = crate::handlers::interview_weeks::reads_as_named("2026-w47", week.to_string().as_bytes()).unwrap();
+		let record = crate::handlers::interview_weeks::week_record(&mut pool.acquire().await.unwrap(), OWNER, held, "2026-11-23T08:15:00.000Z")
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(put[0]["weeks"], serde_json::json!([serde_json::to_value(&record).unwrap()]), "the record's own shape");
+		assert_eq!(put[0]["weeks"][0]["sent"]["draft"], serde_json::json!(false));
+		assert_eq!(put[0]["weeks"][0]["unanswered"], serde_json::json!(["a-conflict"]));
+		assert_eq!(put[0]["weeks"][0]["unread"], serde_json::json!([]));
+
+		pass_at(&pool, &fake, "2026-11-23T09:15:00.000Z").await.unwrap();
+		assert_eq!(interview(&fake).len(), 1, "nothing moved: nothing put");
 	}
 
 	/// A week nothing was sent of is final too: every ticket a silence.

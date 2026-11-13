@@ -74,6 +74,11 @@
 //! 2026-11-04), and keeping its receipt in
 //! `voice_note_deletion`, is [`delete`]'s (paulgsc/some-ui#2477, MD3).
 //!
+//! Where each Studio take is on the conveyor, and every move that put it
+//! there, is [`conveyor`]'s: `studio_take_move`, one row per move, written
+//! only by `file_host`'s `handlers::voice` (`POST
+//! /api/v1/voice-notes/:id/station`; paulgsc/some-ui epic #2872, CONVEYOR1).
+//!
 //! Which notes the owner let go of on the phone is [`set_aside`]'s:
 //! `voice_note_set_aside`, one mark per note, the first standing, written
 //! only by `file_host`'s `handlers::voice` (`PUT
@@ -85,6 +90,7 @@
 //! mark does not unname it.
 
 pub mod bite_match;
+pub mod conveyor;
 pub mod delete;
 pub mod kept;
 pub mod meaning;
@@ -426,10 +432,10 @@ fn container(content_type: &str) -> Option<&'static str> {
 
 /// The names under `/voice-notes/` that are routes of their own, never a
 /// note's id: `PUT /voice-notes/on-drive` reaches the `GET` route of that
-/// name, not a note's, and so do `PUT /voice-notes/kept` and
-/// `DELETE /voice-notes/deleted`. `file_host`'s `handlers::voice` tests that
+/// name, not a note's, and so do `PUT /voice-notes/kept`,
+/// `DELETE /voice-notes/deleted` and `PUT /voice-notes/conveyor`. `file_host`'s `handlers::voice` tests that
 /// every such route is named here.
-const ROUTE_NAMES: [&str; 4] = ["on-drive", "kept", "deleted", "takes"];
+const ROUTE_NAMES: [&str; 5] = ["on-drive", "kept", "deleted", "takes", "conveyor"];
 
 /// Whether `id` reads as a note's id, as [`describe`] takes one: a name, and
 /// not one of [`ROUTE_NAMES`].
