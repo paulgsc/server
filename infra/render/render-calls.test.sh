@@ -594,6 +594,9 @@ check "its progress counts the scenes recorded" progress_is "scene=2"
 check "and how many there are" progress_is "scenes=6"
 check "and its station" progress_is "station=recording"
 check "and never a scene's name" sh -c '! grep -q scene-name "$1"' _ "$ROOT/renders/call-worker/job.progress"
+alive="$ROOT/renders/call-worker/job.alive"
+check "the worker stamps its sign of life with the job's id" grep -qx "id=$(cat "$ROOT/renders/call-worker/job")" "$alive"
+check "and the time, while the job is paused" grep -qx "at=[0-9]\+" "$alive"
 held=$(steps_made)
 rm "$FAKE/hold-at"
 sleep 1
@@ -608,6 +611,7 @@ check "a pause is no failure" test ! -e "$ROOT/renders/call-worker/2026-10-30.fa
 check "the pause is said in the log" grep -q "^paused the call of 2026-10-30" "$SCRATCH/pass.out"
 check "the recorder's lines still reach the worker's output" grep -q "^made step 6" "$SCRATCH/pass.out"
 check "a finished job leaves no progress" test ! -e "$ROOT/renders/call-worker/job.progress"
+check "nor a sign of life" test ! -e "$ROOT/renders/call-worker/job.alive"
 
 # A stop: killed, the work and the id kept, resumed from the kept steps.
 fresh stopped 2026-10-30

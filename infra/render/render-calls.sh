@@ -132,6 +132,10 @@ RETRY_AFTER=3600
 LANE_POLL=2
 # A decision older than this is stop (`call_weeks::lane::STALE_AFTER`).
 STALE_AFTER=30
+# How often, at most, the worker stamps <lane>/job.alive while a job renders
+# or is paused, its sign of life (#739). The Renders read takes a stamp older
+# than `feeds::renders::ALIVE_STALE` (60 s) as a worker gone.
+ALIVE_EVERY=10
 # How long a killed recorder is given to go before the worker goes on.
 KILL_WAIT=10
 # A recorder that fails this soon after a pause or a resume is taken to have
@@ -463,7 +467,23 @@ begin_job() {
 
 # The job is over: rendered, failed or let go.
 end_job() {
-  rm -f "${LANE:?}/job" "${LANE:?}/job.state" "${LANE:?}/job.progress" "${LANE:?}/job.termed"
+  rm -f "${LANE:?}/job" "${LANE:?}/job.state" "${LANE:?}/job.progress" "${LANE:?}/job.termed" "${LANE:?}/job.alive"
+}
+
+# The worker's sign of life while a job renders or is paused (#739): its id
+# and the time, in <lane>/job.alive, at most every ALIVE_EVERY seconds. It
+# is the worker's own loop that stamps it, never the recorder's output: a
+# scene or the assembly may say nothing for minutes, but the loop looks at
+# the lane every LANE_POLL seconds, so a stamp gone stale is a worker gone
+# (its container killed or stopped mid-render), and the Renders read stops
+# showing that job as rendering. A recorder that hangs while the worker
+# lives is still CallRenderOverdue's.
+alive() {
+  local now
+  now=$(date +%s)
+  [ $(( now - ${ALIVE:-0} )) -ge "$ALIVE_EVERY" ] || return 0
+  ALIVE=$now
+  put_in "$LANE" job.alive "$(printf 'id=%s\nat=%s' "$JOB_ID" "$now")" || true
 }
 
 # How far the recorder is, for the phone's Renders page (C138), kept whole
@@ -631,9 +651,11 @@ attempt() {
   ) &
   RECORDER=$!
   job_state rendering
+  ALIVE=0 && alive
   while kill -0 "$RECORDER" 2> /dev/null; do
     sleep "$LANE_POLL"
     kill -0 "$RECORDER" 2> /dev/null || break
+    alive
     [ "$paused" -eq 0 ] || heartbeat
     read_lane
     case $LANE_VERB in
