@@ -32,8 +32,8 @@
 //!                                      takes at a station, newest move
 //!                                      first, at most 100
 //! GET /voice-notes/:id/audio          → { id, contentType, sha256, audio }:
-//!                                      a Rust Rounds note's or a Studio
-//!                                      take's audio as base64, to a paired
+//!                                      a note's audio as base64, any kind
+//!                                      (My data plays them), to a paired
 //!                                      phone, with its SHA-256 as the ETag
 //!                                      (`304` on `If-None-Match`), or a
 //!                                      JSON 404
@@ -55,8 +55,10 @@
 //!                                      aside and since when, what reached
 //!                                      home each week, and with `of` that
 //!                                      kind's newest notes, each saying
-//!                                      whether My data may delete it, to a
-//!                                      paired phone (paulgsc/some-ui#2476)
+//!                                      whether My data may delete it, how
+//!                                      long it ran and the first words
+//!                                      home heard, to a paired phone
+//!                                      (paulgsc/some-ui#2476)
 //! DELETE /voice-notes/:id             → { receipt }: deletes the note for
 //!                                      good, from a paired phone's My
 //!                                      data, only of a kind the owner
@@ -82,7 +84,7 @@
 //! row of `voice_repo::conveyor`'s, and the newest says where it is.
 //!
 //! The audio read is the one route that gives a note's bytes back, for a
-//! `rust-round` note or a `studio` take only (`voice_repo::PLAYED_BACK`
+//! note of any kind, to its own subject's paired phone (`voice_repo::PLAYED_BACK`
 //! says why). The take library answers what each take is and its words,
 //! never its audio (`voice_repo::takes`).
 //!
