@@ -370,10 +370,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			}
 			// Only `up` runs on the box it deploys, so only its MemTotal is home's.
 			let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
-			for warning in caps::warnings(
-				&caps::caps(&raw, &caps::profiles(deployment.compose.get("COMPOSE_PROFILES").map(String::as_str))),
-				meminfo.as_deref().and_then(caps::mem_total),
-			) {
+			// The profiles `up` starts with: the deployment's, or else the shell's,
+			// which reaches compose unless a compose file reads the variable.
+			let profiles = deployment.compose.get("COMPOSE_PROFILES").cloned().or_else(|| shell.get("COMPOSE_PROFILES").cloned());
+			for warning in caps::warnings(&caps::caps(&raw, &caps::profiles(profiles.as_deref())), meminfo.as_deref().and_then(caps::mem_total)) {
 				println!("warning: {warning}");
 			}
 			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, &compose::read(&repo)?)

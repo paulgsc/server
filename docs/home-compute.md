@@ -301,8 +301,9 @@ order above decides only when the host as a whole runs out.
 `up` starts and warns when the sum is above `MemTotal`. A service's cap is
 its `mem_limit`, or else its `deploy.resources.limits.memory`, times its
 `scale` or `deploy.replicas`. A service under `profiles:` counts only when
-`COMPOSE_PROFILES` turns one of them on. Sizes are read as compose reads
-them (`1.5g`, `512MiB`, `1t`). The warning names the three largest caps,
+`COMPOSE_PROFILES` turns one of them on (`*` turns on all). Sizes are read
+as compose reads them (`1.5g`, `512MiB`, `1t`, `.5g`); a cap of 0 is no cap,
+as Docker takes it. The warning names the three largest caps,
 which bind first, with each one's class (read from its `oom_score_adj`, as
 above). It also warns of any service whose cap or class it can't read, such
 as a `${…}` value, rather than leave it out unsaid.

@@ -53,34 +53,33 @@ pub(crate) struct Cap {
 }
 
 /// Compose's byte size, as compose itself reads one (go-units'
-/// `RAMInBytes`): a number, a decimal one too, then an optional space and
-/// unit `k`, `m`, `g`, `t` or `p` (binary, any case), with an optional `i`
-/// and `b` after it, or `b` alone. None for anything else, as an
-/// uninterpolated `${…}` is.
+/// `RAMInBytes`): a number, in any form a float takes (`.5`, `1.`, `1e3`,
+/// `+1`), then an optional space and unit `b`, or `k`, `m`, `g`, `t` or `p`
+/// (binary, any case) with an optional `b` or `ib`. None for anything else,
+/// as an uninterpolated `${…}` is, and for 0, which Docker takes as no cap.
 fn bytes(text: &str) -> Option<u64> {
-	let text = text.trim().to_ascii_lowercase();
-	let text = text.strip_suffix('b').unwrap_or(&text);
-	let text = text.strip_suffix('i').filter(|rest| rest.ends_with(['k', 'm', 'g', 't', 'p'])).unwrap_or(text);
-	let (number, shift) = match text.chars().last()? {
-		'k' => (&text[..text.len() - 1], 10),
-		'm' => (&text[..text.len() - 1], 20),
-		'g' => (&text[..text.len() - 1], 30),
-		't' => (&text[..text.len() - 1], 40),
-		'p' => (&text[..text.len() - 1], 50),
-		_ => (text, 0),
-	};
-	let number = number.strip_suffix(' ').unwrap_or(number);
-	if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') || number.starts_with('.') || number.ends_with('.') {
+	let text = text.to_ascii_lowercase();
+	let (number, shift) = [("kib", 10), ("mib", 20), ("gib", 30), ("tib", 40), ("pib", 50)]
+		.into_iter()
+		.chain([("kb", 10), ("mb", 20), ("gb", 30), ("tb", 40), ("pb", 50)])
+		.chain([("k", 10), ("m", 20), ("g", 30), ("t", 40), ("p", 50), ("b", 0)])
+		.find_map(|(unit, shift)| text.strip_suffix(unit).map(|number| (number, shift)))
+		.unwrap_or((&text, 0));
+	let number = number.strip_suffix(' ').unwrap_or(number).replace('_', "");
+	// What a float parses and compose would not: a name, or a bare sign.
+	if !number.chars().any(|c| c.is_ascii_digit()) || number.contains(|c: char| c.is_ascii_alphabetic() && c != 'e') {
 		return None;
 	}
-	if let Ok(whole) = number.parse::<u64>() {
-		return whole.checked_mul(1 << shift);
-	}
-	let decimal = number.parse::<f64>().ok()?;
-	#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-	// a size with a fraction, truncated to bytes as compose truncates it
-	let sized = (decimal * (1u64 << shift) as f64) as u64;
-	Some(sized)
+	let sized = if let Ok(whole) = number.parse::<u64>() {
+		whole.checked_mul(1 << shift)?
+	} else {
+		let decimal = number.parse::<f64>().ok().filter(|decimal| decimal.is_finite() && *decimal >= 0.0)?;
+		#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+		// a size with a fraction, truncated to bytes as compose truncates it
+		let sized = (decimal * (1u64 << shift) as f64) as u64;
+		sized
+	};
+	Some(sized).filter(|&sized| sized > 0)
 }
 
 /// A whole number compose may give as a number or as text.
@@ -95,7 +94,7 @@ fn whole(value: &Value) -> Option<i64> {
 /// A size compose may give as a number of bytes or as text.
 fn size(value: &Value) -> Option<u64> {
 	match value {
-		Value::Number(number) => number.as_u64(),
+		Value::Number(number) => number.as_u64().filter(|&sized| sized > 0),
 		Value::String(text) => bytes(text),
 		_ => None,
 	}
@@ -122,7 +121,8 @@ fn replicas(service: &Value) -> Option<u64> {
 
 /// Each service `up` starts, with its cap and class, from compose's
 /// uninterpolated config. A service under `profiles:` is left out unless
-/// one of them is in `active` (`COMPOSE_PROFILES`), as `up` leaves it.
+/// one of them is in `active` (`COMPOSE_PROFILES`; `*` is every profile),
+/// as `up` leaves it.
 pub(crate) fn caps(raw: &Value, active: &[&str]) -> Vec<Cap> {
 	compose::services(raw)
 		.into_iter()
@@ -131,7 +131,7 @@ pub(crate) fn caps(raw: &Value, active: &[&str]) -> Vec<Cap> {
 				.get("profiles")
 				.and_then(Value::as_array)
 				.filter(|profiles| !profiles.is_empty())
-				.is_none_or(|profiles| profiles.iter().filter_map(Value::as_str).any(|profile| active.contains(&profile)))
+				.is_none_or(|profiles| profiles.iter().filter_map(Value::as_str).any(|profile| active.contains(&"*") || active.contains(&profile)))
 		})
 		.map(|(name, service)| Cap {
 			service: name.to_owned(),
@@ -196,7 +196,7 @@ pub(crate) fn warnings(caps: &[Cap], mem_total: Option<u64>) -> Vec<String> {
 		warnings.push("this machine's MemTotal could not be read from /proc/meminfo, so home's caps were not checked".to_owned());
 		return warnings;
 	};
-	let total: u64 = caps.iter().filter_map(|cap| cap.bytes).sum();
+	let total = caps.iter().filter_map(|cap| cap.bytes).fold(0u64, u64::saturating_add);
 	if total <= mem_total {
 		return warnings;
 	}
@@ -253,8 +253,19 @@ mod tests {
 		assert_eq!(bytes("${CAP:-1G}"), None);
 		assert_eq!(bytes(""), None);
 		assert_eq!(bytes("g"), None);
-		assert_eq!(bytes(".5g"), None);
+		assert_eq!(bytes(".5g"), Some(G / 2));
+		assert_eq!(bytes("1.g"), Some(G));
+		assert_eq!(bytes("1e3m"), Some(1000 << 20));
+		assert_eq!(bytes("+1g"), Some(G));
+		assert_eq!(bytes("1_000"), Some(1000));
+		assert_eq!(bytes("1.5 GiB"), Some(1_610_612_736));
 		assert_eq!(bytes("1x"), None);
+		assert_eq!(bytes("inf"), None);
+		assert_eq!(bytes("nan"), None);
+		assert_eq!(bytes("-1g"), None);
+		assert_eq!(bytes("+"), None);
+		assert_eq!(bytes("0"), None, "Docker takes 0 as no cap");
+		assert_eq!(bytes("0g"), None);
 	}
 
 	#[test]
@@ -286,6 +297,7 @@ mod tests {
 			"scaled": {"mem_limit": "1G", "scale": 3},
 			"replicated": {"mem_limit": "1G", "deploy": {"replicas": 2}},
 			"uninterpolated": {"mem_limit": "${CAP:-1G}"},
+			"unlimited": {"mem_limit": 0},
 			"none": {}
 		}});
 		let caps = caps(&raw, &[]);
@@ -294,6 +306,7 @@ mod tests {
 		assert_eq!(cap_of(&caps, "scaled").bytes, Some(3 * G));
 		assert_eq!(cap_of(&caps, "replicated").bytes, Some(2 * G));
 		assert_eq!(cap_of(&caps, "uninterpolated").bytes, None);
+		assert_eq!(cap_of(&caps, "unlimited").bytes, None);
 		assert_eq!(cap_of(&caps, "none").bytes, None);
 	}
 
@@ -306,6 +319,7 @@ mod tests {
 		let names = |active: &[&str]| caps(&raw, active).into_iter().map(|cap| cap.service).collect::<Vec<_>>();
 		assert_eq!(names(&[]), ["always"]);
 		assert_eq!(names(&profiles(Some("other, extra"))), ["always", "extra"]);
+		assert_eq!(names(&profiles(Some("*"))), ["always", "extra"]);
 		assert!(profiles(None).is_empty());
 		assert!(profiles(Some(" , ")).is_empty());
 	}
