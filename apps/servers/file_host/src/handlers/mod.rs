@@ -16,6 +16,7 @@ pub mod episode_notes;
 pub mod feed_videos;
 pub mod health;
 pub mod ideas;
+pub mod interview_weeks;
 pub mod jobs;
 pub mod korean;
 pub mod leetype_files;
