@@ -79,6 +79,10 @@ pub struct RealtimeContext {
 	pub dedup_cache: Arc<DedupCache>,
 	pub transport: NatsTransport<UnifiedEvent>,
 	pub pipeline_publisher: Arc<JetStreamPublisher<JobEnvelope>>,
+	/// The paired phone's live game day (`/ws/game-week`): told by the game
+	/// feed each time a pass keeps something, and the source of every
+	/// offer's `seq`.
+	pub game_live: websocket::game_live::GameLive,
 }
 
 /// Everything the study nudge needs, or `None` when the deployment has not
@@ -185,12 +189,15 @@ impl AppState {
 		let pipeline_publisher = Arc::new(JetStreamPublisher::from_client(client));
 
 		let ws = WebSocketFsm::new();
+		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
+		let game_live = websocket::game_live::GameLive::new(game_feed.is_some(), core.connection_guard.clone(), cancel_token.clone());
 
 		let realtime = RealtimeContext {
 			ws,
 			dedup_cache,
 			transport,
 			pipeline_publisher,
+			game_live,
 		};
 
 		let nudge = Self::build_nudge(&config, auth.deletion_lock())?;
@@ -198,7 +205,6 @@ impl AppState {
 		let meaning = meaning::MeaningContext::from_config(&config)?;
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock(), meaning.as_ref())?;
 		let rust_rounds = rust_rounds::RustRoundsContext::new();
-		let game_feed = game_feed::GameFeedContext::from_config(&config)?;
 		let call_weeks = call_weeks::CallWeeksContext::new()?;
 
 		Ok(Self {
