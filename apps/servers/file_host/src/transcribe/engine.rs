@@ -51,8 +51,15 @@
 //! with [`Decode::Verbatim`], each English run's decode starts from
 //! [`super::verbatim::PROMPT`], so its fillers come back as words. Its first
 //! window reads the prompt; later windows read what was heard before them, as
-//! every note's do, with what is left of the prompt until that pushes it out,
-//! and a window whisper.cpp decodes again at a high temperature reads none.
+//! every note's do, with what is left of the prompt until that pushes it out.
+//! **A known limit:** a window whisper.cpp decodes again at a high temperature
+//! (a fallback on a hard stretch) reads no prompt, and every window after it
+//! in that run reads only what was heard from it on, so the prompt is gone
+//! for the rest of the run; so it is for a run's last five seconds. A long,
+//! noisy answer is heard verbatim at its start more surely than at its end.
+//! whisper.cpp's `carry_initial_prompt` would keep the prompt in every window,
+//! a change for a later prompt (`verbatim-2`) once real takes are checked
+//! (IW6).
 //! The prompt is tokenized once, at load. Every other note is
 //! [`Decode::Plain`], decoded exactly as before.
 //!

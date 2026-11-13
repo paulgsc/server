@@ -141,18 +141,6 @@ pub struct Keys<'a> {
 	pub verbatim: &'a str,
 }
 
-impl<'a> Keys<'a> {
-	/// The key a note of `of_kind` is kept under.
-	#[must_use]
-	pub fn of(&self, of_kind: &str) -> &'a str {
-		if of_kind == VERBATIM {
-			self.verbatim
-		} else {
-			self.plain
-		}
-	}
-}
-
 /// A note waiting to be heard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
@@ -166,8 +154,8 @@ pub struct Waiting {
 /// The notes their key in `keys` has not ended (heard, or found silent) and
 /// has failed on fewer than `attempts` times, oldest first, at most `limit`.
 ///
-/// A note's key is [`Keys::of`] its kind, so a [`VERBATIM`] note waits on
-/// the verbatim key alone, and any other note on the plain one alone.
+/// A [`VERBATIM`] note waits on [`Keys::verbatim`] alone, and any other note
+/// on [`Keys::plain`] alone; [`Waiting::verbatim`] says which.
 ///
 /// A note the owner set aside ([`crate::set_aside`]) is not one: hearing it
 /// is work nothing wants, since its transcript is filed for no routine and
@@ -679,12 +667,6 @@ mod tests {
 			waiting_on(&pool, SMALL).await,
 			[(A.to_owned(), "reflection".to_owned(), false), (A.to_owned(), "take".to_owned(), true)]
 		);
-		let keys = Keys {
-			plain: &plain,
-			verbatim: &verbatim,
-		};
-		assert_eq!((keys.of(VERBATIM), keys.of("reflection"), keys.of("rust-round")), (&verbatim[..], &plain[..], &plain[..]));
-
 		// The plain key's hearing of the take is not the take's ending, nor
 		// the verbatim key's of the reflection the reflection's.
 		assert_eq!(keep(&pool, A, "take", &attempt(&plain, heard("so I was"))).await, Kept::Added(1));
@@ -703,25 +685,24 @@ mod tests {
 
 	/// The key is decided per note, and both lookups still search the
 	/// `(subject_id, note_id, model)` index rather than scan transcripts.
+	/// The plan is of `waiting`'s own SQL, read from this file.
 	#[tokio::test]
 	async fn the_queue_searches_transcripts_by_their_index() {
+		let source = include_str!("transcript.rs");
+		let from = source.find("r#\"SELECT n.subject_id").unwrap() + "r#\"".len();
+		let to = from + source[from..].find("\"#,").unwrap();
+		let sql = &source[from..to];
+		assert!(sql.contains("CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END") && sql.ends_with("LIMIT ?3"), "{sql}");
 		let pool = pool().await;
-		let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-			"EXPLAIN QUERY PLAN SELECT n.note_id FROM voice_note n
-			 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
-			                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-			                     AND t.model = CASE WHEN n.of_kind = ?3 THEN ?2 ELSE ?1 END
-			                     AND t.outcome IN ('heard', 'silent'))
-			   AND (SELECT COUNT(*) FROM voice_transcript t
-			        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-			          AND t.model = CASE WHEN n.of_kind = ?3 THEN ?2 ELSE ?1 END) < 3",
-		)
-		.bind("p")
-		.bind("v")
-		.bind(VERBATIM)
-		.fetch_all(&pool)
-		.await
-		.unwrap();
+		let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(&["EXPLAIN QUERY PLAN ", sql].concat())
+			.bind("p")
+			.bind(3_i64)
+			.bind(20_i64)
+			.bind("v")
+			.bind(VERBATIM)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
 		let details: Vec<&str> = plan.iter().map(|(_, _, _, detail)| detail.as_str()).collect();
 		let searched = details.iter().filter(|detail| detail.starts_with("SEARCH t USING")).count();
 		assert_eq!(searched, 2, "{details:?}");
