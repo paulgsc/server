@@ -22,7 +22,10 @@
 --
 -- Written only by `POST /api/v1/voice-notes/:id/station`
 -- (`voice_repo::conveyor::advance`), and only for a `studio` take the
--- subject holds that is no idea's answer, from the station the take is at.
+-- subject holds that is no idea's answer and was not let go of, as the next
+-- `seq` after the one the move names. Moves are ordered by `seq`, never by
+-- a phone's clock (docs/conveyor.md, "Invariants"): `moved_at` is shown,
+-- never compared.
 --
 -- What a person wrote here is the owner's own labels and a short comment on
 -- their own take, and the issue the routine filed it as; never audio and

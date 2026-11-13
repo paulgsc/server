@@ -137,6 +137,9 @@ pub struct Take {
 	/// When its newest move put it there; null in the oven, or for an
 	/// idea's answer or a take let go of.
 	pub station_at: Option<String>,
+	/// Its newest move's number, 0 in the oven, what a move of it names;
+	/// null off the conveyor.
+	pub station_seq: Option<i64>,
 }
 
 /// The library's answer.
@@ -174,7 +177,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 		          heard.outcome AS "outcome?: String", heard.text AS "text?: String",
 		          heard.language AS "language?: String", heard.model AS "model?: String",
 		          heard.heard_at AS "heard_at?: String",
-		          moved.to_station AS "to_station?: String", moved.moved_at AS "moved_at?: String",
+		          moved.to_station AS "to_station?: String", moved.moved_at AS "moved_at?: String", moved.seq AS "seq?: i64",
 		          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id) AS "answers!: bool"
 		   FROM voice_note AS note
 		   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
@@ -213,12 +216,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 		// An idea's answer and a take let go of are not on the conveyor, as
 		// `conveyor` holds them.
 		let on_conveyor = crate::delete::deletable(studio, &row.of_ref, row.answers) == Some(crate::delete::Deletable::StudioTake) && row.set_aside_at.is_none();
-		let station = match (on_conveyor, row.to_station.as_deref()) {
-			(false, _) => None,
-			(true, None) => Some(Station::InTheOven),
-			(true, Some(to)) => Some(Station::parse(to).ok_or(VoiceError::Unreadable)?),
-		};
-		let station_at = row.moved_at.filter(|_| on_conveyor);
+		let (station, station_at, station_seq) = on_the_conveyor(on_conveyor, row.to_station.as_deref(), row.moved_at, row.seq)?;
 		all.push((
 			words,
 			Take {
@@ -231,6 +229,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 				heard,
 				station,
 				station_at,
+				station_seq,
 			},
 		));
 	}
@@ -266,6 +265,21 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 		matched: Some(matched),
 		by: By::Words,
 	})
+}
+
+/// A take's station, when its newest move put it there and that move's
+/// number, each `None` off the conveyor.
+type OnConveyor = (Option<Station>, Option<String>, Option<i64>);
+
+/// A take's station, when its newest move put it there and that move's
+/// number, if it is `on` the conveyor: in the oven, at none and 0 with no
+/// move (`to` the newest move's station).
+fn on_the_conveyor(on: bool, to: Option<&str>, at: Option<String>, seq: Option<i64>) -> Result<OnConveyor, VoiceError> {
+	if !on {
+		return Ok((None, None, None));
+	}
+	let station = to.map_or(Ok(Station::InTheOven), |to| Station::parse(to).ok_or(VoiceError::Unreadable))?;
+	Ok((Some(station), at, Some(seq.unwrap_or(0))))
 }
 
 /// Where in `all` (each take, and whether a model heard words in it) the
@@ -404,10 +418,10 @@ mod tests {
 		assert_eq!(all.takes[0].heard, None, "not heard yet");
 		assert_eq!(all.takes[1].heard.as_ref().map(|heard| heard.text.as_str()), Some(""), "heard, and silent");
 		assert_eq!(all.takes[1].set_aside_at.as_deref(), Some("2026-11-02T11:00:00.000Z"), "set aside, and still listed");
-		let stations: Vec<_> = all.takes.iter().map(|take| (take.station, take.station_at.as_deref())).collect();
+		let stations: Vec<_> = all.takes.iter().map(|take| (take.station, take.station_at.as_deref(), take.station_seq)).collect();
 		assert_eq!(
 			stations,
-			[(Some(Station::InTheOven), None), (None, None), (Some(Station::InTheOven), None)],
+			[(Some(Station::InTheOven), None, Some(0)), (None, None, None), (Some(Station::InTheOven), None, Some(0))],
 			"an idea's answer is not on the conveyor"
 		);
 		sqlx::query(
@@ -421,8 +435,8 @@ mod tests {
 		.unwrap();
 		let scene = library(&mut conn, A, None).await.unwrap().takes.remove(2);
 		assert_eq!(
-			(scene.station, scene.station_at.as_deref()),
-			(Some(Station::Canned), Some("2026-11-04T00:00:00.000Z")),
+			(scene.station, scene.station_at.as_deref(), scene.station_seq),
+			(Some(Station::Canned), Some("2026-11-04T00:00:00.000Z"), Some(2)),
 			"its newest move"
 		);
 
@@ -455,9 +469,13 @@ mod tests {
 			.unwrap()
 			.takes
 			.into_iter()
-			.map(|take| (take.station, take.station_at))
+			.map(|take| (take.station, take.station_at, take.station_seq))
 			.collect();
-		assert_eq!(off, [(None, None), (None, None), (None, None)], "named as an answer, or let go of, after it moved");
+		assert_eq!(
+			off,
+			[(None, None, None), (None, None, None), (None, None, None)],
+			"named as an answer, or let go of, after it moved"
+		);
 		assert_eq!(
 			all.takes[2].heard,
 			Some(Transcript {

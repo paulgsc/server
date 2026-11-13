@@ -17,15 +17,17 @@
 //!                                      note go; home sets it aside and
 //!                                      keeps it (idempotent, the first
 //!                                      mark stands)
-//! GET /voice-notes/:id/station        → { id, station, labels, history }:
+//! GET /voice-notes/:id/station        → { id, station, seq, labels,
+//!                                      history }:
 //!                                      where the take is on the conveyor
 //!                                      and every move, oldest first
 //!                                      (paulgsc/some-ui epic #2872)
 //! POST /voice-notes/:id/station       → { change, take }: moves the take
-//!                                      from the station the body names
-//!                                      (`{ from, to, at, labels?,
-//!                                      comment?, issue? }`), else a 409
-//!                                      naming where it is
+//!                                      if the body (`{ seq, from, to, at,
+//!                                      labels?, comment?, issue? }`) names
+//!                                      its newest move and station, else a
+//!                                      409 naming them; moves are ordered
+//!                                      by number, never by a clock
 //! GET /voice-notes/conveyor?station=  → { station, takes, total }: the
 //!                                      takes at a station, newest move
 //!                                      first, at most 100
@@ -44,8 +46,9 @@
 //!                                      words hold every term, `by` saying
 //!                                      which, to a paired phone
 //!                                      (paulgsc/some-ui#2590, ST32), each
-//!                                      take saying its conveyor `station`
-//!                                      and `stationAt` (null off the conveyor)
+//!                                      take saying its conveyor `station`,
+//!                                      `stationAt` and `stationSeq` (null off
+//!                                      the conveyor)
 //! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
 //!                                      notes of each kind home keeps,
 //!                                      their bytes, how many were set

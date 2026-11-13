@@ -13,10 +13,13 @@
 //! - **Each move is a row; the newest says where the take is.** A take with
 //!   no row is in the oven. Nothing rewrites a move (the trigger aborts an
 //!   `UPDATE`); a later move is a new row.
-//! - **A move names where it starts.** [`advance`] refuses a move from a
-//!   station the take is not at, or made before the take's newest move
-//!   ([`Advanced::Stale`]), so a phone that has not seen a later move cannot
-//!   skip it, and one that sends a move late cannot undo a newer one. A retry of the take's newest move
+//! - **Moves are ordered by their number, never by a clock**
+//!   (docs/conveyor.md, "Invariants"). A move names the take's newest move
+//!   number as the mover saw it, and where the take was; [`advance`] refuses
+//!   one that names anything else ([`Advanced::Stale`]), so a phone that
+//!   has not seen a later move cannot skip it, and one that sends a move
+//!   late cannot undo a newer one. A move's `at` is shown, never compared,
+//!   and is at most [`CLOCK_ALLOWANCE`] ahead of home's clock. A retry of the take's newest move
 //!   is [`Advanced::Unchanged`] and writes nothing.
 //! - **Which moves there are** ([`ask`]): to cooking, ready for pickup or
 //!   canned from any station but itself; to picked up only from ready for
@@ -96,6 +99,7 @@ pub const MAX_COMMENT_CHARS: usize = 280;
 /// A move as asked for, checked by [`ask`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asked {
+	seq: i64,
 	from: Station,
 	to: Station,
 	at: String,
@@ -111,8 +115,10 @@ pub struct Said<'a> {
 	pub from: &'a str,
 	/// Where it goes.
 	pub to: &'a str,
-	/// When, as an RFC 3339 instant.
+	/// When, as an RFC 3339 instant: shown, never used to order moves.
 	pub at: &'a str,
+	/// The take's newest move number as the mover saw it, 0 for none.
+	pub seq: i64,
 	/// The take's labels from now on, or `None` to keep them.
 	pub labels: Option<&'a [String]>,
 	/// A short comment on the move.
@@ -138,14 +144,21 @@ fn is_issue(issue: &str) -> bool {
 	name(owner) && name(repo) && !number.is_empty() && number.len() <= 9 && number.bytes().all(|b| b.is_ascii_digit()) && !number.starts_with('0')
 }
 
-/// `said`, checked against the rules that hold whatever the take's state:
-/// or each refused field, with why, in fixed words.
+/// How far ahead of home's clock a move's `at` may be.
+pub const CLOCK_ALLOWANCE: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+
+/// `said`, checked against the rules that hold whatever the take's state,
+/// home's clock reading `now` (an RFC 3339 instant): or each refused field,
+/// with why, in fixed words.
 ///
 /// # Errors
-/// Each refused field (`from`, `to`, `at`, `labels`, `comment`, `issue`) and
-/// why.
-pub fn ask(said: &Said<'_>) -> Result<Asked, Vec<(&'static str, &'static str)>> {
+/// Each refused field (`seq`, `from`, `to`, `at`, `labels`, `comment`,
+/// `issue`) and why.
+pub fn ask(said: &Said<'_>, now: &str) -> Result<Asked, Vec<(&'static str, &'static str)>> {
 	let mut refused = Vec::new();
+	if said.seq < 0 {
+		refused.push(("seq", "not a move number"));
+	}
 	let from = Station::parse(said.from);
 	let to = Station::parse(said.to);
 	if from.is_none() {
@@ -164,8 +177,11 @@ pub fn ask(said: &Said<'_>) -> Result<Asked, Vec<(&'static str, &'static str)>> 
 		refused.push(("from", "a take picked up stays picked up"));
 	}
 	let at = instant(said.at);
-	if at.is_none() {
-		refused.push(("at", "not an RFC 3339 instant"));
+	let latest = chrono::DateTime::parse_from_rfc3339(now).ok().map(|now| now + CLOCK_ALLOWANCE);
+	match (chrono::DateTime::parse_from_rfc3339(said.at).ok(), latest) {
+		(None, _) => refused.push(("at", "not an RFC 3339 instant")),
+		(Some(at), Some(latest)) if at > latest => refused.push(("at", "ahead of home's clock")),
+		_ => {}
 	}
 	let labels = said.labels.map(|labels| labels.iter().map(|label| label.trim().to_owned()).collect::<Vec<_>>());
 	if let Some(labels) = &labels {
@@ -187,6 +203,7 @@ pub fn ask(said: &Said<'_>) -> Result<Asked, Vec<(&'static str, &'static str)>> 
 	}
 	match (from, to, at) {
 		(Some(from), Some(to), Some(at)) if refused.is_empty() => Ok(Asked {
+			seq: said.seq,
 			from,
 			to,
 			at,
@@ -227,6 +244,8 @@ pub struct TakeStation {
 	pub id: String,
 	/// Where it is: its newest move's `to`, or the oven.
 	pub station: Station,
+	/// Its newest move's number, 0 for none: what the next move names.
+	pub seq: i64,
 	/// Its labels: the newest move's that set any, or none.
 	pub labels: Vec<String>,
 	/// Every move, oldest first.
@@ -238,6 +257,7 @@ impl TakeStation {
 		Self {
 			id: id.to_owned(),
 			station: history.last().map_or(Station::InTheOven, |newest| newest.to),
+			seq: history.last().map_or(0, |newest| newest.seq),
 			labels: history.iter().rev().find_map(|step| step.labels.clone()).unwrap_or_default(),
 			history,
 		}
@@ -251,8 +271,9 @@ pub enum Advanced {
 	Moved(TakeStation),
 	/// The take's newest move is this one already: nothing written.
 	Unchanged(TakeStation),
-	/// The take is not where the move starts, but here: nothing written.
-	Stale(Station),
+	/// The mover had not seen the take's newest move: the take is at this
+	/// station, its newest move this number. Nothing written.
+	Stale(Station, i64),
 	/// The subject holds no such take: nothing written.
 	NotHeld,
 }
@@ -336,21 +357,22 @@ pub async fn advance(conn: &mut SqliteConnection, subject: &str, note_id: &str, 
 	}
 	let mut moves = history(conn, subject, note_id).await?;
 	if let Some(newest) = moves.last() {
-		let same =
-			(newest.from, newest.to, &newest.at, &newest.labels, &newest.comment, &newest.issue) == (asked.from, asked.to, &asked.at, &asked.labels, &asked.comment, &asked.issue);
+		// A retry of the move that became the newest: it named the move
+		// before it, and says the same.
+		let same = (newest.seq - 1, newest.from, newest.to, &newest.at, &newest.labels, &newest.comment, &newest.issue)
+			== (asked.seq, asked.from, asked.to, &asked.at, &asked.labels, &asked.comment, &asked.issue);
 		if same {
 			return Ok(Advanced::Unchanged(TakeStation::of(note_id, moves)));
 		}
 	}
-	let at = moves.last().map_or(Station::InTheOven, |newest| newest.to);
-	// A move older than the take's newest is one a phone sent late, after
-	// the owner moved on: taking it would undo the newer move. Both times
-	// are ISO-8601 UTC to the millisecond, so they order as text.
-	let older = moves.last().is_some_and(|newest| asked.at < newest.at);
-	if at != asked.from || older {
-		return Ok(Advanced::Stale(at));
+	// Moves are ordered by their number, never by a phone's clock: a move
+	// that does not name the take's newest was made without seeing it, a
+	// late resend included, and taking it would skip or undo that move.
+	let (at, newest) = moves.last().map_or((Station::InTheOven, 0), |newest| (newest.to, newest.seq));
+	if asked.seq != newest || asked.from != at {
+		return Ok(Advanced::Stale(at, newest));
 	}
-	let seq = moves.last().map_or(1, |newest| newest.seq + 1);
+	let seq = newest + 1;
 	let labels = asked.labels.as_ref().map(|labels| serde_json::Value::from(labels.clone()).to_string());
 	let (from, to) = (asked.from.as_str(), asked.to.as_str());
 	sqlx::query!(
@@ -396,6 +418,8 @@ pub struct AtStation {
 	pub recorded_at: String,
 	/// When it was moved here, or `None` in the oven.
 	pub moved_at: Option<String>,
+	/// Its newest move's number, 0 in the oven: what the next move names.
+	pub seq: i64,
 	/// Its labels.
 	pub labels: Vec<String>,
 	/// The issue it was filed as, once picked up.
@@ -405,9 +429,11 @@ pub struct AtStation {
 /// The most takes [`at_station`] answers.
 pub const AT_STATION: i64 = 100;
 
-/// `subject`'s takes at `station`, newest move first (in the oven, newest
-/// recorded first; the take's id breaking a tie), at most [`AT_STATION`] of
-/// them, and how many are there in all.
+/// `subject`'s takes at `station`, at most [`AT_STATION`], and how many.
+///
+/// The one home stored a move of last comes first (home's clock, never a
+/// phone's; in the oven, newest recorded first; the take's id breaking a
+/// tie).
 ///
 /// # Errors
 /// Any `sqlx` failure, or stored labels that do not read back.
@@ -433,7 +459,7 @@ pub async fn at_station(conn: &mut SqliteConnection, subject: &str, station: Sta
 	.fetch_one(&mut *conn)
 	.await?;
 	let rows = sqlx::query!(
-		r#"SELECT newest.note_id AS "note_id!", note.of_ref AS "of_ref!", note.recorded_at AS "recorded_at!", newest.moved_at AS "moved_at!", newest.issue,
+		r#"SELECT newest.note_id AS "note_id!", newest.seq AS "seq!: i64", note.of_ref AS "of_ref!", note.recorded_at AS "recorded_at!", newest.moved_at AS "moved_at!", newest.issue,
 		          (SELECT labelled.labels FROM studio_take_move labelled
 		           WHERE labelled.subject_id = newest.subject_id AND labelled.note_id = newest.note_id AND labelled.labels IS NOT NULL
 		           ORDER BY labelled.seq DESC LIMIT 1) AS "labels?: String"
@@ -444,7 +470,7 @@ pub async fn at_station(conn: &mut SqliteConnection, subject: &str, station: Sta
 		     AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
 		     AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
 		     AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
-		   ORDER BY newest.moved_at DESC, newest.note_id DESC
+		   ORDER BY newest.stored_at DESC, newest.note_id DESC
 		   LIMIT ?3"#,
 		subject,
 		name,
@@ -461,6 +487,7 @@ pub async fn at_station(conn: &mut SqliteConnection, subject: &str, station: Sta
 				of_ref: row.of_ref,
 				recorded_at: row.recorded_at,
 				moved_at: Some(row.moved_at),
+				seq: row.seq,
 				issue: row.issue,
 			})
 		})
@@ -500,6 +527,7 @@ async fn in_the_oven(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec<
 		of_ref: row.of_ref,
 		recorded_at: row.recorded_at,
 		moved_at: None,
+		seq: 0,
 		labels: Vec::new(),
 		issue: None,
 	})
@@ -550,8 +578,21 @@ mod tests {
 		note(pool, subject, id, "studio", "ep05:s1:1", recorded_at).await;
 	}
 
-	fn asked(from: &str, to: &str, at: &str) -> Asked {
-		ask(&Said { from, to, at, ..Said::default() }).unwrap()
+	/// Home's clock, for [`ask`]: after every move the tests make.
+	const CLOCK: &str = "2026-11-14T00:00:00.000Z";
+
+	fn asked(seq: i64, from: &str, to: &str, at: &str) -> Asked {
+		ask(
+			&Said {
+				from,
+				to,
+				at,
+				seq,
+				..Said::default()
+			},
+			CLOCK,
+		)
+		.unwrap()
 	}
 
 	async fn go(pool: &SqlitePool, subject: &str, id: &str, asked: &Asked) -> Advanced {
@@ -578,11 +619,11 @@ mod tests {
 	/// field.
 	#[test]
 	fn a_move_is_one_the_conveyor_has() {
-		let refused = |said: Said<'_>| ask(&said).unwrap_err().into_iter().map(|(field, _)| field).collect::<Vec<_>>();
+		let refused = |said: Said<'_>| ask(&said, CLOCK).unwrap_err().into_iter().map(|(field, _)| field).collect::<Vec<_>>();
 		let at = "2026-11-13T01:00:00-08:00";
 		let move_ = |from, to| Said { from, to, at, ..Said::default() };
-		assert_eq!(asked("in-the-oven", "cooking", at).at, NOW, "kept as UTC to the millisecond");
-		assert!(ask(&move_("canned", "ready-for-pickup")).is_ok(), "a canned take can come back");
+		assert_eq!(asked(0, "in-the-oven", "cooking", at).at, NOW, "kept as UTC to the millisecond");
+		assert!(ask(&move_("canned", "ready-for-pickup"), CLOCK).is_ok(), "a canned take can come back");
 		assert_eq!(refused(move_("cooking", "in-the-oven")), ["to"], "nothing goes back to the oven");
 		assert_eq!(refused(move_("cooking", "cooking")), ["to"]);
 		assert_eq!(refused(move_("cooking", "picked-up")), ["to", "issue"], "only from ready, with its issue");
@@ -595,11 +636,42 @@ mod tests {
 			}),
 			["at"]
 		);
+		// `at` is shown, never compared: it may be at most five minutes ahead
+		// of home's clock, so a wrong clock cannot pin a take in a list.
+		assert!(ask(
+			&Said {
+				at: "2026-11-14T00:05:00Z",
+				..move_("cooking", "canned")
+			},
+			CLOCK
+		)
+		.is_ok());
+		assert_eq!(
+			refused(Said {
+				at: "2026-11-14T00:05:01Z",
+				..move_("cooking", "canned")
+			}),
+			["at"]
+		);
+		assert_eq!(
+			refused(Said {
+				at: "2099-01-01T00:00:00Z",
+				..move_("cooking", "canned")
+			}),
+			["at"]
+		);
+		assert_eq!(
+			refused(Said {
+				seq: -1,
+				..move_("cooking", "canned")
+			}),
+			["seq"]
+		);
 		let pickup = |issue| Said {
 			issue: Some(issue),
 			..move_("ready-for-pickup", "picked-up")
 		};
-		assert!(ask(&pickup("paulgsc/some-ui#2873")).is_ok());
+		assert!(ask(&pickup("paulgsc/some-ui#2873"), CLOCK).is_ok());
 		for bad in ["some-ui#2873", "paulgsc/some-ui#", "paulgsc/some-ui#0", "paulgsc/some ui#1", "paulgsc/some-ui#12a"] {
 			assert_eq!(refused(pickup(bad)), ["issue"], "{bad}");
 		}
@@ -611,7 +683,18 @@ mod tests {
 			["issue"],
 			"only a pickup names one"
 		);
+	}
 
+	/// A move's labels and comment are bounded and printable.
+	#[test]
+	fn a_moves_labels_and_comment_are_short_and_printable() {
+		let refused = |said: Said<'_>| ask(&said, CLOCK).unwrap_err().into_iter().map(|(field, _)| field).collect::<Vec<_>>();
+		let move_ = |from, to| Said {
+			from,
+			to,
+			at: NOW,
+			..Said::default()
+		};
 		let nine: Vec<String> = (0..9).map(|n| n.to_string()).collect();
 		let long = ["x".repeat(33)];
 		let blank = [String::from("  ")];
@@ -625,11 +708,14 @@ mod tests {
 			);
 		}
 		let spaced = [String::from(" hook ")];
-		let checked = ask(&Said {
-			labels: Some(&spaced),
-			comment: Some("  "),
-			..move_("cooking", "canned")
-		})
+		let checked = ask(
+			&Said {
+				labels: Some(&spaced),
+				comment: Some("  "),
+				..move_("cooking", "canned")
+			},
+			CLOCK,
+		)
 		.unwrap();
 		assert_eq!(
 			(checked.labels, checked.comment),
@@ -665,14 +751,18 @@ mod tests {
 		assert_eq!((fresh.station, fresh.history.len()), (Station::InTheOven, 0));
 
 		let labels = [String::from("hook"), String::from("ep05")];
-		let to_cooking = ask(&Said {
-			from: "in-the-oven",
-			to: "cooking",
-			at: "2026-11-13T08:00:00Z",
-			labels: Some(&labels),
-			comment: Some("the opener?"),
-			issue: None,
-		})
+		let to_cooking = ask(
+			&Said {
+				seq: 0,
+				from: "in-the-oven",
+				to: "cooking",
+				at: "2026-11-13T08:00:00Z",
+				labels: Some(&labels),
+				comment: Some("the opener?"),
+				issue: None,
+			},
+			CLOCK,
+		)
 		.unwrap();
 		let Advanced::Moved(cooking) = go(&pool, A, "t1", &to_cooking).await else {
 			panic!("moved");
@@ -680,28 +770,35 @@ mod tests {
 		assert_eq!((cooking.station, cooking.labels.as_slice()), (Station::Cooking, &labels[..]));
 		assert_eq!(go(&pool, A, "t1", &to_cooking).await, Advanced::Unchanged(cooking.clone()), "a retry writes nothing");
 
-		let stale = asked("in-the-oven", "canned", "2026-11-13T08:01:00Z");
-		assert_eq!(go(&pool, A, "t1", &stale).await, Advanced::Stale(Station::Cooking), "a stale phone cannot skip a move");
+		let stale = asked(0, "in-the-oven", "canned", "2026-11-13T08:01:00Z");
+		assert_eq!(go(&pool, A, "t1", &stale).await, Advanced::Stale(Station::Cooking, 1), "a stale phone cannot skip a move");
 
-		let canned = asked("cooking", "canned", "2026-11-13T08:01:30Z");
+		let canned = asked(1, "cooking", "canned", "2026-11-13T08:01:30Z");
 		assert!(matches!(go(&pool, A, "t1", &canned).await, Advanced::Moved(_)));
-		assert!(matches!(go(&pool, A, "t1", &asked("canned", "cooking", "2026-11-13T08:01:45Z")).await, Advanced::Moved(_)));
+		assert!(matches!(
+			go(&pool, A, "t1", &asked(2, "canned", "cooking", "2026-11-13T08:01:45Z")).await,
+			Advanced::Moved(_)
+		));
 		assert_eq!(
 			go(&pool, A, "t1", &canned).await,
-			Advanced::Stale(Station::Cooking),
+			Advanced::Stale(Station::Cooking, 3),
 			"a move sent late cannot undo a newer one"
 		);
 		assert!(matches!(
-			go(&pool, A, "t1", &asked("cooking", "ready-for-pickup", "2026-11-13T08:02:00Z")).await,
+			go(&pool, A, "t1", &asked(3, "cooking", "ready-for-pickup", "2026-11-13T08:02:00Z")).await,
 			Advanced::Moved(_)
 		));
-		let pickup = ask(&Said {
-			from: "ready-for-pickup",
-			to: "picked-up",
-			at: "2026-11-13T08:03:00Z",
-			issue: Some("paulgsc/some-ui#3000"),
-			..Said::default()
-		})
+		let pickup = ask(
+			&Said {
+				seq: 4,
+				from: "ready-for-pickup",
+				to: "picked-up",
+				at: "2026-11-13T08:03:00Z",
+				issue: Some("paulgsc/some-ui#3000"),
+				..Said::default()
+			},
+			CLOCK,
+		)
 		.unwrap();
 		let Advanced::Moved(picked) = go(&pool, A, "t1", &pickup).await else {
 			panic!("picked up");
@@ -725,6 +822,34 @@ mod tests {
 		assert_eq!(station(&mut conn, A, "t1").await.unwrap(), Some(picked), "the read is what the move answered");
 	}
 
+	/// Moves are ordered by their number, never by a clock: a move whose time
+	/// is earlier than the take's newest still lands when it names the newest
+	/// move, and a station lists its takes by when home stored their newest
+	/// move, whatever the phone's clock said.
+	#[tokio::test]
+	async fn moves_are_ordered_by_number_never_by_a_clock() {
+		let pool = pool().await;
+		take(&pool, A, "t1", "2026-11-12T00:00:00.000Z").await;
+		take(&pool, A, "t2", "2026-11-12T00:00:00.000Z").await;
+		let mut conn = pool.acquire().await.unwrap();
+		let fast = asked(0, "in-the-oven", "cooking", "2026-11-13T23:59:00Z");
+		assert!(matches!(advance(&mut conn, A, "t1", &fast, "2026-11-13T09:00:00.000Z").await.unwrap(), Advanced::Moved(_)));
+		let slow = asked(1, "cooking", "canned", "2026-11-13T08:00:00Z");
+		let Advanced::Moved(moved) = advance(&mut conn, A, "t1", &slow, "2026-11-13T09:01:00.000Z").await.unwrap() else {
+			panic!("a fast clock before it does not wedge the take");
+		};
+		assert_eq!((moved.station, moved.seq), (Station::Canned, 2));
+
+		let early = asked(0, "in-the-oven", "canned", "2026-11-13T23:00:00Z");
+		advance(&mut conn, A, "t2", &early, "2026-11-13T09:02:00.000Z").await.unwrap();
+		drop(conn);
+		assert_eq!(
+			listed(&pool, A, Station::Canned).await,
+			(vec![String::from("t2"), String::from("t1")], 2),
+			"home stored t2's move last, though t1's says later"
+		);
+	}
+
 	/// Only the subject's own Studio take is on the conveyor: not another
 	/// kind, not an idea's answer, not another subject's take.
 	#[tokio::test]
@@ -733,7 +858,7 @@ mod tests {
 		take(&pool, B, "b-take", "then").await;
 		note(&pool, A, "reflection", "reflection", "session-1", "then").await;
 		note(&pool, A, "spoken", "studio", "idea:i1:why", "then").await;
-		let first = asked("in-the-oven", "cooking", NOW);
+		let first = asked(0, "in-the-oven", "cooking", NOW);
 		for id in ["b-take", "reflection", "spoken", "never-sent"] {
 			assert_eq!(go(&pool, A, id, &first).await, Advanced::NotHeld, "{id}");
 			let mut conn = pool.acquire().await.unwrap();
@@ -757,10 +882,10 @@ mod tests {
 			(vec![String::from("t3"), String::from("t2"), String::from("t1")], 3)
 		);
 
-		go(&pool, A, "t1", &asked("in-the-oven", "cooking", "2026-11-13T01:00:00Z")).await;
-		go(&pool, A, "t2", &asked("in-the-oven", "cooking", "2026-11-13T02:00:00Z")).await;
-		go(&pool, A, "t1", &asked("cooking", "ready-for-pickup", "2026-11-13T03:00:00Z")).await;
-		go(&pool, B, "t1", &asked("in-the-oven", "ready-for-pickup", "2026-11-13T04:00:00Z")).await;
+		go(&pool, A, "t1", &asked(0, "in-the-oven", "cooking", "2026-11-13T01:00:00Z")).await;
+		go(&pool, A, "t2", &asked(0, "in-the-oven", "cooking", "2026-11-13T02:00:00Z")).await;
+		go(&pool, A, "t1", &asked(1, "cooking", "ready-for-pickup", "2026-11-13T03:00:00Z")).await;
+		go(&pool, B, "t1", &asked(0, "in-the-oven", "ready-for-pickup", "2026-11-13T04:00:00Z")).await;
 
 		assert_eq!(listed(&pool, A, Station::InTheOven).await, (vec![String::from("t3")], 1));
 		assert_eq!(listed(&pool, A, Station::Cooking).await, (vec![String::from("t2")], 1), "t1 has moved on");
@@ -791,7 +916,7 @@ mod tests {
 		take(&pool, A, "t1", "then").await;
 		take(&pool, B, "t1", "then").await;
 		for subject in [A, B] {
-			go(&pool, subject, "t1", &asked("in-the-oven", "canned", NOW)).await;
+			go(&pool, subject, "t1", &asked(0, "in-the-oven", "canned", NOW)).await;
 		}
 		let refused = sqlx::query("UPDATE studio_take_move SET to_station = 'cooking'").execute(&pool).await;
 		assert!(refused.unwrap_err().to_string().contains("append-only"));
@@ -808,7 +933,7 @@ mod tests {
 		let pool = pool().await;
 		for id in ["answered", "let-go", "kept"] {
 			take(&pool, A, id, "then").await;
-			go(&pool, A, id, &asked("in-the-oven", "ready-for-pickup", NOW)).await;
+			go(&pool, A, id, &asked(0, "in-the-oven", "ready-for-pickup", NOW)).await;
 		}
 		take(&pool, A, "fresh-let-go", "then").await;
 		assert_eq!(listed(&pool, A, Station::ReadyForPickup).await.1, 3);
@@ -833,13 +958,17 @@ mod tests {
 
 		assert_eq!(listed(&pool, A, Station::ReadyForPickup).await, (vec![String::from("kept")], 1));
 		assert_eq!(listed(&pool, A, Station::InTheOven).await, (vec![], 0));
-		let pickup = ask(&Said {
-			from: "ready-for-pickup",
-			to: "picked-up",
-			at: NOW,
-			issue: Some("paulgsc/some-ui#1"),
-			..Said::default()
-		})
+		let pickup = ask(
+			&Said {
+				seq: 1,
+				from: "ready-for-pickup",
+				to: "picked-up",
+				at: NOW,
+				issue: Some("paulgsc/some-ui#1"),
+				..Said::default()
+			},
+			CLOCK,
+		)
 		.unwrap();
 		for id in ["answered", "let-go"] {
 			assert_eq!(go(&pool, A, id, &pickup).await, Advanced::NotHeld, "{id}");
@@ -862,7 +991,7 @@ mod tests {
 		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 3, "up recreates them");
 
 		take(&pool, A, "t1", "then").await;
-		go(&pool, A, "t1", &asked("in-the-oven", "cooking", NOW)).await;
+		go(&pool, A, "t1", &asked(0, "in-the-oven", "cooking", NOW)).await;
 		assert!(MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.is_err(), "down refuses once the record holds a row");
 		assert_eq!(tables().fetch_one(&pool).await.unwrap(), 3, "and leaves it as it was");
 	}

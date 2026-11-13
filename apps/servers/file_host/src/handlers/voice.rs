@@ -552,6 +552,7 @@ pub async fn get_conveyor(subject: SubjectId, State(db): State<SqlitePool>, Quer
 /// `POST /voice-notes/:id/station`'s body: the move.
 #[derive(Debug, Deserialize)]
 pub struct MoveBody {
+	seq: i64,
 	from: String,
 	to: String,
 	at: String,
@@ -569,55 +570,70 @@ pub struct TakeMoved {
 	pub take: TakeStation,
 }
 
-/// What a move from a station the take is not at answers with.
-const STALE: &str = "the take is not at the station this move starts from";
+/// What a move made without seeing the take's newest move answers with.
+const STALE: &str = "the take has moved since this move's mover saw it";
 
 /// `POST /voice-notes/:id/station`: moves the caller's Studio take `id`.
 ///
-/// The body is `{ from, to, at, labels?, comment?, issue? }`; the take moves
-/// along the conveyor (paulgsc/some-ui epic #2872, CONVEYOR1;
+/// The body is `{ seq, from, to, at, labels?, comment?, issue? }`; the take
+/// moves along the conveyor (paulgsc/some-ui epic #2872, CONVEYOR1;
 /// `voice_repo::conveyor::advance`), and the answer is where it is now.
 ///
-/// A move names the station it starts from, and one from a station the take
-/// is not at is a `409` whose `details.station` says where it is, so a phone
-/// that missed a later move cannot skip it. A retry of the take's newest
-/// move is a `200` with `change: "unchanged"` that writes nothing. Nothing
-/// moves back to `in-the-oven`, a take reaches `picked-up` only from
-/// `ready-for-pickup` and with its `issue`, and stays there.
+/// Moves are ordered by their number, never by a clock (docs/conveyor.md).
+/// A move names the take's newest move number as the mover saw it (`seq`, 0
+/// for a take in the oven) and where the take was; one that names anything
+/// else is a `409` whose `details.station` and `details.seq` say where the
+/// take is and its newest move, so a phone that missed a move, or resends
+/// one late, cannot skip or undo it. A retry of the move that became the
+/// take's newest is a `200` with `change: "unchanged"` that writes nothing.
+/// `at` is shown, never compared, and may be at most five minutes ahead of
+/// home's clock. Nothing moves back to `in-the-oven`, a take reaches
+/// `picked-up` only from `ready-for-pickup` and with its `issue`, and stays
+/// there.
 ///
 /// `BEGIN IMMEDIATE`, so the read that finds where the take is and the write
 /// see one snapshot.
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 422 naming `body`
-/// when it is not a move, or each refused field (`from`, `to`, `at`,
+/// when it is not a move, or each refused field (`seq`, `from`, `to`, `at`,
 /// `labels`, `comment`, `issue`), 404 for a take the caller's subject does
-/// not hold, 409 for a move from a station the take is not at, and 500 for
-/// a storage failure.
+/// not hold, 409 for a move that does not name the take's newest move and
+/// station, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_station_post", skip_all, fields(otel.kind = "server"))]
 pub async fn post_station(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<TakeMoved>, FileHostError> {
 	let Ok(body) = serde_json::from_slice::<MoveBody>(&body) else {
 		return Err(FileHostError::unprocessable_entity([("body", "not a move")]));
 	};
-	let asked = voice_repo::conveyor::ask(&MoveSaid {
-		from: &body.from,
-		to: &body.to,
-		at: &body.at,
-		labels: body.labels.as_deref(),
-		comment: body.comment.as_deref(),
-		issue: body.issue.as_deref(),
-	})
+	let now = now();
+	let asked = voice_repo::conveyor::ask(
+		&MoveSaid {
+			seq: body.seq,
+			from: &body.from,
+			to: &body.to,
+			at: &body.at,
+			labels: body.labels.as_deref(),
+			comment: body.comment.as_deref(),
+			issue: body.issue.as_deref(),
+		},
+		&now,
+	)
 	.map_err(FileHostError::unprocessable_entity)?;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let advanced = voice_repo::conveyor::advance(&mut tx, subject.as_str(), &id, &asked, &now()).await.map_err(refusal)?;
+	let advanced = voice_repo::conveyor::advance(&mut tx, subject.as_str(), &id, &asked, &now).await.map_err(refusal)?;
 	tx.commit().await?;
 	match advanced {
 		Advanced::Moved(take) => Ok(Json(TakeMoved { change: "moved", take })),
 		Advanced::Unchanged(take) => Ok(Json(TakeMoved { change: "unchanged", take })),
-		Advanced::Stale(at) => Err(FileHostError::ConflictNaming {
+		Advanced::Stale(at, seq) => Err(FileHostError::ConflictNaming {
 			reason: STALE,
-			details: std::iter::once((Cow::Borrowed("station"), vec![Cow::Borrowed(at.as_str())])).collect(),
+			details: [
+				(Cow::Borrowed("station"), vec![Cow::Borrowed(at.as_str())]),
+				(Cow::Borrowed("seq"), vec![Cow::Owned(seq.to_string())]),
+			]
+			.into_iter()
+			.collect(),
 		}),
 		Advanced::NotHeld => Err(FileHostError::NotFound),
 	}
@@ -988,14 +1004,14 @@ mod tests {
 		assert_eq!(get(&app, STATION, None).await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(
 			get(&app, STATION, Some(&phone)).await,
-			(StatusCode::OK, json!({ "id": "t1", "station": "in-the-oven", "labels": [], "history": [] }))
+			(StatusCode::OK, json!({ "id": "t1", "station": "in-the-oven", "seq": 0, "labels": [], "history": [] }))
 		);
 		assert_eq!(
 			get(&app, "/voice-notes/conveyor?station=in-the-oven", Some(&phone)).await,
 			(
 				StatusCode::OK,
 				json!({ "station": "in-the-oven", "total": 1, "takes": [
-					{ "id": "t1", "ref": "ep05:s1:1", "recordedAt": "2026-11-12T18:20:00.000Z", "movedAt": null, "labels": [], "issue": null }
+					{ "id": "t1", "ref": "ep05:s1:1", "recordedAt": "2026-11-12T18:20:00.000Z", "movedAt": null, "seq": 0, "labels": [], "issue": null }
 				] })
 			)
 		);
@@ -1005,7 +1021,7 @@ mod tests {
 			assert!(refused["error"]["details"]["station"].is_array(), "{refused}");
 		}
 
-		let first = json!({ "from": "in-the-oven", "to": "cooking", "at": "2026-11-13T01:00:00-08:00", "labels": ["hook"], "comment": "opener?" });
+		let first = json!({ "seq": 0, "from": "in-the-oven", "to": "cooking", "at": "2026-11-13T01:00:00-08:00", "labels": ["hook"], "comment": "opener?" });
 		assert_eq!(post(&app, STATION, None, &first).await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(get(&app, STATION, Some(&other)).await.0, StatusCode::NOT_FOUND, "A's take is not B's");
 		assert_eq!(post(&app, STATION, Some(&other), &first).await.0, StatusCode::NOT_FOUND);
@@ -1013,13 +1029,13 @@ mod tests {
 		let (status, refused) = post(&app, STATION, Some(&phone), &json!({ "from": "cooking" })).await;
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 		assert!(refused["error"]["details"]["body"].is_array(), "{refused}");
-		let (status, refused) = post(&app, STATION, Some(&phone), &json!({ "from": "cooking", "to": "in-the-oven", "at": "soon" })).await;
+		let (status, refused) = post(&app, STATION, Some(&phone), &json!({ "seq": 0, "from": "cooking", "to": "in-the-oven", "at": "soon" })).await;
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 		assert!(refused["error"]["details"]["to"].is_array() && refused["error"]["details"]["at"].is_array(), "{refused}");
 		assert_eq!(written().await, 0, "nothing refused was written");
 
 		let expected = json!({
-			"id": "t1", "station": "cooking", "labels": ["hook"],
+			"id": "t1", "station": "cooking", "seq": 1, "labels": ["hook"],
 			"history": [{
 				"seq": 1, "from": "in-the-oven", "to": "cooking", "at": "2026-11-13T09:00:00.000Z",
 				"labels": ["hook"], "comment": "opener?", "issue": null, "storedAt": "x"
@@ -1035,13 +1051,18 @@ mod tests {
 		assert_eq!((status, normalised(body)), (StatusCode::OK, json!({ "change": "unchanged", "take": expected })), "a retry");
 		assert_eq!(written().await, 1);
 
-		let behind = json!({ "from": "in-the-oven", "to": "canned", "at": "2026-11-13T10:00:00Z" });
+		let behind = json!({ "seq": 0, "from": "in-the-oven", "to": "canned", "at": "2026-11-13T10:00:00Z" });
 		let (status, refused) = post(&app, STATION, Some(&phone), &behind).await;
 		assert_eq!(status, StatusCode::CONFLICT);
 		assert_eq!(refused["error"]["details"]["station"], json!(["cooking"]), "{refused}");
+		assert_eq!(refused["error"]["details"]["seq"], json!(["1"]), "{refused}");
+		let ahead = json!({ "seq": 1, "from": "cooking", "to": "canned", "at": "2099-01-01T00:00:00Z" });
+		let (status, refused) = post(&app, STATION, Some(&phone), &ahead).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a clock far ahead of home's");
+		assert!(refused["error"]["details"]["at"].is_array(), "{refused}");
 		assert_eq!(written().await, 1);
 
-		let ready = json!({ "from": "cooking", "to": "ready-for-pickup", "at": "2026-11-13T10:00:00Z" });
+		let ready = json!({ "seq": 1, "from": "cooking", "to": "ready-for-pickup", "at": "2026-11-13T10:00:00Z" });
 		assert_eq!(post(&app, STATION, Some(&phone), &ready).await.0, StatusCode::OK);
 		let (status, listed) = get(&app, "/voice-notes/conveyor?station=ready-for-pickup", Some(&phone)).await;
 		assert_eq!((status, listed["total"].clone()), (StatusCode::OK, json!(1)));
@@ -1050,8 +1071,12 @@ mod tests {
 		assert_eq!(get(&app, "/voice-notes/conveyor?station=ready-for-pickup", Some(&other)).await.1["total"], json!(0));
 		let library = get(&app, "/voice-notes/takes", Some(&phone)).await.1;
 		assert_eq!(
-			(library["takes"][0]["station"].clone(), library["takes"][0]["stationAt"].clone()),
-			(json!("ready-for-pickup"), json!("2026-11-13T10:00:00.000Z")),
+			(
+				library["takes"][0]["station"].clone(),
+				library["takes"][0]["stationAt"].clone(),
+				library["takes"][0]["stationSeq"].clone()
+			),
+			(json!("ready-for-pickup"), json!("2026-11-13T10:00:00.000Z"), json!(2)),
 			"the take library says where each take is"
 		);
 	}
@@ -1370,11 +1395,11 @@ mod tests {
 			json!({
 				"takes": [
 					{ "id": "t2", "ref": "library:t2", "recordedAt": "2026-11-04T18:21:00.000Z", "storedAt": all["takes"][0]["storedAt"],
-						"size": TAKE.len(), "setAsideAt": null, "heard": null, "station": "in-the-oven", "stationAt": null },
+						"size": TAKE.len(), "setAsideAt": null, "heard": null, "station": "in-the-oven", "stationAt": null, "stationSeq": 0 },
 					{ "id": "t1", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
 						"size": TAKE.len(), "setAsideAt": null,
 						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" },
-						"station": "in-the-oven", "stationAt": null }
+						"station": "in-the-oven", "stationAt": null, "stationSeq": 0 }
 				],
 				"total": 2, "matched": null, "by": "newest"
 			}),
@@ -1456,7 +1481,7 @@ mod tests {
 		keys.sort();
 		assert_eq!(
 			keys,
-			["heard", "id", "recordedAt", "ref", "setAsideAt", "size", "station", "stationAt", "storedAt"],
+			["heard", "id", "recordedAt", "ref", "setAsideAt", "size", "station", "stationAt", "stationSeq", "storedAt"],
 			"no vector"
 		);
 		let (_, listed) = get(&app, "/voice-notes/takes", Some(&phone)).await;
