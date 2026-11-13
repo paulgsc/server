@@ -92,6 +92,8 @@ pub struct RunRecord {
 	/// The last bytes of stderr, to the logs ceiling (where a panic's
 	/// message is), with a panic header's thread id dropped.
 	pub stderr: String,
+	/// How many bytes it printed to stderr, less the thread ids dropped from
+	/// `stderr`, so the same failure counts the same.
 	pub stderr_bytes: u64,
 	/// Whether either stream was longer than its ceiling, so what is kept
 	/// is not all it printed.

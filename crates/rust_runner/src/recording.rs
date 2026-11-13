@@ -147,7 +147,14 @@ impl Recorder {
 			Err(SpawnError::Io(err)) if !crate::process::not_started(&err) => return Err(SpawnError::Unsupervised(err)),
 			Err(err) => return Err(err),
 		};
-		let stderr = without_thread_ids(&String::from_utf8_lossy(&finished.stderr.tail));
+		let printed = String::from_utf8_lossy(&finished.stderr.tail);
+		let stderr = without_thread_ids(&printed);
+		// The thread ids dropped from what is kept are dropped from the count
+		// too: an id is the program's pid, so a run whose pid has one more
+		// digit than the last one's would otherwise record a different count
+		// for the same failure (#775). Ids before a cut stream's tail are not
+		// seen, so a cut stream's count can still vary with them.
+		let dropped = printed.len() - stderr.len();
 		let (outcome, note, exit_code, signal) = match finished.ending {
 			Ending::Exited(status) if status.success() => (Outcome::Ok, None, status.code(), None),
 			Ending::Exited(status) => (Outcome::Runtime, Some(String::from("the program ") + &describe(status)), status.code(), signal_of(status)),
@@ -162,7 +169,7 @@ impl Recorder {
 			stdout: String::from_utf8_lossy(&finished.stdout.head).into_owned(),
 			stdout_bytes: finished.stdout.total,
 			stderr,
-			stderr_bytes: finished.stderr.total,
+			stderr_bytes: finished.stderr.total.saturating_sub(u64::try_from(dropped).unwrap_or(u64::MAX)),
 			cut: finished.stdout.truncated() || finished.stderr.truncated(),
 			exit_code,
 			signal,

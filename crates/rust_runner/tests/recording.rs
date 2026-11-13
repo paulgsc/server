@@ -212,6 +212,12 @@ fn output_past_the_ceiling_is_kept_to_it_and_counted() {
 	);
 }
 
+/// The two runs get different pids, and a panic header carries its thread's
+/// id, which for `main` is the pid. Neither `stderr` nor `stderr_bytes` may
+/// depend on it, or the test fails whenever the pids straddle a power of ten
+/// (#775, first blamed on `RUST_BACKTRACE`, which a run never sees: the
+/// runner clears its environment). The count is checked against the kept text
+/// so the case is held without having to place the pids.
 #[test]
 fn the_same_program_records_the_same_bytes_but_its_time() {
 	let work = tempfile::tempdir().unwrap();
@@ -223,6 +229,13 @@ fn the_same_program_records_the_same_bytes_but_its_time() {
 		recording.run.as_mut().unwrap().milliseconds = 0;
 	}
 	assert_eq!(first, second);
+	let run = run_of(&first);
+	assert!(run.stderr.starts_with("\nthread 'main' panicked at "), "{}", run.stderr);
+	assert_eq!(
+		run.stderr_bytes,
+		u64::try_from(run.stderr.len()).unwrap(),
+		"the count is of the kept text, without the thread id"
+	);
 	assert_eq!(first.key, rust_runner::recording::key(recorder.toolchain(), &source));
 	assert!(
 		recorder.toolchain().starts_with("rustc 1.") && recorder.toolchain().ends_with("; --edition 2024 -C opt-level=0"),
