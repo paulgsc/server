@@ -646,8 +646,9 @@ pub struct Heard {
 /// Oldest heard first, at most `limit`. A note heard as nothing at all, or
 /// not heard, is never one: the routine reads that from the absence. Only
 /// a note said for a kind a routine reads is one (`reflection`, `jobs`,
-/// `scene`, `studio`, and `rust-round`, which a Rust Rounds tutor reads:
-/// paulgsc/some-ui#2237, RR6), as the mailbox's `transcript` folder takes no
+/// `scene`, `studio`, `rust-round`, which a Rust Rounds tutor reads:
+/// paulgsc/some-ui#2237, RR6, and `interview`, which the interview week's
+/// routine reads: paulgsc/some-ui#2932, IW1), as the mailbox's `transcript` folder takes no
 /// other `of`: a game bite leaves home only inside the weekly bundle
 /// (paulgsc/some-ui#2074, GWB8), and a soundbite, a grammar-lens take or a
 /// `LeetType` spoken answer never does, since no routine reads them
@@ -673,7 +674,7 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		   WHERE heard.subject_id = ?1
 		     AND heard.outcome = 'heard'
 		     AND trim(heard.text) <> ''
-		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round')
+		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round', 'interview')
 		     AND (note.of_kind = 'jobs' OR NOT EXISTS (
 		       SELECT 1 FROM voice_note_set_aside AS aside
 		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
@@ -1958,10 +1959,17 @@ mod tests {
 
 	/// A Studio take's transcript (paulgsc/server#552) and a Rust Rounds
 	/// note's (paulgsc/some-ui#2237, RR6: the tutor reads what was said on
-	/// each card) are filed as any note's is, said for their kind and `ref`.
+	/// each card) and an interview take's (paulgsc/some-ui#2932, IW1: the
+	/// interview week's routine reads each answer and read) are filed as any
+	/// note's is, said for their kind and `ref`.
 	#[tokio::test]
 	async fn a_studio_take_or_a_rust_round_notes_transcript_is_filed_like_any_note() {
-		for (id, of_kind, of_ref) in [("t1", "studio", "build-journal-ep04:s3:2"), ("r1", "rust-round", "indexing-01:refine-a:n0")] {
+		for (id, of_kind, of_ref) in [
+			("t1", "studio", "build-journal-ep04:s3:2"),
+			("r1", "rust-round", "indexing-01:refine-a:n0"),
+			("i1", "interview", "2026-w47:about-you"),
+			("i2", "interview", "2026-w47:read:home-first"),
+		] {
 			let pool = pool().await;
 			sqlx::query(
 				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)

@@ -20,7 +20,13 @@ Studio take is a voice note said for `studio`, its `ref` the take
 grammar-lens take and a LeetType spoken answer are voice notes said for
 `soundbite`, `lens` and `leetype`, with nothing beside them; what the phone
 wrote beside a soundbite or an answer is `study_note_repo`'s
-(`migrations/20261101000500_add_takes_to_voice_note.up.sql`). A note the
+(`migrations/20261101000500_add_takes_to_voice_note.up.sql`). A Rust Rounds
+note is a voice note said for `rust-round`
+(`migrations/20261102000100_add_rust_round_to_voice_note.up.sql`), and an
+interview take one said for `interview`, its `ref` the week's question
+(`<week>:<question>`) or the teleprompter card it reads
+(`<week>:read:<card>`), each with nothing beside it
+(`migrations/20261113002100_add_interview_to_voice_note.up.sql`). A note the
 owner let go of on the phone is set aside, never deleted: one mark per note
 in `voice_note_set_aside`, the first standing. The transcriber's queue, the
 transcripts home files for the mailbox and the reflections index skip it,
