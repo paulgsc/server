@@ -1,4 +1,4 @@
-use app_config::schema::{Bound, RequiredWhen, Rules, When, SET};
+use app_config::schema::{Bound, Class, Classed, RequiredWhen, Rules, When, SET};
 pub use app_config::{LogArgs, NatsArgs, OtelArgs};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -67,10 +67,172 @@ pub const BOUNDS: &[Bound] = &[Bound {
 	],
 }];
 
-/// What `file_host` holds its `Config` to at start beyond what clap parses.
+/// The class of every variable `Config` declares itself (ENV-CLASS, #617);
+/// the shared groups' are `app_config::CLASSES`.
+///
+/// Only a deployment constant belongs in the environment. Every other class
+/// here is still read from it, on its way to a lever, and is listed with the
+/// issue that moves it in `infra/env-classes.json`, which `envctl check`
+/// holds to shrink (README.md, "Configuration").
+pub const CLASSES: &[Classed] = &[
+	Classed {
+		variable: "RATE_LIMIT",
+		class: Class::Policy,
+		why: "Abuse policy, changed while running: a lever (confirmed on #617, 2026-11-01).",
+	},
+	Classed {
+		variable: "TRUSTED_PROXIES",
+		class: Class::Deployment,
+		why: "Which reverse proxies front this deployment; compose sets home's (`gateway`).",
+	},
+	Classed {
+		variable: "ALLOWED_ORIGINS",
+		class: Class::Deployment,
+		why: "The origins this deployment's app is served from (kept whole, #617).",
+	},
+	Classed {
+		variable: "REDIS_URL",
+		class: Class::Deployment,
+		why: "Wiring: which Redis this deployment reaches.",
+	},
+	Classed {
+		variable: "DATABASE_URL",
+		class: Class::Deployment,
+		why: "A per-machine path to this deployment's database.",
+	},
+	Classed {
+		variable: "NUDGE_ENABLED",
+		class: Class::Policy,
+		why: "Whether the nudge sends, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+	Classed {
+		variable: "VAPID_PUBLIC_KEY",
+		class: Class::Deployment,
+		why: "Every push subscription is bound to it; the owner's own example (#613).",
+	},
+	Classed {
+		variable: "VAPID_PRIVATE_KEY",
+		class: Class::Deployment,
+		why: "A secret, paired with the public key.",
+	},
+	Classed {
+		variable: "NUDGE_TIMEZONE",
+		class: Class::Policy,
+		why: "The quiet hours' zone, which moves with the learner: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "NUDGE_QUIET_HOURS_START",
+		class: Class::Policy,
+		why: "When nudges stop: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "NUDGE_QUIET_HOURS_END",
+		class: Class::Policy,
+		why: "When nudges resume: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "RECOMMENDER_USES_OUTCOMES",
+		class: Class::Policy,
+		why: "A decision made on real data, not a deploy: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "APP_BASE_URL",
+		class: Class::Deployment,
+		why: "This deployment's app URL, for the nudge's deep link.",
+	},
+	Classed {
+		variable: "AUTH_ENABLED",
+		class: Class::Deployment,
+		why: "Whether this deployment has sign-in at all; as a lever it would lock out the operator who sets it.",
+	},
+	Classed {
+		variable: "WEBAUTHN_RP_ID",
+		class: Class::Deployment,
+		why: "The domain every passkey is bound to; the owner's own example (#613).",
+	},
+	Classed {
+		variable: "WEBAUTHN_ORIGINS",
+		class: Class::Deployment,
+		why: "Where this deployment's passkey ceremonies come from.",
+	},
+	Classed {
+		variable: "AUTH_SESSION_DAYS",
+		class: Class::Policy,
+		why: "How long a sign-in lasts: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "AUTH_OPEN_SIGNUP",
+		class: Class::Deployment,
+		why: "The deployment's ownership model, not a dial (kept whole, #617).",
+	},
+	Classed {
+		variable: "AUTH_NEW_ACCOUNTS_PER_DAY",
+		class: Class::Policy,
+		why: "Sign-up policy: a lever, 0 pausing sign-up (confirmed on #617).",
+	},
+	Classed {
+		variable: "OPERATOR_SUBJECTS",
+		class: Class::Policy,
+		why: "Who operates is a role held by a subject, granted from the console (confirmed on #617).",
+	},
+	Classed {
+		variable: "MAILBOX_ENABLED",
+		class: Class::Policy,
+		why: "Whether home reads the mailbox, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+	Classed {
+		variable: "MAILBOX_URL",
+		class: Class::Deployment,
+		why: "The address of this deployment's mailbox Worker.",
+	},
+	Classed {
+		variable: "MAILBOX_TOKEN",
+		class: Class::Deployment,
+		why: "A secret.",
+	},
+	Classed {
+		variable: "MAILBOX_SUBJECT",
+		class: Class::Deployment,
+		why: "Whose copy the mailbox's files are kept as, on an open deployment (confirmed on #617).",
+	},
+	Classed {
+		variable: "ROUTINE_SCHEDULE",
+		class: Class::Policy,
+		why: "Mirrors the routines' own schedules, which change without a release: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "MAILBOX_ARCHIVE_TOKEN",
+		class: Class::Deployment,
+		why: "A secret.",
+	},
+	Classed {
+		variable: "MAILBOX_ARCHIVE_DAYS",
+		class: Class::Policy,
+		why: "How long a file stays live: a lever, clamped to the mailbox's consts (confirmed on #617).",
+	},
+	Classed {
+		variable: "FCM_SERVICE_ACCOUNT_FILE",
+		class: Class::Deployment,
+		why: "A credential for this deployment's Firebase project.",
+	},
+	Classed {
+		variable: "TRANSCRIBE_ENABLED",
+		class: Class::Policy,
+		why: "Whether home transcribes, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+	Classed {
+		variable: "MEANING_ENABLED",
+		class: Class::Policy,
+		why: "Whether takes are indexed by meaning, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+];
+
+/// What `file_host` holds its `Config` to at start beyond what clap parses,
+/// and each variable's class.
 pub const RULES: Rules = Rules {
 	required_when: REQUIRED_WHEN,
 	bounds: BOUNDS,
+	classes: CLASSES,
 };
 
 /// The routines' own schedules (paulgsc/some-ui `packages/job-desk/ROUTINE.md`

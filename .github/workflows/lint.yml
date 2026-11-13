@@ -116,8 +116,21 @@ jobs:
       # only its own decrypted file; every deploy/ file is one sops wrote and
       # names only what its binary or compose reads; every binary reading
       # app-config has its schema; no tracked file is a plain-text env file.
+      # ENV-CLASS (#617): every variable is a deployment constant, or is
+      # listed in infra/env-classes.json with the issue that moves it out;
+      # that file may only shrink against the base branch's copy.
       - name: Every deployment file and service conforms, by name only
-        run: target/debug/envctl check
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          args=()
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          if git show FETCH_HEAD:infra/env-classes.json > base_classes.json 2>/dev/null; then
+            args+=(--base-classes base_classes.json)
+          else
+            echo "the base branch has no infra/env-classes.json yet; skipping the shrink-only comparison"
+          fi
+          target/debug/envctl check "${args[@]}"
 
   # The NixOS modules (#408) evaluated against the flake's own nixpkgs, no
   # build: nix/modules/test.nix throws unless a bare module names every gap,

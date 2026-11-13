@@ -24,12 +24,26 @@ const SCHEMA: &str = r#"{
   "binary": "probe",
   "about": "A probe.",
   "variables": [
-    {"name": "RP_ID", "group": null, "required": true, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "The relying party id.", "required_when": null, "bounds": null},
-    {"name": "KEY", "group": null, "required": true, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": true, "help": "A key.", "required_when": null, "bounds": null},
-    {"name": "ON", "group": null, "required": false, "default": "false", "kind": "bool", "values": [], "delimiter": null, "secret": false, "help": "A switch.", "required_when": null, "bounds": null},
-    {"name": "WIRE", "group": null, "required": false, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "Compose's own.", "required_when": null, "bounds": null},
-    {"name": "EXTRA", "group": null, "required": false, "default": "d", "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "Not in the container.", "required_when": null, "bounds": null}
+    {"name": "RP_ID", "group": null, "required": true, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "The relying party id.", "required_when": null, "bounds": null, "class": "deployment", "why": "A fact."},
+    {"name": "KEY", "group": null, "required": true, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": true, "help": "A key.", "required_when": null, "bounds": null, "class": "deployment", "why": "A fact."},
+    {"name": "ON", "group": null, "required": false, "default": "false", "kind": "bool", "values": [], "delimiter": null, "secret": false, "help": "A switch.", "required_when": null, "bounds": null, "class": "deployment", "why": "A fact."},
+    {"name": "WIRE", "group": null, "required": false, "default": null, "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "Compose's own.", "required_when": null, "bounds": null, "class": "deployment", "why": "A fact."},
+    {"name": "EXTRA", "group": null, "required": false, "default": "d", "kind": "string", "values": [], "delimiter": null, "secret": false, "help": "Not in the container.", "required_when": null, "bounds": null, "class": "deployment", "why": "A fact."}
   ]
+}"#;
+
+/// The fixture's compose variables' classes, and `ON` a confirmed deployment
+/// switch (ENV-CLASS).
+const CLASSES: &str = r#"{
+  "compose": [
+    {"variable": "GRAFANA_PASSWORD", "class": "deployment", "why": "A secret."},
+    {"variable": "STRAY", "class": "deployment", "why": "A fact."},
+    {"variable": "ONLY_ENV", "class": "deployment", "why": "A fact."},
+    {"variable": "STORAGE", "class": "deployment", "why": "A path."},
+    {"variable": "PORT_HOST", "class": "deployment", "why": "A port."}
+  ],
+  "moving": [],
+  "switches": [{"app": "probe", "variable": "ON", "issue": "o/r#1"}]
 }"#;
 
 /// What `docker compose config --no-interpolate` prints for the checkout.
@@ -129,6 +143,7 @@ impl Fixture {
 		fs::create_dir_all(repo.join("infra/env"))?;
 		fs::create_dir_all(&bin)?;
 		fs::write(repo.join("infra/env/probe.json"), SCHEMA)?;
+		fs::write(repo.join("infra/env-classes.json"), CLASSES)?;
 		fs::write(
 			repo.join("docker-compose.yml"),
 			"services:\n  probe:\n    env_file:\n      - path: ${ENV_DIR:?make sets ENV_DIR}/probe.env\n    environment:\n      - GF_PASSWORD=${GRAFANA_PASSWORD:?set it}\n      - FROM_SHELL=${STRAY:-none}\n      - ONLY=${ONLY_ENV:-a}\n    volumes:\n      - ${STORAGE:?set STORAGE}:/app/dbs\n    ports:\n      - 127.0.0.1:${PORT_HOST:-1000}:3000\n",
@@ -368,6 +383,35 @@ fn check_holds_deploy_to_encrypted_files_without_a_key() {
 		assert!(shown.contains(expected), "{expected}:\n{shown}");
 	}
 	assert!(!fixture.log().contains("decrypt"), "check holds no key, so it decrypts nothing");
+}
+
+/// ENV-CLASS (#617): a policy variable fails `check`, and so does an
+/// exception the base branch's copy lacks.
+#[test]
+fn check_holds_every_variable_to_its_class_and_the_exceptions_to_shrink() {
+	let fixture = Fixture::new("classes").unwrap();
+	imported(&fixture).unwrap();
+	let base = fixture.repo.join("base-classes.json");
+	fs::write(&base, CLASSES.replace(r#"{"app": "probe", "variable": "ON", "issue": "o/r#1"}"#, "")).unwrap();
+	let grown = fixture.envctl(&["check", "--base-classes", base.to_str().unwrap()]).output().unwrap();
+	assert!(!grown.status.success());
+	assert!(
+		printed(&grown).contains("infra/env-classes.json lists probe ON, which the base branch's does not"),
+		"{}",
+		printed(&grown)
+	);
+	fs::write(
+		fixture.repo.join("infra/env/probe.json"),
+		SCHEMA.replacen(r#""class": "deployment", "why": "A fact."}"#, r#""class": "policy", "why": "A lever."}"#, 1),
+	)
+	.unwrap();
+	let policy = fixture.envctl(&["check"]).output().unwrap();
+	assert!(!policy.status.success());
+	assert!(
+		printed(&policy).contains("probe RP_ID is classed policy, and the environment holds deployment constants only"),
+		"{}",
+		printed(&policy)
+	);
 }
 
 #[test]

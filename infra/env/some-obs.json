@@ -13,7 +13,9 @@
       "secret": false,
       "help": "The NATS server to connect to.\n\nRequired: no address is right on every host (#617). Compose's services set theirs; `make dev` takes its role's.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Wiring: which NATS this deployment reaches; compose sets its own, dev its own."
     },
     {
       "name": "OBS_HOST",
@@ -26,7 +28,9 @@
       "secret": false,
       "help": "obs-websocket's host",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "The OBS machine's address on this deployment's network."
     },
     {
       "name": "OBS_PORT",
@@ -39,7 +43,9 @@
       "secret": false,
       "help": "obs-websocket's port",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "Part of OBS's address: an OBS install can change it."
     },
     {
       "name": "OBS_PASSWORD",
@@ -52,7 +58,9 @@
       "secret": true,
       "help": "obs-websocket's server password. Empty means OBS has authentication off",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A secret."
     },
     {
       "name": "RUST_LOG",
@@ -65,7 +73,9 @@
       "secret": false,
       "help": "`tracing` filter directives, e.g. `info,async_nats=warn`.\n\nA filter that does not parse stops the binary at start.",
       "required_when": null,
-      "bounds": null
+      "bounds": null,
+      "class": "deployment",
+      "why": "A per-role log level (dev runs at debug without a rebuild); confirmed on #617, 2026-11-01."
     }
   ]
 }

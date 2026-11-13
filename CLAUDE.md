@@ -169,7 +169,10 @@ takes of it (a new service, a cap, a worker loop), it is `docs/home-compute.md`,
 one batch job at a time, interactive work first, no clock; every service has a class, and its
 class sets who is killed first. For which images home runs and how they move
 (compose `image:` lines, `deploy/home/release.json`, the image publish and release workflows), it
-is `docs/release.md`, "Invariants": one source, reconciled rather than carried, by digest. Those sections are the source of truth;
+is `docs/release.md`, "Invariants": one source, reconciled rather than carried, by digest. For any
+environment variable a binary or compose reads (a new one, or a class change) it is README.md,
+"Configuration", ENV-CLASS: env holds deployment constants only, and a switch is policy, not env
+(`infra/env-classes.json` only shrinks). Those sections are the source of truth;
 this list is only a pointer to them. If the change
 would break one, **stop and raise it** on the issue or PR. Name the invariant and the shape that
 breaks it, and wait for a decision instead of building it or patching around it. Two things

@@ -1,6 +1,9 @@
 //! Everything `some-obs` reads from its environment (#484).
 
-use app_config::{LogArgs, NatsArgs};
+use app_config::{
+	schema::{Class, Classed, Rules},
+	LogArgs, NatsArgs,
+};
 use clap::Parser;
 use obs_websocket::ObsConfig;
 use std::time::Duration;
@@ -15,6 +18,29 @@ const _: () = assert!(!HEALTH_CHECK_INTERVAL.is_zero());
 
 /// Time the service's tasks get to finish once it is told to stop.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Each variable `Config` declares itself, with its class (ENV-CLASS, #617).
+pub const RULES: Rules = Rules {
+	required_when: &[],
+	bounds: &[],
+	classes: &[
+		Classed {
+			variable: "OBS_HOST",
+			class: Class::Deployment,
+			why: "The OBS machine's address on this deployment's network.",
+		},
+		Classed {
+			variable: "OBS_PORT",
+			class: Class::Deployment,
+			why: "Part of OBS's address: an OBS install can change it.",
+		},
+		Classed {
+			variable: "OBS_PASSWORD",
+			class: Class::Deployment,
+			why: "A secret.",
+		},
+	],
+};
 
 /// The OBS NATS service's whole configuration.
 ///
@@ -95,7 +121,7 @@ mod tests {
 	#[test]
 	fn the_checked_in_schema_is_this_config() {
 		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra/env/some-obs.json");
-		app_config::schema::assert_checked_in("some-obs", &Config::command(), &app_config::schema::NO_RULES, &path);
+		app_config::schema::assert_checked_in("some-obs", &Config::command(), &super::RULES, &path);
 		app_config::schema::assert_groups_hold_only_their_own(&Config::command());
 	}
 
