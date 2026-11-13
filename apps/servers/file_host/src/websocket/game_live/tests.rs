@@ -159,14 +159,18 @@ impl Home {
 		Self::following(at, true).await
 	}
 
-	/// A home whose game feed is on (`following`) or off.
+	/// A home whose game feed is on (`following`, the default) or paused by
+	/// the operator's switch.
 	async fn following(at: DateTime<Utc>, following: bool) -> Self {
 		let db = pool().await;
+		if !following {
+			pause(&db).await;
+		}
 		let auth = AuthContext::for_tests(db.clone(), 100);
 		let (headers, _) = paired(&auth, &db).await;
 		let clock = Arc::new(Mutex::new(at));
 		let read = clock.clone();
-		let live = GameLive::with_clock(following, ConnectionGuard::new(), CancellationToken::new(), Box::new(move || *read.lock().unwrap()));
+		let live = GameLive::with_clock(ConnectionGuard::new(), CancellationToken::new(), Box::new(move || *read.lock().unwrap()));
 		Self {
 			db,
 			live,
@@ -252,6 +256,44 @@ async fn a_seq_never_falls_below_what_the_phone_saw() {
 	let offer = phone.hear_json().await;
 	assert_eq!(offer["seq"], json!(ahead + 1), "a home whose clock went back still numbers past the phone");
 	assert_eq!((offer["games"].clone(), offer["offer"].clone()), (json!([]), Value::Null), "no week kept yet");
+}
+
+/// The operator pauses the game feed (`settings::GameFeed`).
+async fn pause(db: &SqlitePool) {
+	admin_setting_repo::append(
+		&mut db.acquire().await.unwrap(),
+		"game-feed",
+		r#"{"following":false}"#,
+		admin_setting_repo::SetBy::Owner,
+		"2026-10-23T00:00:00Z",
+	)
+	.await
+	.unwrap();
+}
+
+#[tokio::test]
+/// Each offer reads the switch: a paused worker tells no socket, and the
+/// socket's own next `TICK` sends the pause; `fed` stands in for that tick
+/// here, so the test does not wait 5 s.
+async fn an_open_socket_reads_the_pause_at_its_next_offer() {
+	let (early, early_at) = live_after(12);
+	let home = Home::new(early_at + TimeDelta::seconds(5)).await;
+	keep(&home.db, Fetched::Scoreboard, &board(), early_at - TimeDelta::minutes(30)).await;
+	keep(&home.db, Fetched::Summary(GAME), &early, early_at + TimeDelta::seconds(5)).await;
+	let mut phone = Phone::open(&home.live, &home.db, &home.session);
+	phone.say(&hello(None));
+	let first = phone.hear_json().await;
+	assert_eq!(first["following"], json!(true), "on by default, with nothing set");
+	assert!(!first["games"].as_array().unwrap().is_empty());
+
+	pause(&home.db).await;
+	home.live.fed();
+	let paused = phone.hear_json().await;
+	assert_eq!(
+		(paused["following"].clone(), paused["games"].clone(), paused["offer"].clone()),
+		(json!(false), json!([]), Value::Null),
+		"paused: the phone is told home follows no game"
+	);
 }
 
 #[tokio::test]

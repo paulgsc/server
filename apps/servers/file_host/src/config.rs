@@ -1,4 +1,4 @@
-use app_config::schema::{Bound, RequiredWhen, Rules, When, SET};
+use app_config::schema::{Bound, Class, Classed, RequiredWhen, Rules, When, SET};
 pub use app_config::{LogArgs, NatsArgs, OtelArgs};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -67,10 +67,172 @@ pub const BOUNDS: &[Bound] = &[Bound {
 	],
 }];
 
-/// What `file_host` holds its `Config` to at start beyond what clap parses.
+/// The class of every variable `Config` declares itself (ENV-CLASS, #617);
+/// the shared groups' are `app_config::CLASSES`.
+///
+/// Only a deployment constant belongs in the environment. Every other class
+/// here is still read from it, on its way to a lever, and is listed with the
+/// issue that moves it in `infra/env-classes.json`, which `envctl check`
+/// holds to shrink (README.md, "Configuration").
+pub const CLASSES: &[Classed] = &[
+	Classed {
+		variable: "RATE_LIMIT",
+		class: Class::Policy,
+		why: "Abuse policy, changed while running: a lever (confirmed on #617, 2026-11-01).",
+	},
+	Classed {
+		variable: "TRUSTED_PROXIES",
+		class: Class::Deployment,
+		why: "Which reverse proxies front this deployment; compose sets home's (`gateway`).",
+	},
+	Classed {
+		variable: "ALLOWED_ORIGINS",
+		class: Class::Deployment,
+		why: "The origins this deployment's app is served from (kept whole, #617).",
+	},
+	Classed {
+		variable: "REDIS_URL",
+		class: Class::Deployment,
+		why: "Wiring: which Redis this deployment reaches.",
+	},
+	Classed {
+		variable: "DATABASE_URL",
+		class: Class::Deployment,
+		why: "A per-machine path to this deployment's database.",
+	},
+	Classed {
+		variable: "NUDGE_ENABLED",
+		class: Class::Policy,
+		why: "Whether the nudge sends, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+	Classed {
+		variable: "VAPID_PUBLIC_KEY",
+		class: Class::Deployment,
+		why: "Every push subscription is bound to it; the owner's own example (#613).",
+	},
+	Classed {
+		variable: "VAPID_PRIVATE_KEY",
+		class: Class::Deployment,
+		why: "A secret, paired with the public key.",
+	},
+	Classed {
+		variable: "NUDGE_TIMEZONE",
+		class: Class::Policy,
+		why: "The quiet hours' zone, which moves with the learner: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "NUDGE_QUIET_HOURS_START",
+		class: Class::Policy,
+		why: "When nudges stop: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "NUDGE_QUIET_HOURS_END",
+		class: Class::Policy,
+		why: "When nudges resume: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "RECOMMENDER_USES_OUTCOMES",
+		class: Class::Policy,
+		why: "A decision made on real data, not a deploy: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "APP_BASE_URL",
+		class: Class::Deployment,
+		why: "This deployment's app URL, for the nudge's deep link.",
+	},
+	Classed {
+		variable: "AUTH_ENABLED",
+		class: Class::Deployment,
+		why: "Whether this deployment has sign-in at all; as a lever it would lock out the operator who sets it.",
+	},
+	Classed {
+		variable: "WEBAUTHN_RP_ID",
+		class: Class::Deployment,
+		why: "The domain every passkey is bound to; the owner's own example (#613).",
+	},
+	Classed {
+		variable: "WEBAUTHN_ORIGINS",
+		class: Class::Deployment,
+		why: "Where this deployment's passkey ceremonies come from.",
+	},
+	Classed {
+		variable: "AUTH_SESSION_DAYS",
+		class: Class::Policy,
+		why: "How long a sign-in lasts: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "AUTH_OPEN_SIGNUP",
+		class: Class::Deployment,
+		why: "The deployment's ownership model, not a dial (kept whole, #617).",
+	},
+	Classed {
+		variable: "AUTH_NEW_ACCOUNTS_PER_DAY",
+		class: Class::Policy,
+		why: "Sign-up policy: a lever, 0 pausing sign-up (confirmed on #617).",
+	},
+	Classed {
+		variable: "OPERATOR_SUBJECTS",
+		class: Class::Policy,
+		why: "Who operates is a role held by a subject, granted from the console (confirmed on #617).",
+	},
+	Classed {
+		variable: "MAILBOX_ENABLED",
+		class: Class::Policy,
+		why: "Whether home reads the mailbox, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+	Classed {
+		variable: "MAILBOX_URL",
+		class: Class::Deployment,
+		why: "The address of this deployment's mailbox Worker.",
+	},
+	Classed {
+		variable: "MAILBOX_TOKEN",
+		class: Class::Deployment,
+		why: "A secret.",
+	},
+	Classed {
+		variable: "MAILBOX_SUBJECT",
+		class: Class::Deployment,
+		why: "Whose copy the mailbox's files are kept as, on an open deployment (confirmed on #617).",
+	},
+	Classed {
+		variable: "ROUTINE_SCHEDULE",
+		class: Class::Policy,
+		why: "Mirrors the routines' own schedules, which change without a release: a lever (confirmed on #617).",
+	},
+	Classed {
+		variable: "MAILBOX_ARCHIVE_TOKEN",
+		class: Class::Deployment,
+		why: "A secret.",
+	},
+	Classed {
+		variable: "MAILBOX_ARCHIVE_DAYS",
+		class: Class::Policy,
+		why: "How long a file stays live: a lever, clamped to the mailbox's consts (confirmed on #617).",
+	},
+	Classed {
+		variable: "FCM_SERVICE_ACCOUNT_FILE",
+		class: Class::Deployment,
+		why: "A credential for this deployment's Firebase project.",
+	},
+	Classed {
+		variable: "TRANSCRIBE_ENABLED",
+		class: Class::Policy,
+		why: "Whether home transcribes, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+	Classed {
+		variable: "MEANING_ENABLED",
+		class: Class::Policy,
+		why: "Whether takes are indexed by meaning, paused or resumed while running: a switch (proposed on #617, 2026-11-13).",
+	},
+];
+
+/// What `file_host` holds its `Config` to at start beyond what clap parses,
+/// and each variable's class.
 pub const RULES: Rules = Rules {
 	required_when: REQUIRED_WHEN,
 	bounds: BOUNDS,
+	classes: CLASSES,
 };
 
 /// The routines' own schedules (paulgsc/some-ui `packages/job-desk/ROUTINE.md`
@@ -375,16 +537,6 @@ pub struct Config {
 	#[arg(long, env = "MEANING_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "Take library meaning index")]
 	pub meaning_enabled: bool,
 
-	// ── The NFL game feed ─────────────────────────────────────────────────────
-	//
-	// See `game_feed`. Home follows the games of the week through ESPN's public
-	// site API and keeps every response and the play log read from them. Off
-	// unless `GAME_FEED_ENABLED`; on, the server refuses to start with a cadence
-	// out of range.
-	/// Whether home follows the games of the week at all.
-	#[arg(long, env = "GAME_FEED_ENABLED", default_value_t = false, action = clap::ArgAction::Set, help_heading = "NFL game feed")]
-	pub game_feed_enabled: bool,
-
 	// ── Shared with the other binaries (`app_config`) ─────────────────────────
 	/// `NATS_URL`. The container sets it (`infra/compose/file_host.yml`).
 	#[command(flatten)]
@@ -441,7 +593,9 @@ fn parse_timezone(name: &str) -> Result<String, Box<dyn std::error::Error + Send
 /// The retired transcriber's `WHISPER_*` three (#407), and
 /// `OTEL_SERVICE_NAME`, which the binary's own name replaced (#617), and
 /// `RUST_ROUNDS_ENABLED`, which the operator's recording switch replaced
-/// (`settings::RustRounds`, paulgsc/some-ui#2357). Startup
+/// (`settings::RustRounds`, paulgsc/some-ui#2357), and `GAME_FEED_ENABLED`,
+/// which the operator's following switch replaced (`settings::GameFeed`).
+/// Startup
 /// warns with their names, so a stale deployment file is never silent
 /// (#476).
 ///
@@ -455,10 +609,17 @@ pub fn retired_variables_set() -> Vec<&'static str> {
 
 /// [`retired_variables_set`] over `var`, which reads one variable.
 fn retired_variables_in(var: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
-	["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME", "RUST_ROUNDS_ENABLED"]
-		.into_iter()
-		.filter(|name| var(name).is_some())
-		.collect()
+	[
+		"WHISPER_MODELS_PATH",
+		"WHISPER_MODEL",
+		"WHISPER_THREADS",
+		"OTEL_SERVICE_NAME",
+		"RUST_ROUNDS_ENABLED",
+		"GAME_FEED_ENABLED",
+	]
+	.into_iter()
+	.filter(|name| var(name).is_some())
+	.collect()
 }
 
 #[cfg(test)]
@@ -471,7 +632,7 @@ mod tests {
 		Config::command().debug_assert();
 	}
 
-	const REFUSED: [(&str, &str); 18] = [
+	const REFUSED: [(&str, &str); 17] = [
 		("RUST_LOG", "info,=[bad"),
 		("RATE_LIMIT", "-1"),
 		("RATE_LIMIT", "0"),
@@ -488,7 +649,6 @@ mod tests {
 		("MAILBOX_ARCHIVE_DAYS", "90d"),
 		("TRANSCRIBE_ENABLED", "on"),
 		("MEANING_ENABLED", "on"),
-		("GAME_FEED_ENABLED", "on"),
 		("NUDGE_TIMEZONE", "America/Denvr"),
 	];
 	// The URLs, keys and paths are checked by what uses them, which refuses
@@ -534,13 +694,20 @@ mod tests {
 		let stale = |name: &str| {
 			matches!(
 				name,
-				"WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" | "OTEL_SERVICE_NAME" | "RUST_ROUNDS_ENABLED"
+				"WHISPER_MODELS_PATH" | "WHISPER_MODEL" | "WHISPER_THREADS" | "OTEL_SERVICE_NAME" | "RUST_ROUNDS_ENABLED" | "GAME_FEED_ENABLED"
 			)
 			.then(String::new)
 		};
 		assert_eq!(
 			retired_variables_in(stale),
-			["WHISPER_MODELS_PATH", "WHISPER_MODEL", "WHISPER_THREADS", "OTEL_SERVICE_NAME", "RUST_ROUNDS_ENABLED"]
+			[
+				"WHISPER_MODELS_PATH",
+				"WHISPER_MODEL",
+				"WHISPER_THREADS",
+				"OTEL_SERVICE_NAME",
+				"RUST_ROUNDS_ENABLED",
+				"GAME_FEED_ENABLED"
+			]
 		);
 	}
 

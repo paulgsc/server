@@ -133,11 +133,6 @@
       default = null;
       description = "Whether the take library is searched by meaning. On, the server refuses to start unless the model loads and `TRANSCRIBE_ENABLED` is on. Get the model with `nix develop .#whisper -c whisper fetch`\n\nUnset (null), the binary's default: `false`.";
     };
-    GAME_FEED_ENABLED = lib.mkOption {
-      type = lib.types.nullOr lib.types.bool;
-      default = null;
-      description = "Whether home follows the games of the week at all\n\nUnset (null), the binary's default: `false`.";
-    };
     NATS_URL = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -180,7 +175,6 @@
     MAILBOX_ARCHIVE_DAYS = "90";
     TRANSCRIBE_ENABLED = "false";
     MEANING_ENABLED = "false";
-    GAME_FEED_ENABLED = "false";
     ENVIRONMENT = "development";
     RUST_LOG = "info,async_nats=warn";
   };
