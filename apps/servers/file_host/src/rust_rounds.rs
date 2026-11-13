@@ -192,6 +192,8 @@ fn spawn(state: &AppState, context: &RustRoundsContext) {
 		let mut ticker = tokio::time::interval(every);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut seen = Seen::default();
+		let mut guard = crate::contention::Guard::host();
+		crate::metrics::contention::record("rust_rounds", crate::metrics::contention::Counts::default());
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
@@ -214,7 +216,7 @@ fn spawn(state: &AppState, context: &RustRoundsContext) {
 					if !lever.recording {
 						continue;
 					}
-					let result = pass::run_once(&db, &runner, deadline, pass::Waits::SERVER, &cancel, &crate::mailbox::pass::now).await;
+					let result = pass::run_once(&db, &runner, deadline, pass::Waits::SERVER, &mut guard, &cancel, &crate::mailbox::pass::now).await;
 					if let Some(change) = result.as_ref().ok().and_then(|done| seen.runner(done.stopped)) {
 						say(change);
 					}
@@ -240,8 +242,27 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 		error!(error = "storage", "Rust Rounds pass failed");
 		return;
 	};
+	let guard = crate::metrics::contention::Counts {
+		excused: done.excused,
+		judged_anyway: done.judged_anyway,
+		marked: done.marked,
+		unreadable: done.unreadable,
+	};
+	crate::metrics::contention::record("rust_rounds", guard);
+	if done.judged_anyway > 0 {
+		warn!(
+			judged_anyway = done.judged_anyway,
+			"Rust Rounds kept a verdict taken on a contended box: its program was excused as many times in a row as the guard allows"
+		);
+	}
 	match done.stopped {
 		Some(pass::Stop::NoRunner) => {}
+		Some(pass::Stop::Contended) => info!(
+			asked = done.asked,
+			recorded = done.recorded,
+			excused = done.excused,
+			"Rust Rounds pass gave way: a verdict was taken while the box was contended, so it is nobody's and asked again next pass"
+		),
 		Some(stop) if done.failed() => {
 			crate::metrics::instruments::record_error("rust_rounds", stop.kind());
 			error!(

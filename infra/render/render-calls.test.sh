@@ -138,8 +138,11 @@ lane_says() {
 # in one child that lives as long as the hold, so a case acts on it half
 # way without racing it.
 # $FAKE/fail-after-pause makes it fail once after its steps. It keeps
-# its pid in $FAKE/pid, its child's in $FAKE/child, and the job it saw in
-# the lane's folder in $FAKE/seen-job.
+# its pid in $FAKE/pid, its latest child's in $FAKE/child, the held child's
+# in $FAKE/held-child once it holds, and the job it saw in the lane's folder
+# in $FAKE/seen-job. Each pid file is written whole (`keep_pid`): a case
+# reads one while the fake runs, and a read between truncate and write saw
+# no pid at all (#825).
 # Both recorders keep the arguments they were given, one to a line, in
 # $FAKE/args-<script> (call, preview), and stamp each run's start and end in
 # $FAKE/times (`start <s>`, `end <s>`). While $FAKE/too-large exists, each
@@ -263,7 +266,12 @@ done
 week=$(basename "$week_file" .json)
 echo "$week" >> "$fake/runs"
 echo "recording $week: no cache warning here"
-echo $$ > "$fake/pid"
+# A pid file is written beside and moved into place, so a case reading it
+# meanwhile sees the old pid or the new, never an empty file (#825).
+keep_pid() {
+  echo "$2" > "$fake/.$1" && mv "$fake/.$1" "$fake/$1"
+}
+keep_pid pid $$
 cat "$(dirname "$out")/call-worker/job" > "$fake/seen-job" 2> /dev/null
 dir=$out/$week
 mkdir -p "$dir/steps"
@@ -298,11 +306,14 @@ if [ -e "$fake/steps" ]; then
           sleep 0.05
         done
       ) &
-      echo $! > "$fake/child"
+      keep_pid child $!
+      # The child a case acts on, named once it exists: after a step is
+      # made, $FAKE/child still names that step's ended child for a moment.
+      keep_pid held-child $!
       wait $!
     fi
     sleep "$(cat "$fake/slow" 2> /dev/null || echo 0)" &
-    echo $! > "$fake/child"
+    keep_pid child $!
     wait $!
     echo "step $i of $week" > "$dir/steps/.step-$i" && mv "$dir/steps/.step-$i" "$dir/steps/step-$i"
     echo "made step $i"
@@ -349,7 +360,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
+    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
@@ -397,9 +408,12 @@ has_steps() {
   [ "$(steps_made)" -ge "$1" ]
 }
 
-# A process's state letter: T when stopped; nothing when it is gone.
+# A process's state letter: T when stopped; nothing when it is gone; `nopid`
+# when what it was given is no pid: an empty one would read /proc//stat,
+# which is /proc/stat, and look alive as `cpu` (#825).
 state_of() {
   local stat
+  case $1 in '' | *[!0-9]*) echo nopid; return 0 ;; esac
   read -r stat 2> /dev/null < "/proc/$1/stat" || return 0
   stat=${stat##*) }
   echo "${stat%% *}"
@@ -411,6 +425,19 @@ gone() {
   local state
   state=$(state_of "$1")
   [ -z "$state" ] || [ "$state" = Z ]
+}
+
+# `within gone`, and when the process outlives the wait, what it is: its
+# stat line (state and parent), its command line, and the children the fake
+# recorder names now. Kept from #825, whose cause was a pid read as empty.
+gone_or_say() {
+  within gone "$1" && return 0
+  case $1 in '' | *[!0-9]*) echo "  no pid to look at: [$1]"; return 1 ;; esac
+  echo "  still there, pid $1: $(cat "/proc/$1/stat" 2> /dev/null || echo gone by now)"
+  echo "  its command line: $(tr '\0' ' ' 2> /dev/null < "/proc/$1/cmdline")"
+  echo "  the fake names as its child now: $(cat "$FAKE/child" 2> /dev/null)," \
+    "as its held child: $(cat "$FAKE/held-child" 2> /dev/null)"
+  return 1
 }
 
 job_state_is() {
@@ -557,6 +584,7 @@ echo 6 > "$FAKE/steps"
 echo 2 > "$FAKE/hold-at"
 pass_behind
 check "the recorder reaches its second step" within has_steps 2
+check "and holds before its third" within test -s "$FAKE/held-child"
 lane_says pause
 check "the job says it is paused" within job_state_is paused
 progress_is() {
@@ -571,7 +599,7 @@ rm "$FAKE/hold-at"
 sleep 1
 check "a pause makes no more steps, even with nothing holding it" test "$(steps_made)" -eq "$held"
 check "a pause stops the recorder" test "$(state_of "$(cat "$FAKE/pid")")" = T
-check "and what the recorder started" test "$(state_of "$(cat "$FAKE/child")")" = T
+check "and what the recorder started" test "$(state_of "$(cat "$FAKE/held-child")")" = T
 lane_says run
 wait "$PASS"
 check "a paused render finishes once the lane says run" test "$(video_of)" = "$REFERENCE"
@@ -587,12 +615,13 @@ echo 6 > "$FAKE/steps"
 echo 2 > "$FAKE/hold-at"
 pass_behind
 check "the recorder reaches its second step" within has_steps 2
+check "and holds before its third" within test -s "$FAKE/held-child"
 id=$(cat "$ROOT/renders/call-worker/job")
-recorder=$(cat "$FAKE/pid") child=$(cat "$FAKE/child")
+recorder=$(cat "$FAKE/pid") child=$(cat "$FAKE/held-child")
 : > "$SCRATCH/saw"
 lane_says stop
-check "a stop kills the recorder" within gone "$recorder"
-check "and what the recorder started" within gone "$child"
+check "a stop kills the recorder" gone_or_say "$recorder"
+check "and what the recorder started" gone_or_say "$child"
 check "the job says it waits" within job_state_is waiting
 kept=$(steps_made)
 check "a stop keeps the finished steps" test "$kept" -eq 2

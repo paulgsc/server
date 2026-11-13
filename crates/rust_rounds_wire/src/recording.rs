@@ -102,6 +102,12 @@ pub struct RunRecord {
 	pub signal: Option<i32>,
 	/// From start to end, on the machine that recorded it. Illustrative.
 	pub milliseconds: u64,
+	/// Set by the server that keeps the recording, never by the runner: the
+	/// box's CPU was contended while it was measured (paulgsc/server#706),
+	/// so `milliseconds` is the box's as much as the program's. Absent when
+	/// it was not.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub contended: bool,
 }
 
 /// The hex SHA-256 of `toolchain`, a NUL, and `source`. A toolchain never
