@@ -15,6 +15,11 @@
 //! - **Bounded retries.** [`waiting`] names only the notes a model has not
 //!   ended and has failed on fewer than `attempts` times, so one note whose
 //!   audio cannot be heard is never retried forever.
+//! - **An interview take is its own transcription** (paulgsc/some-ui#2933,
+//!   IW2). A [`VERBATIM`] note is heard with a prompt that keeps fillers, so
+//!   its rows are kept under the model's verbatim key, not its file name
+//!   ([`Keys`]): [`waiting`] puts each note on its kind's key alone, and a
+//!   reader tells which it has from `model`.
 //! - **A note set aside waits on no model** ([`crate::set_aside`]): [`waiting`]
 //!   skips it, and whatever was heard in it before stays. A Jobs note is the
 //!   exception: a file naming it still waits on its transcript.
@@ -102,7 +107,8 @@ impl Outcome {
 /// One attempt to hear a note, as [`keep_attempt`] stores it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attempt<'a> {
-	/// The model file it was heard with (`ggml-small-q5_1.bin`).
+	/// The model file it was heard with (`ggml-small-q5_1.bin`), and how it
+	/// was decoded when that is not as every note is ([`Keys::verbatim`]).
 	pub model: &'a str,
 	/// What ran it (`whisper.cpp 1.8.3`).
 	pub engine: &'a str,
@@ -113,15 +119,55 @@ pub struct Attempt<'a> {
 	pub took_ms: i64,
 }
 
+/// The kind of note heard verbatim, fillers and all (paulgsc/some-ui#2933,
+/// IW2): an interview take, whose "um"s and "uh"s are what the interview
+/// essay counts. Every other kind is heard as it always was.
+pub const VERBATIM: &str = "interview";
+
+/// What a model's transcriptions are kept under: one key for the notes
+/// heard as they always were, and another for the [`VERBATIM`] kind's,
+/// heard with a prompt that keeps fillers.
+///
+/// They are different transcriptions, so each is its own `model` in
+/// `voice_transcript`: one never ends the other's note, a changed prompt
+/// (a new key) hears its notes again beside the old rows, and a reader
+/// tells which it has from the key alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keys<'a> {
+	/// The model file, for every kind but [`VERBATIM`] (`ggml-small-q5_1.bin`).
+	pub plain: &'a str,
+	/// The model file and the prompt, for [`VERBATIM`]
+	/// (`ggml-small-q5_1.bin+verbatim-1`).
+	pub verbatim: &'a str,
+}
+
+impl<'a> Keys<'a> {
+	/// The key a note of `of_kind` is kept under.
+	#[must_use]
+	pub fn of(&self, of_kind: &str) -> &'a str {
+		if of_kind == VERBATIM {
+			self.verbatim
+		} else {
+			self.plain
+		}
+	}
+}
+
 /// A note waiting to be heard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
 	pub subject: String,
 	pub note_id: String,
+	/// It is the [`VERBATIM`] kind: heard with the prompt, kept under
+	/// [`Keys::verbatim`].
+	pub verbatim: bool,
 }
 
-/// The notes `model` has not ended (heard, or found silent) and has failed on
-/// fewer than `attempts` times, oldest first, at most `limit`.
+/// The notes their key in `keys` has not ended (heard, or found silent) and
+/// has failed on fewer than `attempts` times, oldest first, at most `limit`.
+///
+/// A note's key is [`Keys::of`] its kind, so a [`VERBATIM`] note waits on
+/// the verbatim key alone, and any other note on the plain one alone.
 ///
 /// A note the owner set aside ([`crate::set_aside`]) is not one: hearing it
 /// is work nothing wants, since its transcript is filed for no routine and
@@ -132,21 +178,27 @@ pub struct Waiting {
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn waiting(conn: &mut SqliteConnection, model: &str, attempts: i64, limit: i64) -> Result<Vec<Waiting>, VoiceError> {
+pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64, limit: i64) -> Result<Vec<Waiting>, VoiceError> {
+	// The key is decided per note before either lookup, a value the
+	// `(subject_id, note_id, model)` index reads as it reads a bound one.
 	let rows = sqlx::query!(
-		r#"SELECT n.subject_id AS "subject_id!", n.note_id AS "note_id!" FROM voice_note n
+		r#"SELECT n.subject_id AS "subject_id!", n.note_id AS "note_id!", n.of_kind = ?5 AS "verbatim!: bool" FROM voice_note n
 		 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
-		                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.model = ?1
+		                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		                     AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
 		                     AND t.outcome IN ('heard', 'silent'))
 		   AND (SELECT COUNT(*) FROM voice_transcript t
-		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.model = ?1) < ?2
+		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		          AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) < ?2
 		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
 		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
 		 ORDER BY n.stored_at, n.subject_id, n.note_id
 		 LIMIT ?3"#,
-		model,
+		keys.plain,
 		attempts,
-		limit
+		limit,
+		keys.verbatim,
+		VERBATIM
 	)
 	.fetch_all(&mut *conn)
 	.await?;
@@ -156,6 +208,7 @@ pub async fn waiting(conn: &mut SqliteConnection, model: &str, attempts: i64, li
 			.map(|row| Waiting {
 				subject: row.subject_id,
 				note_id: row.note_id,
+				verbatim: row.verbatim,
 			})
 			.collect(),
 	)
@@ -407,7 +460,7 @@ pub async fn words_heard_by(conn: &mut SqliteConnection, subject: &str, note_id:
 
 #[cfg(test)]
 mod tests {
-	use super::{audio, keep_attempt, waiting, words, words_heard_by, Attempt, Kept, Outcome, Waiting, Word};
+	use super::{audio, keep_attempt, waiting, words, words_heard_by, Attempt, Kept, Keys, Outcome, Waiting, Word, VERBATIM};
 	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -484,14 +537,61 @@ mod tests {
 		kept
 	}
 
+	/// `model`'s keys: itself, and itself with the verbatim prompt.
+	fn keys(model: &str) -> (String, String) {
+		(model.to_owned(), [model, "+verbatim-1"].concat())
+	}
+
 	async fn waiting_for(pool: &SqlitePool, model: &str) -> Vec<(String, String)> {
+		waiting_on(pool, model).await.into_iter().map(|(subject, note_id, _)| (subject, note_id)).collect()
+	}
+
+	/// What waits on `model`'s keys, and whether each is heard verbatim.
+	async fn waiting_on(pool: &SqlitePool, model: &str) -> Vec<(String, String, bool)> {
+		let (plain, verbatim) = keys(model);
 		let mut conn = pool.acquire().await.unwrap();
-		waiting(&mut conn, model, 3, 20)
+		waiting(
+			&mut conn,
+			Keys {
+				plain: &plain,
+				verbatim: &verbatim,
+			},
+			3,
+			20,
+		)
+		.await
+		.unwrap()
+		.into_iter()
+		.map(|Waiting { subject, note_id, verbatim }| (subject, note_id, verbatim))
+		.collect()
+	}
+
+	/// An interview take of `subject`'s, `id`, stored at `stored_at`.
+	///
+	/// Written past `voice_note.of_kind`'s CHECK, so this holds whether or
+	/// not the migration that admits `interview` (paulgsc/some-ui#2932, IW1)
+	/// has run: the transcriber decides by the kind's name alone.
+	async fn interview(pool: &SqlitePool, subject: &str, id: &str, stored_at: &str) {
+		let mut conn = pool.acquire().await.unwrap();
+		sqlx::query("PRAGMA ignore_check_constraints = ON").execute(&mut *conn).await.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, ?3, 'week-01:q1', '2026-11-13T19:00:00Z', 'audio/webm', 4, 'sha', ?4)",
+		)
+		.bind(subject)
+		.bind(id)
+		.bind(VERBATIM)
+		.bind(stored_at)
+		.execute(&mut *conn)
+		.await
+		.unwrap();
+		sqlx::query("INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, ?2, x'74616b65')")
+			.bind(subject)
+			.bind(id)
+			.execute(&mut *conn)
 			.await
-			.unwrap()
-			.into_iter()
-			.map(|Waiting { subject, note_id }| (subject, note_id))
-			.collect()
+			.unwrap();
+		sqlx::query("PRAGMA ignore_check_constraints = OFF").execute(&mut *conn).await.unwrap();
 	}
 
 	fn named(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -564,6 +664,68 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(audio(&mut conn, A, "late").await.unwrap().as_deref(), Some(&b"two"[..]));
 		assert_eq!(audio(&mut conn, B, "late").await.unwrap(), None, "B's ids are B's");
+	}
+
+	/// An interview take waits on the verbatim key alone, and every other
+	/// note on the plain key alone: one key's hearing never ends the other's
+	/// note, and each says which it is (paulgsc/some-ui#2933, IW2).
+	#[tokio::test]
+	async fn an_interview_take_waits_on_the_verbatim_key_and_no_other_note_does() {
+		let pool = pool().await;
+		note(&pool, A, "reflection", "2026-11-13T19:00:00.000Z", b"one").await;
+		interview(&pool, A, "take", "2026-11-13T19:01:00.000Z").await;
+		let (plain, verbatim) = keys(SMALL);
+		assert_eq!(
+			waiting_on(&pool, SMALL).await,
+			[(A.to_owned(), "reflection".to_owned(), false), (A.to_owned(), "take".to_owned(), true)]
+		);
+		let keys = Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		assert_eq!((keys.of(VERBATIM), keys.of("reflection"), keys.of("rust-round")), (&verbatim[..], &plain[..], &plain[..]));
+
+		// The plain key's hearing of the take is not the take's ending, nor
+		// the verbatim key's of the reflection the reflection's.
+		assert_eq!(keep(&pool, A, "take", &attempt(&plain, heard("so I was"))).await, Kept::Added(1));
+		assert_eq!(keep(&pool, A, "reflection", &attempt(&verbatim, heard("um so"))).await, Kept::Added(1));
+		assert_eq!(waiting_for(&pool, SMALL).await, named(&[(A, "reflection"), (A, "take")]));
+
+		assert_eq!(keep(&pool, A, "take", &attempt(&verbatim, heard("um so uh I was"))).await, Kept::Added(1));
+		assert_eq!(keep(&pool, A, "reflection", &attempt(&plain, heard("so"))).await, Kept::Added(1));
+		assert_eq!(waiting_for(&pool, SMALL).await, named(&[]), "each heard under its own key");
+		assert_eq!(
+			waiting_on(&pool, MEDIUM).await,
+			[(A.to_owned(), "reflection".to_owned(), false), (A.to_owned(), "take".to_owned(), true)],
+			"a better model hears both again, each its own way"
+		);
+	}
+
+	/// The key is decided per note, and both lookups still search the
+	/// `(subject_id, note_id, model)` index rather than scan transcripts.
+	#[tokio::test]
+	async fn the_queue_searches_transcripts_by_their_index() {
+		let pool = pool().await;
+		let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+			"EXPLAIN QUERY PLAN SELECT n.note_id FROM voice_note n
+			 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
+			                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+			                     AND t.model = CASE WHEN n.of_kind = ?3 THEN ?2 ELSE ?1 END
+			                     AND t.outcome IN ('heard', 'silent'))
+			   AND (SELECT COUNT(*) FROM voice_transcript t
+			        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+			          AND t.model = CASE WHEN n.of_kind = ?3 THEN ?2 ELSE ?1 END) < 3",
+		)
+		.bind("p")
+		.bind("v")
+		.bind(VERBATIM)
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+		let details: Vec<&str> = plan.iter().map(|(_, _, _, detail)| detail.as_str()).collect();
+		let searched = details.iter().filter(|detail| detail.starts_with("SEARCH t USING")).count();
+		assert_eq!(searched, 2, "{details:?}");
+		assert!(!details.iter().any(|detail| detail.starts_with("SCAN t")), "{details:?}");
 	}
 
 	/// A Studio take is heard as any note is: it waits until heard, by each
