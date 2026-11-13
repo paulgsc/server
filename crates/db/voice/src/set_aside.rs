@@ -121,7 +121,7 @@ pub async fn studio_take_held(conn: &mut SqliteConnection, subject: &str, note_i
 #[cfg(test)]
 mod tests {
 	use super::{set_aside, set_aside_at, studio_take_held, when, SetAside};
-	use crate::transcript::waiting;
+	use crate::transcript::{waiting, Keys};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -272,7 +272,11 @@ mod tests {
 		.unwrap();
 		let queued = |pool: SqlitePool| async move {
 			let mut conn = pool.acquire().await.unwrap();
-			waiting(&mut conn, MODEL, 3, 10)
+			let keys = Keys {
+				plain: MODEL,
+				verbatim: "ggml-small-q5_1.bin+verbatim-1",
+			};
+			waiting(&mut conn, keys, 3, 10)
 				.await
 				.unwrap()
 				.into_iter()
