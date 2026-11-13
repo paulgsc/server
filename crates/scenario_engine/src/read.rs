@@ -124,6 +124,11 @@ impl<'a> SoFar<'a> {
 		self.plays.is_empty() && self.game.status.state == Some(GameState::Post) && !self.over()
 	}
 
+	/// The index of the opening kickoff, the first kickoff in the log.
+	pub(crate) fn opening_kickoff(&self) -> Option<usize> {
+		self.plays.iter().position(|seen| kind(seen.play) == "kickoff")
+	}
+
 	/// The index of the latest snap.
 	pub(crate) fn last_snap(&self) -> Option<usize> {
 		self.plays.iter().rposition(|seen| is_snap(seen.play))

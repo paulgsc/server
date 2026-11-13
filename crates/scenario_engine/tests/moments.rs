@@ -361,6 +361,8 @@ fn the_opening_kickoff_is_the_first_kickoff_after_a_coin_toss() {
 	let o = just_after(&[toss], plays[kickoff].clone());
 	let opening = o.just_happened.iter().find(|j| j.scenario == Scenario::CoinToss).unwrap();
 	assert_eq!(opening.play_id, plays[kickoff].id);
+	// Once the kickoff is in the log, the coin toss is only in "just happened".
+	assert!(!ids(&o).contains(&Scenario::CoinToss.id()), "{:?}", ids(&o));
 }
 
 #[test]
