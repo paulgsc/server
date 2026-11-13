@@ -851,9 +851,26 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 /// - [`Of::Interview`]: a week's takes play back in My data and the week's
 ///   essay, as Rust Rounds' do (paulgsc/some-ui#2932, IW1, under the epic
 ///   paulgsc/some-ui#2931's decisions of 2026-11-13).
+/// - Every other kind: My data plays any recording home keeps to the owner's
+///   paired phone, so the owner can hear what they would delete (the owner,
+///   2026-11-13, on paulgsc/some-ui#2473 (issuecomment-6861770728), MY-DATA).
 ///
-/// Every other kind's audio never leaves home.
-pub const PLAYED_BACK: [Of; 3] = [Of::RustRound, Of::Studio, Of::Interview];
+/// So every kind is played back, and still only to the note's own subject's
+/// paired phone. The kinds are listed one by one, not taken from every
+/// [`Of`], so a kind added later is not played back until someone lists it
+/// and says why.
+pub const PLAYED_BACK: [Of; 10] = [
+	Of::Reflection,
+	Of::Jobs,
+	Of::Scene,
+	Of::Game,
+	Of::Studio,
+	Of::Soundbite,
+	Of::Lens,
+	Of::Leetype,
+	Of::RustRound,
+	Of::Interview,
+];
 
 /// What home holds of a note's audio short of its bytes: its container and
 /// their SHA-256, enough to answer a read that already has them.
@@ -2074,7 +2091,8 @@ mod tests {
 
 	/// Every kind a note is said for, by the name the phone sends, the CHECK
 	/// holds and the mailbox files; and the kinds whose audio home gives back
-	/// (IW1, paulgsc/some-ui#2932, adds `interview` to both).
+	/// (IW1, paulgsc/some-ui#2932, adds `interview` to both; MY-DATA plays
+	/// every kind back).
 	#[test]
 	fn the_kinds_and_the_kinds_played_back_are_pinned() {
 		assert_eq!(
@@ -2084,7 +2102,7 @@ mod tests {
 		for of in Of::ALL {
 			assert_eq!(Of::named(of.as_str()), Some(of));
 		}
-		assert_eq!(PLAYED_BACK, [Of::RustRound, Of::Studio, Of::Interview]);
+		assert_eq!(PLAYED_BACK, Of::ALL, "every kind plays back, interview included (MY-DATA, IW1)");
 	}
 
 	/// IW1 (paulgsc/some-ui#2932): an interview take names the week's

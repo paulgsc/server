@@ -16,10 +16,36 @@
 //! [`schema::assert_groups_hold_only_their_own`] holds.
 
 use clap::Args;
+use schema::{Class, Classed};
 use serde::{Deserialize, Serialize};
 
 pub mod env1;
 pub mod schema;
+
+/// The class of every variable the groups here declare (ENV-CLASS, #617),
+/// for every binary that flattens them.
+pub const CLASSES: &[Classed] = &[
+	Classed {
+		variable: "NATS_URL",
+		class: Class::Deployment,
+		why: "Wiring: which NATS this deployment reaches; compose sets its own, dev its own.",
+	},
+	Classed {
+		variable: "RUST_LOG",
+		class: Class::Deployment,
+		why: "A per-role log level (dev runs at debug without a rebuild); confirmed on #617, 2026-11-01.",
+	},
+	Classed {
+		variable: "OTEL_EXPORTER_OTLP_ENDPOINT",
+		class: Class::Deployment,
+		why: "The collector this deployment exports to, if any.",
+	},
+	Classed {
+		variable: "ENVIRONMENT",
+		class: Class::Deployment,
+		why: "The role's own label on its traces.",
+	},
+];
 
 /// Where a binary reaches NATS.
 #[derive(Args, Clone, Debug, Serialize, Deserialize)]
@@ -175,6 +201,7 @@ mod tests {
 				],
 			},
 		],
+		classes: &[],
 	};
 
 	fn unmet(args: &[&str]) -> Vec<String> {
@@ -205,6 +232,77 @@ mod tests {
 			unmet(&["--probe-enabled", "true", "--probe-url", "u", "--probe-days", "1"]).is_empty(),
 			"every condition must hold"
 		);
+	}
+
+	const PROBE_ENABLED: crate::schema::Classed = crate::schema::Classed {
+		variable: "PROBE_ENABLED",
+		class: crate::schema::Class::Policy,
+		why: "A switch.",
+	};
+
+	fn classed(classes: &'static [crate::schema::Classed]) -> crate::schema::Schema {
+		let rules = crate::schema::Rules { classes, ..GATED };
+		crate::schema::schema("probe", &Gated::command(), &rules)
+	}
+
+	/// ENV-CLASS (#617): a variable with no class is never checked in.
+	#[test]
+	#[should_panic(expected = "probe's PROBE_URL has no class")]
+	fn a_variable_with_no_class_is_refused() {
+		let _ = classed(&[PROBE_ENABLED]);
+	}
+
+	#[test]
+	#[should_panic(expected = "probe classes NATS_URL, which app_config::CLASSES already does")]
+	fn a_shared_variable_has_one_class() {
+		let _ = classed(&[crate::schema::Classed {
+			variable: "NATS_URL",
+			class: crate::schema::Class::Policy,
+			why: "x",
+		}]);
+	}
+
+	#[test]
+	#[should_panic(expected = "probe classes PROBE_GONE, which it does not declare")]
+	fn a_class_for_a_variable_that_is_gone_is_refused() {
+		let _ = classed(&[crate::schema::Classed {
+			variable: "PROBE_GONE",
+			class: crate::schema::Class::Policy,
+			why: "x",
+		}]);
+	}
+
+	#[test]
+	fn every_variable_carries_its_class_and_why() {
+		const ALL: &[crate::schema::Classed] = &[
+			PROBE_ENABLED,
+			crate::schema::Classed {
+				variable: "PROBE_URL",
+				class: crate::schema::Class::Deployment,
+				why: "An address.",
+			},
+			crate::schema::Classed {
+				variable: "PROBE_TOKEN",
+				class: crate::schema::Class::Deployment,
+				why: "A secret.",
+			},
+			crate::schema::Classed {
+				variable: "PROBE_SECONDS",
+				class: crate::schema::Class::Source,
+				why: "A cadence.",
+			},
+			crate::schema::Classed {
+				variable: "PROBE_DAYS",
+				class: crate::schema::Class::Policy,
+				why: "A lever.",
+			},
+		];
+		let schema = classed(ALL);
+		let enabled = schema.variables.iter().find(|variable| variable.name == "PROBE_ENABLED").unwrap();
+		assert_eq!((enabled.class, enabled.why.as_deref()), (Some(crate::schema::Class::Policy), Some("A switch.")));
+		assert!(schema.variables.iter().all(|variable| variable.class.is_some() && variable.why.is_some()));
+		let rendered = String::from_utf8(crate::schema::render(&schema)).unwrap();
+		assert!(rendered.contains("\"class\": \"source\""), "{rendered}");
 	}
 
 	/// ENV1 for the groups themselves; each binary's own test walks them
