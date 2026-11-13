@@ -573,6 +573,40 @@ mod tests {
 		assert_eq!(kept, 7);
 	}
 
+	/// Done means (#780): a backup that does not verify is removed and
+	/// nothing is applied. The live database here holds a row its own CHECK
+	/// constraint rejects, written with the check switched off: `VACUUM INTO`
+	/// copies it as it is, and the copy then fails `PRAGMA integrity_check`.
+	#[tokio::test]
+	async fn a_backup_that_does_not_verify_is_removed_and_nothing_is_applied() {
+		let dir = tempfile::tempdir().unwrap();
+		let options = options(dir.path());
+		let pool = database_behind(&options, 2).await;
+		sqlx::query("CREATE TABLE torn (n INTEGER NOT NULL CHECK (n > 0))").execute(&pool).await.unwrap();
+		sqlx::query("PRAGMA ignore_check_constraints = ON").execute(&pool).await.unwrap();
+		sqlx::query("INSERT INTO torn (n) VALUES (-1)").execute(&pool).await.unwrap();
+		let pending = drift(&pool, &MIGRATOR).await.unwrap().pending;
+		assert_eq!(pending.len(), 2);
+		pool.close().await;
+
+		let refused = bring_current_at(&options, &MIGRATOR, at(0)).await.unwrap_err();
+
+		let message = refused.to_string();
+		let Refused::Unverified { path, reason } = refused else {
+			panic!("expected the backup refused as unverified, got {message}");
+		};
+		let first_pending = up_versions()[up_versions().len() - 2].to_string();
+		assert_eq!(path, dir.path().join(BACKUP_DIR).join(backup_name("hopium", &first_pending, at(0))));
+		assert!(reason.contains("torn"), "the reason is integrity_check's own: {reason}");
+		assert!(message.contains(&path.display().to_string()) && message.contains(&reason), "{message}");
+		assert!(message.contains("nothing was applied"), "{message}");
+		assert!(!path.exists(), "the copy that did not verify is removed");
+		assert!(backups(dir.path()).is_empty(), "nothing is left to be counted among the newest kept");
+
+		let pool = open(&options).await;
+		assert_eq!(drift(&pool, &MIGRATOR).await.unwrap().pending, pending, "no migration was applied");
+	}
+
 	/// A migration that fails is retried by every restart, and each attempt
 	/// backs up again: the backups stay at `keep`, the newest kept.
 	#[tokio::test]
