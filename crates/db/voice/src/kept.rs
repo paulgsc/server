@@ -14,7 +14,8 @@
 //!   That ending is the one `GET /voice-notes/:id/heard` answers
 //!   ([`crate::transcript::heard`]), which already gives a note's words to its
 //!   own subject: what was said reaches only the owner's paired phone through
-//!   it. None reads `voice_note_audio`, a word's time, a `ref` or a bite.
+//!   it. None reads `voice_note_audio`, a word's time, a `ref` or a bite;
+//!   whether a note plays back is its kind's ([`crate::PLAYED_BACK`]).
 //! - **Per subject, and only per subject.** Every query takes the subject and
 //!   filters on it.
 //! - **Bounded.** [`kinds`] answers at most one row per [`Of`], [`weeks`] one
@@ -25,7 +26,7 @@
 
 use crate::{
 	delete::{deletable, Deletable},
-	Of, VoiceError,
+	Of, VoiceError, PLAYED_BACK,
 };
 use serde::Serialize;
 use sqlx::SqliteConnection;
@@ -97,6 +98,9 @@ pub struct NoteKept {
 	pub heard: Option<String>,
 	/// Whether [`NoteKept::heard`] stops short of what home heard.
 	pub heard_cut: bool,
+	/// Whether `GET /voice-notes/:id/audio` plays it back: its kind is in
+	/// [`crate::PLAYED_BACK`].
+	pub plays_back: bool,
 }
 
 /// One `voice_note` row as [`newest`] reads it, with its chosen ending.
@@ -132,6 +136,7 @@ impl Row {
 			duration_ms: self.duration_ms,
 			heard,
 			heard_cut,
+			plays_back: Of::named(of).is_some_and(|of| PLAYED_BACK.contains(&of)),
 		})
 	}
 }
@@ -599,6 +604,7 @@ mod tests {
 			Some("old"),
 			"the note asked for, past the cap, carries its words too"
 		);
+		assert!(listed.iter().all(|kept| kept.plays_back), "every kind plays back from home");
 		for kept in &listed {
 			match heard(&mut conn, A, &kept.id).await.unwrap() {
 				Hearing::Heard(transcript) if !transcript.text.is_empty() => {

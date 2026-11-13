@@ -1254,18 +1254,22 @@ nowhere is marked as such and belongs to review.
     is switched off; `voice_repo::delete::delete` has no other caller. It is
     written only by `PUT /voice-notes/:id`, whose span skips its arguments,
     so neither the audio nor its hash reaches a log line. **Its audio is
-    read back by one route, for Rust Rounds notes and Studio takes only**
+    read back by one route, to its own subject's paired phone only**
     (`voice_repo::PLAYED_BACK`; the owner's D4 on paulgsc/some-ui#2237,
     2026-10-29: home gives a note's audio back to the phone, for refine cards
-    and replay; and the owner's decision 8 on paulgsc/some-ui#2248,
+    and replay; the owner's decision 8 on paulgsc/some-ui#2248,
     2026-11-04: a take is kept and played from home, paulgsc/some-ui#2590,
-    ST32): `GET /voice-notes/:id/audio`, a
+    ST32; and, amending both to every kind, the owner on 2026-11-13,
+    paulgsc/some-ui#2473 (comment 6861770728), MY-DATA: My data plays any
+    recording home keeps to the owner's paired phone, so the owner can hear
+    what they would delete): `GET /voice-notes/:id/audio`, a
     `Paired` phone's (a browser's session is a `403`), answers the caller's
-    own subject's `rust-round` or `studio` note `id` (a `studio` note being any
-    take, an idea's spoken answer included) with its container, SHA-256 and
+    own subject's note `id`, of a kind `PLAYED_BACK` lists (every kind
+    today), with its container, SHA-256 and
     bytes as base64, the SHA-256 its `ETag`; another subject's note, one
-    home does not hold and a note said for any other kind are each a `404`,
-    so no other kind's audio leaves home. It reads only, its span skips every
+    home does not hold and a note said for a kind `PLAYED_BACK` does not list
+    are each a `404`, so no audio leaves home but to its own subject's paired
+    phone, and a kind added later stays home until it is listed. It reads only, its span skips every
     argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
     one other caller, `rust_essays`, which copies a final week's `rust-round`
     takes into its essay's render input on home's own drive (the exception
@@ -1294,7 +1298,8 @@ nowhere is marked as such and belongs to review.
     ending `GET /voice-notes/:id/heard` answers (the same choice of hearing),
     the note's `duration_ms` once heard or found silent and the first words
     heard, cut at the last space within about 80 characters
-    (`voice_repo::kept::HEARD_CHARS`), with whether they were cut, so the
+    (`voice_repo::kept::HEARD_CHARS`), with whether they were cut, and
+    whether its kind plays back (`PLAYED_BACK`), so the
     owner can tell what they would delete (MY-DATA, paulgsc/some-ui#2918,
     2026-11-13) (`voice_repo::kept`, its one caller `handlers::voice`). What
     was said goes only to the caller's own paired phone, as `/heard` already
@@ -1464,8 +1469,7 @@ nowhere is marked as such and belongs to review.
     `GET /ideas` and `GET /ideas/:id` (invariant 32), to the note's own
     subject only, by the same `voice_repo::transcript::heard`. The words
     are readable by no route yet, and the audio leaves home only through
-    `GET /voice-notes/:id/audio`, to its own subject's paired phone, for a
-    `rust-round` note (above). A probability is not text, so
+    `GET /voice-notes/:id/audio`, to its own subject's paired phone (above). A probability is not text, so
     it may reach a metric, never a log line.
     *Enforced by* `voice_repo`'s `the_tables_hold_exactly_their_described_columns`,
     `a_note_is_stored_once_and_never_replaced`,

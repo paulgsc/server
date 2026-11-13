@@ -809,9 +809,14 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 /// - [`Of::Studio`]: every take, an idea's spoken answer included, is kept
 ///   and played from home (the owner's decision 8 on paulgsc/some-ui#2248,
 ///   2026-11-04; ST32).
+/// - Every other kind: My data plays any recording home keeps to the owner's
+///   paired phone, so the owner can hear what they would delete (the owner,
+///   2026-11-13, on paulgsc/some-ui#2473 (issuecomment-6861770728), MY-DATA).
 ///
-/// Every other kind's audio never leaves home.
-pub const PLAYED_BACK: [Of; 2] = [Of::RustRound, Of::Studio];
+/// So every kind is played back, and still only to the note's own subject's
+/// paired phone; the list stays so a kind added later is not played back
+/// until someone says why it should be.
+pub const PLAYED_BACK: [Of; 9] = Of::ALL;
 
 /// What home holds of a note's audio short of its bytes: its container and
 /// their SHA-256, enough to answer a read that already has them.

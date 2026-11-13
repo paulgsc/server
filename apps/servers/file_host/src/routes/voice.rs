@@ -18,8 +18,8 @@
 //!                                      keeps it (idempotent, the first
 //!                                      mark stands)
 //! GET /voice-notes/:id/audio          → { id, contentType, sha256, audio }:
-//!                                      a Rust Rounds note's or a Studio
-//!                                      take's audio as base64, to a paired
+//!                                      a note's audio as base64, any kind
+//!                                      (My data plays them), to a paired
 //!                                      phone, with its SHA-256 as the ETag
 //!                                      (`304` on `If-None-Match`), or a
 //!                                      JSON 404
@@ -65,7 +65,7 @@
 //! own table beside the note, so no note is rewritten.
 //!
 //! The audio read is the one route that gives a note's bytes back, for a
-//! `rust-round` note or a `studio` take only (`voice_repo::PLAYED_BACK`
+//! note of any kind, to its own subject's paired phone (`voice_repo::PLAYED_BACK`
 //! says why). The take library answers what each take is and its words,
 //! never its audio (`voice_repo::takes`).
 //!
