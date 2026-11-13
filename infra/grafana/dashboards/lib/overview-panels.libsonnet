@@ -29,12 +29,12 @@ local ds = { type: 'prometheus', uid: 'prometheus' };
 // `container_name` — the services this stack runs for its own sake, as
 // opposed to the observability stack watching them. cadvisor labels
 // containers by that name (`name`).
-local services = 'file-host-server|orchestrator-service|some-redis|nats-server|tabsched-ollama';
+local services = 'file-host-server|orchestrator-service|some-redis|nats-server';
 
 // The same services by process name (`comm`), for process-exporter — see the
 // Disk I/O panel for why that one is read per process rather than per
 // container.
-local serviceProcesses = 'file_host|orchestrator|redis-server|nats-server|ollama';
+local serviceProcesses = 'file_host|orchestrator|redis-server|nats-server';
 
 // Real filesystems only: tmpfs/overlay/etc. are either memory or a docker
 // layer view of a disk already listed, and /nix/store is a read-only bind of /

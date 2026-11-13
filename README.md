@@ -65,7 +65,7 @@ crates/
 docs/        Design notes, fault taxonomy, dashboard conventions, SLAs
 infra/       Compose files, Grafana dashboards, Prometheus, NATS config
 migrations/  SQLx migrations
-nix/         Reproducible dev shells (default / rust / ci / whisper / llm)
+nix/         Reproducible dev shells (default / rust / ci / whisper)
 scripts/     Metric-contract and scrape-inventory checks
 ```
 
@@ -105,8 +105,8 @@ services — those still need to be running separately:
 nix develop  # default shell: Rust + dev tools + Whisper + audio libs
 ```
 
-[`flake.nix`](./flake.nix) defines five shells — `default`, `rust`, `ci`,
-`whisper`, and `llm` — see [Nix Development Environment](./nix/README.md)
+[`flake.nix`](./flake.nix) defines four shells — `default`, `rust`, `ci`
+and `whisper` — see [Nix Development Environment](./nix/README.md)
 for the first three.
 
 ### Configuration
@@ -514,8 +514,8 @@ silent:
   `NATS_URL` and `REDIS_URL` have no default (#406, #617): a host sets its
   own, and `make preflight` names them if it does not. The dev host's values
   are its role's, in `deploy/dev/`, not defaults in the code. The compose files' host paths (`STORAGE`,
-  `TRANSCRIBE_MODELS_DIR`, `METABASE_DATA_DIR`, `DATABASES_DIR`,
-  `OLLAMA_MODELS_PATH`), Grafana's and Metabase's addresses and Grafana's
+  `TRANSCRIBE_MODELS_DIR`, `METABASE_DATA_DIR`, `DATABASES_DIR`),
+  Grafana's and Metabase's addresses and Grafana's
   admin password have no default either: each role's `compose.sops.env`
   sets them (#614).
 * **Tracked.** [#406](https://github.com/paulgsc/server/issues/406) is the
