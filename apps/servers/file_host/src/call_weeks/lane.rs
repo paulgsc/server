@@ -349,6 +349,7 @@ impl Paths {
 				PathBuf::from(crate::previews::STATUS_FOLDER),
 				PathBuf::from(crate::rust_essays::STATUS_FOLDER),
 				PathBuf::from(crate::clips::WALK_STATUS_FOLDER),
+				PathBuf::from(crate::cards_essays::STATUS_FOLDER),
 			],
 		}
 	}

@@ -28,7 +28,7 @@
 //! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 6;
+pub const CONTRACT_EPOCH: u32 = 7;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
@@ -37,9 +37,11 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// The layout of the folders render reads, as home's release states it.
 ///
 /// RELEASE R3, #790; docs/release.md, "Constraints". The folders are
-/// `call-weeks`, `playoff-delta-episodes`, `preview-requests` and
-/// `rust-essays`, which `file_host` writes and the render worker
-/// (paulgsc/some-ui) reads. `file_host`'s image provides
+/// `call-weeks`, `playoff-delta-episodes`, `preview-requests`,
+/// `rust-essays` and `cards-essays`, which `file_host` writes and the render
+/// worker (paulgsc/some-ui) reads. `cards-essays` (#854) came without a
+/// raise: it is a new folder, so no layout an older render reads changed,
+/// and server's own `render-calls.sh` names each file to `record:cards`. `file_host`'s image provides
 /// `render-folders=<this>` and render's requires the layout it reads, so a
 /// release whose render reads a newer layout than its `file_host` writes is
 /// refused.
@@ -54,7 +56,7 @@ pub const RENDER_FOLDERS_EPOCH: u32 = 1;
 /// FNV-1a over the sorted `METHOD full_path` lines of every route this build
 /// serves, as [`route_fingerprint`] computes it. A route change fails `the_fingerprint_is_this_route_surface`,
 /// whose message names the new value, until this and the epoch are updated.
-pub const ROUTE_FINGERPRINT: &str = "1773207157ba2920";
+pub const ROUTE_FINGERPRINT: &str = "5cb1db112983fcb6";
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;

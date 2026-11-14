@@ -337,6 +337,52 @@ groups:
           objective: RR16
           says: "Every pass giving Rust Rounds essays to the render worker has failed for 3 hours; file-host-server's log names what failed."
 
+      - alert: CardsEssaysStale
+        # CE1 (#854, some-ui#2979): the cards essays worker reads
+        # paulgsc/testing's cards index every hour (cards_essays::INTERVAL),
+        # sooner after a failure, and stamps each pass it starts, as the
+        # call weeks worker does (CallWeeksStale).
+        expr: |
+          (time() - max(cards_essays_last_attempt_timestamp_seconds)) > 7200
+        labels:
+          objective: CE1
+          says: "Home has not read paulgsc/testing's cards essays for 2 hours (it reads them hourly)."
+
+      - alert: CardsEssaysFailing
+        # CE1: every pass for 3 hours failed, on storage or on an essay it
+        # could not read or write; retried as CallWeeksFailing's are. An
+        # essay the index lists that is not a cut list of its key's day is
+        # one it could not read, so it fails every pass until it is fixed.
+        expr: |
+          max(cards_essays_pass_failing) == 1
+        for: 3h
+        labels:
+          objective: CE1
+          says: "Every pass reading paulgsc/testing's cards essays has failed for 3 hours; file-host-server's log names what failed by kind (an unreadable essay is one cards-check should have refused)."
+
+      - alert: CardsEssayRenderFailed
+        # CE1: an essay home holds has no video and the render worker's last
+        # attempt at it failed (render-calls.sh's cards-essay job keeps that
+        # attempt's whole output, and removes it once the essay renders).
+        # file_host reads that each minute (cards_essays::observe). The
+        # worker tries again hourly.
+        expr: |
+          max(cards_essay_render_failed) > 0
+        labels:
+          objective: CE1
+          says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly."
+
+      - alert: CardsEssayRenderOverdue
+        # CE1: an essay has waited 3 hours since home took it, with no
+        # failed attempt, as CallRenderOverdue reads the call's weeks.
+        expr: |
+          max(cards_essay_render_waiting) > 0
+          and on() (time() - max(cards_essay_render_oldest_waiting_taken_timestamp_seconds)) > 10800
+          and on() max(cards_essay_render_failed) == 0
+        labels:
+          objective: CE1
+          says: "A cards essay has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
+
       - alert: CallRenderWorkerStale
         # CW5: the worker stamps each pass it starts, a minute apart, and
         # every minute while a job waits for room or is paused (L4c), never

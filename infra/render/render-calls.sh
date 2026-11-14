@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Home's render worker (GWB10, paulgsc/some-ui#2084), with five jobs, one
+# Home's render worker (GWB10, paulgsc/some-ui#2084), with six jobs, one
 # loop: the weekly call's (paulgsc/some-ui#2635, ST36), Playoff Delta's
 # (FEED4, paulgsc/some-ui#2647), a template's preview (SFEED12,
-# paulgsc/some-ui#2757), a Rust Rounds essay's (RR16, paulgsc/some-ui#2691)
-# and a clip's walk (paulgsc/some-ui#2670's clips, C125).
+# paulgsc/some-ui#2757), a Rust Rounds essay's (RR16, paulgsc/some-ui#2691),
+# a clip's walk (paulgsc/some-ui#2670's clips, C125) and a cards essay's
+# (CARDS7, #854, paulgsc/some-ui#2979, C327).
 # infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
@@ -20,6 +21,7 @@
 # | preview       | /previews/<id>.json (previews)         | /renders/preview/<id>/      | preview.mp4 |
 # | rust-essay    | /essays/<week>/essay.json (rust_essays) | /renders/rust-essay/<week>/ | essay.mp4   |
 # | clip-walk     | /clip-walks/<clip>-<side>/{sample.json,app} (clips) | /renders/clip-walk/<clip>-<side>/ | walk.json |
+# | cards-essay   | /cards-essays/<key>.json (cards_essays) | /renders/cards-essay/<key>/ | cards.mp4   |
 #
 # A Playoff Delta key is <season>-<team>-<NN> (2026-SF-08, NN 00 the legend);
 # file_host writes only fills of a voiced version (pd_fills::render), so a
@@ -45,6 +47,13 @@
 # walk this image draws differently is never kept. It is drawn by this
 # image's some-ui, not the commit of the change the clip shows: nothing here
 # reaches the internet to fetch another.
+# A cards essay's key is its slug and its stamp's day
+# (nixos-upgrade-2026-11-14): file_host gives the worker each essay
+# paulgsc/testing's cards index lists, as first served (`cards_essays`), and
+# the recorder draws each card on the stage's burn-ins page and renders it,
+# refusing one that isn't a cards essay before anything is drawn
+# (`record:cards`). Nothing is said: no speaker is asked. Essays go by their
+# day, oldest first, not by name.
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -172,7 +181,7 @@ MOTION_TSX=$MOTION_DIR/node_modules/.bin/tsx
 COMMON=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
-JOBS=(call playoff-delta preview rust-essay clip-walk)
+JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay)
 
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
@@ -183,6 +192,10 @@ PREVIEW_ID='^(conference-call|playoff-delta-legend|playoff-delta-week|rust-essay
 # `clips::pass`), and the app it walks, plain too.
 WALK_KEY='^[a-z0-9]+(-[a-z0-9]+)*-(before|after)$'
 WALK_APP='^[a-z0-9]+(-[a-z0-9]+)*$'
+
+# A cards essay: a slug of plain words, then its stamp's day (file_host's
+# `cards_essays::pass::is_key`, some-ui's CARDS_KEY).
+CARDS_KEY='^[a-z0-9]+(-[a-z0-9]+)*-[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 
 # The job's folders and video's name, as globals: INPUT, RENDERS, STATUS,
 # WORK, VIDEO. The work folder is on the same drive as the videos, not the
@@ -206,6 +219,9 @@ use_job() {
     clip-walk)
       INPUT=$ROOT/clip-walks RENDERS=$ROOT/renders/clip-walk STATUS=$ROOT/renders/clip-walk-worker
       WORK=$ROOT/renders/clip-walk-work VIDEO=walk.json ;;
+    cards-essay)
+      INPUT=$ROOT/cards-essays RENDERS=$ROOT/renders/cards-essay STATUS=$ROOT/renders/cards-essay-worker
+      WORK=$ROOT/renders/cards-essay-work VIDEO=cards.mp4 ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -250,6 +266,14 @@ episodes() {
         [[ "$key" =~ $WALK_KEY ]] || continue
         [ -e "$entry/sample.json" ] && [ -e "$entry/app" ] && echo "$key"
       done ;;
+    cards-essay)
+      # By its day, not its name: a slug-first key's name order isn't its
+      # day's (nixos-upgrade-2026-11-14 before zfs-2026-11-02).
+      for entry in "$INPUT"/*.json; do
+        [ -e "$entry" ] || continue
+        key=$(basename "$entry" .json)
+        [[ "$key" =~ $CARDS_KEY ]] && echo "${key: -10} $key"
+      done | LC_ALL=C sort | cut -d' ' -f2 ;;
   esac
 }
 
@@ -262,6 +286,7 @@ holds() {
     preview) [ -e "$INPUT/$2.json" ] ;;
     rust-essay) [ -e "$INPUT/$2/essay.json" ] ;;
     clip-walk) [ -e "$INPUT/$2/sample.json" ] ;;
+    cards-essay) [ -e "$INPUT/$2.json" ] ;;
   esac
 }
 
@@ -295,6 +320,11 @@ record() {
       fi
       (cd "$MOTION_DIR" && "$MOTION_TSX" src/cli.ts walk "$app" \
         --sample "$INPUT/$key/sample.json" --out "$WORK/$key") ;;
+    cards-essay)
+      # Silent: the recorder asks no speaker. It names the finished folder
+      # for the essay's key in --out (`record:cards`).
+      (cd "$APP_DIR" && "$TSX" tests/record/cards.ts "${COMMON[@]}" \
+        --cut-list-file "$INPUT/$key.json" --out "$WORK") ;;
   esac
 }
 
@@ -315,6 +345,7 @@ finished() {
     preview) echo "$WORK/$2" ;;
     rust-essay) echo "$WORK/$2" ;;
     clip-walk) echo "$WORK/$2" ;;
+    cards-essay) echo "$WORK/$2" ;;
   esac
 }
 
@@ -426,7 +457,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] && [[ "$LEFT_RESTARTS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview | rust-essay | clip-walk) return 0 ;;
+    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay) return 0 ;;
     *) return 1 ;;
   esac
 }

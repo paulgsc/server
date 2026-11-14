@@ -10,6 +10,7 @@ use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 pub mod auth;
 pub mod cache;
 pub mod call_weeks;
+pub mod cards_essays;
 pub mod clips;
 pub mod config;
 pub mod contention;
@@ -142,6 +143,7 @@ pub struct AppState {
 	/// lever (`settings::GameFeed`), each pass.
 	pub game_feed: game_feed::GameFeedContext,
 	pub call_weeks: call_weeks::CallWeeksContext,
+	pub cards_essays: cards_essays::CardsEssaysContext,
 	/// Interactive work in progress (a note being heard, a program being
 	/// recorded), held by those workers and read by the batch lane, which
 	/// pauses a render for it (`call_weeks::lane`, LA1).
@@ -208,6 +210,7 @@ impl AppState {
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock(), meaning.as_ref())?;
 		let rust_rounds = rust_rounds::RustRoundsContext::new();
 		let call_weeks = call_weeks::CallWeeksContext::new()?;
+		let cards_essays = cards_essays::CardsEssaysContext::new()?;
 
 		Ok(Self {
 			core,
@@ -219,6 +222,7 @@ impl AppState {
 			rust_rounds,
 			game_feed,
 			call_weeks,
+			cards_essays,
 			interactive: call_weeks::lane::Interactive::default(),
 			auth,
 		})
@@ -311,7 +315,9 @@ impl AppState {
 /// - Rust Rounds' essays (`rust_essays`), given to the render worker from
 ///   the mailbox once their week is final; on with the mailbox;
 /// - the clips' frames (`clips`), read hourly from `paulgsc/testing`'s
-///   index, a walk rendered on home's render lane; always on.
+///   index, a walk rendered on home's render lane; always on;
+/// - the cards essays (`cards_essays`), read hourly from `paulgsc/testing`'s
+///   `cards/` index and given to the render worker; always on.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
@@ -323,6 +329,7 @@ pub fn start_polls(state: &AppState) {
 	previews::start(state);
 	rust_essays::start(state);
 	clips::start(state);
+	cards_essays::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

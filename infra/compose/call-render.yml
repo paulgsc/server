@@ -4,7 +4,7 @@
 #
 # - `kokoro`, the speaker: Kokoro v1.0, seeded per line
 #   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
-# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with five jobs
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with six jobs
 #   (infra/render/render-calls.sh): for each week `file_host` writes to
 #   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
 #   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
@@ -26,6 +26,11 @@
 #   (`clips::WALKS_FOLDER`) is walked by the motion into
 #   ${STORAGE}/renders/clip-walk/<clip>-<side>/, its snips and walk.json,
 #   which file_host checks against the clip index before it keeps a frame.
+#   Its sixth is a cards essay (CARDS7, #854, paulgsc/some-ui#2979): each
+#   essay file_host writes to ${STORAGE}/cards-essays/<key>.json
+#   (`cards_essays::ESSAYS_FOLDER`), a cut list paulgsc/testing's cards index
+#   listed, is drawn card by card, silent, into
+#   ${STORAGE}/renders/cards-essay/<key>/.
 #
 #   Its image is published by paulgsc/some-ui's CI, not built here (#718,
 #   the owner's "B′ for render", 2026-11-11): the recorders, the motion and
@@ -104,9 +109,11 @@ services:
         condition: service_started
       # file_host makes ${STORAGE}/call-weeks,
       # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests,
-      # ${STORAGE}/rust-essays and ${STORAGE}/clip-walks before it answers its
-      # health check (call_weeks::start, pd_fills::start, previews::start,
-      # rust_essays::start, clips::start), so each is its own, never Docker's.
+      # ${STORAGE}/rust-essays, ${STORAGE}/clip-walks and
+      # ${STORAGE}/cards-essays before it answers its health check
+      # (call_weeks::start, pd_fills::start, previews::start,
+      # rust_essays::start, clips::start, cards_essays::start), so each is its
+      # own, never Docker's.
       file-host:
         condition: service_healthy
     networks:
@@ -154,6 +161,15 @@ services:
       - type: volume
         source: clip_walk_files
         target: /clip-walks
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`cards_essays::ESSAYS_FOLDER`), read here only,
+      # through `cards_essay_files` (below): one cut list per essay, by its
+      # key (CARDS7, #854).
+      - type: volume
+        source: cards_essay_files
+        target: /cards-essays
         read_only: true
         volume:
           nocopy: true
@@ -254,6 +270,15 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/clip-walks
+  # ${STORAGE}/cards-essays, where file_host writes each cards essay it
+  # gives the worker; bound as call_week_files is, for the same reason
+  # (cards_essays::start makes it).
+  cards_essay_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/cards-essays
 
 networks:
   # Internal: neither reaches the internet or the rest of the stack. The

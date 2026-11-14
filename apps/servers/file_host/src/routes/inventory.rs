@@ -39,8 +39,9 @@
 
 use super::table::Module;
 use super::{
-	admin_settings, aph, app_events, auth, clips, compat, db, episode_notes, feed_videos, health, ideas, interview_weeks, jobs, korean, leetype_files, leetype_log, outcomes,
-	presence, previews, push, readiness, renders, routine, rust_rounds, shelf, signals, studio_log, studio_videos, study_notes, subjects, sync, tab_metadata, utterance, voice,
+	admin_settings, aph, app_events, auth, cards_essays, clips, compat, db, episode_notes, feed_videos, health, ideas, interview_weeks, jobs, korean, leetype_files,
+	leetype_log, outcomes, presence, previews, push, readiness, renders, routine, rust_rounds, shelf, signals, studio_log, studio_videos, study_notes, subjects, sync,
+	tab_metadata, utterance, voice,
 };
 use crate::{auth::AuthContext, websocket, AppState, Config, API_V1_BASE_PATH};
 use axum::{extract::FromRef, Router};
@@ -140,6 +141,7 @@ where
 		renders::renders(),
 		clips::clips(),
 		previews::previews(),
+		cards_essays::cards_essays(),
 		app_events::app_events(),
 		ideas::ideas(),
 		routine::routine(),

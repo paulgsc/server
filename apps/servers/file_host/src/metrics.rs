@@ -5,6 +5,7 @@
 // lint gate covers this module again.
 pub mod build_info;
 pub mod call_weeks;
+pub mod cards_essays;
 pub mod contention;
 pub mod deploy;
 pub mod game_feed;
