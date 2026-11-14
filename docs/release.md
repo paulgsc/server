@@ -135,7 +135,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   no release applied they refuse, naming `make home-deploy` (R6d, #870, C350;
   `deploy::applied_stack`). Only the deploy's own `up`, which names its state
   directory, runs on a release's tree under that directory's `releases/` as
-  given; anything else run from such a tree is refused.
+  given; any other `up` or `compose` run from such a tree is refused.
 
 ## Constraints
 

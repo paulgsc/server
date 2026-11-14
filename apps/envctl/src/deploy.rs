@@ -2543,7 +2543,7 @@ mod tests {
 		drop(applied);
 
 		// The deploy's own `up` on a release's tree, and another role, run as
-		// given; anything else on a release's tree is refused.
+		// given; any other `up` or `compose` on a release's tree is refused.
 		let tree = state.join("releases").join(&first);
 		assert!(applied_stack(&tree, &state, "home", false, true).unwrap().is_none());
 		let refused = applied_stack(&tree, &state, "home", false, false).err().unwrap().to_string();
