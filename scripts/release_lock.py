@@ -9,7 +9,8 @@ of its own, so runs are idempotent and order-free: any run computes the
 whole set, a dropped or cancelled run loses nothing, and the last one wins
 with the right answer (docs/release.md, "Invariants").
 
-    python3 scripts/release_lock.py              # reconcile deploy/home/release.json
+    python3 scripts/release_lock.py                # reconcile deploy/home/release.json
+    python3 scripts/release_lock.py --third-party  # refresh the third-party pins only
     python3 scripts/release_lock.py --self-test
 
 Where "newest published" comes from, per followed service (`SOURCES`):
@@ -25,13 +26,21 @@ Where "newest published" comes from, per followed service (`SOURCES`):
   check (#790) can refuse an inconsistent set, so a www release can never
   again move without the render that records it (#756's break).
 
-Docker Hub's tag API gives each tag's digest, so every reference is
-`repo:tag@sha256:…`. What it never does:
+- **A third-party image** (`THIRD_PARTY`, R7 #796), only with
+  `--third-party`: the current digest of the tag its entry already names (a
+  real version, never `latest`). Which tag is a reviewed change to the
+  release; the refresh moves only the digest under it. It is its own mode,
+  so a third-party move is its own release and an app publish never brings
+  one in (C120).
+
+Docker Hub's tag API gives each tag's digest (another registry's v2 API, for
+an image named with its host), so every reference is `repo:tag@sha256:…`.
+What it never does:
 
 - **Moves a held entry.** `file-host` stays `pgathondu/server:latest` until R4
   (#793), because `envctl deploy` pulls, tags and rolls back that tag.
-- **Moves an entry it does not follow** (third-party images are R7's, #796),
-  or adds or removes a service.
+- **Moves an entry it does not follow**, or adds or removes a service. The
+  default mode moves only `SOURCES`; `--third-party` only `THIRD_PARTY`.
 - **Moves an entry backwards in serial**: `serial` rises once, from main's,
   when anything changes; `server_commit` is main's commit it formed on.
 
@@ -50,6 +59,7 @@ import subprocess
 import sys
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -89,6 +99,46 @@ SOURCES: dict[str, Changesets | Hub] = {
     "rust-runner": Changesets("rust-runner"),
 }
 
+# Every image home runs that nobody here publishes (R7, #796; C120). Each
+# entry is `repo:<real tag>@sha256:…`, the tag the current major or minor
+# version where the publisher has one, else the exact version, and only
+# `--third-party` moves it: to that tag's current digest. caddy runs at NixOS
+# level and is not in the release (#787, decision 6).
+THIRD_PARTY = frozenset(
+    {
+        "blackbox-exporter",
+        "cadvisor",
+        "grafana",
+        "metabase",
+        "nats",
+        "nats-exporter",
+        "node_exporter",
+        "process-exporter",
+        "prometheus",
+        "redis",
+        "redis-exporter",
+        "redisinsight",
+    }
+)
+# `[host[:port]/]path:tag[@digest]`; the tag is what follows the last colon
+# after the last slash, so a registry's port is never read as one.
+TAGGED = re.compile(r"(?P<repository>(?:[a-z0-9.-]+(?::[0-9]+)?/)?[a-z0-9][a-z0-9._/-]*):(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]*)(@sha256:[0-9a-f]{64})?")
+# Docker Hub's own names for itself, which its tag API takes without.
+HUB_HOSTS = ("docker.io", "index.docker.io", "registry-1.docker.io")
+
+
+def located(repository: str) -> tuple[str | None, str]:
+    """Where a repository's tags are read: (None, Docker Hub path) or (registry host, name).
+
+    A first component with a dot or a port is a registry host, as Docker reads
+    it; Docker Hub's official images are `library/<name>`.
+    """
+    first, _, rest = repository.partition("/")
+    if rest and ("." in first or ":" in first) and first not in HUB_HOSTS:
+        return first, rest
+    path = rest if rest and first in HUB_HOSTS else repository
+    return None, path if "/" in path else "library/" + path
+
 COMMIT = r"[0-9a-f]{40}"
 VERSION = r"[0-9]+\.[0-9]+\.[0-9]+"
 
@@ -112,6 +162,50 @@ def hub_get(path: str) -> dict | None:
         raise Unreadable(f"Docker Hub answered {err.code} for {path}") from err
     except (urllib.error.URLError, TimeoutError, ValueError) as err:
         raise Unreadable(f"Docker Hub could not be read for {path}: {err}") from err
+
+
+# What a registry answers a manifest request with: a multi-platform index
+# first, so a digest is the one `docker pull` resolves, as Docker Hub's is.
+MANIFESTS = ", ".join(
+    (
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    )
+)
+
+
+def registry_digest(host: str, name: str, tag: str) -> str | None:
+    """A tag's digest from a v2 registry (gcr.io, ghcr.io), anonymously; None when absent."""
+
+    def head(token: str | None) -> urllib.request.Request:
+        headers = {"Accept": MANIFESTS, "User-Agent": "release-lock"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return urllib.request.Request(f"https://{host}/v2/{name}/manifests/{tag}", headers=headers, method="HEAD")
+
+    try:
+        try:
+            with urllib.request.urlopen(head(None), timeout=30) as response:
+                return response.headers.get("Docker-Content-Digest")
+        except urllib.error.HTTPError as err:
+            challenge = err.headers.get("WWW-Authenticate", "") if err.code == 401 else ""
+            if not challenge.startswith("Bearer "):
+                raise
+        # An anonymous pull token, as `docker pull` gets one.
+        fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+        query = urllib.parse.urlencode({key: fields[key] for key in ("service", "scope") if key in fields})
+        with urllib.request.urlopen(urllib.request.Request(f"{fields.get('realm', '')}?{query}", headers={"User-Agent": "release-lock"}), timeout=30) as response:
+            token = json.load(response).get("token")
+        with urllib.request.urlopen(head(token), timeout=30) as response:
+            return response.headers.get("Docker-Content-Digest")
+    except urllib.error.HTTPError as err:
+        if err.code == 404:
+            return None
+        raise Unreadable(f"{host} answered {err.code} for {name}:{tag}") from err
+    except (urllib.error.URLError, TimeoutError, ValueError) as err:
+        raise Unreadable(f"{host} could not be read for {name}:{tag}: {err}") from err
 
 
 def main_order(repo: Path) -> list[str]:
@@ -144,7 +238,10 @@ class World:
 
 def real_world(repo: Path) -> World:
     def tag(repository: str, name: str) -> str | None:
-        found = hub_get(f"{repository}/tags/{name}")
+        host, path = located(repository)
+        if host is not None:
+            return registry_digest(host, path, name)
+        found = hub_get(f"{path}/tags/{name}")
         return None if found is None else found.get("digest")
 
     def tags(repository: str) -> list[tuple[str, str]]:
@@ -199,6 +296,30 @@ def reconcile(release: dict, world: World, server_commit: str, sources: dict | N
     return {"serial": int(release["serial"]) + 1, "server_commit": server_commit, "services": services}, said
 
 
+def refresh_third_party(release: dict, world: World, server_commit: str, names: frozenset[str] | None = None) -> tuple[dict, list[str]]:
+    """main's release with each third-party entry at its tag's current digest, and what moved."""
+    names = THIRD_PARTY if names is None else names
+    services = {name: dict(entry) for name, entry in release["services"].items()}
+    said: list[str] = []
+    for name in sorted(names):
+        if name not in services:
+            raise Unreadable(f"{name} is third-party, and the release does not name it")
+        pinned = TAGGED.fullmatch(services[name]["image"])
+        if pinned is None or pinned["tag"] == "latest":
+            raise Unreadable(f"{name} names {services[name]['image']}: a third-party entry is repo:<a real tag>, never latest")
+        digest = world.tag(pinned["repository"], pinned["tag"])
+        if digest is None:
+            raise Unreadable(f"{name}'s tag {pinned['repository']}:{pinned['tag']} is not published")
+        wanted = f"{pinned['repository']}:{pinned['tag']}@{digest}"
+        if wanted == services[name]["image"]:
+            continue
+        said.append(f"- {name}: {services[name]['image']} → {wanted}")
+        services[name]["image"] = wanted
+    if services == release["services"]:
+        return release, said
+    return {"serial": int(release["serial"]) + 1, "server_commit": server_commit, "services": services}, said
+
+
 def render(release: dict) -> str:
     """The release as R1 wrote it: one service per line, in name order."""
     services = release["services"]
@@ -214,6 +335,7 @@ def render(release: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--release", type=Path, default=RELEASE)
+    parser.add_argument("--third-party", action="store_true", help="refresh the third-party pins, and nothing else")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -222,7 +344,8 @@ def main() -> int:
     try:
         world = real_world(REPO_ROOT)
         release = json.loads(args.release.read_text())
-        updated, said = reconcile(release, world, world.order[-1] if world.order else "")
+        form = refresh_third_party if args.third_party else reconcile
+        updated, said = form(release, world, world.order[-1] if world.order else "")
     except (Unreadable, KeyError, ValueError) as err:
         print(f"release_lock: {err}", file=sys.stderr)
         return 2
@@ -334,6 +457,59 @@ class Tests(unittest.TestCase):
             if runs or suffix in followed:
                 self.assertIn(suffix, followed | held, f"pgathondu/{suffix} is published and home runs it, so the release follows it")
         self.assertIn("kokoro", followed)
+
+    def test_the_third_party_refresh_moves_only_the_digest_under_each_tag(self) -> None:
+        before = sample()
+        before["services"]["redis"]["image"] = f"redis:8.10@{DA}"
+        seen = world({("redis", "8.10"): DB, ("pgathondu/rust-runner", A): DA}, [changeset(A, "rust-runner")], [A])
+        updated, said = refresh_third_party(before, seen, "main", frozenset({"redis"}))
+        self.assertEqual(updated["services"]["redis"]["image"], f"redis:8.10@{DB}")
+        self.assertEqual(updated["services"]["rust-runner"], before["services"]["rust-runner"], "an app image never moves with a third-party one")
+        self.assertEqual((updated["serial"], len(said)), (5, 1))
+        again, said = refresh_third_party(updated, seen, "m2", frozenset({"redis"}))
+        self.assertIs(again, updated, "idempotent")
+        self.assertEqual(said, [])
+
+    def test_an_app_reconcile_never_moves_a_third_party_entry(self) -> None:
+        before = sample()
+        before["services"]["redis"]["image"] = f"redis:8.10@{DA}"
+        seen = world({("redis", "8.10"): DB, ("pgathondu/rust-runner", A): DA}, [changeset(A, "rust-runner")], [A])
+        updated, _ = reconcile(before, seen, "main", {"rust-runner": Changesets("rust-runner")})
+        self.assertEqual(updated["services"]["redis"]["image"], f"redis:8.10@{DA}")
+
+    def test_a_third_party_entry_on_latest_or_an_unpublished_tag_is_unreadable(self) -> None:
+        for image, published in (("redis:latest", {("redis", "latest"): DA}), ("redis", {}), ("redis:9.9", {})):
+            before = sample()
+            before["services"]["redis"]["image"] = image
+            with self.assertRaises(Unreadable, msg=image):
+                refresh_third_party(before, world(published, [], []), "main", frozenset({"redis"}))
+
+    def test_a_repository_is_read_where_docker_pulls_it_from(self) -> None:
+        self.assertEqual(located("redis"), (None, "library/redis"))
+        self.assertEqual(located("prom/prometheus"), (None, "prom/prometheus"))
+        self.assertEqual(located("docker.io/redis"), (None, "library/redis"))
+        self.assertEqual(located("docker.io/prom/prometheus"), (None, "prom/prometheus"))
+        self.assertEqual(located("gcr.io/cadvisor/cadvisor"), ("gcr.io", "cadvisor/cadvisor"))
+        self.assertEqual(located("localhost:5000/tools/x"), ("localhost:5000", "tools/x"))
+
+    def test_a_registry_port_is_never_read_as_the_tag(self) -> None:
+        pinned = TAGGED.fullmatch(f"localhost:5000/tools/x:1.2@{DA}")
+        assert pinned is not None
+        self.assertEqual((pinned["repository"], pinned["tag"]), ("localhost:5000/tools/x", "1.2"))
+        self.assertIsNone(TAGGED.fullmatch("localhost:5000/tools/x"), "a port is no tag")
+
+    def test_every_image_nobody_here_publishes_is_third_party_and_pinned(self) -> None:
+        """No `:latest` and no bare tag among them (R7, #796); file-host is RL5's to free."""
+        release = json.loads(RELEASE.read_text())
+        ours = set(SOURCES) | set(HELD) | {"render"}
+        self.assertEqual(set(release["services"]) - ours, set(THIRD_PARTY))
+        self.assertFalse(THIRD_PARTY & ours)
+        for name in THIRD_PARTY:
+            pinned = TAGGED.fullmatch(release["services"][name]["image"])
+            self.assertIsNotNone(pinned, name)
+            assert pinned is not None
+            self.assertNotEqual(pinned["tag"], "latest", name)
+            self.assertTrue(release["services"][name]["image"].split("@")[-1].startswith("sha256:"), name)
 
     def test_the_checked_in_changesets_all_read(self) -> None:
         for found in changesets(CHANGESETS):
