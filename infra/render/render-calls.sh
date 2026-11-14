@@ -136,6 +136,12 @@ STALE_AFTER=30
 # or is paused, its sign of life (#739). The Renders read takes a stamp older
 # than `feeds::renders::ALIVE_STALE` (60 s) as a worker gone.
 ALIVE_EVERY=10
+# How old the worker's own beat (`beat`, below) may be before Docker reads
+# the container unhealthy: call-render.yml's healthcheck, which the deploy
+# gates render on (#794). Its longest silence is a pass's EVERY sleep and
+# the listing and tidying around it; a wait or a render beats every
+# LANE_POLL.
+BEAT_STALE=300
 # How long a killed recorder is given to go before the worker goes on.
 KILL_WAIT=10
 # A recorder that fails this soon after a pause or a resume is taken to have
@@ -340,6 +346,24 @@ heartbeat() {
   BEAT=$now
   put last-pass "$now"
   [ "$STATUS" = "$LANE" ] || put_in "$LANE" last-pass "$now"
+}
+
+# The worker's sign of life for Docker's healthcheck (#794): the time, in
+# <TMP_BASE>/worker.beat (/tmp/worker.beat, the path call-render.yml's
+# healthcheck reads: the container's tmpfs, so a restart starts with no
+# beat), at most every ALIVE_EVERY seconds, from every
+# loop the worker turns (a pass, a wait for room, a render), so it is never
+# stale while the worker runs, whatever the lane decides or however long a
+# render takes. Not last-pass, which a render leaves to go stale on purpose,
+# and not job.alive, which only a job writes. It says only that the loop
+# turns: a recorder that hangs while the worker lives is still
+# CallRenderOverdue's.
+beat() {
+  local now
+  now=$(date +%s)
+  [ $(( now - ${BEAT_AT:-0} )) -ge "$ALIVE_EVERY" ] || return 0
+  BEAT_AT=$now
+  put_in "$TMP_BASE" worker.beat "$now" || true
 }
 
 # Now, in Unix seconds, against which a decision's age is read.
@@ -626,6 +650,7 @@ wait_for_room() {
       say "the $job of $key waits for room on home (the lane: $LANE_VERB, $LANE_WHY)" "$log"
     fi
     heartbeat
+    beat
     sleep "$LANE_POLL"
   done
 }
@@ -658,6 +683,7 @@ attempt() {
     sleep "$LANE_POLL"
     kill -0 "$RECORDER" 2> /dev/null || break
     alive
+    beat
     [ "$paused" -eq 0 ] || heartbeat
     read_lane
     case $LANE_VERB in
@@ -925,6 +951,7 @@ RECORDER=
 serve() {
   local job
   while true; do
+    beat
     resume_left
     for job in "${JOBS[@]}"; do
       run_job "$job"

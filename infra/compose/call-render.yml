@@ -186,6 +186,18 @@ services:
     # they get it first, and the render takes what is left over.
     cpu_shares: 256
     pids_limit: 512
+    # Healthy while the worker's loop turns (RELEASE R5, #794): it writes the
+    # time to /tmp/worker.beat at least every BEAT_STALE seconds from every
+    # loop it runs, a render's included (render-calls.sh, `beat`), and this
+    # reads its age with bash's builtins alone. Healthy says the worker is
+    # alive, not that a render progresses: that stays the CALL alerts'.
+    healthcheck:
+      test: ['CMD', 'bash', '-c', "read -r at < /tmp/worker.beat && printf -v now '%(%s)T' -1 && (( now - at < 300 ))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
     deploy:
       resources:
         limits:

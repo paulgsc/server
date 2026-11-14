@@ -604,6 +604,15 @@ alive_moved() {
   [ "$(sed -n 's/^at=//p' "$alive")" -gt "$stamped" ]
 }
 check "the paused worker's own loop stamps it again" within alive_moved
+# The healthcheck's beat (#794), from the same loop: a render that waits on
+# the lane for hours is a worker alive.
+beat="$TMP_BASE/worker.beat"
+check "the paused worker beats for its healthcheck" grep -qx "[0-9]\+" "$beat"
+beaten=$(cat "$beat")
+beat_moved() {
+  [ "$(cat "$beat")" -gt "$beaten" ]
+}
+check "and beats again" within beat_moved
 held=$(steps_made)
 rm "$FAKE/hold-at"
 sleep 1

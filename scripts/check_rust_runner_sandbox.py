@@ -93,6 +93,18 @@ SERVE = (
 	" --work /work --program-uid 10101 --program-gid 10101 --client-uid 10000"
 )
 RESIDENTS = (SERVE,)
+# The compose file's healthcheck (#794): a toolchain ask as file_host's uid,
+# every 30 s. Its processes are root's (the shell, grep) and the client's
+# (`ask`), never the programs' uid, so one is taken as the probe only with
+# its uid as well as its args, and no program's survivor can pass for it.
+# check_sandbox holds the compose file to PROBE.
+PROBE = "echo '{\"ask\":\"toolchain\"}' | setpriv --reuid 10000 --regid 10001 --clear-groups rust-runner ask | grep -q '\"answer\":\"toolchain\"'"
+PROBE_PROCESSES = {
+	("0", "/bin/sh -c " + PROBE),
+	("0", "setpriv --reuid 10000 --regid 10001 --clear-groups rust-runner ask"),
+	("10000", "rust-runner ask"),
+	("0", 'grep -q "answer":"toolchain"'),
+}
 # The runner's watchdog deadline for one job with the default limits
 # (`serve_job_deadline`): 60 s compile, 2 s run, 30 s clean, 2 x 5 s client,
 # 30 s sweep allowance.
@@ -140,11 +152,25 @@ def wait_ready(deadline_seconds: float = 120) -> None:
 	raise Failed(f"the runner did not answer within {deadline_seconds} s: {last}")
 
 
+def wait_healthy(deadline_seconds: float = 60) -> None:
+	"""Docker reads the container `healthy` by PROBE: what the deploy gates it on (#794)."""
+	deadline = time.monotonic() + deadline_seconds
+	status = ""
+	while time.monotonic() < deadline:
+		state = json.loads(subprocess.run(["docker", "inspect", CONTAINER], capture_output=True, text=True, check=True).stdout)[0]["State"]
+		status = (state.get("Health") or {}).get("Status", "none")
+		if status == "healthy":
+			print("ok: the runner reads healthy by its healthcheck")
+			return
+		time.sleep(1)
+	raise Failed(f"the runner was not healthy within {deadline_seconds} s: {status}")
+
+
 def leftovers() -> list[str]:
-	"""Every process in the container but the runner."""
-	result = subprocess.run(["docker", "top", CONTAINER, "-eo", "pid,args"], capture_output=True, text=True, check=True)
-	processes = [line.split(None, 1)[1] for line in result.stdout.splitlines()[1:] if len(line.split(None, 1)) == 2]
-	return [args for args in processes if args not in RESIDENTS]
+	"""Every process in the container but the runner and the healthcheck's."""
+	result = subprocess.run(["docker", "top", CONTAINER, "-eo", "pid,uid,args"], capture_output=True, text=True, check=True)
+	processes = [line.split(None, 2)[1:] for line in result.stdout.splitlines()[1:] if len(line.split(None, 2)) == 3]
+	return [args for uid, args in processes if args not in RESIDENTS and (uid, args) not in PROBE_PROCESSES]
 
 
 def files_left() -> list[str]:
@@ -219,6 +245,9 @@ def check_sandbox() -> None:
 	expect(declared == [(f"{PROJECT}_rust_runner_socket", "/run/rust-runner")], f"mounts declared: {declared}")
 	mounted = [(mount.get("Type"), mount.get("Destination")) for mount in inspected.get("Mounts") or []]
 	expect(mounted == [("volume", "/run/rust-runner")], f"mounts: {mounted}")
+	# The healthcheck is PROBE, which leftovers() knows by its processes.
+	probe = (inspected["Config"].get("Healthcheck") or {}).get("Test")
+	expect(probe == ["CMD-SHELL", PROBE], f"healthcheck: {probe}")
 	names = {entry.split("=", 1)[0] for entry in inspected["Config"].get("Env") or []}
 	expect(names <= ENV_ALLOWED, f"variables beyond the allowlist: {sorted(names - ENV_ALLOWED)}")
 	status = runner_status()
@@ -625,8 +654,11 @@ def check_hostile() -> None:
 	expect(queued["outcome"] == "prints" and queued["stdout"] == "queued\n", f"queueing a request: {queued}")
 	expect(ask({"ask": "toolchain"})["answer"] == "toolchain", "the runner stopped answering")
 	logged = compose("logs", "--no-color", CONTAINER).stdout.splitlines()
-	tail = [line.split("rust-runner: ", 1)[-1] for line in logged[-3:]]
-	expect(tail[0].startswith("recorded ok in ") and tail[1:] == ["refused peer", "toolchain"], f"the runner's log: {tail}")
+	# Toolchain asks left out: the compose file's healthcheck asks one every
+	# 30 s (#794), so one may fall between any two lines.
+	answered = [line.split("rust-runner: ", 1)[-1] for line in logged]
+	tail = [line for line in answered if line != "toolchain"][-2:]
+	expect(tail[0].startswith("recorded ok in ") and tail[1:] == ["refused peer"] and answered[-1] == "toolchain", f"the runner's log: {tail}")
 	clean("queueing a request")
 	print("ok: a request a program queues on the socket is refused, unread")
 
@@ -699,6 +731,7 @@ def main() -> int:
 			compose("build", timeout=3600)
 		compose("up", "-d", "--no-build", "--pull", "never", "--force-recreate")
 		wait_ready()
+		wait_healthy()
 		check_ids()
 		check_sandbox()
 		check_client_container()
