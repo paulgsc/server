@@ -25,9 +25,8 @@
 services:
   rust-runner:
     image: ${IMAGE_RUST_RUNNER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile.rust-runner
+    # Never built on home (RELEASE R6, #795): its local build is
+    # infra/compose/dev.build.yml's, which only the sandbox check loads.
     container_name: rust-runner
     # Who the kernel kills first when home runs out of memory: interactive
     # (docs/home-compute.md, "Who is killed first").

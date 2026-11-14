@@ -357,11 +357,76 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 	environment
 }
 
+/// Why `envctl compose --role <role>` refuses `args`, if it does (RELEASE R6,
+/// #795).
+///
+/// Home runs one release, applied whole by `make home-deploy`, so on the home
+/// role compose may not pull, build, rebuild-and-start, or start some services
+/// on their own: each is a way back to running one image apart from its set.
+/// `ps`, `logs`, `exec`, `run`, a plain `up` and the rest pass.
+/// `scripts/check_home_guard.py` refuses the same commands written in the
+/// docs.
+pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
+	// Compose's own options before the command, and those that take a value.
+	const GLOBAL_VALUED: &[&str] = &[
+		"-f",
+		"--file",
+		"-p",
+		"--project-name",
+		"--profile",
+		"--env-file",
+		"--project-directory",
+		"--ansi",
+		"--progress",
+		"--parallel",
+	];
+	// `up`'s options that take a value, so it is never read as a service.
+	const UP_VALUED: &[&str] = &["-t", "--timeout", "--scale", "--pull", "--wait-timeout", "--exit-code-from", "--attach", "--no-attach"];
+	if role != "home" {
+		return None;
+	}
+	let mut rest = args.iter().map(String::as_str);
+	let command = loop {
+		let arg = rest.next()?;
+		if !arg.starts_with('-') {
+			break arg;
+		}
+		if GLOBAL_VALUED.contains(&arg) {
+			rest.next();
+		}
+	};
+	let deploy = "home deploys one release, whole: run `make home-deploy`";
+	match command {
+		"pull" | "build" => Some(format!("`compose {command}` on the home role would move images apart from the release; {deploy}")),
+		"up" => {
+			let mut services = Vec::new();
+			let mut rest = rest.peekable();
+			while let Some(arg) = rest.next() {
+				if arg == "--build" {
+					return Some(format!("`compose up --build` on the home role builds an image the release does not name; {deploy}"));
+				}
+				if UP_VALUED.contains(&arg) {
+					rest.next();
+				} else if !arg.starts_with('-') {
+					services.push(arg);
+				}
+			}
+			(!services.is_empty()).then(|| {
+				format!(
+					"`compose up {}` on the home role starts some services apart from the rest of the release; {deploy}",
+					services.join(" ")
+				)
+			})
+		}
+		_ => None,
+	}
+}
+
 #[cfg(test)]
 // `${...}` is compose's syntax under test here, not a format argument.
 #[allow(clippy::literal_string_with_formatting_args)]
 mod tests {
-	use super::{included, own_paragraph, variables, wired};
+	use super::{home_refusal, included, own_paragraph, variables, wired};
 	use serde_json::json;
 
 	fn texts(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -426,5 +491,62 @@ mod tests {
 		let optional = json!({"env_file": [{"path": "${ENV_DIR:?x}/probe.env", "required": false}]});
 		assert!(wired(&optional, "probe").is_some(), "a missing file would start it on nothing");
 		assert!(wired(&json!({}), "probe").unwrap().contains("reads no env_file"));
+	}
+
+	fn args(line: &str) -> Vec<String> {
+		line.split_whitespace().map(str::to_owned).collect()
+	}
+
+	/// RELEASE R6 (#795): each way of moving one image apart from its release
+	/// is refused on home, and points at the one command.
+	#[test]
+	fn home_refuses_pull_build_up_build_and_up_some_services() {
+		for line in [
+			"pull",
+			"pull rust-runner",
+			"build",
+			"build render",
+			"up --build",
+			"up -d --build render",
+			"up -d render",
+			"up render kokoro",
+			"-p x pull",
+			"--profile tools up -d render",
+			"up --timeout 30 render",
+		] {
+			let refused = home_refusal("home", &args(line));
+			assert!(
+				refused.as_deref().is_some_and(|why| why.contains("make home-deploy")),
+				"`{line}` was not refused: {refused:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn home_lets_everything_else_through() {
+		for line in [
+			"",
+			"ps",
+			"logs -f render",
+			"exec render sh",
+			"run --rm --no-deps render true",
+			"up -d",
+			"up",
+			"up --timeout 30 -d",
+			"up --pull never -d",
+			"down",
+			"config",
+			"-p x ps",
+			"--profile tools ps",
+		] {
+			assert_eq!(home_refusal("home", &args(line)), None, "`{line}` was refused");
+		}
+	}
+
+	#[test]
+	fn another_role_is_never_refused() {
+		for line in ["pull", "build render", "up --build", "up -d render"] {
+			assert_eq!(home_refusal("dev", &args(line)), None, "`{line}` on dev");
+		}
 	}
 }

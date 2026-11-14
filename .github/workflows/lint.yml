@@ -179,6 +179,21 @@ jobs:
   # read from the registry by digest. The self-test (the rule, envctl's cases,
   # every server image's labels) always runs; the registry is read when the
   # release or the check changed, which every release pull request does.
+  # RELEASE R6 (#795): home starts nothing outside its release. No compose
+  # service of the home include set builds or floats, no release entry lacks
+  # a digest, no NixOS module names its own image, and no doc tells anyone
+  # to pull or build by hand. No path gate: stdlib python3, a second.
+  home_guard:
+    name: Home guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Home starts nothing outside deploy/home/release.json
+        run: |
+          set -euo pipefail
+          python3 scripts/check_home_guard.py --self-test
+          python3 scripts/check_home_guard.py
+
   # No path gate on the job: stdlib python3 and one file from the base.
   release_set:
     name: Release set
@@ -331,7 +346,7 @@ jobs:
   # and on a fork's head, whose token cannot dispatch (the sweep judges those).
   tell_gate:
     name: Tell PR gate
-    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, release_set, contract_epoch, rust_lint]
+    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, home_guard, release_set, contract_epoch, rust_lint]
     if: always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:

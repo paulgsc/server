@@ -414,6 +414,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, &compose::read(&repo)?)
 		}
 		Command::Compose { role, env_dir, args } => {
+			if let Some(why) = compose::home_refusal(&role, &args) {
+				bail!("{why}");
+			}
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
 			let raw = compose::config(&repo).context("docker compose config failed")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
