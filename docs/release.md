@@ -85,11 +85,18 @@ per CLAUDE.md, "Drift is loud, not silent".
     yet merged; the refresh is still due, so it is proposed again once the
     app release is on main.
 
-  A daily schedule asks whether one is due by git alone, and stops there
-  when it is not: no registry read, no pull request. A forced refresh made
-  when none is due is closed by the next run that is not forced, so force
-  one only to merge it then. caddy runs at NixOS level and is not in the
-  release.
+  A daily schedule asks whether one is due by git alone, outside the
+  release job's concurrency group, and stops there when it is not: no
+  registry read, no pull request, and no queued run cancelled. So a
+  scheduled day with nothing due reconciles nothing: an open release pull
+  request that main has since passed waits for the next publish or dispatch
+  run to form or close it. A forced refresh made when none is due is closed
+  by the next publish or dispatch run with no app moves, so force one only
+  to merge it then. "Due" means no third-party line moved, not that no
+  refresh ran: a refresh that finds every digest the same commits nothing,
+  so the next runs read the registries again until one moves, and an
+  unreadable registry on such a day fails the run, as RL2's runs fail
+  loudly. caddy runs at NixOS level and is not in the release.
 
 ## What a turned-down release means
 

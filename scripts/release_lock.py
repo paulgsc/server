@@ -536,8 +536,13 @@ class Tests(unittest.TestCase):
             # An app move inside the window does not count.
             commit({"redis": {"image": f"redis:8.10@{DB}"}, "rust-runner": {"image": "pgathondu/rust-runner:b"}}, 1)
             self.assertFalse(third_party_moved_since(repo, 30, release), "a third-party move 31 days ago, an app move since: due")
-            commit({"redis": {"image": f"redis:8.10@{DC}"}, "rust-runner": {"image": "pgathondu/rust-runner:b"}}, 2)
-            self.assertTrue(third_party_moved_since(repo, 30, release), "a third-party move 2 days ago: not due")
+            # A serial and server_commit change alone (render writes both) is no move.
+            release.write_text(render({"serial": 2, "server_commit": "x", "services": {"redis": {"image": f"redis:8.10@{DB}"}, "rust-runner": {"image": "pgathondu/rust-runner:b"}}}))
+            subprocess.run(["git", "commit", "-qam", "s"], cwd=repo, check=True, env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin"})
+            self.assertFalse(third_party_moved_since(repo, 30, release), "only serial and server_commit moved: due")
+            # A hyphenated name, which the pattern escapes, counts.
+            commit({"redis": {"image": f"redis:8.10@{DB}"}, "redis-exporter": {"image": f"oliver006/redis_exporter:v1@{DA}"}, "rust-runner": {"image": "pgathondu/rust-runner:b"}}, 2)
+            self.assertTrue(third_party_moved_since(repo, 30, release), "redis-exporter moved 2 days ago: not due")
 
     def test_a_repository_is_read_where_docker_pulls_it_from(self) -> None:
         self.assertEqual(located("redis"), (None, "library/redis"))

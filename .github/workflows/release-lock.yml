@@ -11,9 +11,11 @@
 # published, and forming the set adds none).
 #
 # A run carries no images of its own: what started it is only a reason to
-# look. So any run computes the whole set, and the one concurrency group's
-# single pending slot loses nothing when GitHub cancels a queued run for a
-# newer one: the newer one sees everything the cancelled one would have.
+# look. So any run computes the whole set, and the release job's concurrency
+# group's single pending slot loses nothing when GitHub cancels a queued run
+# for a newer one: the newer one sees everything the cancelled one would
+# have. Only a run that reconciles enters the group (a scheduled one only
+# when a refresh is due), so none that skips can cancel one that would not.
 #
 # It runs after server's images are pushed (publish-image-changesets.yml's
 # `release` job), when some-ui's www and render releases dispatch it (U1,
@@ -54,13 +56,41 @@ on:
     - cron: '17 11 * * *'
 permissions:
   contents: read
-concurrency:
-  group: release-lock
-  cancel-in-progress: false
 jobs:
+  # The schedule's only question, by git alone, outside the concurrency
+  # group: a scheduled day with no refresh due ends here, before any registry
+  # read or pull request, and its skipped release job never takes the
+  # group's one pending slot, so it can't cancel a queued run that has app
+  # moves to form (the review of #860).
+  due:
+    name: Is a third-party refresh due
+    runs-on: ubuntu-latest
+    outputs:
+      due: ${{ steps.due.outputs.due }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Read main's history
+        id: due
+        env:
+          FORCE_THIRD_PARTY: ${{ inputs.third_party == true }}
+        run: |
+          set -euo pipefail
+          due=$(python3 scripts/release_lock.py --third-party-due)
+          [ "$FORCE_THIRD_PARTY" != true ] || due=due
+          echo "third-party refresh: $due"
+          echo "due=$due" >> "$GITHUB_OUTPUT"
   release:
     name: Reconcile the release
+    needs: due
+    if: github.event_name != 'schedule' || needs.due.outputs.due == 'due'
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-lock
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
@@ -69,7 +99,6 @@ jobs:
       GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
       GH_REPO: ${{ github.repository }}
       FORCE_THIRD_PARTY: ${{ inputs.third_party == true }}
-      SCHEDULED: ${{ github.event_name == 'schedule' }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -77,16 +106,6 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
-      # The schedule's only question, by git alone: a day with no refresh due
-      # ends here, before any registry read or pull request.
-      - name: Is a third-party refresh due
-        id: due
-        run: |
-          set -euo pipefail
-          due=$(python3 scripts/release_lock.py --third-party-due)
-          [ "$FORCE_THIRD_PARTY" != true ] || due=due
-          echo "third-party refresh: $due"
-          echo "due=$due" >> "$GITHUB_OUTPUT"
       # Runs are one at a time (the concurrency group), so the only thing that
       # can move under a run is main itself: a release, or anything else,
       # merging meanwhile. The run forms on main as it is, pushes, and forms
@@ -96,7 +115,6 @@ jobs:
       # or the other, never both.
       - name: Reconcile the release with what has been published
         id: reconcile
-        if: env.SCHEDULED != 'true' || steps.due.outputs.due == 'due'
         env:
           REASON: ${{ inputs.reason }}
         run: |
