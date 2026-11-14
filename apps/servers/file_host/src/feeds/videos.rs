@@ -310,13 +310,22 @@ pub struct Folders<'a> {
 /// A storage failure, or a file the drive would not remove. The receipt is
 /// kept then, and asking for the step again finishes it.
 pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders<'_>, key: &str, step: Step, now: &str) -> Result<LetGo, LetGoError> {
-	// How many parts, read strictly: a parts file the drive won't give is
-	// never taken for a week of one video (`call_weeks::render::parts_read`).
-	if let (Feed::Call, Some((week, _))) = (feed, video::split_key(key)) {
-		crate::call_weeks::render::parts_read(folders.renders, week).await?;
-	}
-	let Some((week, _, of)) = part_of(feed, folders.renders, key).await else {
-		return Ok(LetGo::NoEpisode);
+	// How many parts, read once and strictly: a parts file the drive won't
+	// give is never taken for a week of one video
+	// (`call_weeks::render::parts_read`), and the count the receipt records
+	// is the count this read.
+	let (week, of) = match feed {
+		Feed::Call => {
+			let Some((week, part)) = video::split_key(key) else {
+				return Ok(LetGo::NoEpisode);
+			};
+			let of = crate::call_weeks::render::parts_read(folders.renders, week).await?;
+			if part > of {
+				return Ok(LetGo::NoEpisode);
+			}
+			(week.to_owned(), of)
+		}
+		Feed::PlayoffDelta | Feed::RustEssay => (key.to_owned(), 1),
 	};
 	let gone = Gone { week: &week, of };
 	let _folders = super::FOLDERS.lock().await;
