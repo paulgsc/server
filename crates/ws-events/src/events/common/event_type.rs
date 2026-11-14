@@ -8,6 +8,10 @@ use std::fmt;
 /// `io.paulgsc.*` labels in their Dockerfiles, which each side's own test
 /// holds to this number.
 ///
+/// It covers what crosses these subjects between the two, the subjects
+/// and the payloads (`UnifiedEvent`, `OrchestratorCommandData`,
+/// `OrchestratorState`) alike, though only the subjects are pinned by a
+/// test: raise it by hand with a payload change the other side must read.
 /// Raise it by one whenever [`EventType::subject`] changes:
 /// `the_subjects_are_this_epoch_s` (in `apps/orchestrator/src/lib.rs`, since
 /// this crate runs no tests) fails until the subjects it pins and this
