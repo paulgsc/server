@@ -363,10 +363,12 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 /// Home runs one release, applied whole by `make home-deploy`, so on the home
 /// role compose may not pull, build, watch, rebuild-and-start, or start some
 /// services on their own: each is a way back to running one image apart from
-/// its set. A `--build` on any command (`run`, `create`) is refused with
-/// them. `ps`, `logs`, `exec`, a plain `run`, a plain `up`, `restart` and the
-/// rest pass: they reuse the release's images. `scripts/check_home_guard.py`
-/// refuses the same commands written in the docs.
+/// its set. A `--build` on any command but `exec` (`run`, `create`) is
+/// refused with them, and so is a compose file of one's own (`-f`), which
+/// could start an image the release does not name. `ps`, `logs`, `exec`, a
+/// plain `run`, a plain `up`, `restart` and the rest pass: they reuse the
+/// release's images. `scripts/check_home_guard.py` refuses the same commands
+/// written in the docs.
 pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 	// Compose's own options before the command, and those that take a value.
 	const GLOBAL_VALUED: &[&str] = &[
@@ -386,11 +388,17 @@ pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 	if role != "home" {
 		return None;
 	}
+	let deploy = "home deploys one release, whole: run `make home-deploy`";
 	let mut rest = args.iter().map(String::as_str);
 	let command = loop {
 		let arg = rest.next()?;
 		if !arg.starts_with('-') {
 			break arg;
+		}
+		if arg == "-f" || arg == "--file" || arg.starts_with("--file=") {
+			return Some(format!(
+				"a compose file of one's own (`{arg}`) on the home role could start an image the release does not name; {deploy}"
+			));
 		}
 		if GLOBAL_VALUED.contains(&arg) {
 			rest.next();
@@ -403,17 +411,21 @@ pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 			.iter()
 			.any(|arg| *arg == flag || arg.strip_prefix(flag).and_then(|value| value.strip_prefix('=')).is_some_and(|value| value != "false"))
 	};
-	let deploy = "home deploys one release, whole: run `make home-deploy`";
 	if matches!(command, "pull" | "build" | "watch") {
 		return Some(format!("`compose {command}` on the home role would move images apart from the release; {deploy}"));
 	}
-	if set("--build") {
+	// What follows `exec`'s service is the container's own command.
+	if command != "exec" && set("--build") {
 		return Some(format!("`compose {command} --build` on the home role builds an image the release does not name; {deploy}"));
 	}
 	if command != "up" {
 		return None;
 	}
-	if set("--watch") {
+	// `-w` is `up`'s short `--watch`, alone or in a cluster (`-dw`).
+	let short_watch = rest
+		.iter()
+		.any(|arg| arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('w'));
+	if set("--watch") || short_watch {
 		return Some(format!("`compose up --watch` on the home role rebuilds images the release does not name; {deploy}"));
 	}
 	let mut services = Vec::new();
@@ -532,6 +544,10 @@ mod tests {
 			"up --timeout 30 render",
 			"run --build --rm render true",
 			"create --build",
+			"up -w",
+			"up -dw",
+			"-f other.yml up -d",
+			"--file=other.yml ps",
 		] {
 			let refused = home_refusal("home", &args(line));
 			assert!(
@@ -559,6 +575,9 @@ mod tests {
 			"config",
 			"-p x ps",
 			"--profile tools ps",
+			"exec render node cli.js --build",
+			"run --rm -w /opt render true",
+			"up -d --no-build",
 		] {
 			assert_eq!(home_refusal("home", &args(line)), None, "`{line}` was refused");
 		}
