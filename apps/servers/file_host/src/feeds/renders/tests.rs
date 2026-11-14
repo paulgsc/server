@@ -234,6 +234,7 @@ fn each_episode_is_in_one_place() {
 			at: NOW - 15 * 86_400,
 			template: None,
 			expires_at: None,
+			bytes: None,
 		}]
 	);
 	assert_eq!(read.failed.len(), 1);
@@ -469,6 +470,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	assert_eq!((now.key.as_str(), now.state, now.held_by), ("2026-11-06", Phase::Paused, Some(HeldBy::Busy)));
 	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9);
 	assert_eq!(read.done.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["2026-10-30"]);
+	assert_eq!(read.done[0].bytes, Some(5), "a done call's video says its size");
 	assert_eq!(read.waiting, []);
 	assert_eq!(
 		read.coming,
@@ -517,6 +519,7 @@ async fn a_clips_walks_are_on_the_board_as_episodes_are() {
 		read.done.iter().map(|e| (e.feed.as_str(), e.key.as_str())).collect::<Vec<_>>(),
 		[("clip-walk", "ledger-wake-after")]
 	);
+	assert_eq!(read.done[0].bytes, None, "a walk's walk.json is no video: no size");
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["ledger-wake-before"]);
 	assert_eq!(read.waiting, [], "the walk in progress is not also waiting, and what isn't a walk is not read");
 	assert_eq!(read.coming, [], "a walk is expected on no day");
@@ -557,6 +560,11 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	let read = read(&db, &folders, "", NOW).await.unwrap();
 	let shelf = |episodes: &[Episode]| episodes.iter().map(|e| (e.feed.clone(), e.key.clone())).collect::<Vec<_>>();
 	assert_eq!(shelf(&read.done), [(String::from("cards-essay"), String::from("zfs-2026-11-02"))]);
+	// Its size, from the stat that dates it: the total the phone's ranged
+	// fetch counts against.
+	assert_eq!(read.done[0].bytes, Some(5));
+	assert_eq!(serde_json::to_value(&read.done[0]).unwrap()["bytes"], serde_json::json!(5), "the phone reads it as `bytes`");
+	assert_eq!(read.waiting[0].bytes, None, "a waiting essay has no video yet");
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["nixos-upgrade-2026-11-07"]);
 	assert_eq!(shelf(&read.waiting), [(String::from("cards-essay"), String::from("rust-scratchpad-2026-11-08"))]);
 	assert_eq!(read.waiting[0].template, None, "an essay names no template");
@@ -646,7 +654,7 @@ async fn a_template_s_previews_are_on_the_board_while_home_keeps_them() {
 	assert_eq!(now.template.as_deref(), Some("conference-call"));
 	assert_eq!(
 		serde_json::to_value(&read.done[0]).unwrap(),
-		serde_json::json!({ "feed": "preview", "key": ready, "at": NOW - 3_600, "template": "conference-call", "expiresAt": NOW - 3_600 + 86_400 })
+		serde_json::json!({ "feed": "preview", "key": ready, "at": NOW - 3_600, "template": "conference-call", "expiresAt": NOW - 3_600 + 86_400, "bytes": 3 })
 	);
 	assert_eq!(
 		serde_json::to_value(&read.waiting[0]).unwrap(),
