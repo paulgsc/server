@@ -130,7 +130,7 @@ pub(crate) enum Verdict {
 /// healthcheck at all is not the image's fault, so it is unjudgeable.
 pub(crate) fn judge(reading: &Reading, baseline_restarts: u64) -> Verdict {
 	if reading.container.is_none() {
-		return Verdict::Failed(format!("no {FILE_HOST} container"));
+		return Verdict::Failed("there is no container".to_owned());
 	}
 	let status = reading.status.as_deref();
 	if let Some(status @ ("exited" | "dead" | "restarting" | "removing" | "paused")) = status {
@@ -171,17 +171,34 @@ pub(crate) fn judge_service(reading: &Reading, baseline_restarts: u64, observed:
 	}
 }
 
-/// Polls every service until all are ready, one fails, or `timeout` seconds
-/// pass. Returns the first failure, if any (service, reason), and the
-/// seconds it took.
-pub(crate) fn wait_all(services: &[String], read: &mut dyn FnMut(&str) -> Reading, clock: &dyn Clock, timeout: f64, poll: f64) -> (Option<(String, String)>, f64) {
+/// Polls every service until each runs its expected image (`expected`:
+/// service → image id) and is ready, one fails, or `timeout` seconds pass.
+/// A service still on another image is waited for: a container the release
+/// did not replace is never counted as the release's. Returns the first
+/// failure, if any (service, reason), and the seconds it took.
+pub(crate) fn wait_all(
+	expected: &BTreeMap<String, String>,
+	read: &mut dyn FnMut(&str) -> Reading,
+	clock: &dyn Clock,
+	timeout: f64,
+	poll: f64,
+) -> (Option<(String, String)>, f64) {
 	let start = clock.now();
-	let baselines: Vec<u64> = services.iter().map(|service| read(service).restarts).collect();
+	let baselines: Vec<u64> = expected.keys().map(|service| read(service).restarts).collect();
 	loop {
 		let elapsed = clock.now() - start;
 		let mut waiting = None;
-		for (service, baseline) in services.iter().zip(&baselines) {
+		for ((service, image), baseline) in expected.iter().zip(&baselines) {
 			let reading = read(service);
+			if reading.container.is_some() && reading.image.as_ref() != Some(image) {
+				waiting.get_or_insert_with(|| {
+					(
+						service.clone(),
+						format!("still on {}, not the release's image", reading.image.as_deref().unwrap_or("an unknown image")),
+					)
+				});
+				continue;
+			}
 			match judge_service(&reading, *baseline, elapsed) {
 				Verdict::Ready => {}
 				Verdict::Wait => {
@@ -275,6 +292,8 @@ pub(crate) struct Outcome {
 	pub(crate) serving: Option<u64>,
 	/// The release that served before it, when it changed.
 	pub(crate) previous: Option<u64>,
+	/// Main's release failed here before, so the previous one was kept.
+	pub(crate) skipped: bool,
 }
 
 /// Pulls every image the release names (or, without `pull`, checks each is
@@ -365,16 +384,18 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 	let not_deployed = |previous: &Option<Target>| Outcome {
 		code: EXIT_NOT_DEPLOYED,
 		serving: previous.as_ref().map(|previous| previous.release.serial),
-		previous: None,
+		..Outcome::default()
 	};
 
 	// A release that failed here is not tried again: the previous one is
 	// applied instead, which brings back anything it left stopped.
 	let mut target = target.clone();
-	if previous.as_ref().is_some_and(|previous| previous.release != target.release) && host.failed_releases().contains(&target.release.serial) {
-		let Some(previous) = previous.clone() else {
-			return not_deployed(&previous);
-		};
+	let mut skipped = false;
+	if let Some(previous) = previous
+		.clone()
+		.filter(|previous| previous.release != target.release && host.failed_releases().contains(&target.release.serial))
+	{
+		skipped = true;
 		say(&format!(
 			"deploy: release {} failed here before; staying on {} until a newer release forms",
 			target.name(),
@@ -407,30 +428,55 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		.filter(|(_, reading)| !matches!(judge_service(reading, reading.restarts, STABLE_SECONDS), Verdict::Ready))
 		.map(|(service, _)| service)
 		.collect();
-	if changed.is_empty() && stopped.is_empty() {
-		host.record_applied(&target.commit);
-		say("deploy: every service runs this release's image; nothing restarted");
+	// The tree is part of the release (RL9): a main that moved its compose
+	// files or deploy/<role>/ without an image is brought up too, so what
+	// runs is what the recorded commit holds.
+	let same_tree = recorded.as_deref() == Some(target.commit.as_str());
+	if changed.is_empty() && stopped.is_empty() && same_tree {
+		say("deploy: every service runs this release's image, from its tree; nothing restarted");
 		return Outcome {
 			code: EXIT_DEPLOYED,
 			serving: Some(target.release.serial),
-			previous: None,
+			skipped,
+			..Outcome::default()
 		};
+	}
+	if !same_tree && changed.is_empty() && stopped.is_empty() {
+		say("deploy: every image is the running one; bringing the release's tree up (compose files, deploy/<role>/)");
+	}
+	// A service that was not ready before, on an image this release does not
+	// change, is not the release's to answer for: it is named, not judged.
+	let unjudged: Vec<String> = stopped
+		.iter()
+		.filter(|service| !changed.contains(service) && before[**service].container.is_some())
+		.map(|service| (*service).clone())
+		.collect();
+	for service in &unjudged {
+		say(&format!(
+			"deploy: {service} was not ready before this pass, on the image this release keeps; it is brought up but not judged"
+		));
 	}
 	for service in &changed {
 		let described = host.describe(&ids[*service]);
 		say(&format!("deploy: {service} moves to {described}"));
 	}
-	for service in stopped.iter().filter(|service| !changed.contains(service)) {
-		say(&format!("deploy: {service} runs this release's image but is not ready; bringing it up"));
+	for service in stopped.iter().filter(|service| !changed.contains(service) && !unjudged.contains(service)) {
+		say(&format!("deploy: {service} has no container; bringing it up"));
 	}
 
-	let up_ok = host.up(&target);
-	if !up_ok {
-		say("deploy: up failed (its reason is above); judging what it left");
-	}
-	say(&format!("deploy: waiting up to {:.0} s for every service to be ready", options.ready_timeout));
-	let services = target.services();
-	let (failure, took) = wait_all(&services, &mut |service| host.reading(service), clock, options.ready_timeout, options.poll);
+	let judged: BTreeMap<String, String> = ids
+		.iter()
+		.filter(|(service, _)| !unjudged.contains(service))
+		.map(|(service, id)| (service.clone(), id.clone()))
+		.collect();
+	let (failure, took) = if host.up(&target) {
+		say(&format!("deploy: waiting up to {:.0} s for every service to be ready", options.ready_timeout));
+		wait_all(&judged, &mut |service| host.reading(service), clock, options.ready_timeout, options.poll)
+	} else {
+		// Whatever up left half done is the release's failure: it is not
+		// judged on containers it never replaced.
+		(Some(("up".to_owned(), "envctl up failed (its reason is above)".to_owned())), 0.0)
+	};
 	let Some((service, reason)) = failure else {
 		host.record_applied(&target.commit);
 		say(&format!("deploy: release {} is ready after {took:.0} s", target.name()));
@@ -438,6 +484,7 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 			code: EXIT_DEPLOYED,
 			serving: Some(target.release.serial),
 			previous: previous.filter(|previous| previous.release != target.release).map(|previous| previous.release.serial),
+			skipped,
 		};
 	};
 	say(&format!("deploy: {service} did not come up: {reason}"));
@@ -458,27 +505,29 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		say(&stuck_note(backup.as_deref()));
 		return Outcome {
 			code: EXIT_NOTHING_READY,
-			serving: None,
-			previous: None,
+			..Outcome::default()
 		};
 	};
 
 	host.remember_failed(target.release.serial);
 	say(&format!("deploy: ROLLING BACK to release {}, whole", previous.name()));
-	let back = fetch(host, &previous, options.pull, say).is_some() && host.up(&previous);
-	let (failure, took_back) = if back {
-		wait_all(&previous.services(), &mut |service| host.reading(service), clock, options.ready_timeout, options.poll)
-	} else {
-		(Some((String::from("the rollback"), String::from("its images or up failed"))), 0.0)
-	};
+	// The previous release's images are here, by digest: no pull, so a
+	// rollback needs no registry, and an entry named by tag does not move.
+	let back = fetch(host, &previous, false, say).filter(|_| host.up(&previous));
+	let (failure, took_back) = back.map_or_else(
+		|| (Some((String::from("the rollback"), String::from("its images or up failed"))), 0.0),
+		|back| {
+			let judged: BTreeMap<String, String> = back.into_iter().filter(|(service, _)| !unjudged.contains(service)).collect();
+			wait_all(&judged, &mut |service| host.reading(service), clock, options.ready_timeout, options.poll)
+		},
+	);
 	if let Some((service, reason)) = failure {
 		say(&format!("deploy: the previous release did not come up either: {service}: {reason}"));
 		say(DATABASE_NOTE);
 		say(&stuck_note(backup.as_deref()));
 		return Outcome {
 			code: EXIT_NOTHING_READY,
-			serving: None,
-			previous: None,
+			..Outcome::default()
 		};
 	}
 	host.record_applied(&previous.commit);
@@ -491,7 +540,7 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 	Outcome {
 		code: EXIT_ROLLED_BACK,
 		serving: Some(previous.release.serial),
-		previous: None,
+		..Outcome::default()
 	}
 }
 
@@ -704,6 +753,13 @@ pub(crate) fn on_demand(host: &mut dyn Host, demand: &mut dyn Demand, options: &
 	if let Some(previous) = outcome.previous {
 		state.insert("previous_release".to_owned(), json!(previous));
 	}
+	if outcome.skipped {
+		// What the client needs is the release that failed here: nothing
+		// newer was applied, which is a failure to meet the need, not a
+		// deploy.
+		say(&format!("deploy: release {} failed here before, so epoch {needs} is not served yet", target.name()));
+		return finish(demand, &mut state, &mut counts, EXIT_NOT_DEPLOYED, "failed");
+	}
 	finish(demand, &mut state, &mut counts, outcome.code, outcome_of_exit(outcome.code))
 }
 
@@ -789,8 +845,21 @@ impl RealHost {
 			as_user,
 		};
 		host.project = Self::running_project().unwrap_or_else(|| {
-			// compose's own default for the checkout: its directory's name.
-			host.checkout.file_name().map_or_else(|| "server".to_owned(), |name| name.to_string_lossy().to_lowercase())
+			// compose's own default for the checkout: its directory's name,
+			// lowercased, with what compose drops dropped.
+			let name: String = host
+				.checkout
+				.file_name()
+				.map(|name| name.to_string_lossy().to_lowercase())
+				.unwrap_or_default()
+				.chars()
+				.filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
+				.collect();
+			if name.is_empty() {
+				"server".to_owned()
+			} else {
+				name
+			}
 		});
 		Ok(host)
 	}
@@ -833,14 +902,48 @@ impl RealHost {
 	fn write_state_file(&self, name: &str, value: &Value) {
 		let path = self.state.join(name);
 		let temp = self.state.join(format!(".{name}.tmp"));
-		let written = std::fs::create_dir_all(&self.state)
-			.and_then(|()| std::fs::write(&temp, value.to_string()))
-			.and_then(|()| std::fs::rename(&temp, &path));
+		self.make_dir(&self.state);
+		let written = std::fs::write(&temp, value.to_string()).and_then(|()| std::fs::rename(&temp, &path));
 		if let Err(err) = written {
 			println!("deploy: could not write {}: {err}", path.display());
 		}
 		self.hand_to_owner(&self.state);
 		self.hand_to_owner(&path);
+	}
+
+	/// One pass at a time: `make home-deploy` and the on-demand unit share
+	/// the state directory and the stack. Held while the file lives. With
+	/// `wait` (the on-demand unit, whose marker would start it again at once
+	/// if it gave up) it waits for the other pass; without, it refuses.
+	pub(crate) fn lock(&self, wait: bool) -> Result<std::fs::File> {
+		self.make_dir(&self.state);
+		let path = self.state.join(".lock");
+		let file = std::fs::OpenOptions::new()
+			.create(true)
+			.truncate(false)
+			.write(true)
+			.open(&path)
+			.with_context(|| format!("opening {}", path.display()))?;
+		self.hand_to_owner(&path);
+		if wait {
+			file.lock().with_context(|| format!("locking {}", path.display()))?;
+			return Ok(file);
+		}
+		match file.try_lock() {
+			Ok(()) => Ok(file),
+			Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!("another deploy is running ({} is held); nothing was done", path.display()),
+			Err(std::fs::TryLockError::Error(err)) => Err(err).with_context(|| format!("locking {}", path.display())),
+		}
+	}
+
+	/// A directory and its parents, made as the owner, so none above the
+	/// state directory ends up root's.
+	fn make_dir(&self, dir: &Path) {
+		if self.owner.is_some() {
+			let _ = self.as_owner("mkdir", &["-p", dir.to_str().unwrap_or_default()]);
+		} else if let Err(err) = std::fs::create_dir_all(dir) {
+			println!("deploy: could not make {}: {err}", dir.display());
+		}
 	}
 
 	/// `chown` to the owner when running for one, so their own pass can
@@ -859,9 +962,7 @@ impl RealHost {
 		if tree.join(".git").exists() {
 			return Ok(tree);
 		}
-		std::fs::create_dir_all(&releases).map_err(|err| format!("creating {}: {err}", releases.display()))?;
-		self.hand_to_owner(&self.state);
-		self.hand_to_owner(&releases);
+		self.make_dir(&releases);
 		self.git(&["worktree", "add", "--detach", "--force", tree.to_str().unwrap_or_default(), commit])?;
 		Ok(tree)
 	}
@@ -1245,6 +1346,8 @@ mod tests {
 		failed: Vec<u64>,
 		pull_fails: bool,
 		up_fails: bool,
+		/// `up` of this serial alone fails, starting nothing.
+		up_fails_for: Option<u64>,
 		log: Vec<String>,
 		calls: Vec<String>,
 	}
@@ -1330,7 +1433,7 @@ mod tests {
 
 		fn up(&mut self, target: &Target) -> bool {
 			self.calls.push(format!("up {}", target.release.serial));
-			if self.up_fails {
+			if self.up_fails || self.up_fails_for == Some(target.release.serial) {
 				return false;
 			}
 			self.bring_up(target);
@@ -1477,15 +1580,17 @@ mod tests {
 	#[test]
 	fn waiting_is_bounded() {
 		let clock = FakeClock::default();
-		let services = ["a".to_owned(), "b".to_owned()];
+		let expected: BTreeMap<String, String> = [("a".to_owned(), "sha256:a".to_owned()), ("b".to_owned(), "sha256:b".to_owned())].into();
 		let (failure, took) = wait_all(
-			&services,
+			&expected,
 			&mut |service| {
-				if service == "a" {
+				let mut found = if service == "a" {
 					reading(Some("running"), Some("healthy"), 0)
 				} else {
 					reading(Some("running"), Some("starting"), 0)
-				}
+				};
+				found.image = Some(["sha256:", service].concat());
+				found
 			},
 			&clock,
 			90.0,
@@ -1533,7 +1638,7 @@ mod tests {
 		host.registry.get_mut("pgathondu/render:1@sha256:x").unwrap().behaviour = Rc::new(|_| ("exited", None, 0));
 		let (_, said) = run_deploy(&mut host);
 		assert_eq!(ups(&host), ["up 1"]);
-		assert!(said_any(&said, "render runs this release's image but is not ready"), "{said:?}");
+		assert!(said_any(&said, "render was not ready before this pass"), "{said:?}");
 	}
 
 	#[test]
@@ -1556,7 +1661,8 @@ mod tests {
 			Outcome {
 				code: EXIT_DEPLOYED,
 				serving: Some(2),
-				previous: Some(1)
+				previous: Some(1),
+				skipped: false,
 			}
 		);
 		assert_eq!(host.applied.as_deref(), Some("c2"));
@@ -1693,6 +1799,78 @@ mod tests {
 		assert_eq!(outcome.code, EXIT_NOTHING_READY, "the rollback's up fails as well here");
 		assert!(said_any(&said, "up failed"));
 		assert_eq!(ups(&host), ["up 2", "up 1"]);
+	}
+
+	/// The review's first blocker: an `up` that refuses (a preflight, say)
+	/// leaves the old release's containers healthy. That is not the new
+	/// release deployed.
+	#[test]
+	fn an_up_that_starts_nothing_is_not_called_deployed() {
+		let mut host = serving(&three(ready_after(0.0), ready_after(0.0)));
+		publish(&mut host, "c2", 2, &three(ready_after(0.0), ready_after(0.0)));
+		host.up_fails_for = Some(2);
+		let (outcome, said) = run_deploy_with(&mut host, &Options::default());
+		assert_eq!(outcome.code, EXIT_ROLLED_BACK);
+		assert_eq!(host.applied.as_deref(), Some("c1"), "c2 never ran, so it is never recorded");
+		assert_eq!(host.failed, [2]);
+		assert!(said_any(&said, "envctl up failed"), "{said:?}");
+	}
+
+	/// The gate counts a service ready only on the release's image.
+	#[test]
+	fn a_service_left_on_its_old_image_is_not_ready() {
+		let clock = FakeClock::default();
+		let expected: BTreeMap<String, String> = [("a".to_owned(), "sha256:new".to_owned())].into();
+		let mut old = reading(Some("running"), Some("healthy"), 0);
+		old.image = Some("sha256:old".to_owned());
+		let (failure, _) = wait_all(&expected, &mut |_| old.clone(), &clock, 20.0, 2.0);
+		let (service, reason) = failure.unwrap();
+		assert_eq!(service, "a");
+		assert!(reason.contains("still on sha256:old"), "{reason}");
+	}
+
+	/// The review's second blocker: main moved its compose files or
+	/// deploy/<role>/ with no image change. Its tree is brought up and
+	/// recorded, never recorded without running.
+	#[test]
+	fn a_tree_only_change_is_brought_up_and_recorded() {
+		let mut host = serving(&three(ready_after(0.0), ready_after(0.0)));
+		let mut release = host.releases["c1"].clone();
+		release.server_commit = "c2".to_owned();
+		host.releases.insert("c2".to_owned(), release);
+		host.main = "c2".to_owned();
+		host.clock.sleep(STABLE_SECONDS);
+		let (code, said) = run_deploy(&mut host);
+		assert_eq!(code, EXIT_DEPLOYED);
+		assert_eq!(ups(&host), ["up 1"]);
+		assert_eq!(host.applied.as_deref(), Some("c2"));
+		assert!(said_any(&said, "bringing the release's tree up"), "{said:?}");
+	}
+
+	#[test]
+	fn the_rollback_pulls_nothing() {
+		let mut host = serving(&three(ready_after(0.0), ready_after(0.0)));
+		publish(&mut host, "c2", 2, &three(ready_after(0.0), crashes_after(3.0)));
+		run_deploy(&mut host);
+		let pulls: Vec<&String> = host.calls.iter().filter(|call| call.starts_with("pull")).collect();
+		assert!(pulls.iter().all(|pull| pull.contains(":2@")), "only the new release's images are pulled: {pulls:?}");
+	}
+
+	#[test]
+	fn a_service_already_failing_on_a_kept_image_is_not_the_release_s_failure() {
+		let mut spec = three(ready_after(0.0), ready_after(0.0));
+		spec.push(("metabase", never_ready(), "", ""));
+		let mut host = serving(&spec);
+		host.clock.sleep(500.0); // metabase is unhealthy by now
+		let mut next = three(ready_after(5.0), ready_after(0.0));
+		next.push(("metabase", never_ready(), "", ""));
+		publish(&mut host, "c2", 2, &next);
+		// Release 2 keeps metabase's image: the same reference as release 1's.
+		let kept = host.releases["c1"].services["metabase"].clone();
+		host.releases.get_mut("c2").unwrap().services.insert("metabase".to_owned(), kept);
+		let (code, said) = run_deploy(&mut host);
+		assert_eq!(code, EXIT_DEPLOYED, "{said:?}");
+		assert!(said_any(&said, "metabase was not ready before this pass"), "{said:?}");
 	}
 
 	#[test]
@@ -1884,6 +2062,21 @@ mod tests {
 		assert_eq!(demand.state["counts"], json!({"pulls": 5, "pulled_bytes": 1000, "deployed": 3, "rolled_back": 1}));
 		assert_eq!(demand.state["last_run"]["exit"], json!(EXIT_ROLLED_BACK));
 		assert_eq!(demand.state["release"], json!(1));
+	}
+
+	#[test]
+	fn a_needed_release_that_failed_here_is_counted_failed_not_deployed() {
+		let mut host = serving_contract(1);
+		publish_contract(&mut host, "c2", 2, 2);
+		host.failed = vec![2];
+		host.clock.sleep(STABLE_SECONDS);
+		let mut demand = FakeDemand::new(Some(json!({"needs": 2, "running": 1})));
+		let (code, said) = run_on_demand(&mut host, &mut demand);
+		assert_eq!(code, EXIT_NOT_DEPLOYED);
+		assert!(ups(&host).is_empty());
+		assert_eq!(demand.state["counts"]["failed"], json!(1));
+		assert_eq!(demand.state["release"], json!(1));
+		assert!(said_any(&said, "failed here before"), "{said:?}");
 	}
 
 	#[test]

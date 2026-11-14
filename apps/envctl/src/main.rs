@@ -526,6 +526,13 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 	};
 	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(xdg, home.as_deref()));
 	let mut host = deploy::RealHost::new(repo, &state_dir, &role, as_user_name, as_user)?;
+	let _held = match host.lock(on_demand.is_some()) {
+		Ok(file) => file,
+		Err(err) => {
+			println!("deploy: {err:#}");
+			return Ok(ExitCode::from(deploy::EXIT_NOT_DEPLOYED));
+		}
+	};
 	let clock = deploy::Monotonic::new();
 	let mut say = |line: &str| println!("{line}");
 	let code = if let Some(folder) = on_demand {

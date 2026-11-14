@@ -83,11 +83,18 @@ per CLAUDE.md, "Drift is loud, not silent".
   `${REPO_ROOT}` mount that is writable or names an untracked path
   (`apps/envctl/src/mounts.rs`).
 - **RL10. Applied whole, or put back whole.** `envctl deploy` brings up a
-  release only after every image is pulled and the set checks, gates every
-  service (`healthy`, or running a minute with no restart), and on any
-  failure re-applies the release last applied, its tree and images, through
-  the same `up` and gate. The failed release is skipped by serial until a
-  newer one forms. Home never runs python (#786).
+  release only after every image is pulled and the set checks, and records
+  it applied only once every service runs that release's image and is ready
+  (`healthy`, or running a minute with no restart). A release whose `up`
+  fails, or any of whose services does not come up, is put back: the release
+  last applied, its tree and its images, already here by digest, so the
+  rollback pulls nothing. A service that was not ready before the pass, on
+  an image the release keeps, is named but not judged: it is not the
+  release's failure. The failed release is skipped by serial until a newer
+  one forms. One pass runs at a time (a lock in the state directory). Home
+  never runs python (#786). **Gap:** `up` does not remove a service a
+  release drops, and a rollback does not stop one the failed release added
+  (#861).
 
 ## Constraints
 

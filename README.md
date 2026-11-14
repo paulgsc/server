@@ -401,7 +401,11 @@ rest of envctl; home has no python, and nothing home runs needs it):
    or configuration changed. What git does not hold (file_host's `data/`,
    `logs/`, `config/` and Grafana's built dashboards) is mounted from the
    checkout (`STATE_ROOT`, RL9), so the release brings its own compose files
-   and `deploy/<role>/`, and the checkout needs no `git pull`.
+   and `deploy/<role>/`. A main that changed only those, with no image, is
+   brought up too. The one thing the checkout still decides is envctl
+   itself: `up` runs the envctl make built from the checkout, so a release
+   that needs a newer envctl fails its preflight and is put back; `git pull`
+   the checkout and run `make home-deploy` again.
 4. **`file_host` migrates as it starts** (`apps/servers/file_host/src/migrate.rs`):
    with nothing pending it does nothing; otherwise it copies the database
    (`VACUUM INTO ${STORAGE}/backups/hopium-<UTC>-before-<version>.db`),
