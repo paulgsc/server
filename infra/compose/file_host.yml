@@ -47,9 +47,9 @@ services:
       # weeks are written beside it, in call-weeks/ (call_weeks::RENDER_FOLDER),
       # for the render worker (infra/compose/call-render.yml).
       - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}:/app/dbs
-      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/data:/app/data:rw
-      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/config:/app/config:ro
-      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/logs:/app/logs:rw
+      - ${STATE_ROOT:?envctl sets STATE_ROOT, so run compose through make up or make compose}/data:/app/data:rw
+      - ${STATE_ROOT:?envctl sets STATE_ROOT, so run compose through make up or make compose}/config:/app/config:ro
+      - ${STATE_ROOT:?envctl sets STATE_ROOT, so run compose through make up or make compose}/logs:/app/logs:rw
       # The voice-note transcriber's models, read-only: the multilingual
       # Whisper model and the Silero VAD model `nix/whisper-manager`'s
       # `whisper fetch` downloads. transcribe::MODEL and transcribe::VAD_MODEL
