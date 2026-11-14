@@ -116,7 +116,7 @@ it, which a test holds equal to the Dockerfile's label:
 | `contract` | file_host | (clients, through `/compat`) | `CONTRACT_EPOCH`, `apps/servers/file_host/src/contract.rs` |
 | `render-folders` | file_host | render (some-ui, U2 #792) | `RENDER_FOLDERS_EPOCH`, same file |
 | `rust-runner-protocol` | rust-runner | file_host | `protocol::EPOCH`, `crates/rust_rounds_wire/src/protocol.rs` |
-| `nats-subjects` | orchestrator | file_host | `NATS_SUBJECTS_EPOCH`, `crates/ws-events/src/events/common/event_type.rs` |
+| `nats-subjects` (subjects and payloads; only subjects are pinned by a test) | orchestrator | file_host | `NATS_SUBJECTS_EPOCH`, `crates/ws-events/src/events/common/event_type.rs` |
 
 `render-folders` covers the folders render reads and file_host writes:
 `call-weeks`, `playoff-delta-episodes`, `preview-requests` and

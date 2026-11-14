@@ -50,6 +50,11 @@ jobs:
             fixtures/**
             .cargo/**
             rust-toolchain
+            # Their io.paulgsc.* labels are held equal to Rust constants by
+            # file_host's, orchestrator's and rust_runner's tests (R3, #790).
+            infra/docker/Dockerfile.server
+            infra/docker/Dockerfile.orchestrator
+            infra/docker/Dockerfile.rust-runner
             !**.md
             !**.mdx
 
