@@ -68,8 +68,10 @@
 # paulgsc/testing's cards index lists, as first served (`cards_essays`), and
 # the recorder draws each card on the stage's burn-ins page and renders it,
 # refusing one that isn't a cards essay before anything is drawn
-# (`record:cards`). Nothing is said: no speaker is asked. Essays go by their
-# day, oldest first, not by name.
+# (`record:cards`). Each scene is said by home's speaker, as the call's are,
+# its chapter's intro first (EXPLAIN6, #878, paulgsc/some-ui#3021): a cards
+# essay is a podcast with cards on screen, so its words matter more than its
+# picture. Essays go by their day, oldest first, not by name.
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -422,7 +424,8 @@ record() {
       (cd "$MOTION_DIR" && "$MOTION_TSX" src/cli.ts walk "$app" \
         --sample "$INPUT/$key/sample.json" --out "$WORK/$key") ;;
     cards-essay)
-      # Silent: the recorder asks no speaker. It names the finished folder
+      # Said by home's speaker, from COMMON's --voices and --speaker, as the
+      # call's recorder is (EXPLAIN6, #878). It names the finished folder
       # for the essay's key in --out (`record:cards`).
       (cd "$APP_DIR" && "$TSX" tests/record/cards.ts "${COMMON[@]}" \
         --cut-list-file "$INPUT/$key.json" --out "$WORK") ;;

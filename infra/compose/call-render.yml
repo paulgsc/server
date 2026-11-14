@@ -31,8 +31,9 @@
 #   Its sixth is a cards essay (CARDS7, #854, paulgsc/some-ui#2979): each
 #   essay file_host writes to ${STORAGE}/cards-essays/<key>.json
 #   (`cards_essays::ESSAYS_FOLDER`), a cut list paulgsc/testing's cards index
-#   listed, is drawn card by card, silent, into
-#   ${STORAGE}/renders/cards-essay/<key>/.
+#   listed, is drawn card by card with each scene said by the speaker
+#   (EXPLAIN6, #878), into ${STORAGE}/renders/cards-essay/<key>/. Every job
+#   waits on the speaker alike: `render` starts only after `kokoro` has.
 #
 #   Its image is published by paulgsc/some-ui's CI, not built here (#718,
 #   the owner's "B′ for render", 2026-11-11): the recorders, the motion and
