@@ -20,11 +20,14 @@
 //!    client: nothing has been replaced yet, so an unmet one stops the pass
 //!    with exit 1.
 //! 4. **Stops here when nothing differs**: every service runs the image the
-//!    release names, and is ready.
+//!    release names and is ready, and the release's key (its serial and the
+//!    git trees compose reads) is the one applied.
 //! 5. **Brings the release up** from its own tree: a worktree of the
 //!    checkout at the release's commit, under the state directory's
 //!    `releases/`, and `envctl up` on it under the stack's compose project.
-//!    `up -d` recreates only what changed. Untracked state (`file_host`'s data,
+//!    `up -d` recreates what changed: a service whose image changed, and,
+//!    when the key changed (so the worktree is a new path), every service
+//!    that mounts from `${REPO_ROOT}`. Untracked state (`file_host`'s data,
 //!    logs and config, Grafana's built dashboards) is mounted from the
 //!    owner's checkout, `STATE_ROOT` (C344; RL10). `file_host` applies its
 //!    migrations as it starts, after a verified backup (AS16).
@@ -34,7 +37,7 @@
 //!    `unhealthy` fails at once.
 //! 7. **Rolls back whole** when any service does not come up: the release
 //!    last applied, its tree and its images, through the same `up` and the
-//!    same gate. The failed release is remembered (by serial) and skipped.
+//!    same gate. The failed release is remembered (by its key) and skipped.
 //!
 //! It never touches the database. A migration that ran stays applied: a
 //! database ahead of its binary is one the old binary serves (`schema.rs`),
@@ -484,6 +487,12 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		.filter(|(service, _)| !unjudged.contains(service))
 		.map(|(service, id)| (service.clone(), id.clone()))
 		.collect();
+	// The same key is the release applied: bring up its own tree, the one
+	// mounted now, not main's commit, whose new worktree path would recreate
+	// every service that mounts from ${REPO_ROOT} for nothing.
+	if let Some(applied) = previous.as_ref().filter(|_| same_tree) {
+		target = applied.clone();
+	}
 	let (failure, took) = if host.up(&target) {
 		say(&format!("deploy: waiting up to {:.0} s for every service to be ready", options.ready_timeout));
 		wait_all(&judged, &mut |service| host.reading(service), clock, options.ready_timeout, options.poll)
@@ -502,6 +511,7 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 			skipped,
 		};
 	};
+	let unreadable_record = recorded.is_some() && previous.is_none();
 	say(&format!("deploy: {service} did not come up: {reason}"));
 	let lines = host.logs(&service);
 	let backup = backup_from(&host.logs(FILE_HOST));
@@ -510,7 +520,9 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 	}
 
 	let Some(previous) = previous.filter(|previous| previous.key != target.key) else {
-		let why = if recorded.is_some() {
+		let why = if unreadable_record {
+			"the release last applied cannot be read, so there is none to put back"
+		} else if recorded.is_some() {
 			"neither the release nor its tree changed, so the cause is not the release: look at the host, its state or a dependency"
 		} else {
 			"no release was applied here before this one, so there is none to put back"
@@ -1373,6 +1385,8 @@ mod tests {
 		up_fails_for_key: Option<String>,
 		log: Vec<String>,
 		calls: Vec<String>,
+		/// The commit of each `up`'s tree.
+		trees_up: Vec<String>,
 	}
 
 	impl FakeHost {
@@ -1458,6 +1472,7 @@ mod tests {
 
 		fn up(&mut self, target: &Target) -> bool {
 			self.calls.push(format!("up {}", target.release.serial));
+			self.trees_up.push(target.commit.clone());
 			if self.up_fails || self.up_fails_for == Some(target.release.serial) || self.up_fails_for_key.as_ref() == Some(&target.key) {
 				return false;
 			}
@@ -1909,6 +1924,21 @@ mod tests {
 		assert_eq!(code, EXIT_DEPLOYED);
 		assert!(ups(&host).is_empty(), "{said:?}");
 		assert_eq!(host.applied.as_deref(), Some("c1"), "the tree that is mounted stays the recorded one");
+	}
+
+	/// The closing review's first finding: with the key unchanged, a stopped
+	/// service comes back from the tree mounted now, not from main's commit.
+	#[test]
+	fn a_same_key_pass_brings_up_the_recorded_tree() {
+		let mut host = serving(&three(ready_after(0.0), ready_after(0.0)));
+		let release = host.releases["c1"].clone();
+		host.releases.insert("c2".to_owned(), release);
+		host.main = "c2".to_owned();
+		host.running.remove("render");
+		let (code, _) = run_deploy(&mut host);
+		assert_eq!(code, EXIT_DEPLOYED);
+		assert_eq!(host.trees_up, ["c1"]);
+		assert_eq!(host.applied.as_deref(), Some("c1"));
 	}
 
 	#[test]

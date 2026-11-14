@@ -204,7 +204,7 @@ up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/, decry
 # home"). ARGS passes its flags: make home-deploy ARGS="--no-pull".
 # Nothing home runs calls python: home has none (apps/envctl/tests/home_runs_no_python.rs).
 home-deploy: envctl ## Apply main's release whole: pull every image, check the set, up, gate every service, roll back whole
-	@$(ENVCTL_RUN) deploy $(ARGS)
+	@$(ENVCTL_RUN) deploy --role $(ROLE) $(ARGS)
 
 compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose ARGS="ps"
 	@$(ENVCTL_RUN) compose --role $(ROLE) -- $(ARGS)

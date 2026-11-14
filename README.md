@@ -244,7 +244,11 @@ once compose returns, and a running container keeps its environment. Compose
 runs with `--env-file /dev/null`, so a stray `.env` is read by nothing, and a
 compose variable the shell happens to export is dropped unless the role's
 file sets it. `REPO_ROOT` comes from make (`$(CURDIR)`), and so does
-`ENV_DIR`. Every image compose starts comes from the role's release,
+`ENV_DIR`. `STATE_ROOT`, the checkout whose untracked state compose mounts
+(file_host's `data/`, `logs/`, `config/`, Grafana's built dashboards), is
+envctl's: the checkout itself for `make up`, and the owner's checkout when
+the deploy runs compose on a release's worktree (C344; docs/release.md,
+RL10). Every image compose starts comes from the role's release,
 `deploy/<role>/release.json` (RELEASE #787, R1 #788): each service's
 `image:` is `${IMAGE_<SERVICE>:?…}` (`file-host` reads `IMAGE_FILE_HOST`),
 and envctl sets those from the release, never from a deployment file or the
@@ -410,7 +414,7 @@ rest of envctl; home has no python, and nothing home runs needs it):
    itself: `up` runs the envctl make built from the checkout, so a release
    that needs a newer envctl fails its preflight and is put back; `git pull`
    the checkout and run `make home-deploy` again.
-4. **`file_host` migrates as it starts** (`apps/servers/file_host/src/migrate.rs`):
+5. **`file_host` migrates as it starts** (`apps/servers/file_host/src/migrate.rs`):
    with nothing pending it does nothing; otherwise it copies the database
    (`VACUUM INTO ${STORAGE}/backups/hopium-<UTC>-before-<version>.db`),
    checks the copy (`PRAGMA integrity_check`, the same applied migrations),
@@ -425,15 +429,15 @@ rest of envctl; home has no python, and nothing home runs needs it):
    failed migration ends the process, so no build serves on a schema half
    applied. The same happens on every start: a reboot, a restart, `make up`,
    `make dev`.
-5. **It gates every service, up to 360 s**: `healthy` where it has a
+6. **It gates every service, up to 360 s**: `healthy` where it has a
    healthcheck (`file-host`'s is `file_host --health-check`: `/ready` ready
    or degraded), otherwise running with no restart for 60 s. A container
    that exits, restarts or turns `unhealthy` fails at once. `file-host`'s
    `start_period` is 300 s, so the backup and migrations of a large database
    can finish before any failed probe counts, and the wait outlasts it.
-6. **A release that does not come up is rolled back whole**: the release
+7. **A release that does not come up is rolled back whole**: the release
    last applied, its tree and its images, through the same `up` and the
-   same gate, whichever service failed. The failed release's serial is
+   same gate, whichever service failed. The failed release's key is
    recorded (step 1), and its failing service's last log lines are printed.
 
 It prints each step as `deploy: …` and exits `0` deployed or nothing to do,
@@ -448,7 +452,7 @@ the checkout owner's, in `~/.local/state/server-deploy/`, whether you run
 pass runs at a time. A failed release is remembered by its serial and the
 trees compose reads, so a fix on main to its compose files or
 `deploy/<role>/` is tried again by itself; to retry one after fixing the
-host (or envctl, with a `git pull`), remove its line from
+host (or envctl, with a `git pull`), remove its entry from
 `failed-releases.json`. A `make up` from the checkout after a deploy runs
 the checkout's tree, not the release's, and the deploy does not notice
 until the release's key changes: use `make home-deploy`, not `make up`, on

@@ -113,6 +113,7 @@ in {
           "deploy"
           "--on-demand ${cfg.storage}/deploy"
           "--as-user ${cfg.user}"
+          "--role ${cfg.role}"
           "--runtime-dir /run/home-deploy"
         ];
         # Maybe envctl's first build, the release's pulls, and up to 360 s
