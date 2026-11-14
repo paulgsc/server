@@ -60,6 +60,11 @@ struct Cli {
 	/// and passes the owner's checkout here (C344; docs/release.md, RL10).
 	#[arg(long, global = true)]
 	state_root: Option<PathBuf>,
+	/// The deploy's own `up`, on a release's tree: the state directory that
+	/// keeps it. Without it, home's `up` and `compose` run the release last
+	/// applied (R6d, #870).
+	#[arg(long, global = true, hide = true)]
+	release_state: Option<PathBuf>,
 	#[command(subcommand)]
 	command: Command,
 }
@@ -324,14 +329,8 @@ fn check_preflight(repo: &Path, schemas: &[Schema], raw: &Value, deployment: &De
 /// While compose runs, envctl outlives the signals that end it (Ctrl-C on
 /// `logs -f` is the usual way out): SIGINT reaches compose from the terminal,
 /// SIGTERM and SIGHUP are passed on, and the files are removed either way.
-fn compose_on(
-	repo: &Path,
-	deployment: &Deployment,
-	env_dir: &Path,
-	args: &[String],
-	shell: &IndexMap<String, String>,
-	compose_variables: &compose::ComposeVariables,
-) -> Result<ExitCode> {
+fn compose_on(repo: &Path, deployment: &Deployment, env_dir: &Path, args: &[String], shell: &IndexMap<String, String>, project: Option<&str>) -> Result<ExitCode> {
+	let compose_variables = compose::read(repo)?;
 	let missing: Vec<String> = deployment
 		.apps
 		.iter()
@@ -361,7 +360,13 @@ fn compose_on(
 			process.env_remove(name);
 		}
 	}
+	// The repository's own stack, the one `compose::config` read and the
+	// checks judged: a shell's COMPOSE_FILE would swap it (RELEASE R6, #795).
+	process.env_remove("COMPOSE_FILE");
 	process.envs(&deployment.compose);
+	if let Some(project) = project {
+		process.env("COMPOSE_PROJECT_NAME", project);
+	}
 	process.env("ENV_DIR", delivered.dir());
 	let mut child = process.spawn().context("running docker compose")?;
 	let status = loop {
@@ -379,6 +384,57 @@ fn compose_on(
 	Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))
 }
 
+/// The repository envctl reads and the project compose runs as, for `up` and
+/// `compose`: on home, the tree of the release last applied (R6d, #870), from
+/// the owner's state directory, the deploy's own; else the checkout as given.
+/// The release it returns holds the deploy's lock, where the command changes
+/// containers, until dropped.
+fn stack_of(
+	repo: PathBuf,
+	command: &Command,
+	release_state: Option<&Path>,
+	shell: &IndexMap<String, String>,
+) -> Result<(PathBuf, Option<String>, Option<deploy::AppliedStack>)> {
+	let (role, lock) = match command {
+		// The preflight and the listing start nothing: they check the
+		// checkout's files, which is how a change is checked before its push.
+		Command::Up { role, .. } => (role, true),
+		Command::Compose { role, args, .. } => {
+			if let Some(why) = compose::home_refusal(role, args) {
+				bail!("{why}");
+			}
+			(role, compose::changes_containers(args))
+		}
+		_ => return Ok((repo, None, None)),
+	};
+	let home = shell.get("HOME").filter(|home| Path::new(home).is_absolute());
+	if role == "home" && home.is_none() && release_state.is_none() {
+		bail!("HOME is not an absolute path, so the deploy's record of the release last applied cannot be found");
+	}
+	let state_dir = release_state.map_or_else(|| deploy::default_state_dir(None, home.map(String::as_str)), Path::to_path_buf);
+	let Some(applied) = deploy::applied_stack(&repo, &state_dir, role, lock, release_state.is_some())? else {
+		return Ok((repo, None, None));
+	};
+	eprintln!(
+		"{}: the release last applied (main {}), from its tree; `make home-deploy` applies main's",
+		applied.tree.display(),
+		applied.commit.get(..7).unwrap_or(&applied.commit)
+	);
+	Ok((applied.tree.clone(), Some(applied.project.clone()), Some(applied)))
+}
+
+/// `up`'s warnings on the services' caps against this box's memory.
+fn warn_caps(raw: &Value, deployment: &Deployment, shell: &IndexMap<String, String>) {
+	// Only `up` runs on the box it deploys, so only its MemTotal is home's.
+	let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
+	// The profiles `up` starts with: the deployment's, or else the shell's,
+	// which reaches compose unless a compose file reads the variable.
+	let profiles = deployment.compose.get("COMPOSE_PROFILES").cloned().or_else(|| shell.get("COMPOSE_PROFILES").cloned());
+	for warning in caps::warnings(&caps::caps(raw, &caps::profiles(profiles.as_deref())), meminfo.as_deref().and_then(caps::mem_total)) {
+		println!("warning: {warning}");
+	}
+}
+
 fn run(cli: Cli) -> Result<ExitCode> {
 	let repo = find_repo(cli.repo)?;
 	let state_root = cli.state_root.clone().unwrap_or_else(|| repo.clone());
@@ -387,6 +443,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
 	if matches!(cli.command, Command::Deploy { .. }) {
 		return run_deploy(repo, &shell, cli.command);
 	}
+	// Home's `up` and `compose` read the release's tree, its schemas included.
+	let (repo, project, _applied) = stack_of(repo, &cli.command, cli.release_state.as_deref(), &shell)?;
 	let schemas = schema::load(&repo.join("infra/env"))?;
 	let sops_program = sops::program(&shell);
 	match cli.command {
@@ -395,7 +453,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			let deployment = deployment(&repo, &state_root, &role, &raw, Path::new("$XDG_RUNTIME_DIR/server"), &sops_program)?;
 			Ok(exit(!check_preflight(&repo, &schemas, &raw, &deployment)?))
 		}
-		Command::Up { role, env_dir } => {
+		Command::Up { role, env_dir, .. } => {
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
 			let raw = compose::config(&repo).context("docker compose config failed, so no service was checked")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
@@ -403,21 +461,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
 				println!("Nothing was started.");
 				return Ok(ExitCode::FAILURE);
 			}
-			// Only `up` runs on the box it deploys, so only its MemTotal is home's.
-			let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
-			// The profiles `up` starts with: the deployment's, or else the shell's,
-			// which reaches compose unless a compose file reads the variable.
-			let profiles = deployment.compose.get("COMPOSE_PROFILES").cloned().or_else(|| shell.get("COMPOSE_PROFILES").cloned());
-			for warning in caps::warnings(&caps::caps(&raw, &caps::profiles(profiles.as_deref())), meminfo.as_deref().and_then(caps::mem_total)) {
-				println!("warning: {warning}");
-			}
-			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, &compose::read(&repo)?)
+			warn_caps(&raw, &deployment, &shell);
+			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, project.as_deref())
 		}
 		Command::Compose { role, env_dir, args } => {
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
 			let raw = compose::config(&repo).context("docker compose config failed")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
-			compose_on(&repo, &deployment, &env_dir, &args, &shell, &compose::read(&repo)?)
+			compose_on(&repo, &deployment, &env_dir, &args, &shell, project.as_deref())
 		}
 		Command::Run { role, app, command } => {
 			let relative = sops::relative(&role, &app);
@@ -522,6 +573,8 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 	// One rule for both, so they share one record and one lock: the
 	// owner's home, never a $XDG_STATE_HOME only one of them sees.
 	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(None, home.as_deref()));
+	// Absolute, as the tree it keeps is: its own `up` runs in that tree.
+	let state_dir = std::path::absolute(&state_dir).context("reading the current directory")?;
 	let mut host = deploy::RealHost::new(repo, &state_dir, &role, as_user_name, as_user)?;
 	let _held = match host.lock(on_demand.is_some()) {
 		Ok(file) => file,

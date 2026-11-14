@@ -146,7 +146,10 @@ DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 # compose service only (tmpfs, mode 600, removed once compose has started it),
 # compose's into compose's own environment. It runs the preflight first, which
 # names every missing or refused variable at once. Any other compose command
-# needs the same files: `make compose ARGS="logs -f file-host"`.
+# needs the same files: `make compose ARGS="logs -f file-host"`. On home, up
+# and compose run the release last applied, from its tree, not this checkout
+# (R6d, #870): a change to deploy/home/ is checked here with `make preflight`,
+# then reaches home through commit, push and `make home-deploy`.
 #
 # DEPLOY is the role make up and the rest use, home by default; make dev's is
 # DEV_DEPLOY, dev by default. cargo runs under the decrypted file too: sqlx's
@@ -194,7 +197,7 @@ deploy-check: envctl ## Without a key, names only (CI's Env schema): every deplo
 preflight: envctl ## Decrypt deploy/$(ROLE)/ into memory and name every missing or refused variable at once
 	@$(ENVCTL_RUN) preflight --role $(ROLE)
 
-up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/, decrypted to tmpfs only
+up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/ (home: the release last applied), decrypted to tmpfs only
 	@$(ENVCTL_RUN) up --role $(ROLE)
 
 # Home's deploy (RELEASE R4, #793): main's release, every image by digest,
@@ -237,7 +240,8 @@ promo: envctl ## A release's promo on home, the same bytes twice: make promo APP
 
 # Once, on the box (ENV2, #615): deploy/$(ROLE)/ written from what the
 # running containers use, straight into sops. DRY=1 only names what would
-# change. It ends by naming the .env to delete once `make up` has run.
+# change. It ends by naming the .env to delete once the stack runs from the
+# encrypted files (on home, after `make home-deploy`).
 import: envctl ## Write deploy/$(ROLE)/ from the running containers, through sops (DRY=1 to only report)
 	@$(ENVCTL_RUN) import --role $(ROLE) $(if $(DRY),--dry-run)
 

@@ -100,6 +100,7 @@ COMMIT = r"[0-9a-f]{40}"
 SOURCES: dict[str, Changesets | Hub] = {
     # Since R4 (#793): envctl deploy applies whole releases by digest, so
     # file_host is followed like any server image.
+    "dashboard-builder": Changesets("dashboard-builder"),
     "file-host": Changesets("server"),
     "kokoro": Changesets("kokoro"),
     "orchestrator": Changesets("orchestrator"),

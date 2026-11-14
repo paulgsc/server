@@ -174,6 +174,33 @@ jobs:
       - name: Home's release follows what is published
         run: python3 scripts/release_lock.py --self-test
 
+  # RELEASE R6 (#795): home starts nothing outside its release. No compose
+  # service of the home include set builds or floats, no release entry lacks
+  # a digest, no NixOS module names its own image, and no doc tells anyone
+  # to pull or build by hand (docs/release.md, RL12). No path gate: stdlib
+  # python3 and compose's own reading of the stack, seconds.
+  home_guard:
+    name: Home guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The stack is read as compose reads it (`config --no-interpolate`),
+      # which the runner's compose refuses for a short-syntax volume holding
+      # `${X:?}`; v5 reads it. The same pinned, checked release as Env schema.
+      - name: Install Docker Compose v5.6.1
+        run: |
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
+            https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-x86_64
+          echo "47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          docker compose version
+      - name: Home starts nothing outside deploy/home/release.json
+        run: |
+          set -euo pipefail
+          python3 scripts/check_home_guard.py --self-test
+          python3 scripts/check_home_guard.py
+
   # Home's release fits together (RELEASE R3, #790; docs/release.md, RL9):
   # every image's io.paulgsc.requires is met by another image's provides,
   # read from the registry by digest. The self-test (the rule, envctl's cases,
@@ -331,7 +358,7 @@ jobs:
   # and on a fork's head, whose token cannot dispatch (the sweep judges those).
   tell_gate:
     name: Tell PR gate
-    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, release_set, contract_epoch, rust_lint]
+    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, home_guard, release_set, contract_epoch, rust_lint]
     if: always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:

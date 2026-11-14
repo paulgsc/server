@@ -1,0 +1,14 @@
+# Local builds, for development and CI checks only (RELEASE R6, #795). The
+# home role never loads this file: docker-compose.yml doesn't include it, and
+# home runs every image by digest from deploy/home/release.json, applied whole
+# by `make home-deploy`. scripts/check_home_guard.py refuses a `build:` in the
+# home include set, so a build belongs here.
+#
+# Load it beside the service's own file, as the sandbox check does:
+#
+#   docker compose -f infra/compose/rust_runner.yml -f infra/compose/dev.build.yml build
+services:
+  rust-runner:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.rust-runner

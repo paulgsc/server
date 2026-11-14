@@ -85,7 +85,10 @@ per CLAUDE.md, "Drift is loud, not silent".
 - **RL11. Applied whole, or put back whole.** `envctl deploy` brings up a
   release only after every image is pulled and the set checks, and records
   it applied only once every service runs that release's image and is ready
-  (`healthy`, or running a minute with no restart). A release whose `up`
+  (`healthy`, or running a minute with no restart). A one-shot is ready once
+  it has finished, and only if its restart policy is `no` and it exited 0
+  (`dashboard-builder`; C351); the home guard requires every service to state
+  its `restart:`, since one with none reads as `no`. A release whose `up`
   fails, or any of whose services does not come up, is put back: the release
   last applied, its tree and its images, already here, so the rollback pulls
   nothing. A release is its serial and the git trees compose reads
@@ -100,6 +103,39 @@ per CLAUDE.md, "Drift is loud, not silent".
   never runs python (#786). **Gap:** `up` does not remove a service a
   release drops, and a rollback does not stop one the failed release added
   (#861).
+- **RL12. One way onto home** (R6, #795). Home starts nothing outside its
+  release, and only `make home-deploy` moves it. `scripts/check_home_guard.py`
+  (Lint's `Home guard`, every PR) reads the home stack as compose itself reads
+  it (`docker compose config --no-interpolate`: every include, anchor, merge
+  and `extends:` resolved) and refuses a service whose image is not
+  `${IMAGE_*}` or that names none, a `build:` (local builds live in
+  `infra/compose/dev.build.yml`, which the home role never loads;
+  `dashboard-builder` is published since R6a, #868), and any `:latest`;
+  then a release entry without a digest, an image a NixOS module names itself
+  (C127), and a doc that writes a command the run-time rule refuses (the same
+  rule in Python, both tested on `scripts/home_refusal_cases.json`). `envctl
+  compose --role home` refuses the same at run time: `pull`, `build`, `watch`,
+  a `--build` on any command but `exec`, `up --watch` or `-w`, an `up` that
+  names services, and another stack (`-f`, `--project-directory`); a shell's
+  `COMPOSE_FILE` is dropped wherever envctl reads or runs compose. Each
+  refusal has a test. `make up` and `make compose` on home run the release
+  last applied (`applied.json` in the deploy's state directory), from its own
+  tree and under the stack's project, never the checkout's
+  `deploy/home/release.json`, which `make home-deploy` does not move, and they
+  check it against that tree's own schemas. `make preflight` and `make env`
+  start nothing, so they read the checkout: that is how a change to
+  `deploy/home/` is checked before it is pushed. `make up`, and any
+  `make compose` command that may
+  create, replace or stop containers, holds the deploy's lock while it runs
+  (`logs`, `ps`, `exec` and the other reads do not, nor does a
+  `run --no-deps`, which starts none of the stack's, such as `make promo`).
+  A change to `deploy/home/` reaches home through commit, push and
+  `make home-deploy`. So a
+  restart starts what runs and nothing else, and never during a deploy. With
+  no release applied they refuse, naming `make home-deploy` (R6d, #870, C350;
+  `deploy::applied_stack`). Only the deploy's own `up`, which names its state
+  directory, runs on a release's tree under that directory's `releases/` as
+  given; any other `up` or `compose` run from such a tree is refused.
 
 ## Constraints
 
@@ -201,4 +237,4 @@ carry, against RL2.
 | Each image's labels | `infra/docker/Dockerfile.*`; render's in some-ui (U2, #792) |
 | The deploy applies a release whole | `apps/envctl/src/deploy.rs` (`make home-deploy`, `nix/modules/home-deploy.nix`) |
 | What compose may mount from a release's tree | `apps/envctl/src/mounts.rs` (RL10) |
-| **Planned:** guard against `:latest`, `build:`, per-service pulls | R6, #795 |
+| The guard (RL12) | `scripts/check_home_guard.py` (Lint's `Home guard`), `apps/envctl/src/compose.rs` (`home_refusal`), `infra/compose/dev.build.yml` |

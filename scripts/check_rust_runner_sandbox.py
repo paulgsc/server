@@ -63,6 +63,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = REPO_ROOT / "infra" / "compose" / "rust_runner.yml"
+# Its local build (RELEASE R6, #795): never in the home include set, so the
+# check loads it beside the runner's own file. It adds `build:` alone.
+DEV_BUILD_FILE = REPO_ROOT / "infra" / "compose" / "dev.build.yml"
 PROJECT = "rust-runner-check"
 CONTAINER = "rust-runner"
 # The image this check builds and runs: a local tag, never home's release's
@@ -119,7 +122,7 @@ class Failed(Exception):
 
 
 def compose(*args: str, stdin: str | None = None, check: bool = True, timeout: float = 600) -> subprocess.CompletedProcess[str]:
-	command = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), *args]
+	command = ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), "-f", str(DEV_BUILD_FILE), *args]
 	result = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=timeout, check=False, env={**os.environ, "IMAGE_RUST_RUNNER": IMAGE})
 	if check and result.returncode != 0:
 		raise Failed(f"`{' '.join(command)}` failed ({result.returncode}):\n{result.stdout}{result.stderr}")
