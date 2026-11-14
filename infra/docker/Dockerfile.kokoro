@@ -18,3 +18,11 @@ USER appuser
 EXPOSE 8880
 ENTRYPOINT []
 CMD ["/app/.venv/bin/python", "/app/say.py"]
+
+# What this image provides and requires of the others in home's release
+# (RELEASE R3, #790; docs/release.md, "Constraints"): comma-separated
+# name=value pairs, a value an epoch (met by one at least as high) or a
+# 40-hex commit (met by the same one). Last, so no layer depends on them.
+# No edge is written down for kokoro yet, so it states nothing either way.
+LABEL io.paulgsc.provides="" \
+      io.paulgsc.requires=""

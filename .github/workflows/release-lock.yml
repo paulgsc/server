@@ -18,9 +18,11 @@
 # when a refresh is due), so none that skips can cancel one that would not.
 #
 # It runs after server's images are pushed (publish-image-changesets.yml's
-# `release` job), when some-ui's www and render releases dispatch it (U1,
-# #791, `gh workflow run release-lock.yml` with SERVER_ROUTES_DISPATCH_TOKEN),
-# and by hand.
+# `release` job), when some-ui's render, www and resume-render publishes
+# dispatch it (U1, #791, `gh workflow run release-lock.yml` with
+# SERVER_ROUTES_DISPATCH_TOKEN), and by hand. A dispatch is only a reason to
+# look: render joins SOURCES with R4 (#793), once file-host is pinned by
+# digest, and www and resume-render join with #853's server half.
 #
 # Third-party images (R7, #796; C120, C347) refresh in the same one pull
 # request, never beside an app move: when the app images have nothing to

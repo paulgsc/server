@@ -24,6 +24,21 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
+/// This protocol's epoch, as home's release states it.
+///
+/// RELEASE R3, #790; docs/release.md, "Constraints". The `rust-runner`
+/// image provides `rust-runner-protocol=<EPOCH>` and `file_host`'s requires
+/// it, both as `io.paulgsc.*` labels in their Dockerfiles, which each side's
+/// own test holds to this number. A release in which `file_host` requires
+/// more than the runner provides is refused.
+///
+/// Raise it by one with every change a client can tell: a request or
+/// answer added, removed or reshaped, or a field's meaning changed. A
+/// change the runner still answers the old way keeps it; one that drops the
+/// old way must be shipped with both images (both link this crate, so
+/// detect.yml rebuilds both).
+pub const EPOCH: u32 = 1;
+
 /// The largest request read, in bytes. A round's program is about 25 lines.
 pub const REQUEST_CEILING: u64 = 64 * 1024;
 

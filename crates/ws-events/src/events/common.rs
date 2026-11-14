@@ -7,7 +7,7 @@ mod orchestrator;
 mod system_events;
 mod utterance;
 
-pub use event_type::EventType;
+pub use event_type::{EventType, NATS_SUBJECTS_EPOCH};
 pub use message::{MessageId, ProcessResult};
 pub use now_playing::NowPlaying;
 use obs_websocket::{ObsCommand, ObsEvent};

@@ -1,6 +1,23 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// The NATS subjects' epoch, as home's release states it.
+///
+/// RELEASE R3, #790; docs/release.md, "Constraints". `orchestrator`'s image provides
+/// `nats-subjects=<EPOCH>` and `file_host`'s requires it, both as
+/// `io.paulgsc.*` labels in their Dockerfiles, which each side's own test
+/// holds to this number.
+///
+/// It covers what crosses these subjects between the two, the subjects
+/// and the payloads (`UnifiedEvent`, `OrchestratorCommandData`,
+/// `OrchestratorState`) alike, though only the subjects are pinned by a
+/// test: raise it by hand with a payload change the other side must read.
+/// Raise it by one whenever [`EventType::subject`] changes:
+/// `the_subjects_are_this_epoch_s` (in `apps/orchestrator/src/lib.rs`, since
+/// this crate runs no tests) fails until the subjects it pins and this
+/// number move together.
+pub const NATS_SUBJECTS_EPOCH: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum EventType {

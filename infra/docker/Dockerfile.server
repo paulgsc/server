@@ -192,3 +192,13 @@ LABEL org.opencontainers.image.title="${APP_NAME}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.source="https://github.com/paulgsc/server"
+
+# What this image provides and requires of the others in home's release
+# (RELEASE R3, #790; docs/release.md, "Constraints"): comma-separated
+# name=value pairs, a value an epoch (met by one at least as high) or a
+# 40-hex commit (met by the same one). Last, so no layer depends on them.
+# The numbers are apps/servers/file_host/src/contract.rs's (contract,
+# render-folders), ws-events' NATS_SUBJECTS_EPOCH and rust_rounds_wire's
+# protocol::EPOCH; contract.rs's own test holds them equal.
+LABEL io.paulgsc.provides="contract=6,render-folders=1" \
+      io.paulgsc.requires="nats-subjects=1,rust-runner-protocol=1"
