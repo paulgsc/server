@@ -322,3 +322,22 @@ impl OrchestratorService {
 		self.orchestrators.len()
 	}
 }
+
+/// What this image provides and requires, as home's release reads them
+/// (RELEASE R3, #790; docs/release.md, "Constraints"): the labels
+/// `infra/docker/Dockerfile.orchestrator` writes are these numbers.
+#[cfg(test)]
+mod image_labels {
+	fn label(name: &str) -> String {
+		let dockerfile = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../infra/docker/Dockerfile.orchestrator")).unwrap();
+		let start = ["io.paulgsc.", name, "=\""].concat();
+		let from = dockerfile.find(&start).unwrap() + start.len();
+		dockerfile[from..].split('"').next().unwrap().to_owned()
+	}
+
+	#[test]
+	fn the_image_labels_are_these_epochs() {
+		assert_eq!(label("provides"), ["nats-subjects=", &ws_events::events::NATS_SUBJECTS_EPOCH.to_string()].concat());
+		assert_eq!(label("requires"), "");
+	}
+}

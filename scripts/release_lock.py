@@ -20,10 +20,12 @@ Where "newest published" comes from, per followed service (`SOURCES`):
   the image and whose `pgathondu/<suffix>:<source_sha>` tag Docker Hub has.
   A changeset whose publish failed has no tag, so the one before it is used.
 - **A some-ui image** (`hub`): the most recently pushed tag of the shape its
-  release publishes (a whole commit for render, a version for www), never
-  `latest`. None is followed yet: they enter with U1 (#791) once R3's set
-  check (#790) can refuse an inconsistent set, so a www release can never
-  again move without the render that records it (#756's break).
+  release publishes (a whole commit for render), never `latest`. render is
+  followed since R3 (#790): `scripts/check_release.py` runs on the release
+  pull request and refuses a set whose render requires what its file_host
+  does not provide (RL7), so a some-ui image can no longer move past the
+  server image it needs (#756's break). www is not run on home, so it is not
+  in the release at all.
 
 Docker Hub's tag API gives each tag's digest, so every reference is
 `repo:tag@sha256:…`. What it never does:
@@ -83,14 +85,17 @@ class Hub:
 
 # Every service the release follows, and where its newest reference comes
 # from. A service not here keeps whatever main's release says.
+COMMIT = r"[0-9a-f]{40}"
+VERSION = r"[0-9]+\.[0-9]+\.[0-9]+"
+
 SOURCES: dict[str, Changesets | Hub] = {
     "kokoro": Changesets("kokoro"),
     "orchestrator": Changesets("orchestrator"),
+    # Since R3 (#790): the release pull request's set check refuses a
+    # render that requires what its file_host does not provide (RL7).
+    "render": Hub("pgathondu/render", COMMIT),
     "rust-runner": Changesets("rust-runner"),
 }
-
-COMMIT = r"[0-9a-f]{40}"
-VERSION = r"[0-9]+\.[0-9]+\.[0-9]+"
 
 
 class Unreadable(Exception):
@@ -310,6 +315,11 @@ class Tests(unittest.TestCase):
     def test_following_a_service_the_release_lacks_is_unreadable(self) -> None:
         with self.assertRaises(Unreadable):
             reconcile(sample(), world({}, [], []), "main", {"ghost": Changesets("ghost")})
+
+    def test_render_is_followed_by_its_commit_tags(self) -> None:
+        """RL7: render is followed once the set check exists (R3, #790)."""
+        self.assertEqual(SOURCES["render"], Hub("pgathondu/render", COMMIT))
+        self.assertTrue((REPO_ROOT / "scripts" / "check_release.py").exists())
 
     def test_the_checked_in_sources_name_real_services(self) -> None:
         release = json.loads(RELEASE.read_text())

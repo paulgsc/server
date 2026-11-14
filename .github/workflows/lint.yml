@@ -174,6 +174,36 @@ jobs:
       - name: Home's release follows what is published
         run: python3 scripts/release_lock.py --self-test
 
+  # Home's release fits together (RELEASE R3, #790; docs/release.md, RL8):
+  # every image's io.paulgsc.requires is met by another image's provides,
+  # read from the registry by digest. The self-test (the rule, envctl's cases,
+  # every server image's labels) always runs; the registry is read when the
+  # release or the check changed, which every release pull request does.
+  # No path gate on the job: stdlib python3 and one file from the base.
+  release_set:
+    name: Release set
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Every requirement in the release is met
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          # A higher registry pull limit than anonymous, where the secrets
+          # reach this run; the answers are the same without them.
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_release.py --self-test
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            if git diff --quiet FETCH_HEAD HEAD -- deploy/home/release.json scripts/check_release.py; then
+              echo "The release and its check are as on $BASE_REF; the registry is not read."
+              exit 0
+            fi
+          fi
+          python3 scripts/check_release.py
+
   # The contract epoch (apps/servers/file_host/src/contract.rs) only rises,
   # and rises whenever the route fingerprint changes: a client bundles it,
   # and home pulls a newer image only for a client that needs a higher one.
@@ -301,7 +331,7 @@ jobs:
   # and on a fork's head, whose token cannot dispatch (the sweep judges those).
   tell_gate:
     name: Tell PR gate
-    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, contract_epoch, rust_lint]
+    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, release_set, contract_epoch, rust_lint]
     if: always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:

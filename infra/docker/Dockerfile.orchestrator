@@ -86,3 +86,11 @@ ENTRYPOINT ["/usr/local/bin/orchestrator"]
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD pgrep orchestrator || exit 1
+
+# What this image provides and requires of the others in home's release
+# (RELEASE R3, #790; docs/release.md, "Constraints"): comma-separated
+# name=value pairs, a value an epoch (met by one at least as high) or a
+# 40-hex commit (met by the same one). Last, so no layer depends on them.
+# The number is ws-events' NATS_SUBJECTS_EPOCH; apps/orchestrator/src/lib.rs's test holds it equal.
+LABEL io.paulgsc.provides="nats-subjects=1" \
+      io.paulgsc.requires=""

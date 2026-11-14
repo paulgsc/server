@@ -66,3 +66,11 @@ CMD ["serve", \
     "--program-uid", "10101", \
     "--program-gid", "10101", \
     "--client-uid", "10000"]
+
+# What this image provides and requires of the others in home's release
+# (RELEASE R3, #790; docs/release.md, "Constraints"): comma-separated
+# name=value pairs, a value an epoch (met by one at least as high) or a
+# 40-hex commit (met by the same one). Last, so no layer depends on them.
+# The number is rust_rounds_wire's protocol::EPOCH; crates/rust_runner/src/lib.rs's test holds it equal.
+LABEL io.paulgsc.provides="rust-runner-protocol=1" \
+      io.paulgsc.requires=""

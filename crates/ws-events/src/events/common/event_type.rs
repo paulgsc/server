@@ -1,6 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// The NATS subjects' epoch, as home's release states it.
+///
+/// RELEASE R3, #790; docs/release.md, "Constraints". `orchestrator`'s image provides
+/// `nats-subjects=<EPOCH>` and `file_host`'s requires it, both as
+/// `io.paulgsc.*` labels in their Dockerfiles, which each side's own test
+/// holds to this number.
+///
+/// Raise it by one whenever [`EventType::subject`] changes:
+/// `the_subjects_are_this_epoch_s` fails until the list it pins and this
+/// number move together.
+pub const NATS_SUBJECTS_EPOCH: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum EventType {
@@ -86,5 +98,75 @@ impl std::str::FromStr for EventType {
 			"systemEvent" => Ok(EventType::SystemEvent),
 			_ => Err(format!("Unknown event type: {}", s)),
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{EventType, NATS_SUBJECTS_EPOCH};
+
+	/// The subjects [`NATS_SUBJECTS_EPOCH`] was last set for. A change to
+	/// any of them is a change both `orchestrator` and `file_host` must see.
+	/// Every variant, so a new one fails to compile here until it is listed.
+	const fn listed(event: &EventType) {
+		match event {
+			EventType::ObsStatus
+			| EventType::ObsCommand
+			| EventType::ClientCount
+			| EventType::Ping
+			| EventType::Pong
+			| EventType::Error
+			| EventType::TabMetaData
+			| EventType::Utterance
+			| EventType::OrchestratorCommandData
+			| EventType::OrchestratorState
+			| EventType::SystemEvent
+			| EventType::AudioChunk
+			| EventType::Subtitle => {}
+		}
+	}
+
+	#[test]
+	fn the_subjects_are_this_epoch_s() {
+		let all = [
+			EventType::ObsStatus,
+			EventType::ObsCommand,
+			EventType::ClientCount,
+			EventType::Ping,
+			EventType::Pong,
+			EventType::Error,
+			EventType::TabMetaData,
+			EventType::Utterance,
+			EventType::OrchestratorCommandData,
+			EventType::OrchestratorState,
+			EventType::SystemEvent,
+			EventType::AudioChunk,
+			EventType::Subtitle,
+		];
+		all.iter().for_each(listed);
+		let subjects: Vec<&str> = all.iter().map(EventType::subject).collect();
+		assert_eq!(
+			(NATS_SUBJECTS_EPOCH, subjects.as_slice()),
+			(
+				1,
+				[
+					"obs.status",
+					"obs.command",
+					"system.client_count",
+					"system.ping",
+					"system.ping",
+					"system.error",
+					"tab.metadata",
+					"utterance",
+					"orchestrator.command",
+					"orchestrator.state",
+					"system",
+					"audio.chunk",
+					"audio.subtitle",
+				]
+				.as_slice()
+			),
+			"a NATS subject changed: update this list and raise NATS_SUBJECTS_EPOCH by one"
+		);
 	}
 }
