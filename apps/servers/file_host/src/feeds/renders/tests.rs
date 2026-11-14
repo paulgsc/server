@@ -452,7 +452,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	std::fs::write(status.join("job.state"), worker_text("paused", NOW - 10, 600)).unwrap();
 	std::fs::write(status.join("lane"), b"verb=pause\nwhy=busy\nstops=0\nstuck=false\nat=1794139198\n").unwrap();
 	let folders = Folders {
-		feeds: vec![(Feed::Call, renders, status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
+		feeds: vec![(Feed::Call, renders.clone(), status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
 		clip_walks: None,
 		previews: None,
 		cards_essays: None,
@@ -471,6 +471,14 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9);
 	assert_eq!(read.done.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["2026-10-30"]);
 	assert_eq!(read.done[0].bytes, Some(5), "a done call's video says its size");
+	// A feed's download follows a link to a plain file (`feeds::videos`), so
+	// its size is the file the link reaches.
+	let video = renders.join("2026-10-30").join("call.mp4");
+	let elsewhere = dir.path().join("elsewhere.mp4");
+	std::fs::write(&elsewhere, b"the linked video").unwrap();
+	std::fs::remove_file(&video).unwrap();
+	std::os::unix::fs::symlink(&elsewhere, &video).unwrap();
+	assert_eq!(read_now().await.done[0].bytes, Some(16), "a linked call video's size is what the download serves");
 	assert_eq!(read.waiting, []);
 	assert_eq!(
 		read.coming,

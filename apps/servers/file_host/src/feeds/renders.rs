@@ -52,11 +52,13 @@
 //! every other row reads as it did.
 //!
 //! **A done row's size** (`bytes`): a finished video's length on the drive,
-//! from the same `stat` that dates it, for every shelf whose finished file is
-//! a video (not a clip's walk, whose is `walk.json`). The phone fetches a
-//! home video in ranged parts and its home link carries no headers, so this
-//! is the total it counts against, and how it tells a whole cached copy from
-//! a part.
+//! for every shelf whose finished file is a video (not a clip's walk, whose
+//! is `walk.json`), and only when that shelf's download would serve the file
+//! (`Shelf::follows_links`): a feed's (`feeds::videos`) follows a link to a
+//! plain file, a preview's and a cards essay's serve a plain file only. The
+//! phone fetches a home video in ranged parts and its home link carries no
+//! headers, so this is the total it counts against, and how it tells a whole
+//! cached copy from a part.
 //!
 //! **How far a render is** (C138): the worker keeps the recorder's own
 //! count in `renders/call-worker/job.progress` as it goes (its station,
@@ -320,6 +322,15 @@ impl Shelf {
 	#[must_use]
 	pub const fn is_video(self) -> bool {
 		!matches!(self, Self::ClipWalk)
+	}
+
+	/// Whether its download follows a link to its video
+	/// (`feeds::videos::video_file`, a feed's), or serves a plain file only
+	/// (`handlers::previews`, `handlers::cards_essays`): what a done row's
+	/// size is read by, so `bytes` is said for what the download serves.
+	#[must_use]
+	pub const fn follows_links(self) -> bool {
+		matches!(self, Self::Feed(_))
 	}
 
 	/// The file a finished episode is known by.
@@ -925,7 +936,7 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 			continue;
 		}
 		seen.held.push((episode.key.clone(), taken));
-		if let Some((made, size)) = made_and_size(&renders.join(&episode.key).join(feed.video())).await {
+		if let Some((made, size)) = made_and_size(&renders.join(&episode.key).join(feed.video()), feed.follows_links()).await {
 			seen.videos.insert(episode.key.clone(), made);
 			if let Some(size) = size.filter(|_| feed.is_video()) {
 				seen.sizes.insert(episode.key.clone(), size);
@@ -964,12 +975,17 @@ async fn modified(path: &Path) -> Option<i64> {
 }
 
 /// When a finished file was last written, Unix seconds, if it is there, and
-/// its length in bytes if it is a plain file, as the downloads serve only one
-/// (`handlers::cards_essays`, `handlers::previews`, `feeds::videos`): one
-/// `stat` for the file the worker moves into place, a second only for
+/// its length in bytes if its shelf's download would serve it: a plain file,
+/// reached through a link where the download follows one (`follows`). One
+/// `stat` for the file the worker moves into place; a second only for
 /// anything else, whose date is read as before and whose size is none.
-async fn made_and_size(path: &Path) -> Option<(i64, Option<u64>)> {
-	if let Ok(meta) = tokio::fs::symlink_metadata(path).await {
+async fn made_and_size(path: &Path, follows: bool) -> Option<(i64, Option<u64>)> {
+	let meta = if follows {
+		tokio::fs::metadata(path).await
+	} else {
+		tokio::fs::symlink_metadata(path).await
+	};
+	if let Ok(meta) = meta {
 		if meta.file_type().is_file() {
 			let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
 			return Some((i64::try_from(since.as_secs()).ok()?, Some(meta.len())));
