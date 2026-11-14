@@ -20,15 +20,14 @@
 # #791, `gh workflow run release-lock.yml` with SERVER_ROUTES_DISPATCH_TOKEN),
 # and by hand.
 #
-# Third-party images (R7, #796; C120) move on their own clock: monthly, or
-# by hand with `third_party`, `release_lock.py --third-party` moves each
-# third-party entry to its tag's current digest and nothing else, into its
-# own pull request, `automation/release-third-party`, so a third-party move
-# is its own release and rolls back whole without an app image. An app
-# publish never starts one. Both pull requests bump main's serial, so the one
-# that merges second has to be formed again on the new main: every run forms
-# the app release, and forms the third-party one again only while its pull
-# request is open (it re-reads the tags it names; it adds no move of its own).
+# Third-party images (R7, #796; C120, C347) refresh in the same one pull
+# request, never beside an app move: when the app images have nothing to
+# move and a refresh is due (no third-party entry moved on main in 30 days,
+# read from main's history, so no run carries it), `release_lock.py
+# --third-party` moves each to its tag's current digest. One branch is one
+# serial at a time. The daily schedule only asks whether a refresh is due,
+# by git alone, and stops there when it is not: no registry read, no pull
+# request. A dispatch with `third_party` forces one.
 #
 # A pull request opened with the default GITHUB_TOKEN gets its checks in an
 # approval-required state (docs/assurance.md, "A pull request the image bot …
@@ -46,13 +45,13 @@ on:
         required: false
         type: string
       third_party:
-        description: "Also refresh the third-party images' digests, as the monthly run does (R7)."
+        description: "Refresh the third-party images' digests now, though no month has passed (R7)."
         required: false
         type: boolean
         default: false
-  # The third-party refresh's own clock (C120): the 9th of each month.
+  # Whether a third-party refresh is due (C347): daily, git alone unless it is.
   schedule:
-    - cron: '17 11 9 * *'
+    - cron: '17 11 * * *'
 permissions:
   contents: read
 concurrency:
@@ -66,10 +65,11 @@ jobs:
       contents: write
       pull-requests: write
     env:
+      RELEASE_BRANCH: automation/release
       GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
       GH_REPO: ${{ github.repository }}
-      # The schedule, or a dispatch that asks: the only starts of a refresh.
-      THIRD_PARTY: ${{ github.event_name == 'schedule' || inputs.third_party == true }}
+      FORCE_THIRD_PARTY: ${{ inputs.third_party == true }}
+      SCHEDULED: ${{ github.event_name == 'schedule' }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -77,14 +77,26 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_BOT_TOKEN || github.token }}
+      # The schedule's only question, by git alone: a day with no refresh due
+      # ends here, before any registry read or pull request.
+      - name: Is a third-party refresh due
+        id: due
+        run: |
+          set -euo pipefail
+          due=$(python3 scripts/release_lock.py --third-party-due)
+          [ "$FORCE_THIRD_PARTY" != true ] || due=due
+          echo "third-party refresh: $due"
+          echo "due=$due" >> "$GITHUB_OUTPUT"
       # Runs are one at a time (the concurrency group), so the only thing that
       # can move under a run is main itself: a release, or anything else,
-      # merging meanwhile. Each release forms on main as it is, pushes, and
-      # forms again if main moved, so its pull request is never one formed on
-      # a main that is gone. main already having it closes a pull request
-      # still open for it, which would propose nothing or something main has
-      # passed. Otherwise its pull request opens and asks for auto-merge.
-      - name: Form each release with what has been published
+      # merging meanwhile. The run forms on main as it is, pushes, and forms
+      # again if main moved, so the release pull request is never one formed
+      # on a main that is gone. App moves first; third-party ones only when
+      # there are none and a refresh is due on that main, so a release is one
+      # or the other, never both.
+      - name: Reconcile the release with what has been published
+        id: reconcile
+        if: env.SCHEDULED != 'true' || steps.due.outputs.due == 'due'
         env:
           REASON: ${{ inputs.reason }}
         run: |
@@ -92,65 +104,79 @@ jobs:
           [ -z "${REASON:-}" ] || echo "Started for: $REASON"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
-          # form <branch> <title> <what it holds> [release_lock.py flag]
-          form() {
-            local branch=$1 title=$2 holds=$3 flag=${4:-} changed='' attempt formed_on number body created
-            for attempt in 1 2 3 4 5; do
-              git fetch -q origin main
-              formed_on=$(git rev-parse origin/main)
-              git checkout -q --detach "$formed_on"
-              python3 scripts/release_lock.py $flag > "$RUNNER_TEMP/changes.md"
-              cat "$RUNNER_TEMP/changes.md"
-              if git diff --quiet -- deploy/home/release.json; then
-                changed=false
-                break
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            formed_on=$(git rev-parse origin/main)
+            git checkout -q --detach "$formed_on"
+            kind=app
+            python3 scripts/release_lock.py > "$RUNNER_TEMP/changes.md"
+            if git diff --quiet -- deploy/home/release.json; then
+              due=$(python3 scripts/release_lock.py --third-party-due)
+              [ "$FORCE_THIRD_PARTY" != true ] || due=due
+              if [ "$due" = due ]; then
+                kind=third-party
+                python3 scripts/release_lock.py --third-party > "$RUNNER_TEMP/changes.md"
               fi
-              # The branch is main plus this release, whatever it held
-              # before: the run computed the whole set, so nothing on it is
-              # owed to an earlier run.
-              git commit -q -m "$title" -- deploy/home/release.json
-              git push -q --force origin "HEAD:refs/heads/$branch"
-              git fetch -q origin main
-              if [ "$(git rev-parse origin/main)" = "$formed_on" ]; then
-                changed=true
-                break
-              fi
-              echo "main moved while $branch formed; forming it again (attempt $attempt)."
-            done
-            number=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
-            case $changed in
-              false)
-                echo "main's release already names $holds."
-                if [ -n "$number" ]; then
-                  gh pr close "$number" --comment "main's release already names $holds (release-lock.yml)."
-                fi ;;
-              true)
-                body="Home's next release (\`deploy/home/release.json\`, epic #787): main's release with $holds (docs/release.md).
+            fi
+            cat "$RUNNER_TEMP/changes.md"
+            if git diff --quiet -- deploy/home/release.json; then
+              echo "main's release already names the newest of everything it follows, and every third-party digest due."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$kind" = app ]; then
+              title="chore(release): home's next release"
+              holds="every image it follows at its newest published reference, by tag and digest"
+            else
+              title="chore(release): home's third-party images at their tags' current digests"
+              holds="every third-party image at its tag's current digest, and no app image moved (RL8)"
+            fi
+            # The branch is main plus this release, whatever it held before:
+            # the run computed the whole set, so nothing on it is owed to an
+            # earlier run, a third-party release an app one replaces included
+            # (the refresh is due again once the app release is on main).
+            git commit -q -m "$title" -- deploy/home/release.json
+            git push -q --force origin "HEAD:refs/heads/$RELEASE_BRANCH"
+            git fetch -q origin main
+            if [ "$(git rev-parse origin/main)" = "$formed_on" ]; then
+              {
+                echo "changed=true"
+                echo "title=$title"
+                echo "holds=$holds"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "main moved while the release formed; forming it again (attempt $attempt)."
+          done
+          echo "::error::main kept moving; the next run forms the release"
+          exit 1
+      # main already has the release: a pull request still open for it would
+      # propose nothing, or something main has passed, so it is closed.
+      - name: Close a release pull request main no longer needs
+        if: steps.reconcile.outputs.changed == 'false'
+        run: |
+          set -euo pipefail
+          number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr close "$number" --comment "main's release already names the newest published image of everything it follows (release-lock.yml)."
+          fi
+      - name: Open the release pull request and ask for auto-merge
+        if: steps.reconcile.outputs.changed == 'true'
+        env:
+          TITLE: ${{ steps.reconcile.outputs.title }}
+          HOLDS: ${{ steps.reconcile.outputs.holds }}
+        run: |
+          set -euo pipefail
+          body="Home's next release (\`deploy/home/release.json\`, epic #787): main's release with $HOLDS (docs/release.md).
 
           $(cat "$RUNNER_TEMP/changes.md")
 
           Formed by \`release-lock.yml\` and merged by auto-merge once its checks pass (C119). Home applies it at the next \`make home-deploy\`, or when a client needs a newer contract epoch."
-                if [ -z "$number" ]; then
-                  created=$(gh pr create --base main --head "$branch" --title "$title" --body "$body")
-                  number=$(grep -oE '[0-9]+$' <<< "$created")
-                else
-                  gh pr edit "$number" --body "$body"
-                fi
-                gh pr merge --auto --squash "$number" ;;
-              *)
-                echo "::error::main kept moving; the next run forms $branch"
-                exit 1 ;;
-            esac
-          }
-
-          # Called plainly, never in `||` or `if`, which would turn off
-          # `set -e` inside it: a source it cannot read must fail the run,
-          # never read as "nothing changed" and close a pull request.
-          form automation/release "chore(release): home's next release" \
-            "every image it follows at its newest published reference, by tag and digest"
-          open=$(gh pr list --head automation/release-third-party --state open --json number --jq '.[0].number // empty')
-          if [ "$THIRD_PARTY" = true ] || [ -n "$open" ]; then
-            form automation/release-third-party "chore(release): home's third-party images at their tags' current digests" \
-              "every third-party image at its tag's current digest, and nothing else moved" --third-party
+          number=$(gh pr list --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            created=$(gh pr create --base main --head "$RELEASE_BRANCH" --title "$TITLE" --body "$body")
+            number=$(grep -oE '[0-9]+$' <<< "$created")
+          else
+            gh pr edit "$number" --title "$TITLE" --body "$body"
           fi
+          gh pr merge --auto --squash "$number"

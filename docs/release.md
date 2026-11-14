@@ -66,19 +66,30 @@ per CLAUDE.md, "Drift is loud, not silent".
   they enter `SOURCES` only with R3's set check (#790), which refuses an
   inconsistent set. Until then their entries move by a reviewed pull request.
 
-- **RL8. Third-party images are pinned, and move on their own clock, alone**
-  (R7, #796; C120). Every image nobody here publishes (`THIRD_PARTY` in
+- **RL8. Third-party images are pinned, and refresh alone, when due**
+  (R7, #796; C120, C347). Every image nobody here publishes (`THIRD_PARTY` in
   `release_lock.py`) is `repo:<real tag>@sha256:…`: the current major or
   minor version where its publisher tags one, else the exact version, never
   `latest`. Which tag is a reviewed change to the release. An exact version
   (a publisher with no major or minor tag) never moves by refresh, and
-  nothing yet says a newer one is out: its bump is a reviewed change too. Only the monthly
-  refresh (or a dispatch with `third_party`) moves one, and only to its tag's
-  current digest, in its own pull request, `automation/release-third-party`,
-  so a third-party move is a release of its own and rolls back whole without
-  an app image. An app publish never starts one; a run re-forms an open one
-  on main as it now is, since the release that merges second must be formed
-  again. caddy runs at NixOS level and is not in the release.
+  nothing yet says a newer one is out: its bump is a reviewed change too
+  (#857). A refresh moves each to its tag's current digest, and only:
+  - **when due:** no commit on main in the last 30 days changed a
+    third-party entry, read from main's history (RL2: no run carries it, so
+    a cancelled or failed run loses nothing), or a dispatch with
+    `third_party` forces it;
+  - **alone:** in the one release pull request, only when the app images
+    have nothing to move. A release is app moves or third-party moves, never
+    both, so a third-party move rolls back whole without an app image, and
+    serials never collide. An app move replaces a third-party release not
+    yet merged; the refresh is still due, so it is proposed again once the
+    app release is on main.
+
+  A daily schedule asks whether one is due by git alone, and stops there
+  when it is not: no registry read, no pull request. A forced refresh made
+  when none is due is closed by the next run that is not forced, so force
+  one only to merge it then. caddy runs at NixOS level and is not in the
+  release.
 
 ## What a turned-down release means
 
@@ -95,7 +106,7 @@ carry, against RL2.
 | The release | `deploy/home/release.json` |
 | Compose reads it | `infra/compose/*.yml` (`${IMAGE_*}`), `apps/envctl/src/release.rs` |
 | CI reconciles it | `scripts/release_lock.py`, `.github/workflows/release-lock.yml` |
-| Third-party pins refresh (RL8) | `release_lock.py --third-party`, release-lock.yml's monthly `schedule` |
+| Third-party pins refresh (RL8) | `release_lock.py --third-party` and `--third-party-due`, release-lock.yml's daily `schedule` |
 | Called after a server publish | `.github/workflows/publish-image-changesets.yml` (`release`) |
 | **Planned:** set check | R3, #790 |
 | **Planned:** deploy applies a release whole | R4, #793 |

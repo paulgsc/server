@@ -11,6 +11,7 @@ with the right answer (docs/release.md, "Invariants").
 
     python3 scripts/release_lock.py                # reconcile deploy/home/release.json
     python3 scripts/release_lock.py --third-party  # refresh the third-party pins only
+    python3 scripts/release_lock.py --third-party-due  # `due` or `not due`: git alone
     python3 scripts/release_lock.py --self-test
 
 Where "newest published" comes from, per followed service (`SOURCES`):
@@ -30,8 +31,11 @@ Where "newest published" comes from, per followed service (`SOURCES`):
   `--third-party`: the current digest of the tag its entry already names (a
   real version, never `latest`). Which tag is a reviewed change to the
   release; the refresh moves only the digest under it. It is its own mode,
-  so a third-party move is its own release and an app publish never brings
-  one in (C120).
+  so a third-party move is its own release and never rides with an app
+  image (C120). It is due (`--third-party-due`) when no commit on main in
+  the last REFRESH_DAYS changed a third-party entry: derived from main's
+  history, never from what started the run, so a run that is cancelled or
+  fails loses nothing (C347).
 
 Docker Hub's tag API gives each tag's digest (another registry's v2 API, for
 an image named with its host), so every reference is `repo:tag@sha256:…`.
@@ -122,6 +126,9 @@ THIRD_PARTY = frozenset(
 )
 # `[host[:port]/]path:tag[@digest]`; the tag is what follows the last colon
 # after the last slash, so a registry's port is never read as one.
+# How long a third-party digest stays before a refresh is due (C120's
+# monthly cadence, C347).
+REFRESH_DAYS = 30
 TAGGED = re.compile(r"(?P<repository>(?:[a-z0-9.-]+(?::[0-9]+)?/)?[a-z0-9][a-z0-9._/-]*):(?P<tag>[A-Za-z0-9_][A-Za-z0-9_.-]*)(@sha256:[0-9a-f]{64})?")
 # Docker Hub's own names for itself, which its tag API takes without.
 HUB_HOSTS = ("docker.io", "index.docker.io", "registry-1.docker.io")
@@ -206,6 +213,21 @@ def registry_digest(host: str, name: str, tag: str) -> str | None:
         raise Unreadable(f"{host} answered {err.code} for {name}:{tag}") from err
     except (urllib.error.URLError, TimeoutError, ValueError) as err:
         raise Unreadable(f"{host} could not be read for {name}:{tag}: {err}") from err
+
+
+def third_party_moved_since(repo: Path, days: int, release: Path = RELEASE) -> bool:
+    """Whether a commit on main in the last `days` changed a third-party entry (git alone)."""
+    lines = "|".join(re.escape(json.dumps(name)) for name in sorted(THIRD_PARTY))
+    done = subprocess.run(
+        ["git", "log", f"--since={days} days ago", "--format=%H", "-G", f"^ *({lines}): ", "HEAD", "--", str(release.relative_to(repo))],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise Unreadable(f"git log failed: {done.stderr.strip()}")
+    return bool(done.stdout.strip())
 
 
 def main_order(repo: Path) -> list[str]:
@@ -336,11 +358,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--release", type=Path, default=RELEASE)
     parser.add_argument("--third-party", action="store_true", help="refresh the third-party pins, and nothing else")
+    parser.add_argument("--third-party-due", action="store_true", help="print `due` or `not due` for the third-party refresh, from git alone")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         result = unittest.main(argv=[sys.argv[0]], exit=False, verbosity=1).result
         return 0 if result.wasSuccessful() else 1
+    if args.third_party_due:
+        try:
+            print("not due" if third_party_moved_since(REPO_ROOT, REFRESH_DAYS) else "due")
+        except Unreadable as err:
+            print(f"release_lock: {err}", file=sys.stderr)
+            return 2
+        return 0
     try:
         world = real_world(REPO_ROOT)
         release = json.loads(args.release.read_text())
@@ -483,6 +513,31 @@ class Tests(unittest.TestCase):
             before["services"]["redis"]["image"] = image
             with self.assertRaises(Unreadable, msg=image):
                 refresh_third_party(before, world(published, [], []), "main", frozenset({"redis"}))
+
+    def test_a_third_party_refresh_is_due_only_after_a_quiet_month(self) -> None:
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = Path(scratch)
+            release = repo / "deploy" / "home" / "release.json"
+            release.parent.mkdir(parents=True)
+
+            def commit(services: dict, days_ago: int) -> None:
+                release.write_text(render({"serial": 1, "server_commit": "", "services": services}))
+                stamp = f"@{int(time.time()) - days_ago * 86400} +0000"
+                env = {"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin"}
+                subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=env)
+                subprocess.run(["git", "commit", "-qm", "r"], cwd=repo, check=True, env=env)
+
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            commit({"redis": {"image": f"redis:8.10@{DA}"}, "rust-runner": {"image": "pgathondu/rust-runner:a"}}, 400)
+            commit({"redis": {"image": f"redis:8.10@{DB}"}, "rust-runner": {"image": "pgathondu/rust-runner:a"}}, 31)
+            # An app move inside the window does not count.
+            commit({"redis": {"image": f"redis:8.10@{DB}"}, "rust-runner": {"image": "pgathondu/rust-runner:b"}}, 1)
+            self.assertFalse(third_party_moved_since(repo, 30, release), "a third-party move 31 days ago, an app move since: due")
+            commit({"redis": {"image": f"redis:8.10@{DC}"}, "rust-runner": {"image": "pgathondu/rust-runner:b"}}, 2)
+            self.assertTrue(third_party_moved_since(repo, 30, release), "a third-party move 2 days ago: not due")
 
     def test_a_repository_is_read_where_docker_pulls_it_from(self) -> None:
         self.assertEqual(located("redis"), (None, "library/redis"))
