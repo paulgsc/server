@@ -440,7 +440,8 @@ rest of envctl; home has no python, and nothing home runs needs it):
    `make dev`.
 6. **It gates every service, up to 360 s**: `healthy` where it has a
    healthcheck (`file-host`'s is `file_host --health-check`: `/ready` ready
-   or degraded), otherwise running with no restart for 60 s. A container
+   or degraded), a one-shot once it has exited 0 under `restart: 'no'`
+   (`dashboard-builder`), otherwise running with no restart for 60 s. A container
    that exits, restarts or turns `unhealthy` fails at once. `file-host`'s
    `start_period` is 300 s, so the backup and migrations of a large database
    can finish before any failed probe counts, and the wait outlasts it.
