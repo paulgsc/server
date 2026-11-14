@@ -1,10 +1,10 @@
 {
-  "serial": 6,
-  "server_commit": "ea95364029c14ea021edf7f51b9f2449599318a9",
+  "serial": 7,
+  "server_commit": "788ef739e242afd1c25d0666102ef37c9f89c96f",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:latest"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:latest"},
-    "file-host": {"image": "pgathondu/server:latest"},
+    "file-host": {"image": "pgathondu/server:60ada0dbb20f994da78af0d16fa7b409b67d807f@sha256:1ea3b0952b0739f79554c64936f167fff31b788c184cde410ed19bec04ae3fd6"},
     "grafana": {"image": "grafana/grafana-oss:latest"},
     "kokoro": {"image": "pgathondu/kokoro:249470f9481783dcc993ad3c8003254e51b629f0@sha256:c9136773df09b0bd52a7615d3e98850ebd7f73f5d1d22d9840972d4b02f4550d"},
     "metabase": {"image": "metabase/metabase:latest"},

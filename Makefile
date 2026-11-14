@@ -197,13 +197,13 @@ preflight: envctl ## Decrypt deploy/$(ROLE)/ into memory and name every missing 
 up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/, decrypted to tmpfs only
 	@$(ENVCTL_RUN) up --role $(ROLE)
 
-# Home's deploy of file_host (AS18, #564): pull pgathondu/server:latest and,
-# only when it changed, `make up` (file_host migrates as it starts, AS16
-# #563), a wait for it to be ready, and the previous image put back when it
-# is not (`envctl deploy`, apps/envctl/src/deploy.rs; README.md, "Deploying
-# to home"). ARGS passes its flags: make home-deploy ARGS="--no-pull".
+# Home's deploy (RELEASE R4, #793): main's release, every image by digest,
+# its set checked, brought up from its own worktree, every service gated,
+# and the previous release put back whole when any does not come up
+# (`envctl deploy`, apps/envctl/src/deploy.rs; README.md, "Deploying to
+# home"). ARGS passes its flags: make home-deploy ARGS="--no-pull".
 # Nothing home runs calls python: home has none (apps/envctl/tests/home_runs_no_python.rs).
-home-deploy: envctl ## Pull file_host's image and, if it changed, up, wait for it to be ready, and roll it back if it is not
+home-deploy: envctl ## Apply main's release whole: pull every image, check the set, up, gate every service, roll back whole
 	@$(ENVCTL_RUN) deploy $(ARGS)
 
 compose: envctl ## Any docker compose command on deploy/$(ROLE)/: make compose ARGS="ps"

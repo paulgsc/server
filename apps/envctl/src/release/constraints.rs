@@ -11,10 +11,9 @@
 //!
 //! CI checks a release with `scripts/check_release.py`, which reads the
 //! labels from the registry; the deploy checks it again here, from the
-//! pulled images, before `up` (R4, #793). The two sides are run on the same
+//! pulled images, before `up` (`deploy.rs`, R4 #793). The two sides are run on the same
 //! cases: `scripts/check_release.py`'s `test_the_rule_is_envctl_s` reads
 //! this file's `case(…)` lines.
-#![cfg_attr(not(test), expect(dead_code, reason = "envctl deploy checks the release with it before up (R4, #793)"))]
 
 use std::collections::BTreeMap;
 

@@ -139,9 +139,9 @@ enum Command {
 		#[arg(long = "prune", value_delimiter = ',')]
 		names: Vec<String>,
 	},
-	/// Home's deploy of `file_host` (AS18, #564; `make home-deploy`): pull
-	/// pgathondu/server:latest and, only when it changed, `make up`, wait for
-	/// it to be ready, and put the previous image back when it is not. With
+	/// Home's deploy (RELEASE R4, #793; `make home-deploy`): main's release,
+	/// applied whole from its own worktree, every service gated, and the
+	/// previous release put back whole when any does not come up. With
 	/// --on-demand, only when `file_host`'s marker asks for a newer contract
 	/// epoch (`nix/modules/home-deploy.nix`). Exit 0 deployed or nothing to
 	/// do, 1 not deployed, 2 rolled back, 3 nothing ready.
@@ -152,13 +152,15 @@ enum Command {
 		/// Seconds to wait for each start to be ready.
 		#[arg(long, default_value_t = deploy::DEFAULT_READY_TIMEOUT)]
 		ready_timeout: f64,
-		/// Where the failed images are remembered (default
-		/// `$XDG_STATE_HOME/server-deploy`).
+		/// Where the applied and failed releases are recorded and their
+		/// worktrees kept (default: the owner's
+		/// `$XDG_STATE_HOME/server-deploy`, the same for `make home-deploy`
+		/// and the on-demand unit).
 		#[arg(long)]
 		state_dir: Option<PathBuf>,
-		/// The image file-host runs, as `infra/compose/file_host.yml` names it.
-		#[arg(long, default_value = deploy::IMAGE)]
-		image: String,
+		/// The role under deploy/ whose release is applied.
+		#[arg(long, default_value = "home")]
+		role: String,
 		/// Run only if `DEPLOY_DIR/wanted` asks (`${STORAGE}/deploy`).
 		#[arg(long, value_name = "DEPLOY_DIR")]
 		on_demand: Option<PathBuf>,
@@ -489,7 +491,7 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 		no_pull,
 		ready_timeout,
 		state_dir,
-		image,
+		role,
 		on_demand,
 		as_user,
 		runtime_dir,
@@ -499,19 +501,27 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 	};
 	let options = deploy::Options {
 		pull: !no_pull,
-		image,
 		ready_timeout,
 		poll: deploy::POLL_SECONDS,
 	};
 	if options.ready_timeout <= 0.0 || !options.ready_timeout.is_finite() {
 		bail!("--ready-timeout must be positive");
 	}
+	let as_user_name = as_user.clone();
 	let as_user = match as_user.as_deref() {
 		Some(user) => deploy::runuser_prefix(user, runtime_dir.as_deref())?,
 		None => Vec::new(),
 	};
-	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(shell.get("XDG_STATE_HOME").map(String::as_str), shell.get("HOME").map(String::as_str)));
-	let mut host = deploy::RealHost::new(repo, &state_dir, as_user);
+	// The owner's own state directory, whoever runs the pass: the on-demand
+	// unit (root, --as-user) and `make home-deploy` (the owner) keep one
+	// record of the release applied.
+	let home = match &as_user_name {
+		Some(user) => Some(deploy::home_of(user)?),
+		None => shell.get("HOME").cloned(),
+	};
+	let xdg = if as_user_name.is_some() { None } else { shell.get("XDG_STATE_HOME").map(String::as_str) };
+	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(xdg, home.as_deref()));
+	let mut host = deploy::RealHost::new(repo, &state_dir, &role, as_user_name, as_user)?;
 	let clock = deploy::Monotonic::new();
 	let mut say = |line: &str| println!("{line}");
 	let code = if let Some(folder) = on_demand {
@@ -533,7 +543,7 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 			}
 		}
 	} else {
-		deploy::deploy(&mut host, &options, &clock, &mut say)
+		deploy::deploy(&mut host, &options, &clock, &mut say).code
 	};
 	Ok(ExitCode::from(code))
 }
