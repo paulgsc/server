@@ -45,8 +45,8 @@ per CLAUDE.md, "Drift is loud, not silent".
 - **RL5. Held entries do not move.** `file-host` stays
   `pgathondu/server:latest` until the deploy applies whole releases (R4,
   #793), because `envctl deploy` pulls, tags and rolls back that tag. An
-  entry the release does not follow keeps whatever main says: third-party
-  images until R7 (#796). kokoro is followed (R2b, #805), but until its
+  entry the release does not follow keeps whatever main says, and a
+  third-party entry moves only by RL8. kokoro is followed (R2b, #805), but until its
   first publish main's entry is still `some-kokoro:local`, the image home
   last built, and nothing builds it any more. Home has it, so home is
   unaffected. On a box without it, `make up` fails pulling
@@ -66,6 +66,38 @@ per CLAUDE.md, "Drift is loud, not silent".
   they enter `SOURCES` only with R3's set check (#790), which refuses an
   inconsistent set. Until then their entries move by a reviewed pull request.
 
+- **RL8. Third-party images are pinned, and refresh alone, when due**
+  (R7, #796; C120, C347). Every image nobody here publishes (`THIRD_PARTY` in
+  `release_lock.py`) is `repo:<real tag>@sha256:…`: the current major or
+  minor version where its publisher tags one, else the exact version, never
+  `latest`. Which tag is a reviewed change to the release. An exact version
+  (a publisher with no major or minor tag) never moves by refresh, and
+  nothing yet says a newer one is out: its bump is a reviewed change too
+  (#857). A refresh moves each to its tag's current digest, and only:
+  - **when due:** no commit on main in the last 30 days changed a
+    third-party entry, read from main's history (RL2: no run carries it, so
+    a cancelled or failed run loses nothing), or a dispatch with
+    `third_party` forces it;
+  - **alone:** in the one release pull request, only when the app images
+    have nothing to move. A release is app moves or third-party moves, never
+    both, so a third-party move rolls back whole without an app image, and
+    serials never collide. An app move replaces a third-party release not
+    yet merged; the refresh is still due, so it is proposed again once the
+    app release is on main.
+
+  A daily schedule asks whether one is due by git alone, outside the
+  release job's concurrency group, and stops there when it is not: no
+  registry read, no pull request, and no queued run cancelled. So a
+  scheduled day with nothing due reconciles nothing: an open release pull
+  request that main has since passed waits for the next publish or dispatch
+  run to form or close it. A forced refresh made when none is due is closed
+  by the next publish or dispatch run with no app moves, so force one only
+  to merge it then. "Due" means no third-party line moved, not that no
+  refresh ran: a refresh that finds every digest the same commits nothing,
+  so the next runs read the registries again until one moves, and an
+  unreadable registry on such a day fails the run, as RL2's runs fail
+  loudly. caddy runs at NixOS level and is not in the release.
+
 ## What a turned-down release means
 
 A release pull request someone closes is not remembered. The next run
@@ -80,7 +112,9 @@ carry, against RL2.
 |---|---|
 | The release | `deploy/home/release.json` |
 | Compose reads it | `infra/compose/*.yml` (`${IMAGE_*}`), `apps/envctl/src/release.rs` |
+| What the deploy's gate reads: each service's `healthy` (R5, #794; file-host, kokoro, rust-runner, orchestrator, render) | `infra/compose/*.yml` (`healthcheck:`), render's beat in `infra/render/render-calls.sh` |
 | CI reconciles it | `scripts/release_lock.py`, `.github/workflows/release-lock.yml` |
+| Third-party pins refresh (RL8) | `release_lock.py --third-party` and `--third-party-due`, release-lock.yml's daily `schedule` |
 | Called after a server publish | `.github/workflows/publish-image-changesets.yml` (`release`) |
 | **Planned:** set check | R3, #790 |
 | **Planned:** deploy applies a release whole | R4, #793 |
