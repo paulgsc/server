@@ -365,15 +365,21 @@ pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unverifi
 			columns(unfound).trim_end_matches('\n').replace("\n    ", "\n       ").replacen("    ", "       ", 1)
 		));
 	}
+	// Home starts only the release last applied, so its files reach it once
+	// committed, pushed and deployed (R6d, #870); any other role's `make up`
+	// reads the checkout.
+	let start = if role == "home" { "make home-deploy" } else { "make up" };
 	if dry_run || wrote || !unfound.is_empty() {
-		steps.push(format!(
-			"make up{}              start the stack from deploy/{role}/",
-			if role == "home" { String::new() } else { format!(" DEPLOY={role}") }
-		));
-		steps.push(format!("git add deploy/{role} && git commit && git push"));
+		if role == "home" {
+			steps.push(format!("git add deploy/{role} && git commit && git push"));
+			steps.push("make home-deploy        start the stack from main's deploy/home/".to_owned());
+		} else {
+			steps.push(format!("make up DEPLOY={role}              start the stack from deploy/{role}/"));
+			steps.push(format!("git add deploy/{role} && git commit && git push"));
+		}
 	}
 	if repo.join(".env").exists() {
-		steps.push(format!("rm {}   once make up has run from the encrypted files", repo.join(".env").display()));
+		steps.push(format!("rm {}   once {start} has run from the encrypted files", repo.join(".env").display()));
 	}
 	if !steps.is_empty() {
 		out.push_str("Next:\n");

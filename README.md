@@ -286,7 +286,8 @@ Every file states every variable of its binary but compose's own wiring,
 so a deployment decides each one. An empty value (`NAME=`) is "decided:
 unset" (#616): it reaches the binary unset, never set to nothing. To change
 a value: `sops edit deploy/<role>/<app>.sops.env` (or `sops set`), then
-`make up`. sops' dotenv does no quoting: `KEY="v"` gives
+`make up`; on home, commit and push it, then `make home-deploy`, since home's
+`make up` starts the release last applied. sops' dotenv does no quoting: `KEY="v"` gives
 the container `"v"`, quotes and all, so write `KEY=v`. To prune variables,
 `make prune APP=file_host` opens a checklist of the file's variables grouped
 by the schema's sections, a page at a time (`PAGE=10`), names and states

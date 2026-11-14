@@ -397,6 +397,8 @@ fn stack_of(
 ) -> Result<(PathBuf, Option<String>, Option<deploy::AppliedStack>)> {
 	let (role, lock) = match command {
 		Command::Up { role, .. } => (role, true),
+		// What the preflight and the listing read is what `up` would start.
+		Command::Preflight { role } | Command::List { role } => (role, false),
 		Command::Compose { role, args, .. } => {
 			if let Some(why) = compose::home_refusal(role, args) {
 				bail!("{why}");
@@ -571,6 +573,8 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 	// One rule for both, so they share one record and one lock: the
 	// owner's home, never a $XDG_STATE_HOME only one of them sees.
 	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(None, home.as_deref()));
+	// Absolute, as the tree it keeps is: its own `up` runs in that tree.
+	let state_dir = std::path::absolute(&state_dir).context("reading the current directory")?;
 	let mut host = deploy::RealHost::new(repo, &state_dir, &role, as_user_name, as_user)?;
 	let _held = match host.lock(on_demand.is_some()) {
 		Ok(file) => file,

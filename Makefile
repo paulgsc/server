@@ -146,7 +146,10 @@ DEV_PORT_FILE ?= $(or $(XDG_RUNTIME_DIR),/tmp)/file_host/dev-port.json
 # compose service only (tmpfs, mode 600, removed once compose has started it),
 # compose's into compose's own environment. It runs the preflight first, which
 # names every missing or refused variable at once. Any other compose command
-# needs the same files: `make compose ARGS="logs -f file-host"`.
+# needs the same files: `make compose ARGS="logs -f file-host"`. On home, up,
+# compose, preflight and env read the release last applied, from its tree, not
+# this checkout (R6d, #870): a change to deploy/home/ reaches home through
+# commit, push and `make home-deploy`.
 #
 # DEPLOY is the role make up and the rest use, home by default; make dev's is
 # DEV_DEPLOY, dev by default. cargo runs under the decrypted file too: sqlx's

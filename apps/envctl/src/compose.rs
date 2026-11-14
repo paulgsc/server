@@ -447,17 +447,18 @@ fn up_services<'a>(words: &[&'a str]) -> Vec<&'a str> {
 
 // Compose commands that only read, or act inside a container already
 // running: every other one may create, replace or stop containers.
-const READS: &[&str] = &[
-	"ps", "logs", "config", "images", "top", "ls", "port", "events", "version", "exec", "cp", "stats", "attach", "wait",
-];
+const READS: &[&str] = &["ps", "logs", "config", "images", "top", "ls", "port", "events", "version", "exec", "stats", "wait"];
 
 /// Whether `docker compose <args>` may change the stack's containers, so on
 /// home it takes the deploy's lock (R6d, #870). No command reads as a change.
+/// A `run --no-deps` starts a container of its own and none of the stack's,
+/// so a long one (`make promo`) never holds a deploy back.
 pub(crate) fn changes_containers(args: &[String]) -> bool {
 	let mut rest = args.iter().map(String::as_str);
 	while let Some(arg) = rest.next() {
 		if !arg.starts_with('-') {
-			return !READS.contains(&arg);
+			let after: Vec<&str> = rest.collect();
+			return !(READS.contains(&arg) || arg == "run" && options_of(arg, &after).contains(&"--no-deps"));
 		}
 		if consumes(arg, GLOBAL_LONG, GLOBAL_SHORT) || consumes(arg, OTHER_STACK, &['f']) {
 			rest.next();
@@ -642,7 +643,17 @@ mod tests {
 		for line in ["up -d", "restart file-host", "stop", "down", "-p server start", "--profile x run --rm a", ""] {
 			assert!(changes_containers(&args(line)), "`{line}`");
 		}
-		for line in ["ps", "logs -f file-host", "-p server logs", "--project-name x exec a sh", "config"] {
+		for line in ["up -d", "run --rm render sh", "cp a:/x .", "attach a"] {
+			assert!(changes_containers(&args(line)), "`{line}`");
+		}
+		for line in [
+			"ps",
+			"logs -f file-host",
+			"-p server logs",
+			"--project-name x exec a sh",
+			"config",
+			"run --rm --no-deps -v a:b render x",
+		] {
 			assert!(!changes_containers(&args(line)), "`{line}`");
 		}
 	}
