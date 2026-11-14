@@ -1,4 +1,4 @@
-//! What compose may mount from the tree a release is read from (RL9,
+//! What compose may mount from the tree a release is read from (RL10,
 //! docs/release.md; C344).
 //!
 //! Home's deploy runs compose on a release's worktree (R4, #793), where
@@ -37,12 +37,12 @@ pub(crate) fn problems(raw: &Value, tracked: &[&str]) -> Vec<String> {
 				.any(|path| rest.is_empty() || *path == rest || path.strip_prefix(rest).is_some_and(|below| below.starts_with('/')));
 			if !held {
 				problems.push(format!(
-					"service {service} mounts ${{REPO_ROOT}}/{rest} at {target}, which git does not hold, so a release's worktree has none: mount it from ${{STATE_ROOT}} (docs/release.md, RL9)"
+					"service {service} mounts ${{REPO_ROOT}}/{rest} at {target}, which git does not hold, so a release's worktree has none: mount it from ${{STATE_ROOT}} (docs/release.md, RL10)"
 				));
 			}
 			if volume.get("read_only").and_then(Value::as_bool) != Some(true) {
 				problems.push(format!(
-					"service {service} mounts ${{REPO_ROOT}}/{rest} at {target} writable; a release's tree is read-only: mount it :ro, or mount written state from ${{STATE_ROOT}} (docs/release.md, RL9)"
+					"service {service} mounts ${{REPO_ROOT}}/{rest} at {target} writable; a release's tree is read-only: mount it :ro, or mount written state from ${{STATE_ROOT}} (docs/release.md, RL10)"
 				));
 			}
 		}

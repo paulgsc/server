@@ -25,7 +25,7 @@ static COMPOSE_OWN: LazyLock<Regex> = LazyLock::new(|| dotenv::regex(r"^(COMPOSE
 
 /// What `make` gives compose itself, never a deployment file: the tree the
 /// release's tracked files are read from, the checkout whose untracked state
-/// is mounted (`STATE_ROOT`, C344; docs/release.md, RL9), and where the
+/// is mounted (`STATE_ROOT`, C344; docs/release.md, RL10), and where the
 /// decrypted files are.
 pub(crate) const FROM_MAKE: [&str; 3] = ["REPO_ROOT", "STATE_ROOT", "ENV_DIR"];
 

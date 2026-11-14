@@ -13,7 +13,7 @@
 //!    one forms.
 //! 2. **Pulls every image it names, by digest** (`--no-pull` uses the images
 //!    already here).
-//! 3. **Checks the set fits together** (RL8): every `io.paulgsc.requires`
+//! 3. **Checks the set fits together** (RL9): every `io.paulgsc.requires`
 //!    label is met by another image's `io.paulgsc.provides`, read from the
 //!    pulled images (`release/constraints.rs`, the rule CI ran from the
 //!    registry). It reads them after the pull, since home has no registry
@@ -26,7 +26,7 @@
 //!    `releases/`, and `envctl up` on it under the stack's compose project.
 //!    `up -d` recreates only what changed. Untracked state (`file_host`'s data,
 //!    logs and config, Grafana's built dashboards) is mounted from the
-//!    owner's checkout, `STATE_ROOT` (C344; RL9). `file_host` applies its
+//!    owner's checkout, `STATE_ROOT` (C344; RL10). `file_host` applies its
 //!    migrations as it starts, after a verified backup (AS16).
 //! 6. **Gates every service, up to `--ready-timeout` seconds**: `healthy`
 //!    where it has a healthcheck, otherwise running with no restart for
@@ -325,7 +325,7 @@ fn fetch(host: &mut dyn Host, target: &Target, pull: bool, say: &mut dyn FnMut(&
 }
 
 /// Every requirement the release's images state is met inside it
-/// (docs/release.md, RL8), read from the images here, by their labels.
+/// (docs/release.md, RL9), read from the images here, by their labels.
 fn unmet_here(host: &mut dyn Host, ids: &BTreeMap<String, String>) -> Vec<String> {
 	let mut images = BTreeMap::new();
 	let mut problems = Vec::new();
@@ -440,7 +440,7 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		.filter(|(_, reading)| reading.container.is_some() && matches!(judge_service(reading, reading.restarts, STABLE_SECONDS), Verdict::Failed(_)))
 		.map(|(service, _)| service)
 		.collect();
-	// The tree is part of the release (RL9): a main that moved its compose
+	// The tree is part of the release (RL10): a main that moved its compose
 	// files or deploy/<role>/ without an image is another release, brought
 	// up. One that moved neither is the release applied, whatever its commit.
 	let same_tree = previous.as_ref().is_some_and(|previous| previous.key == target.key);

@@ -392,7 +392,7 @@ rest of envctl; home has no python, and nothing home runs needs it):
    third-party `:latest` ones until R7 #796, is pulled only when it is not
    here, so a deploy never moves it), then **checks they fit
    together**: each image's `io.paulgsc.requires` met by another's
-   `io.paulgsc.provides`, read from the pulled images (RL8). An unmet one
+   `io.paulgsc.provides`, read from the pulled images (RL9). An unmet one
    replaces nothing.
 3. **Stops here, having restarted nothing,** when every service runs its
    image and is ready.
@@ -402,7 +402,7 @@ rest of envctl; home has no python, and nothing home runs needs it):
    stack's compose project. `up -d` recreates only the services whose image
    or configuration changed. What git does not hold (file_host's `data/`,
    `logs/`, `config/` and Grafana's built dashboards) is mounted from the
-   checkout (`STATE_ROOT`, RL9), so the release brings its own compose files
+   checkout (`STATE_ROOT`, RL10), so the release brings its own compose files
    and `deploy/<role>/`. A main that changed only those, with no image, is
    brought up too; one that changed neither (code, docs) is the release
    already applied, and restarts nothing. The one thing the checkout still

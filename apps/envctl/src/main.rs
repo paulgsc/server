@@ -57,7 +57,7 @@ struct Cli {
 	/// The checkout whose untracked state compose mounts (`STATE_ROOT`:
 	/// `file_host`'s data, logs and config, Grafana's built dashboards).
 	/// Default: `--repo`. The deploy runs compose on a release's worktree
-	/// and passes the owner's checkout here (C344; docs/release.md, RL9).
+	/// and passes the owner's checkout here (C344; docs/release.md, RL10).
 	#[arg(long, global = true)]
 	state_root: Option<PathBuf>,
 	#[command(subcommand)]

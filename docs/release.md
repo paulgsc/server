@@ -46,7 +46,7 @@ per CLAUDE.md, "Drift is loud, not silent".
 - **RL5. Held entries do not move.** An entry in `HELD` keeps whatever main
   says; none is held since R4 (#793) pinned `file-host` by digest, once the
   deploy applies whole releases. An entry the release does not follow keeps
-  whatever main says too: third-party images until R7 (#796).
+  whatever main says, and a third-party entry moves only by RL8.
 - **RL6. No approval of its own.** Forming the set adds no human step
   (C119). Each image keeps the one approval it has where it is published, and
   the release pull request auto-merges once its checks pass. **Planned:**
@@ -63,7 +63,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   went with #802), so it is in no release; an image that joins from some-ui
   later (resume-render, www: #853's server half) joins `SOURCES` only with
   its `requires` labels.
-- **RL8. Every requirement is met inside the set.** Each image's
+- **RL9. Every requirement is met inside the set.** Each image's
   `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
   the same release ("Constraints", below). CI checks it from the registry by
   digest (`scripts/check_release.py`, Lint's `Release set` job, on every pull
@@ -73,7 +73,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   again from the pulled images before `up`, where every image is read
   (`apps/envctl/src/release/constraints.rs`, called by `deploy.rs`): an
   unmet requirement replaces nothing. The two sides run on the same cases.
-- **RL9. A release's tree holds only what git holds** (C344). The deploy runs
+- **RL10. A release's tree holds only what git holds** (C344). The deploy runs
   compose on a worktree of the checkout at the release's commit, where
   `REPO_ROOT` is that worktree. So every `${REPO_ROOT}/…` bind mount is a
   tracked path, mounted read-only. State git does not hold (file_host's
@@ -82,7 +82,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   `make up` and the deploy alike (`--state-root`). `envctl check` refuses a
   `${REPO_ROOT}` mount that is writable or names an untracked path
   (`apps/envctl/src/mounts.rs`).
-- **RL10. Applied whole, or put back whole.** `envctl deploy` brings up a
+- **RL11. Applied whole, or put back whole.** `envctl deploy` brings up a
   release only after every image is pulled and the set checks, and records
   it applied only once every service runs that release's image and is ready
   (`healthy`, or running a minute with no restart). A release whose `up`
@@ -139,6 +139,38 @@ it, which a test holds equal to the Dockerfile's label:
 `rust-essays`. There is no `stage` edge: call-stage was removed (#802), and
 render carries its own stage slice. kokoro writes both labels empty.
 
+- **RL8. Third-party images are pinned, and refresh alone, when due**
+  (R7, #796; C120, C347). Every image nobody here publishes (`THIRD_PARTY` in
+  `release_lock.py`) is `repo:<real tag>@sha256:…`: the current major or
+  minor version where its publisher tags one, else the exact version, never
+  `latest`. Which tag is a reviewed change to the release. An exact version
+  (a publisher with no major or minor tag) never moves by refresh, and
+  nothing yet says a newer one is out: its bump is a reviewed change too
+  (#857). A refresh moves each to its tag's current digest, and only:
+  - **when due:** no commit on main in the last 30 days changed a
+    third-party entry, read from main's history (RL2: no run carries it, so
+    a cancelled or failed run loses nothing), or a dispatch with
+    `third_party` forces it;
+  - **alone:** in the one release pull request, only when the app images
+    have nothing to move. A release is app moves or third-party moves, never
+    both, so a third-party move rolls back whole without an app image, and
+    serials never collide. An app move replaces a third-party release not
+    yet merged; the refresh is still due, so it is proposed again once the
+    app release is on main.
+
+  A daily schedule asks whether one is due by git alone, outside the
+  release job's concurrency group, and stops there when it is not: no
+  registry read, no pull request, and no queued run cancelled. So a
+  scheduled day with nothing due reconciles nothing: an open release pull
+  request that main has since passed waits for the next publish or dispatch
+  run to form or close it. A forced refresh made when none is due is closed
+  by the next publish or dispatch run with no app moves, so force one only
+  to merge it then. "Due" means no third-party line moved, not that no
+  refresh ran: a refresh that finds every digest the same commits nothing,
+  so the next runs read the registries again until one moves, and an
+  unreadable registry on such a day fails the run, as RL2's runs fail
+  loudly. caddy runs at NixOS level and is not in the release.
+
 ## What a turned-down release means
 
 A release pull request someone closes is not remembered. The next run
@@ -155,9 +187,10 @@ carry, against RL2.
 | Compose reads it | `infra/compose/*.yml` (`${IMAGE_*}`), `apps/envctl/src/release.rs` |
 | What the deploy's gate reads: each service's `healthy` (R5, #794; file-host, kokoro, rust-runner, orchestrator, render) | `infra/compose/*.yml` (`healthcheck:`), render's beat in `infra/render/render-calls.sh` |
 | CI reconciles it | `scripts/release_lock.py`, `.github/workflows/release-lock.yml` |
+| Third-party pins refresh (RL8) | `release_lock.py --third-party` and `--third-party-due`, release-lock.yml's daily `schedule` |
 | Called after a server publish | `.github/workflows/publish-image-changesets.yml` (`release`) |
 | The set check | `scripts/check_release.py` (CI), `apps/envctl/src/release/constraints.rs` (deploy) |
 | Each image's labels | `infra/docker/Dockerfile.*`; render's in some-ui (U2, #792) |
 | The deploy applies a release whole | `apps/envctl/src/deploy.rs` (`make home-deploy`, `nix/modules/home-deploy.nix`) |
-| What compose may mount from a release's tree | `apps/envctl/src/mounts.rs` (RL9) |
+| What compose may mount from a release's tree | `apps/envctl/src/mounts.rs` (RL10) |
 | **Planned:** guard against `:latest`, `build:`, per-service pulls | R6, #795 |
