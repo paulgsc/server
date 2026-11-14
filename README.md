@@ -552,9 +552,11 @@ secret has no option: it reaches the container only through
 
 Each module runs home's release's image for its service
 (`deploy/home/release.json`, by tag and digest; RELEASE R6, #795, call C127),
-read when the configuration is evaluated: the same image compose starts, from
-the one source. The `image` option is read-only, so a host cannot name another;
-a release that names no such service fails the evaluation.
+read when the configuration is evaluated, from the one source compose reads
+too. A host reads the release at the server revision its own flake lock pins, so
+it runs that release's image until it moves its input; never an image outside a
+release. The `image` option is read-only, so a host cannot name another; a
+release that names no such service fails the evaluation.
 
 Nothing uses them yet: the box still runs the compose stack (`make up`), and
 each module is off unless `enable`. Moving the box onto them is its own step,
