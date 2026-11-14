@@ -28,6 +28,27 @@ services:
     # surface, and pipeline.yml's "no ports exposed" property is deliberate.
     expose:
       - '9464'
+    # Healthy while its /metrics listener answers 200 (RELEASE R5, #794), so
+    # the deploy gates it on `healthy`. Asked from inside the container over
+    # bash's /dev/tcp: the image has no HTTP client, and the probe needs no
+    # new binary, so the release's image already passes it. The listener
+    # starts before NATS is reached, and a NATS it cannot reach at start ends
+    # the process.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9464
+          && printf 'GET /metrics HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n' >&3
+          && read -r -t 5 status <&3
+          && [[ $$status == 'HTTP/1.'?' 200'* ]]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
     mem_limit: 1G
     cpus: 1.0
     pids_limit: 100
