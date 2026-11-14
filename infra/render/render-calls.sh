@@ -16,13 +16,29 @@
 #
 # | job           | file_host writes (read-only here)      | kept in                     | video       |
 # |---------------|----------------------------------------|-----------------------------|-------------|
-# | call          | /weeks/<from>.json (call_weeks)        | /renders/call/<from>/       | call.mp4    |
+# | call          | /weeks/<from>.json (call_weeks)        | /renders/call/<part key>/   | call.mp4    |
 # | playoff-delta | /episodes/<key>/{fill,season}.json     | /renders/playoff-delta/<key>/ | episode.mp4 |
 # | preview       | /previews/<id>.json (previews)         | /renders/preview/<id>/      | preview.mp4 |
 # | rust-essay    | /essays/<week>/essay.json (rust_essays) | /renders/rust-essay/<week>/ | essay.mp4   |
 # | clip-walk     | /clip-walks/<clip>-<side>/{sample.json,app} (clips) | /renders/clip-walk/<clip>-<side>/ | walk.json |
 # | cards-essay   | /cards-essays/<key>.json (cards_essays) | /renders/cards-essay/<key>/ | cards.mp4   |
 #
+# A week of the call is one video or a series of parts (template version 5,
+# paulgsc/some-ui#2918): each part a video of at most ten minutes, cut at a
+# chapter by the recorder's own code. The week's first job asks the
+# recorder's `render call-parts` how many, inside the job the lane admitted
+# (no work starts outside the lane), and keeps the answer in
+# /renders/call/<from>.parts, which file_host reads too
+# (`call_weeks::render::parts`); a week with none is one part, as every
+# week rendered before parts is. Each part is then its own job, keyed
+# (week, part): part 1 by the week's day, as a week of one video always
+# was, and part k by <from>-p<k>, each recorded with `--part k`, kept in
+# /renders/call/<key>/, resumed from its own step cache, failed and retried
+# on its own, and shown on the Renders board as part k of n with the
+# recorder's scene count within the part. A part the owner let go while
+# another still has its video is marked /weeks/<key>.let-go by file_host,
+# and is never rendered again; the week's file goes with its last part. A
+# week of one part records exactly as before, with no --part.
 # A Playoff Delta key is <season>-<team>-<NN> (2026-SF-08, NN 00 the legend);
 # file_host writes only fills of a voiced version (pd_fills::render), so a
 # fill written for the owner's own voice is never tried here, never failed.
@@ -170,6 +186,10 @@ ROOT=
 # pnpm at run time, and nothing here reaches the internet.
 APP_DIR=/opt/some-ui/apps/www
 TSX=/opt/some-ui/node_modules/.bin/tsx
+# The renderer's own command line, for how many parts a week of the call is
+# (`render call-parts`, paulgsc/some-ui#2918), run with the root's tsx as the
+# recorders are: in the published render image beside them, at their commit.
+RENDER_DIR=/opt/some-ui/packages/video-render
 # The motion, for a clip's walk, with its own tsx: in the published render
 # image beside the recorders, built at their commit (#718, some-ui#2866).
 MOTION_DIR=/opt/some-ui/packages/video-motion
@@ -234,10 +254,19 @@ episodes() {
   local entry key
   case $1 in
     call)
+      # Each week, then its later parts once its first job has said how
+      # many. Within a pass each week's parts are listed in order; a week's
+      # later parts first appear in the pass after its first job ran.
+      local part of
       for entry in "$INPUT"/*.json; do
         [ -e "$entry" ] || continue
         key=$(basename "$entry" .json)
-        [[ "$key" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && echo "$key"
+        [[ "$key" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+        echo "$key"
+        of=$(parts_known "$key")
+        for (( part = 2; part <= of; part++ )); do
+          echo "$key-p$part"
+        done
       done ;;
     playoff-delta)
       for entry in "$INPUT"/*/; do
@@ -277,11 +306,69 @@ episodes() {
   esac
 }
 
+# A call's part keys (paulgsc/some-ui#2918): <from> is the week's first
+# part, as a week of one video always was, and <from>-p<k> its k-th.
+week_of() {
+  echo "${1%-p*}"
+}
+
+part_of() {
+  case $1 in
+    *-p*) echo "${1##*-p}" ;;
+    *) echo 1 ;;
+  esac
+}
+
+# How many parts the week of `from` is, as its first job found them
+# (<renders>/<from>.parts); 1 while none is kept, as for a week rendered
+# before parts or not looked at yet.
+parts_known() {
+  local of=
+  [ -r "$RENDERS/$1.parts" ] && read -r of < "$RENDERS/$1.parts"
+  if [[ "$of" =~ ^[1-9][0-9]?$ ]]; then echo "$of"; else echo 1; fi
+}
+
+# How many parts the week of `from` is: kept, or asked of the recorder's
+# `render call-parts` (its JSON, `{week, parts: [{part, of, ...}]}`) and
+# kept, so a week is asked once. Run inside the week's first job, which the
+# lane admitted. Refused (a week that can't make a call) or unreadable, the
+# job fails, as a recorder that refuses the week does.
+call_parts() {
+  local from=$1 said text parts ofs n=0 part of=
+  if [ -r "$RENDERS/$from.parts" ]; then
+    parts_known "$from"
+    return 0
+  fi
+  if ! said=$(cd "$RENDER_DIR" && "$TSX" src/cli.ts call-parts "$INPUT/$from.json"); then
+    printf '%s\n' "$said" >&2
+    echo "render call-parts refused the week of $from" >&2
+    return 1
+  fi
+  # Whatever its spacing: every part's number, and every `of`.
+  text=$(printf '%s' "$said" | tr -d ' \t\r\n')
+  parts=$(grep -o '"part":[0-9]*' <<< "$text" | cut -d: -f2)
+  ofs=$(grep -o '"of":[0-9]*' <<< "$text" | cut -d: -f2 | sort -u)
+  for part in $parts; do
+    n=$(( n + 1 ))
+    [ "$part" = "$n" ] || n=-1000
+  done
+  [[ "$ofs" =~ ^[1-9][0-9]?$ ]] && of=$ofs
+  if [ -z "$of" ] || [ "$n" != "$of" ]; then
+    printf '%s\n' "$said" >&2
+    echo "render call-parts said no parts this worker reads for the week of $from" >&2
+    return 1
+  fi
+  mkdir -p "$RENDERS" && put_in "$RENDERS" "$from.parts" "$of" || return 1
+  echo "the week of $from is $of part(s)" >&2
+  echo "$of"
+}
+
 # Whether the job still holds `key` (file_host takes an episode out of its
-# input once the owner lets it go).
+# input once the owner lets it go; a part of a call's week let go while
+# another still has its video is marked <key>.let-go).
 holds() {
   case $1 in
-    call) [ -e "$INPUT/$2.json" ] ;;
+    call) [ -e "$INPUT/$(week_of "$2").json" ] && [ ! -e "$INPUT/$2.let-go" ] ;;
     playoff-delta) [ -d "$INPUT/$2" ] ;;
     preview) [ -e "$INPUT/$2.json" ] ;;
     rust-essay) [ -e "$INPUT/$2/essay.json" ] ;;
@@ -295,8 +382,22 @@ record() {
   local job=$1 key=$2
   case $job in
     call)
-      (cd "$APP_DIR" && "$TSX" tests/record/call.ts "${COMMON[@]}" \
-        --week-file "$INPUT/$key.json" --out "$WORK") ;;
+      # How many parts first, then this one. A week of one part is
+      # recorded as it always was, with no --part.
+      local from part of
+      from=$(week_of "$key") part=$(part_of "$key")
+      of=$(call_parts "$from") || return 2
+      if [ "$part" -gt "$of" ]; then
+        echo "the week of $from is $of part(s): it has no part $part"
+        return 2
+      fi
+      if [ "$of" -eq 1 ]; then
+        (cd "$APP_DIR" && "$TSX" tests/record/call.ts "${COMMON[@]}" \
+          --week-file "$INPUT/$from.json" --out "$WORK")
+      else
+        (cd "$APP_DIR" && "$TSX" tests/record/call.ts "${COMMON[@]}" \
+          --week-file "$INPUT/$from.json" --part "$part" --out "$WORK")
+      fi ;;
     playoff-delta)
       (cd "$APP_DIR" && "$TSX" tests/record/playoff-delta.ts "${COMMON[@]}" \
         --season-file "$INPUT/$key/season.json" --narration "$INPUT/$key/fill.json" \
@@ -336,11 +437,17 @@ revision() {
 }
 
 # Where `record` leaves `key`'s finished folder: the call's recorder names it
-# for the week's first day in --out, Playoff Delta's <season>-week-NN in it,
-# the essay's for its week in --out.
+# for the week's first day in --out, and a part of a series part-<k> in
+# that, Playoff Delta's <season>-week-NN in it, the essay's for its week in
+# --out.
 finished() {
   case $1 in
-    call) echo "$WORK/$2" ;;
+    call)
+      if [ "$(parts_known "$(week_of "$2")")" -gt 1 ]; then
+        echo "$WORK/$(week_of "$2")/part-$(part_of "$2")"
+      else
+        echo "$WORK/$2"
+      fi ;;
     playoff-delta) echo "$WORK/$2/${2%%-*}-week-${2##*-}" ;;
     preview) echo "$WORK/$2" ;;
     rust-essay) echo "$WORK/$2" ;;
@@ -831,8 +938,14 @@ render_episode() {
   # A preview's day is counted from its video's time (file_host's
   # `previews`): now, not when an earlier attempt first wrote it.
   [ "$job" != preview ] || touch "$RENDERS/$key/$VIDEO"
-  # What is left of Playoff Delta's --out folder is empty.
-  rm -rf "${WORK:?}/$key"
+  # What is left of Playoff Delta's --out folder is empty. A part of a
+  # call's week leaves its week's folder to the parts still waiting in it,
+  # and the last takes the empty folder with it.
+  if [ "$job" = call ]; then
+    rmdir "${WORK:?}/$(week_of "$key")" 2> /dev/null
+  else
+    rm -rf "${WORK:?}/$key"
+  fi
   end_job
 }
 
@@ -857,10 +970,17 @@ keep_cache_warnings() {
 prune_work() {
   local job=$1 current=$2 dir key held=
   if left_job && [ "$LEFT_KIND" = "$job" ]; then held=$LEFT_KEY; fi
+  # A call's parts share their week's work folder, each in part-<k>.
+  if [ "$job" = call ]; then
+    current=$(week_of "$current")
+    [ -z "$held" ] || held=$(week_of "$held")
+  fi
   for dir in "$WORK"/*/; do
     [ -d "$dir" ] || continue
     key=$(basename "$dir")
-    if [ -e "$RENDERS/$key/$VIDEO" ] || ! holds "$job" "$key"; then
+    if [ "$job" = call ]; then
+      prune_week "$key"
+    elif [ -e "$RENDERS/$key/$VIDEO" ] || ! holds "$job" "$key"; then
       rm -rf "$dir"
     fi
   done
@@ -874,6 +994,41 @@ prune_work() {
     tail -n 100 "$STATUS/work.cache.log" > "$STATUS/.work.cache.log" &&
       mv "$STATUS/.work.cache.log" "$STATUS/work.cache.log"
   done
+}
+
+# The call's work for the week of `from`: a part's work goes once the part
+# has its video or is let go, and the week's folder once the week is no
+# longer held, or once nothing of a part is left in it and its video
+# (part 1's, or the week's own) is made.
+prune_week() {
+  local from=$1 part key
+  if [ ! -e "$INPUT/$from.json" ]; then
+    rm -rf "${WORK:?}/$from"
+    return 0
+  fi
+  for part in "$WORK/$from"/part-*/; do
+    [ -d "$part" ] || continue
+    key=${part%/}
+    key=${key##*/part-}
+    [[ "$key" =~ ^[1-9][0-9]?$ ]] || continue
+    if [ "$key" -eq 1 ]; then key=$from; else key=$from-p$key; fi
+    if [ -e "$RENDERS/$key/$VIDEO" ] || ! holds call "$key"; then
+      rm -rf "$part"
+    fi
+  done
+  # A week first worked as one part (by a worker from before parts) and
+  # found since to be more: what it left beside the parts is no part's.
+  if [ "$(parts_known "$from")" -gt 1 ] && [ -d "$WORK/$from" ]; then
+    find "$WORK/$from" -mindepth 1 -maxdepth 1 ! -name 'part-*' -exec rm -rf {} +
+  fi
+  if ! compgen -G "$WORK/$from/part-*" > /dev/null &&
+    { [ -e "$RENDERS/$from/$VIDEO" ] || ! holds call "$from"; } &&
+    [ "$(parts_known "$from")" -eq 1 ]; then
+    rm -rf "${WORK:?}/$from"
+  elif [ -d "$WORK/$from" ]; then
+    rmdir "$WORK/$from" 2> /dev/null
+  fi
+  return 0
 }
 
 # Whether `job`'s `key` failed less than RETRY_AFTER ago. A preview that failed
@@ -890,6 +1045,9 @@ failed_recently() {
 render_one() {
   local job=$1 key=$2 outcome
   [ -e "$RENDERS/$key/$VIDEO" ] && return 0
+  # Let go (a part of a call's week marked so) or no longer given: no job is
+  # named for it, so the lane never sees one it will not admit.
+  holds "$job" "$key" || return 0
   failed_recently "$job" "$key" && return 0
   echo "rendering the $job of $key"
   mkdir -p "$WORK" && prune_work "$job" "$key"

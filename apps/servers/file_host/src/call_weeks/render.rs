@@ -2,9 +2,13 @@
 //! drive they share (paulgsc/some-ui#2635, CW5).
 //!
 //! The worker (`infra/render/render-calls.sh`) keeps each week's video in
-//! `renders/call/<from>/call.mp4`, stamps each pass it starts in
-//! `renders/call-worker/last-pass`, and keeps a week's last failed attempt in
-//! `renders/call-worker/<from>.failed.log`, all under `STORAGE`, which this
+//! `renders/call/<from>/call.mp4`, or, for a week that is a series of parts
+//! (paulgsc/some-ui#2918), each part's: part 1's there and part k's in
+//! `renders/call/<from>-p<k>/call.mp4`, with how many in
+//! `renders/call/<from>.parts` ([`parts`]). Everything below counts a part
+//! as an episode of its own, keyed as `call_week_repo::video` keys it. It
+//! stamps each pass it starts in `renders/call-worker/last-pass`, and keeps
+//! a part's last failed attempt in `renders/call-worker/<key>.failed.log`, all under `STORAGE`, which this
 //! server mounts at `/app/dbs` and the worker's `/renders` is a folder of
 //! (`infra/compose/call-render.yml`). Every tick of the call weeks worker
 //! reads those against `call_week` for the CALL dashboard and the
@@ -135,10 +139,12 @@ fn drive(path: &Path) -> Option<(u64, u64)> {
 	Some((stat.f_bavail.saturating_mul(block), stat.f_blocks.saturating_mul(block)))
 }
 
-/// What the worker has made of the weeks home holds.
+/// What the worker has made of the weeks home holds, counted by episode:
+/// each part of a week that is a series counts as one (paulgsc/some-ui#2918),
+/// a week of one video as one, as before.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Renders {
-	/// Weeks home holds.
+	/// Episodes (weeks, or their parts) home holds.
 	pub held: usize,
 	/// Of those, weeks whose video the owner let go from My data (CW8): never
 	/// waiting, and never rendered again.
@@ -160,26 +166,71 @@ pub struct Renders {
 /// A storage failure reading `call_week`. A file that cannot be read counts
 /// as missing: a video that cannot be seen is a week still waiting.
 pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<Renders, sqlx::Error> {
-	let (held, let_go) = held(db).await?;
+	let (held, let_go) = held(db, renders).await?;
 	Ok(tally(&held, &let_go, renders, status, VIDEO).await)
 }
 
-/// Each week home holds, and the weeks of those the owner let go.
+/// How many parts the worker found the week of `week` is.
+///
+/// Read from `<renders>/<week>.parts` (paulgsc/some-ui#2918), which it writes once,
+/// from the recorder's `render call-parts`, before it records the week's
+/// first part. A week it has not looked at yet, or one rendered before
+/// parts, is one part, as every week was.
+pub async fn parts(renders: &Path, week: &str) -> u32 {
+	parts_read(renders, week).await.unwrap_or(1)
+}
+
+/// [`parts`], strictly.
+///
+/// A parts file that is there but can't be read, or that names no count,
+/// is an error rather than one part. Letting a part go must never take a
+/// series for a week of one video, which would let the whole week go with
+/// its first part.
+///
+/// # Errors
+/// The drive refusing the read, or a file that names no count.
+pub async fn parts_read(renders: &Path, week: &str) -> std::io::Result<u32> {
+	let text = match tokio::fs::read_to_string(renders.join(String::from(week) + PARTS)).await {
+		Ok(text) => text,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+		Err(error) => return Err(error),
+	};
+	text
+		.trim()
+		.parse::<u32>()
+		.ok()
+		.filter(|of| (1..=call_week_repo::video::MOST_PARTS).contains(of))
+		.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "a week's parts file names no count of parts"))
+}
+
+/// The file beside a week's folder that says how many parts it is.
+pub const PARTS: &str = ".parts";
+
+/// The keys of each part of the week of `week`, first to last: the week's day
+/// for part 1, `<day>-p<k>` after (`call_week_repo::video::split_key`).
+pub async fn part_keys(renders: &Path, week: &str) -> Vec<String> {
+	(1..=parts(renders, week).await).map(|part| call_week_repo::video::part_key(week, part)).collect()
+}
+
+/// Each part of each week home holds, and the parts of those the owner let
+/// go, by key.
 ///
 /// # Errors
 /// A storage failure reading `call_week`.
-pub(crate) async fn held(db: &SqlitePool) -> Result<(Vec<Held>, Vec<String>), sqlx::Error> {
+pub(crate) async fn held(db: &SqlitePool, renders: &Path) -> Result<(Vec<Held>, Vec<String>), sqlx::Error> {
 	let (weeks, let_go) = {
 		let mut conn = db.acquire().await?;
 		(call_week_repo::taken(&mut conn).await?, call_week_repo::video::let_go(&mut conn).await?)
 	};
-	let held = weeks
-		.into_iter()
-		.map(|week| Held {
-			key: week.from,
-			taken_at: week.taken_at,
-		})
-		.collect();
+	let mut held = Vec::with_capacity(weeks.len());
+	for week in weeks {
+		for key in part_keys(renders, &week.from).await {
+			held.push(Held {
+				key,
+				taken_at: week.taken_at.clone(),
+			});
+		}
+	}
 	Ok((held, let_go))
 }
 
@@ -347,7 +398,7 @@ mod tests {
 			size: 1,
 			deleted_at: "2026-11-07T12:00:00.000Z".to_owned(),
 		};
-		call_week_repo::video::write_receipt(&mut conn, &receipt).await.unwrap();
+		call_week_repo::video::write_receipt(&mut conn, &receipt, 1).await.unwrap();
 		drop(conn);
 		let after = observe(&pool, &renders, &status).await.unwrap();
 		assert_eq!((after.held, after.let_go, after.waiting, after.oldest_waiting_taken), (3, 1, 0, None));

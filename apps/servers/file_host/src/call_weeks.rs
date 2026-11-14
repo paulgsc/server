@@ -56,6 +56,16 @@ pub const RETRY: Duration = Duration::from_secs(300);
 /// so the folder is always made here, by this server's uid ([`start`]).
 pub const RENDER_FOLDER: &str = "/app/dbs/call-weeks";
 
+/// The mark of a part let go, beside its week's file in [`RENDER_FOLDER`].
+///
+/// `file_host` leaves one for each part of a week the owner let go while
+/// another part still has its video (paulgsc/some-ui#2918): `<key>.let-go`,
+/// empty, so the worker renders the
+/// week's other parts and never that one again. Once every part has gone,
+/// the week's file and its marks go too, as a week of one video's file does
+/// (`feeds::videos::let_go`, [`pass`]).
+pub const LET_GO: &str = ".let-go";
+
 /// How often the worker looks at its schedule. Nothing is fetched unless due.
 pub const TICK: Duration = Duration::from_secs(60);
 

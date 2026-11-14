@@ -18,7 +18,10 @@
 //!
 //! **What a step deletes, and in what order.** The video's step removes the
 //! episode from the feed's input (`Feed::input`), so the render worker is
-//! never given it again, then its video; the rest's step removes the
+//! never given it again, then its video. A part of a call's week that is a
+//! series (paulgsc/some-ui#2918) is marked in the input instead
+//! (`call_weeks::LET_GO`) while another part still has its video, and the
+//! week's file goes with the last; the rest's step removes the
 //! episode's folder under the feed's renders. What it was made from stays in
 //! the feed's table (`call_week`, `pd_fill`).
 //!
@@ -50,9 +53,17 @@ use tokio::io::AsyncReadExt as _;
 /// An episode as the phone sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpisodeVideo {
-	/// Its key: the call's week by its first day, Playoff Delta's
+	/// Its key: the call's week by its first day, or `<day>-p<k>` for a
+	/// later part of a week that is a series; Playoff Delta's
 	/// `<season>-<team>-<NN>`.
 	pub key: String,
+	/// What it is a part of: the call's week by its first day; every other
+	/// feed's episode is its own.
+	pub week: String,
+	/// Which part, from 1, of how many: 1 of 1 for a week of one video, and
+	/// for every other feed's episode.
+	pub part: u32,
+	pub of: u32,
 	/// Bytes of its video, while home has it.
 	pub video_bytes: Option<u64>,
 	/// Bytes of the rest of its folder, while home has it.
@@ -63,7 +74,23 @@ pub struct EpisodeVideo {
 	pub receipts: Vec<Receipt>,
 }
 
-/// Each episode of `feed` home holds, newest first.
+/// The episode `key` names, as (its week, its part, of how many), if it is
+/// one: for the call, a part the worker found the week has
+/// (`call_weeks::render::parts`); for every other feed, the key itself, 1
+/// of 1. Whether home holds it is the feed's table's to say.
+async fn part_of(feed: Feed, renders: &Path, key: &str) -> Option<(String, u32, u32)> {
+	match feed {
+		Feed::Call => {
+			let (week, part) = video::split_key(key)?;
+			let of = crate::call_weeks::render::parts(renders, week).await;
+			(part <= of).then(|| (week.to_owned(), part, of))
+		}
+		Feed::PlayoffDelta | Feed::RustEssay => Some((key.to_owned(), 1, 1)),
+	}
+}
+
+/// Each episode of `feed` home holds, newest first: a call's week as each of
+/// its parts, first to last.
 ///
 /// # Errors
 /// A storage failure.
@@ -77,26 +104,36 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 		(held, links, receipts)
 	};
 	let mut listed = Vec::with_capacity(held.len());
-	for key in held {
-		let folder = renders.join(&key);
-		let video_bytes = tokio::fs::metadata(folder.join(feed.video()))
-			.await
-			.ok()
-			.filter(std::fs::Metadata::is_file)
-			.map(|meta| meta.len());
-		let rest_bytes = if tokio::fs::metadata(&folder).await.is_ok_and(|meta| meta.is_dir()) {
-			Some(bytes_under(&folder).await.saturating_sub(video_bytes.unwrap_or(0)))
-		} else {
-			None
+	for week in held {
+		let keys = match feed {
+			Feed::Call => crate::call_weeks::render::part_keys(renders, &week).await,
+			Feed::PlayoffDelta | Feed::RustEssay => vec![week.clone()],
 		};
-		let mine: Vec<Receipt> = receipts.iter().filter(|receipt| receipt.from == key).cloned().collect();
-		listed.push(EpisodeVideo {
-			link: links.get(&key).cloned(),
-			key,
-			video_bytes,
-			rest_bytes,
-			receipts: mine,
-		});
+		let of = u32::try_from(keys.len()).unwrap_or(u32::MAX);
+		for (part, key) in (1..).zip(keys) {
+			let folder = renders.join(&key);
+			let video_bytes = tokio::fs::metadata(folder.join(feed.video()))
+				.await
+				.ok()
+				.filter(std::fs::Metadata::is_file)
+				.map(|meta| meta.len());
+			let rest_bytes = if tokio::fs::metadata(&folder).await.is_ok_and(|meta| meta.is_dir()) {
+				Some(bytes_under(&folder).await.saturating_sub(video_bytes.unwrap_or(0)))
+			} else {
+				None
+			};
+			let mine: Vec<Receipt> = receipts.iter().filter(|receipt| receipt.from == key).cloned().collect();
+			listed.push(EpisodeVideo {
+				link: links.get(&key).cloned(),
+				week: week.clone(),
+				part,
+				of,
+				key,
+				video_bytes,
+				rest_bytes,
+				receipts: mine,
+			});
+		}
 	}
 	Ok(listed)
 }
@@ -106,6 +143,9 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 /// # Errors
 /// A storage failure.
 pub async fn video_file(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path, key: &str) -> Result<Option<PathBuf>, sqlx::Error> {
+	if part_of(feed, renders, key).await.is_none() {
+		return Ok(None);
+	}
 	let holds = {
 		let mut conn = db.acquire().await?;
 		feed.holds(&mut conn, subject, key).await?
@@ -149,6 +189,9 @@ pub enum Description {
 /// # Errors
 /// A storage failure, or the drive refusing a read of a file that is there.
 pub async fn description(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path, key: &str) -> Result<Description, DescriptionError> {
+	if part_of(feed, renders, key).await.is_none() {
+		return Ok(Description::Absent);
+	}
 	let holds = {
 		let mut conn = db.acquire().await?;
 		feed.holds(&mut conn, subject, key).await?
@@ -207,14 +250,18 @@ pub enum LinkRecorded {
 	NoEpisode,
 }
 
-/// Records a pasted link as the episode's `YouTube` link.
+/// Records a pasted link as the episode's `YouTube` link: a part's alone,
+/// for a call's week that is a series.
 ///
 /// # Errors
 /// A storage failure.
-pub async fn record_link(db: &SqlitePool, feed: Feed, subject: &str, key: &str, pasted: &str, now: &str) -> Result<LinkRecorded, sqlx::Error> {
+pub async fn record_link(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path, key: &str, pasted: &str, now: &str) -> Result<LinkRecorded, sqlx::Error> {
 	let Some(id) = video::youtube_id(pasted) else {
 		return Ok(LinkRecorded::NotAVideo);
 	};
+	if part_of(feed, renders, key).await.is_none() {
+		return Ok(LinkRecorded::NoEpisode);
+	}
 	let mut conn = db.acquire().await?;
 	Ok(match feed.record_link(&mut conn, subject, key, &id, now).await? {
 		Recorded::NoWeek => LinkRecorded::NoEpisode,
@@ -253,20 +300,42 @@ pub struct Folders<'a> {
 	pub input: &'a Path,
 }
 
-/// Lets one step of an episode go (the module doc), under `BEGIN IMMEDIATE`
-/// so two phones asking at once write one receipt.
+/// Lets one step of an episode go (the module doc).
+///
+/// Under `BEGIN IMMEDIATE`, so two phones asking at once write one receipt.
+/// A part of a call's week goes on its own, with its own link; the week's
+/// file goes once every part's video has.
 ///
 /// # Errors
 /// A storage failure, or a file the drive would not remove. The receipt is
 /// kept then, and asking for the step again finishes it.
 pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders<'_>, key: &str, step: Step, now: &str) -> Result<LetGo, LetGoError> {
+	// How many parts, read once and strictly: a parts file the drive won't
+	// give is never taken for a week of one video
+	// (`call_weeks::render::parts_read`), and the count the receipt records
+	// is the count this read.
+	let (week, of) = match feed {
+		Feed::Call => {
+			let Some((week, part)) = video::split_key(key) else {
+				return Ok(LetGo::NoEpisode);
+			};
+			let of = crate::call_weeks::render::parts_read(folders.renders, week).await?;
+			if part > of {
+				return Ok(LetGo::NoEpisode);
+			}
+			(week.to_owned(), of)
+		}
+		Feed::PlayoffDelta | Feed::RustEssay => (key.to_owned(), 1),
+	};
+	let gone = Gone { week: &week, of };
 	let _folders = super::FOLDERS.lock().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	// A receipt names an episode home holds (its foreign key), so the path
 	// below is one of the feed's renders.
 	if let Some(receipt) = feed.receipt(&mut tx, subject, key, step).await? {
+		let whole = whole(feed, &mut tx, &week).await?;
 		tx.commit().await?;
-		finish(feed, folders, key, step).await?;
+		finish(feed, folders, key, step, gone, whole).await?;
 		return Ok(LetGo::Gone(receipt));
 	}
 	if !feed.holds(&mut tx, subject, key).await? {
@@ -297,28 +366,63 @@ pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders
 		size: i64::try_from(size).unwrap_or(i64::MAX),
 		deleted_at: now.to_owned(),
 	};
-	feed.write_receipt(&mut tx, subject, &receipt).await?;
+	feed.write_receipt(&mut tx, subject, &receipt, of).await?;
+	let whole = whole(feed, &mut tx, &week).await?;
 	tx.commit().await?;
-	finish(feed, folders, key, step).await?;
+	finish(feed, folders, key, step, gone, whole).await?;
 	Ok(LetGo::Gone(receipt))
 }
 
+/// Which week a step is of, and how many parts it is.
+#[derive(Debug, Clone, Copy)]
+struct Gone<'a> {
+	week: &'a str,
+	of: u32,
+}
+
+/// Whether every part of `week` has let its video go: always, for a feed
+/// whose episode is one.
+async fn whole(feed: Feed, conn: &mut sqlx::SqliteConnection, week: &str) -> Result<bool, sqlx::Error> {
+	Ok(match feed {
+		Feed::Call => call_week_repo::video::weeks_let_go(conn).await?.iter().any(|gone| gone == week),
+		Feed::PlayoffDelta | Feed::RustEssay => true,
+	})
+}
+
 /// Removes what a step lets go; what is already gone is fine.
-async fn finish(feed: Feed, folders: Folders<'_>, key: &str, step: Step) -> std::io::Result<()> {
+async fn finish(feed: Feed, folders: Folders<'_>, key: &str, step: Step, gone: Gone<'_>, whole: bool) -> std::io::Result<()> {
 	let folder = folders.renders.join(key);
 	match step {
 		Step::Video => {
 			// The episode's input first: the worker renders any episode it is
-			// given that has no video.
-			let input = feed.input_of(folders.input, key);
+			// given that has no video. A part of a week whose other parts
+			// still have theirs is marked instead, so they still render.
+			let input = feed.input_of(folders.input, gone.week);
 			match feed {
-				Feed::Call => remove_file(&input).await?,
+				Feed::Call if whole => {
+					remove_file(&input).await?;
+					for part in 1..=gone.of {
+						let mark = String::from(&*call_week_repo::video::part_key(gone.week, part)) + crate::call_weeks::LET_GO;
+						remove_file(&folders.input.join(mark)).await?;
+					}
+				}
+				Feed::Call => mark_let_go(folders.input, key).await?,
 				Feed::PlayoffDelta | Feed::RustEssay => remove_dir(&input).await?,
 			}
 			remove_file(&folder.join(feed.video())).await
 		}
 		Step::Rest => remove_dir(&folder).await,
 	}
+}
+
+/// Marks a part of a call's week as let go, for the render worker
+/// (`call_weeks::LET_GO`); one already marked is fine.
+pub(crate) async fn mark_let_go(input: &Path, key: &str) -> std::io::Result<()> {
+	let mark = input.join(String::from(key) + crate::call_weeks::LET_GO);
+	if tokio::fs::try_exists(&mark).await? {
+		return Ok(());
+	}
+	tokio::fs::write(&mark, b"").await
 }
 
 /// Removes a file; one already gone is fine.
@@ -394,14 +498,17 @@ mod tests {
 
 		let pasted = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1";
 		assert_eq!(
-			record_link(&pool, Feed::Call, "", "2026-10-30", pasted, NOW).await.unwrap(),
+			record_link(&pool, Feed::Call, "", &renders, "2026-10-30", pasted, NOW).await.unwrap(),
 			LinkRecorded::Kept("dQw4w9WgXcQ".to_owned())
 		);
 		assert_eq!(
-			record_link(&pool, Feed::Call, "", "2026-10-30", "https://youtube.com/@me", NOW).await.unwrap(),
+			record_link(&pool, Feed::Call, "", &renders, "2026-10-30", "https://youtube.com/@me", NOW).await.unwrap(),
 			LinkRecorded::NotAVideo
 		);
-		assert_eq!(record_link(&pool, Feed::Call, "", "2026-01-02", pasted, NOW).await.unwrap(), LinkRecorded::NoEpisode);
+		assert_eq!(
+			record_link(&pool, Feed::Call, "", &renders, "2026-01-02", pasted, NOW).await.unwrap(),
+			LinkRecorded::NoEpisode
+		);
 		let listed = list(&pool, Feed::Call, "", &renders).await.unwrap();
 		assert_eq!(listed[1].link.as_ref().map(|link| link.youtube_id.as_str()), Some("dQw4w9WgXcQ"));
 		assert_eq!(
@@ -464,8 +571,12 @@ mod tests {
 		assert_eq!(go("2026-01-02", Step::Video).await, LetGo::NoEpisode);
 		assert_eq!(go("2026-10-30", Step::Video).await, LetGo::NoLink, "no link, nothing goes");
 		assert!(renders.join("2026-10-30").join(Feed::Call.video()).exists());
-		record_link(&pool, Feed::Call, "", "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap();
-		record_link(&pool, Feed::Call, "", "2026-11-06", "https://youtu.be/aaaaaaaaaaa", NOW).await.unwrap();
+		record_link(&pool, Feed::Call, "", &renders, "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW)
+			.await
+			.unwrap();
+		record_link(&pool, Feed::Call, "", &renders, "2026-11-06", "https://youtu.be/aaaaaaaaaaa", NOW)
+			.await
+			.unwrap();
 		assert_eq!(go("2026-11-06", Step::Video).await, LetGo::NotRendered);
 		assert_eq!(go("2026-10-30", Step::Rest).await, LetGo::VideoFirst);
 		assert!(renders.join("2026-10-30").join("cuts.json").exists());
@@ -489,12 +600,115 @@ mod tests {
 		assert_eq!((listed[1].video_bytes, listed[1].rest_bytes), (None, None));
 	}
 
+	/// A week that is a series (paulgsc/some-ui#2918): each part is listed,
+	/// linked and let go on its own; the week's file stays for the worker
+	/// while any part has its video, each part let go is marked so it never
+	/// renders again, and the last takes the file and the marks with it.
+	#[tokio::test]
+	async fn a_week_of_parts_lists_links_and_lets_go_each_part_on_its_own() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (renders, weeks) = (dir.path().join("call"), dir.path().join("call-weeks"));
+		std::fs::create_dir_all(&weeks).unwrap();
+		std::fs::write(weeks.join("2026-11-06.json"), b"{}").unwrap();
+		hold(&pool, "2026-10-30", "2026-11-05").await;
+		hold(&pool, "2026-11-06", "2026-11-12").await;
+		render(&renders, "2026-10-30");
+		std::fs::create_dir_all(&renders).unwrap();
+		std::fs::write(renders.join("2026-11-06.parts"), b"3\n").unwrap();
+		render(&renders, "2026-11-06");
+		render(&renders, "2026-11-06-p2");
+
+		let listed = list(&pool, Feed::Call, "", &renders).await.unwrap();
+		assert_eq!(
+			listed.iter().map(|e| (e.key.as_str(), e.week.as_str(), e.part, e.of, e.video_bytes)).collect::<Vec<_>>(),
+			[
+				("2026-11-06", "2026-11-06", 1, 3, Some(10)),
+				("2026-11-06-p2", "2026-11-06", 2, 3, Some(10)),
+				("2026-11-06-p3", "2026-11-06", 3, 3, None),
+				("2026-10-30", "2026-10-30", 1, 1, Some(10)),
+			],
+			"newest week first, its parts in order; a week of one video as it always was"
+		);
+		assert_eq!(
+			video_file(&pool, Feed::Call, "", &renders, "2026-11-06-p2").await.unwrap(),
+			Some(renders.join("2026-11-06-p2").join(Feed::Call.video()))
+		);
+		for key in ["2026-11-06-p4", "2026-11-06-p1", "2026-10-30-p2"] {
+			assert_eq!(video_file(&pool, Feed::Call, "", &renders, key).await.unwrap(), None, "{key} is no part");
+			assert_eq!(
+				record_link(&pool, Feed::Call, "", &renders, key, "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+				LinkRecorded::NoEpisode,
+				"{key}"
+			);
+		}
+
+		let go = |key: &'static str, step| {
+			let (pool, renders, weeks) = (pool.clone(), renders.clone(), weeks.clone());
+			async move { let_go(&pool, Feed::Call, "", Folders { renders: &renders, input: &weeks }, key, step, NOW).await.unwrap() }
+		};
+		record_link(&pool, Feed::Call, "", &renders, "2026-11-06", "https://youtu.be/aaaaaaaaaaa", NOW)
+			.await
+			.unwrap();
+		assert_eq!(go("2026-11-06-p2", Step::Video).await, LetGo::NoLink, "part 1's link is not part 2's");
+		record_link(&pool, Feed::Call, "", &renders, "2026-11-06-p2", "https://youtu.be/bbbbbbbbbbb", NOW)
+			.await
+			.unwrap();
+		let LetGo::Gone(two) = go("2026-11-06-p2", Step::Video).await else {
+			panic!("part 2's video goes")
+		};
+		assert_eq!(two.youtube_id, "bbbbbbbbbbb");
+		assert!(!renders.join("2026-11-06-p2").join(Feed::Call.video()).exists());
+		assert!(renders.join("2026-11-06").join(Feed::Call.video()).exists(), "part 1 keeps its video");
+		assert!(weeks.join("2026-11-06.json").exists(), "the worker still has parts to render");
+		assert!(weeks.join("2026-11-06-p2.let-go").exists(), "but never part 2 again");
+		assert!(matches!(go("2026-11-06-p2", Step::Rest).await, LetGo::Gone(_)));
+		assert!(!renders.join("2026-11-06-p2").exists());
+		assert!(matches!(go("2026-11-06", Step::Video).await, LetGo::Gone(_)));
+		assert!(weeks.join("2026-11-06.let-go").exists(), "part 3 is still to render");
+
+		// The last part rendered and let go: the week leaves the worker whole.
+		render(&renders, "2026-11-06-p3");
+		record_link(&pool, Feed::Call, "", &renders, "2026-11-06-p3", "https://youtu.be/ccccccccccc", NOW)
+			.await
+			.unwrap();
+		assert!(matches!(go("2026-11-06-p3", Step::Video).await, LetGo::Gone(_)));
+		assert!(!weeks.join("2026-11-06.json").exists(), "every part gone, the week is never rendered again");
+		let left: Vec<_> = std::fs::read_dir(&weeks).unwrap().collect();
+		assert!(left.is_empty(), "its marks go with it");
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(video::weeks_let_go(&mut conn).await.unwrap(), ["2026-11-06"]);
+	}
+
+	/// A parts file the drive won't read as a count is never taken for a week
+	/// of one video: letting a part go refuses, writes no receipt, and leaves
+	/// the week's file for the worker.
+	#[tokio::test]
+	async fn a_parts_file_that_does_not_read_lets_nothing_go() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (renders, weeks) = (dir.path().join("call"), dir.path().join("call-weeks"));
+		std::fs::create_dir_all(&weeks).unwrap();
+		std::fs::write(weeks.join("2026-11-06.json"), b"{}").unwrap();
+		hold(&pool, "2026-11-06", "2026-11-12").await;
+		render(&renders, "2026-11-06");
+		record_link(&pool, Feed::Call, "", &renders, "2026-11-06", "https://youtu.be/aaaaaaaaaaa", NOW)
+			.await
+			.unwrap();
+		std::fs::write(renders.join("2026-11-06.parts"), b"three\n").unwrap();
+		let folders = Folders { renders: &renders, input: &weeks };
+		assert!(let_go(&pool, Feed::Call, "", folders, "2026-11-06", Step::Video, NOW).await.is_err());
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(video::receipt(&mut conn, "2026-11-06", Step::Video).await.unwrap(), None, "no receipt");
+		assert!(weeks.join("2026-11-06.json").exists() && renders.join("2026-11-06").join(Feed::Call.video()).exists());
+	}
+
 	#[tokio::test]
 	async fn a_step_the_drive_refuses_keeps_its_receipt_and_is_finished_when_asked_again() {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let (renders, weeks) = (dir.path().join("call"), dir.path().join("call-weeks"));
 		hold(&pool, "2026-10-30", "2026-11-05").await;
-		record_link(&pool, Feed::Call, "", "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap();
+		record_link(&pool, Feed::Call, "", &renders, "2026-10-30", "https://youtu.be/dQw4w9WgXcQ", NOW)
+			.await
+			.unwrap();
 		// A folder where the week's file would be: removing it as a file fails,
 		// as a drive that refuses would.
 		let blocked = weeks.join("2026-10-30.json");
@@ -561,11 +775,15 @@ mod tests {
 		let go = |step| let_go(&pool, Feed::PlayoffDelta, "", folders, "2026-SF-09", step, NOW);
 		assert_eq!(go(Step::Video).await.unwrap(), LetGo::NoLink);
 		assert_eq!(
-			record_link(&pool, Feed::PlayoffDelta, "", "2026-SF-09", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			record_link(&pool, Feed::PlayoffDelta, "", &renders, "2026-SF-09", "https://youtu.be/dQw4w9WgXcQ", NOW)
+				.await
+				.unwrap(),
 			LinkRecorded::Kept("dQw4w9WgXcQ".to_owned())
 		);
 		assert_eq!(
-			record_link(&pool, Feed::PlayoffDelta, "", "2026-SF-10", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			record_link(&pool, Feed::PlayoffDelta, "", &renders, "2026-SF-10", "https://youtu.be/dQw4w9WgXcQ", NOW)
+				.await
+				.unwrap(),
 			LinkRecorded::NoEpisode
 		);
 		let LetGo::Gone(video) = go(Step::Video).await.unwrap() else { panic!("the video goes") };
@@ -607,7 +825,9 @@ mod tests {
 		assert!(list(&pool, Feed::RustEssay, "them", &renders).await.unwrap().is_empty(), "another subject's is not theirs");
 		assert_eq!(video_file(&pool, Feed::RustEssay, "them", &renders, "2026-w46").await.unwrap(), None);
 		assert_eq!(
-			record_link(&pool, Feed::RustEssay, "them", "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			record_link(&pool, Feed::RustEssay, "them", &renders, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW)
+				.await
+				.unwrap(),
 			LinkRecorded::NoEpisode
 		);
 		let folders = Folders {
@@ -619,7 +839,9 @@ mod tests {
 			LetGo::NoEpisode
 		);
 		assert_eq!(
-			record_link(&pool, Feed::RustEssay, "me", "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
+			record_link(&pool, Feed::RustEssay, "me", &renders, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW)
+				.await
+				.unwrap(),
 			LinkRecorded::Kept("dQw4w9WgXcQ".to_owned())
 		);
 		let LetGo::Gone(video) = let_go(&pool, Feed::RustEssay, "me", folders, "2026-w46", Step::Video, NOW).await.unwrap() else {

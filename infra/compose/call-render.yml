@@ -10,7 +10,9 @@
 #   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
 #   (`pd_fills::render::EPISODES_FOLDER`, FEED4 paulgsc/some-ui#2647), that
 #   has no video yet, it records the stage with each scene said by the
-#   speaker and renders it. Each video is kept in ${STORAGE}/renders/call/<from>/
+#   speaker and renders it (a week that is a series of parts, some-ui#2918,
+#   one job a part, part k of a week in renders/call/<from>-p<k>/). Each
+#   video is kept in ${STORAGE}/renders/call/<from>/
 #   or ${STORAGE}/renders/playoff-delta/<season>-<team>-<NN>/, on the same
 #   drive as home's database, until the owner lets it go (paulgsc/some-ui#2640,
 #   #2661). Its third job is a template's preview (SFEED12,

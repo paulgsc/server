@@ -374,6 +374,9 @@ pub struct FeedSeen {
 	/// The newest `from` home holds, let go or not, the call's only: its
 	/// weeks are days.
 	pub newest_week: Option<NaiveDate>,
+	/// Each episode that is a part of a call's week of more than one
+	/// (paulgsc/some-ui#2918), by key: which part, of how many.
+	pub parts: BTreeMap<String, (u32, u32)>,
 }
 
 /// The read, as the phone gets it.
@@ -401,6 +404,9 @@ pub struct Now {
 	/// A preview's template, its page on the phone.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub template: Option<String>,
+	/// A part of a call's week of more than one: which, and of how many.
+	#[serde(flatten, skip_serializing_if = "Option::is_none")]
+	pub part: Option<PartOf>,
 	pub state: Phase,
 	/// Unix seconds when the job began.
 	pub since: i64,
@@ -483,6 +489,9 @@ pub struct Episode {
 	/// A preview's template, its page on the phone.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub template: Option<String>,
+	/// A part of a call's week of more than one: which, and of how many.
+	#[serde(flatten, skip_serializing_if = "Option::is_none")]
+	pub part: Option<PartOf>,
 	/// A done preview's: when home lets it go (Unix seconds), a day after it
 	/// was made.
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -491,6 +500,17 @@ pub struct Episode {
 	/// video: the total the phone's ranged fetch counts against.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub bytes: Option<u64>,
+}
+
+/// Which part of a call's week an episode is, of how many.
+///
+/// `"part": 2, "of": 3` on its row (paulgsc/some-ui#2918), which the phone
+/// shows as "2026-11-06 · part 2 of 3", beside the recorder's scene count
+/// within the part. A week of one video's row carries neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PartOf {
+	pub part: u32,
+	pub of: u32,
 }
 
 /// An episode whose last attempt couldn't finish.
@@ -505,6 +525,9 @@ pub struct Failed {
 	/// A preview's template, its page on the phone.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub template: Option<String>,
+	/// A part of a call's week of more than one: which, and of how many.
+	#[serde(flatten, skip_serializing_if = "Option::is_none")]
+	pub part: Option<PartOf>,
 	/// Why a preview failed, as a short class (`previews`: `no-sample`,
 	/// `too-long`, `too-large`, `render`, `overdue`), never its log.
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -605,6 +628,11 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 	}
 }
 
+/// Which part of a call's week `key` is, when its week is more than one.
+fn part_in(seen: &FeedSeen, key: &str) -> Option<PartOf> {
+	seen.parts.get(key).map(|&(part, of)| PartOf { part, of })
+}
+
 /// A preview's template, by its key; `None` for any other shelf's row.
 fn template_of(shelf: Option<Shelf>, key: &str) -> Option<String> {
 	(shelf == Some(Shelf::Preview)).then(|| crate::previews::template_of(key)).flatten().map(str::to_owned)
@@ -638,6 +666,9 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 		feed: job.kind.clone(),
 		key: job.key.clone(),
 		template: template_of(Shelf::parse(&job.kind), &job.key),
+		part: Shelf::parse(&job.kind)
+			.and_then(|feed| feeds.iter().find(|(f, _)| *f == feed))
+			.and_then(|(_, seen)| part_in(seen, &job.key)),
 		state: job.state,
 		since: job.since,
 		state_since: job.state_since,
@@ -667,6 +698,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					feed: name.to_owned(),
 					key: key.clone(),
 					at: *made,
+					part: part_in(seen, key),
 					expires_at: template.is_some().then(|| made.saturating_add(preview_life())),
 					template,
 					bytes: seen.sizes.get(key).copied(),
@@ -676,6 +708,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					feed: name.to_owned(),
 					key: key.clone(),
 					at: *at,
+					part: part_in(seen, key),
 					failure: *failure,
 					template: template_of(Some(*feed), key),
 					reason: seen.reasons.get(key).copied(),
@@ -685,6 +718,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					feed: name.to_owned(),
 					key: key.clone(),
 					at: *taken,
+					part: part_in(seen, key),
 					template: template_of(Some(*feed), key),
 					expires_at: None,
 					bytes: None,
@@ -783,7 +817,7 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 	let mut feeds = Vec::with_capacity(folders.feeds.len());
 	for (feed, renders, status) in &folders.feeds {
 		let (held, let_go) = match feed {
-			Feed::Call => crate::call_weeks::render::held(db).await?,
+			Feed::Call => crate::call_weeks::render::held(db, renders).await?,
 			Feed::PlayoffDelta => {
 				let (_, voiced, let_go) = crate::pd_fills::render::voiced(db).await?;
 				(voiced, let_go)
@@ -928,8 +962,14 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 		// The feed's cadence counts every episode it took, let go or not.
 		seen.newest_taken = seen.newest_taken.max(Some(taken));
 		if feed == Shelf::Feed(Feed::Call) {
-			if let Ok(day) = NaiveDate::parse_from_str(&episode.key, "%Y-%m-%d") {
-				seen.newest_week = seen.newest_week.max(Some(day));
+			if let Some((week, part)) = call_week_repo::video::split_key(&episode.key) {
+				if let Ok(day) = NaiveDate::parse_from_str(week, "%Y-%m-%d") {
+					seen.newest_week = seen.newest_week.max(Some(day));
+				}
+				let of = crate::call_weeks::render::parts(renders, week).await;
+				if of > 1 {
+					seen.parts.insert(episode.key.clone(), (part, of));
+				}
 			}
 		}
 		if let_go.contains(&episode.key) {

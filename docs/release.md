@@ -173,7 +173,14 @@ it, which a test holds equal to the Dockerfile's label:
 `render-folders` covers the folders render reads and file_host writes:
 `call-weeks`, `playoff-delta-episodes`, `preview-requests`, `rust-essays`
 and `cards-essays` (#854, added at epoch 1: a new folder changes no layout
-an older render reads, and server's `render-calls.sh` names each file). There is no `stage` edge: call-stage was removed (#802), and
+an older render reads, and server's `render-calls.sh` names each file). A
+call's part let go is marked `<key>.let-go` in `call-weeks` (some-ui#2918),
+also without a raise: only server's `render-calls.sh` reads it, never the
+image. What the call's series needs of the image (`render call-parts`, and
+`record:call --part`) is no edge yet: render requires `render-folders` of
+file_host, but nothing states what server's loop requires of render, so the
+release that carries the series must pin a render image built from
+some-ui at or after its series change. There is no `stage` edge: call-stage was removed (#802), and
 render carries its own stage slice. kokoro writes both labels empty.
 
 - **RL8. Third-party images are pinned, and refresh alone, when due**

@@ -233,6 +233,7 @@ fn each_episode_is_in_one_place() {
 			key: String::from("2026-10-23"),
 			at: NOW - 15 * 86_400,
 			template: None,
+			part: None,
 			expires_at: None,
 			bytes: None,
 		}]
@@ -361,6 +362,7 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		at: 1,
 		failure: failure_in(refused),
 		template: None,
+		part: None,
 		reason: None,
 	})
 	.unwrap();
@@ -371,6 +373,7 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		at: 1,
 		failure: failure_in(home),
 		template: None,
+		part: None,
 		reason: None,
 	})
 	.unwrap();
@@ -796,4 +799,38 @@ async fn a_run_s_progress_is_its_job_s_only() {
 	)
 	.unwrap();
 	assert_eq!(read(&db, &folders, "", NOW).await.unwrap().now.unwrap().progress, None, "another job's");
+}
+
+/// A part of a call's week of more than one (paulgsc/some-ui#2918) carries
+/// which part and of how many, now, waiting, failed or done: the phone's
+/// "2026-11-06 · part 2 of 3". A week of one video's row carries neither.
+#[test]
+fn a_part_of_a_week_says_which_part_of_how_many() {
+	let mut seen = FeedSeen {
+		held: vec![
+			(String::from("2026-11-06"), NOW - 86_400),
+			(String::from("2026-11-06-p2"), NOW - 86_400),
+			(String::from("2026-11-06-p3"), NOW - 86_400),
+			(String::from("2026-10-30"), NOW - 8 * 86_400),
+		],
+		..FeedSeen::default()
+	};
+	seen.videos.insert(String::from("2026-11-06"), NOW - 3_600);
+	for part in 1..=3 {
+		let key = call_week_repo::video::part_key("2026-11-06", part);
+		seen.parts.insert(key, (part, 3));
+	}
+	let job = Job::parse("id=7\nkind=call\nkey=2026-11-06-p2\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0\n").unwrap();
+	let read = board(&[(Feed::Call, seen)], Some(&job), None, NOW);
+	let now = read.now.unwrap();
+	assert_eq!((now.key.as_str(), now.part), ("2026-11-06-p2", Some(PartOf { part: 2, of: 3 })));
+	let json = serde_json::to_value(&now).unwrap();
+	assert_eq!((json["part"].clone(), json["of"].clone()), (serde_json::json!(2), serde_json::json!(3)));
+	assert_eq!(read.done[0].part, Some(PartOf { part: 1, of: 3 }));
+	assert_eq!(
+		read.waiting.iter().map(|e| (e.key.as_str(), e.part)).collect::<Vec<_>>(),
+		[("2026-10-30", None), ("2026-11-06-p3", Some(PartOf { part: 3, of: 3 }))]
+	);
+	let json = serde_json::to_value(&read.waiting[0]).unwrap();
+	assert!(json.get("part").is_none() && json.get("of").is_none(), "{json}");
 }
