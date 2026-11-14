@@ -17,8 +17,10 @@
 //! reaches a log line: the span skips every argument, and a refusal names
 //! fields with fixed words, never what was said.
 //!
-//! [`post_station`] is the only caller of `voice_repo::conveyor::advance`,
-//! the one writer of `studio_take_move`; it writes no note. A move's labels,
+//! [`post_station`] is the only caller of `voice_repo::conveyor::advance`
+//! but the mailbox poller, which records the routine's answer to a pickup
+//! (`voice_repo::conveyor::pick_up`); between them they are the one writer
+//! of `studio_take_move`, and neither writes a note. A move's labels,
 //! comment and issue reach no log line: the span skips every argument.
 //!
 //! **The one way a note is deleted but with the account** (docs/identity.md
@@ -594,7 +596,8 @@ const STALE: &str = "the take has moved since this move's mover saw it";
 /// `at` is shown, never compared, and may be at most five minutes ahead of
 /// home's clock. Nothing moves back to `in-the-oven`, a take reaches
 /// `picked-up` only from `ready-for-pickup` and with its `issue`, and stays
-/// there.
+/// there. A move to `ready-for-pickup` wakes the mailbox's pass, which files
+/// the take's pickup once home has heard it (CONVEYOR3).
 ///
 /// `BEGIN IMMEDIATE`, so the read that finds where the take is and the write
 /// see one snapshot.
@@ -607,7 +610,13 @@ const STALE: &str = "the take has moved since this move's mover saw it";
 /// station, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_station_post", skip_all, fields(otel.kind = "server"))]
-pub async fn post_station(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Json<TakeMoved>, FileHostError> {
+pub async fn post_station(
+	subject: SubjectId,
+	State(db): State<SqlitePool>,
+	State(outbox): State<crate::mailbox::Outbox>,
+	Path(id): Path<String>,
+	body: Bytes,
+) -> Result<Json<TakeMoved>, FileHostError> {
 	let Ok(body) = serde_json::from_slice::<MoveBody>(&body) else {
 		return Err(FileHostError::unprocessable_entity([("body", "not a move")]));
 	};
@@ -629,7 +638,15 @@ pub async fn post_station(subject: SubjectId, State(db): State<SqlitePool>, Path
 	let advanced = voice_repo::conveyor::advance(&mut tx, subject.as_str(), &id, &asked, &now).await.map_err(refusal)?;
 	tx.commit().await?;
 	match advanced {
-		Advanced::Moved(take) => Ok(Json(TakeMoved { change: "moved", take })),
+		Advanced::Moved(take) => {
+			// A take ready for pickup is filed by the mailbox's next pass
+			// once heard (`mailbox::pass`, CONVEYOR3): run it now, not at
+			// the backstop's hour.
+			if take.station == Station::ReadyForPickup {
+				outbox.filed();
+			}
+			Ok(Json(TakeMoved { change: "moved", take }))
+		}
 		Advanced::Unchanged(take) => Ok(Json(TakeMoved { change: "unchanged", take })),
 		Advanced::Stale(at, seq) => Err(FileHostError::ConflictNaming {
 			reason: STALE,
@@ -761,6 +778,7 @@ mod tests {
 		pool: SqlitePool,
 		auth: AuthContext,
 		meaning: Option<MeaningContext>,
+		outbox: crate::mailbox::Outbox,
 	}
 
 	impl FromRef<TestState> for Option<MeaningContext> {
@@ -772,6 +790,12 @@ mod tests {
 	impl FromRef<TestState> for SqlitePool {
 		fn from_ref(state: &TestState) -> Self {
 			state.pool.clone()
+		}
+	}
+
+	impl FromRef<TestState> for crate::mailbox::Outbox {
+		fn from_ref(state: &TestState) -> Self {
+			state.outbox.clone()
 		}
 	}
 
@@ -792,6 +816,7 @@ mod tests {
 			auth: AuthContext::for_tests(pool.clone(), 100),
 			pool,
 			meaning: None,
+			outbox: crate::mailbox::Outbox::default(),
 		}
 	}
 
@@ -998,7 +1023,11 @@ mod tests {
 	async fn the_owner_moves_a_take_along_the_conveyor() {
 		const TAKE_PATH: &str = "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z";
 		const STATION: &str = "/voice-notes/t1/station";
-		let state = state().await;
+		let wake = std::sync::Arc::new(crate::mailbox::bell::Wake::default());
+		let state = TestState {
+			outbox: crate::mailbox::Outbox::waking(std::sync::Arc::clone(&wake)),
+			..state().await
+		};
 		let pool = state.pool.clone();
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let other = session(&state, B, Carrier::Bearer).await;
@@ -1066,9 +1095,12 @@ mod tests {
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a clock far ahead of home's");
 		assert!(refused["error"]["details"]["at"].is_array(), "{refused}");
 		assert_eq!(written().await, 1);
+		assert_eq!(wake.take(), None, "only a take ready for pickup wakes the mailbox");
 
 		let ready = json!({ "seq": 1, "from": "cooking", "to": "ready-for-pickup", "at": "2026-11-13T10:00:00Z" });
 		assert_eq!(post(&app, STATION, Some(&phone), &ready).await.0, StatusCode::OK);
+		// CONVEYOR3: the mailbox's pass files its pickup once heard, now.
+		assert_eq!(wake.take(), Some(crate::mailbox::bell::Cause::Local));
 		let (status, listed) = get(&app, "/voice-notes/conveyor?station=ready-for-pickup", Some(&phone)).await;
 		assert_eq!((status, listed["total"].clone()), (StatusCode::OK, json!(1)));
 		assert_eq!(listed["takes"][0]["labels"], json!(["hook"]), "labels carry forward");

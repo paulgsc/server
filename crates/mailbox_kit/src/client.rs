@@ -42,13 +42,21 @@ pub enum Folder {
 	/// A note on a feed's episode home keeps, `feedback-<id>.json`:
 	/// archived, never asked for.
 	Feedback,
+	/// A Studio take ready for pickup, as home files it,
+	/// `pickup-<note>-<seq>.json`: its labels and what home heard in it,
+	/// never its comment or its audio.
+	Pickup,
+	/// The routine's answer to a pickup, `picked-<note>-<seq>.json`: the
+	/// issue it filed the take as.
+	Picked,
 }
 
 impl Folder {
 	/// Every folder. A pass's archiving walks all of them but [`Self::Index`],
-	/// home's index, a view the mailbox keeps only the latest of
+	/// home's index, a view the mailbox keeps only the latest of, and
+	/// [`Self::Pickup`] and [`Self::Picked`], which it does not archive yet
 	/// (`file_host`'s `mailbox::pass::ARCHIVES`).
-	pub const ALL: [Self; 14] = [
+	pub const ALL: [Self; 16] = [
 		Self::Brief,
 		Self::Decisions,
 		Self::Scout,
@@ -63,6 +71,8 @@ impl Folder {
 		Self::Reflection,
 		Self::Prompt,
 		Self::Feedback,
+		Self::Pickup,
+		Self::Picked,
 	];
 
 	/// The name in the mailbox's URLs, and in `mailbox_repo`'s rows.
@@ -83,6 +93,8 @@ impl Folder {
 			Self::Reflection => "reflection",
 			Self::Prompt => "prompt",
 			Self::Feedback => "feedback",
+			Self::Pickup => "pickup",
+			Self::Picked => "picked",
 		}
 	}
 }

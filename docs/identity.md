@@ -737,7 +737,10 @@ nowhere is marked as such and belongs to review.
     shows as when the routine last ran and, for the jobs routine, what this
     morning's run couldn't do; owner, 2026-10-24) and its `leetype` folder
     (the routine's LeetType session files, `some-ui.leetype-session/1`;
-    paulgsc/some-ui#2026), `mailbox::pass::READS`, and puts only to
+    paulgsc/some-ui#2026) and its `picked` folder (the routine's answer to a
+    Studio take's pickup, `some-ui.take-picked/1`: the take's id, its ready
+    move's number and the issue it was filed as; paulgsc/some-ui#2875,
+    CONVEYOR3), `mailbox::pass::READS`, and puts only to
     `decisions`, `scout`, `opened`, `transcript` (what home heard in a voice
     note, as text, for the routines to read instead of transcribing;
     paulgsc/server#463), `leetype-log` (how each finished LeetType session
@@ -747,8 +750,11 @@ nowhere is marked as such and belongs to review.
     paulgsc/server#509), `reflection` (each written reflection home
     keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178),
     `prompt` (each drama prompt home keeps, as the routine's minimum,
-    invariant 31; paulgsc/some-ui#2179) and `feedback` (each note on a
-    feed's episode home keeps, invariant 38; paulgsc/some-ui#2745).
+    invariant 31; paulgsc/some-ui#2179), `feedback` (each note on a
+    feed's episode home keeps, invariant 38; paulgsc/some-ui#2745) and
+    `pickup` (each Studio take the owner moved to `ready-for-pickup`, once
+    heard: its labels and what home heard, never the move's comment and never
+    audio; paulgsc/some-ui#2875, CONVEYOR3).
     The poller also holds one connection open to the mailbox's bell
     (`mailbox::bell`, paulgsc/server#500), outbound like every request it
     makes, with the same `MAILBOX_TOKEN` in its `Authorization` header and
@@ -761,7 +767,7 @@ nowhere is marked as such and belongs to review.
     time, so what the poller reads and writes is the same whatever woke it.
     Nothing here listens on a port.
     - `mailbox_item`, written only by the poller: each file it kept from
-      those five folders, its bytes as the mailbox held them (they must
+      those six folders, its bytes as the mailbox held them (they must
       match the listing's SHA-256 and parse as JSON), its hash, size and
       sequence number, and when home read it. Read only by
       `GET /jobs/digests` (`brief`), `GET /jobs/runs` (the jobs routine's
@@ -787,14 +793,20 @@ nowhere is marked as such and belongs to review.
       in the transaction that stores a take it names: each `studio` voice
       note home holds whose SHA-256 it names is recorded in
       `studio_take_on_drive` (invariant 23), and nothing else of it is kept
-      beyond the file itself.
+      beyond the file itself. An answer to a pickup is read by the poller
+      from the bytes it is keeping, in the transaction that keeps it: the
+      take it names moves to `picked-up` with its issue
+      (`voice_repo::conveyor::pick_up`, invariant 23) only while the take's
+      newest move is still the ready move it names by number, and nothing
+      else of it is kept beyond the file itself.
     - `mailbox_outgoing`, written only by `PUT /jobs/files/:name`,
       `PUT /routine/opened`, `PUT /routine/reflections/:id`,
       `PUT /routine/prompts/:stamp`, `PUT /feeds/:feed/notes/:id` and the
-      poller's `file_transcripts` and `file_leetype_logs`: a decisions or
-      scouts file the phone filed, which of the routine's lessons it opened,
-      a written reflection, a drama prompt, a note on an episode, a
-      transcript, or a LeetType session's log, its bytes, hash and when.
+      poller's `file_transcripts`, `file_pickups` and `file_leetype_logs`: a
+      decisions or scouts file the phone filed, which of the routine's
+      lessons it opened, a written reflection, a drama prompt, a note on an
+      episode, a transcript, a Studio take's pickup, or a LeetType session's
+      log, its bytes, hash and when.
       The jobs route files a decisions or scouts file as the phone sent it,
       a voice note it names by the phone's id included (paulgsc/server#508;
       until then it refused one, which only routed the owner through Drive):
@@ -841,6 +853,17 @@ nowhere is marked as such and belongs to review.
       which one, when it was recorded, the text, its language and model, and
       when home heard it. That is text; nothing in it points at audio, and the
       mailbox refuses a body that carries audio or a Drive link.
+      The poller files a pickup for each Studio take on the conveyor whose
+      newest move put it at `ready-for-pickup` and whose newest transcript
+      that heard something holds text, as `pickup-<note>-<seq>.json` in
+      `some-ui.take-pickup/1`, `<seq>` being that ready move's number: the
+      take's id and `ref`, that text, its labels (`[]` for none) and the
+      ready move's `at` and number. Never the move's comment (the owner,
+      call C296, 2026-11-13: "labels go, the per-move comment stays home"),
+      nothing else of the take, and nothing that points at audio. It reads
+      the take again in the transaction that files, and builds a pickup
+      once: a name already filed is never built again, so a later transcript
+      changes no byte the routine was handed.
       The poller files each finished LeetType session's log as
       `log-<session>.json`, then `log-<session>.r<n>.json` for a later copy,
       in `some-ui.leetype-log/1`: the session, the session file it started,
@@ -1039,8 +1062,9 @@ nowhere is marked as such and belongs to review.
     Worker's `archive` role, a token apart from `MAILBOX_TOKEN`), each pass
     of `file_host`'s `mailbox` poller takes the files live in any folder for
     `MAILBOX_ARCHIVE_DAYS` (at least 30, the mailbox's own floor), at most
-    `ITEMS_PER_PASS` of them, in every folder but `index`
-    (`mailbox::pass::ARCHIVES`). For each it reads the bytes, checks them
+    `ITEMS_PER_PASS` of them, in every folder but `index`, `pickup` and
+    `picked` (`mailbox::pass::ARCHIVES`; a pickup and its answer stay live
+    in the mailbox until archiving them is decided). For each it reads the bytes, checks them
     against the listing's size and SHA-256, and stores them in
     `mailbox_archive`, committed, under the deletion hold. Only then does it
     ask the mailbox to archive the file, naming that SHA-256 in `If-Match`,
@@ -1082,8 +1106,8 @@ nowhere is marked as such and belongs to review.
     this invariant's tables, and the next pass computes the same bytes from
     them.
     *Enforced by* `mailbox::pass`'s
-    `archiving_walks_every_folder_but_the_index`,
-    `an_idle_pass_makes_twenty_five_requests_and_none_reaches_the_index`
+    `archiving_walks_every_folder_but_the_index_and_the_pickups`,
+    `an_idle_pass_makes_twenty_six_requests_and_none_reaches_the_index`
     (whose fake fails any archive-token request to `index`),
     `an_old_file_is_stored_home_before_the_mailbox_drops_it_and_a_young_one_stays`,
     `a_file_home_cannot_store_stays_live`,
@@ -1283,7 +1307,11 @@ nowhere is marked as such and belongs to review.
     /voice-notes/:id/station` (`voice_repo::conveyor::advance`) for a
     `studio` take the subject holds that is no idea's answer, naming the
     take's newest move and station (moves are ordered by number, never by a
-    clock: docs/conveyor.md), and its span skips every argument. A take named
+    clock: docs/conveyor.md), and its span skips every argument, and by the
+    mailbox poller's `picked-up` move when the routine answers a pickup
+    (`voice_repo::conveyor::pick_up`, the same `advance` from the ready move
+    the answer names by number, at home's clock; invariant 19). A take's
+    labels leave home in its pickup; its comments never do. A take named
     as an idea's answer, or let go of, after it moved is off the conveyor:
     no station lists it and it reads and moves as not held, its moves kept.
     Its rows go with the account (the sweep and their own trigger) and with

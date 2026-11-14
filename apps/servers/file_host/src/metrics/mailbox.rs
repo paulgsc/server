@@ -128,7 +128,7 @@ fn set_failing(classes: &[&'static str]) {
 /// Every value `mailbox_bell_rings_total`'s `folder` label can take: the
 /// folders a pass reads (`mailbox::pass::READS`), and `other` for a ring
 /// naming any other, so a mailbox can't grow the label.
-pub const RING_FOLDERS: [&str; 6] = ["brief", "scene", "drama", "run", "leetype", "other"];
+pub const RING_FOLDERS: [&str; 7] = ["brief", "scene", "drama", "run", "leetype", "picked", "other"];
 
 /// The bell's task has started: it is not connected yet, and every failure
 /// kind, ring folder and pass cause starts at 0.

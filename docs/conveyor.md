@@ -23,6 +23,31 @@ CONVEYOR1); the take library and a take's audio stay a paired phone's. Each stat
 answers at most 100 takes, newest first, and how many there are; paging past that is
 paulgsc/server#842.
 
+## Pickup (CONVEYOR3)
+
+The routine meets home at the mailbox (paulgsc/some-ui `apps/mailbox/README.md`, "A take
+ready for pickup" and "An answer to a pickup"). Home's half is `file_host`'s
+`mailbox::pass`:
+
+- **Home files a pickup** for each take on the conveyor whose newest move put it at
+  `ready-for-pickup`, once home has heard it (its newest transcript that heard something
+  holds text): `pickup-<note>-<seq>.json`, `some-ui.take-pickup/1`, where `seq` is that
+  ready move's number. It carries the take's id and `ref`, what home heard, its labels
+  (`[]` for none) and the ready move's `at` (`readyAt`) and number. Never a move's comment
+  and never audio: "labels go, the per-move comment stays home" (the owner, call C296,
+  2026-11-13). A move to `ready-for-pickup` wakes the mailbox's pass. A pickup is built
+  once and kept in `mailbox_outgoing`: a later transcript never rebuilds it, and a hand that
+  did not reach the mailbox sends the same bytes again. A take moved on and back is filed
+  anew under its new ready move's number.
+- **The routine answers** in `picked`, `picked-<note>-<seq>.json`,
+  `some-ui.take-picked/1`, with the issue it filed (`<owner>/<repo>#<n>`). Home keeps the
+  answer and, in the same transaction, moves the take to `picked-up` with that issue
+  (`voice_repo::conveyor::pick_up`) only while the take's newest move is still that `seq`
+  at `ready-for-pickup`, invariant 2's rule for any mover. The move's `at` is home's clock.
+  A take the owner moved on stays where the owner put it, and its answer is kept and
+  moves nothing.
+- Neither folder is archived yet (`mailbox::pass::ARCHIVES`; paulgsc/server#850).
+
 ## Invariants
 
 1. **A move is a row, and nothing rewrites one.** Each move is its own row of
@@ -52,7 +77,10 @@ paulgsc/server#842.
    `canned` can come back. The table's `CHECK`s hold the same rules as
    `voice_repo::conveyor::ask`.
 
-*Enforced by* `voice_repo::conveyor`'s tests (`moves_are_ordered_by_number_never_by_a_clock`,
+*Enforced by* `mailbox::pass`'s
+`a_take_ready_for_pickup_is_filed_once_heard_with_its_labels_and_never_its_comment`,
+`a_take_off_the_conveyor_is_never_filed_for_pickup` and
+`an_answered_pickup_moves_its_take_only_from_the_ready_move_it_names`, `voice_repo::conveyor`'s tests (`moves_are_ordered_by_number_never_by_a_clock`,
 `a_take_moves_along_from_where_it_is_and_keeps_every_move`,
 `a_take_that_becomes_an_answer_or_is_let_go_leaves_the_conveyor`, `a_move_is_one_the_conveyor_has`,
 `no_move_is_ever_updated_and_moves_leave_with_the_account`) and `handlers::voice`'s

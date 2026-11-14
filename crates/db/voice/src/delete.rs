@@ -64,7 +64,8 @@ pub const WORDS: &str = "words";
 pub const SET_ASIDE_MARK: &str = "set-aside mark";
 /// Every move the owner made of it along the conveyor ([`crate::conveyor`]).
 pub const CONVEYOR_HISTORY: &str = "conveyor history";
-/// Its words, filed for the Jobs mailbox.
+/// Its words, filed for the Jobs mailbox: a transcript of it, or a Studio
+/// take's pickup, which carries what home heard (CONVEYOR3).
 pub const MAILBOX_COPY: &str = "mailbox copy";
 /// The build-journal session's word that Drive holds it.
 pub const DRIVE_COPY: &str = "drive copy";
@@ -242,7 +243,13 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 		.execute(&mut *conn)
 		.await?;
 	let filed = sqlx::query_scalar!(
-		r#"SELECT EXISTS (SELECT 1 FROM mailbox_transcript WHERE subject_id = ?1 AND note_id = ?2) AS "filed!: bool""#,
+		r#"SELECT EXISTS (SELECT 1 FROM mailbox_transcript WHERE subject_id = ?1 AND note_id = ?2)
+		       OR EXISTS (
+		         SELECT 1 FROM mailbox_outgoing
+		         WHERE subject_id = ?1 AND folder = 'pickup'
+		           AND name >= 'pickup-' || ?2 || '-' AND name < 'pickup-' || ?2 || '.'
+		           AND CASE WHEN json_valid(CAST(body AS TEXT)) THEN json_extract(CAST(body AS TEXT), '$.note') END = ?2
+		       ) AS "filed!: bool""#,
 		subject,
 		note_id
 	)
@@ -545,6 +552,33 @@ mod tests {
 		};
 		assert_eq!(receipt.went, [RECORDING]);
 		assert!(receipt.stayed.is_empty());
+	}
+
+	/// CONVEYOR3: a take's pickup carries what home heard, so a take filed
+	/// for pickup before its transcript was says its mailbox copy stayed.
+	#[tokio::test]
+	async fn a_takes_pickup_is_a_mailbox_copy_that_stays() {
+		let pool = pool().await;
+		// `a`'s pickups' names are a prefix of `a-b`'s: only the body says
+		// whose a pickup is.
+		note(&pool, A, "a", "studio").await;
+		note(&pool, A, "a-b", "studio").await;
+		run(
+			&pool,
+			r#"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at)
+			   VALUES (?1, 'pickup', 'pickup-' || ?2 || '-1.json', 's', CAST('{"note":"' || ?2 || '","heard":"w"}' AS BLOB), 'now')"#,
+			A,
+			"a-b",
+		)
+		.await;
+		let Deleted::Gone(receipt) = gone(&pool, A, "a", ON).await else {
+			panic!("the take is gone");
+		};
+		assert!(receipt.stayed.is_empty(), "another take's pickup is not this one's");
+		let Deleted::Gone(receipt) = gone(&pool, A, "a-b", ON).await else {
+			panic!("the other take is gone");
+		};
+		assert_eq!(receipt.stayed, [MAILBOX_COPY]);
 	}
 
 	#[tokio::test]

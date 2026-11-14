@@ -1,11 +1,13 @@
 //! One pass of the mailbox poller.
 //!
 //! It reads what each folder home reads ([`READS`]: the Jobs digests, the
-//! reflections routine's word sets, dramas and run records, and the `LeetType`
-//! session files) holds after home's cursor for it and keeps each file that
-//! checks out, then files each transcript home heard and has not filed
-//! ([`TRANSCRIPT_SCHEMA`]) and each finished `LeetType` session whose log is
-//! due ([`LEETYPE_LOG_SCHEMA`]), and hands the mailbox what is filed: the
+//! reflections routine's word sets, dramas and run records, the `LeetType`
+//! session files, and the routine's answers to Studio takes' pickups) holds
+//! after home's cursor for it and keeps each file that checks out, then files
+//! each transcript home heard and has not filed ([`TRANSCRIPT_SCHEMA`]), each
+//! Studio take ready for pickup that home has heard ([`PICKUP_SCHEMA`]) and
+//! each finished `LeetType` session whose log is due ([`LEETYPE_LOG_SCHEMA`]),
+//! and hands the mailbox what is filed: the
 //! decisions and scouts the phone filed (`PUT /jobs/files/:name`, text that
 //! names a voice note by id at most), which lessons it opened, each written
 //! reflection it sent home (`PUT /routine/reflections/:id`, text only), each
@@ -32,6 +34,19 @@
 //! filed once, under the next number its note's names have
 //! (`mailbox_repo::file_transcript`), so a better model's transcript goes
 //! under a new name.
+//!
+//! A pickup (paulgsc/some-ui#2875, CONVEYOR3) is a Studio take the owner
+//! moved to `ready-for-pickup`, filed once home has heard it, under the
+//! ready move's number (`pickup-<note>-<seq>.json`): the take's id and
+//! `ref`, what home heard (the newest transcript that heard something, as
+//! the take's page shows it), its labels (`[]` for none) and when and which
+//! move made it ready. Never the move's comment and never audio (the owner,
+//! call C296, 2026-11-13: "labels go, the per-move comment stays home").
+//! Built once: a later transcript never rebuilds a pickup filed, so a hand
+//! that did not reach the mailbox sends the first bytes again. The routine
+//! answers in `picked` with the issue it filed (`picked-<note>-<seq>.json`),
+//! and keeping that answer moves the take to `picked-up`, only while its
+//! newest move is still that ready move ([`keep`]; docs/conveyor.md).
 //!
 //! A `LeetType` session's log is what home holds of the session
 //! (`leetype_session_event`), rebuilt from that table and never from a
@@ -78,7 +93,13 @@ use std::fmt;
 pub const ITEMS_PER_PASS: u32 = 20;
 
 /// The folders archiving walks for files old enough to go home: every
-/// folder but `index`. Its asks walk [`ASKS`].
+/// folder but `index`, `pickup` and `picked`. Its asks walk [`ASKS`].
+///
+/// A take's pickup and the routine's answer to it (CONVEYOR3,
+/// paulgsc/some-ui#2875) are not archived yet: a few hundred bytes each,
+/// one per take the owner sends, and archiving them would add two listings
+/// to every idle pass. They stay live in the mailbox until that is decided
+/// (paulgsc/server#850).
 ///
 /// Home's index is a view it recomputes from records it keeps, not a record
 /// (owner, paulgsc/server#509): the mailbox holds only the latest per
@@ -130,9 +151,11 @@ pub const ASKS: [Folder; 10] = [
 /// The folders home reads and keeps in `mailbox_item`.
 ///
 /// The routine's digests (`GET /jobs/digests`), its word sets, dramas and run
-/// records (`GET /routine/files`), and its `LeetType` session files
-/// (`GET /leetype/session-files`).
-pub const READS: [Folder; 5] = [Folder::Brief, Folder::Scene, Folder::Drama, Folder::Run, Folder::Leetype];
+/// records (`GET /routine/files`), its `LeetType` session files
+/// (`GET /leetype/session-files`), and its answers to Studio takes' pickups
+/// (`picked`), each of which moves its take to `picked-up` as it is kept
+/// ([`keep`]).
+pub const READS: [Folder; 6] = [Folder::Brief, Folder::Scene, Folder::Drama, Folder::Run, Folder::Leetype, Folder::Picked];
 
 /// What a transcript put to the mailbox's `transcript` folder is
 /// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
@@ -141,6 +164,14 @@ pub const TRANSCRIPT_SCHEMA: &str = "some-ui.voice-transcript/1";
 /// What a `LeetType` session's log put to the mailbox's `leetype-log` folder
 /// is (paulgsc/some-ui `apps/mailbox`, the `leetype-log` folder's rules).
 pub const LEETYPE_LOG_SCHEMA: &str = "some-ui.leetype-log/1";
+
+/// What a Studio take's pickup put to the mailbox's `pickup` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "A take ready for pickup").
+pub const PICKUP_SCHEMA: &str = "some-ui.take-pickup/1";
+
+/// What the routine's answer to a pickup in the mailbox's `picked` folder is
+/// (paulgsc/some-ui `apps/mailbox/README.md`, "An answer to a pickup").
+pub const PICKED_SCHEMA: &str = "some-ui.take-picked/1";
 
 /// What a written reflection put to the mailbox's `reflection` folder is
 /// (paulgsc/some-ui `apps/mailbox/README.md`, "What a put must satisfy").
@@ -425,12 +456,17 @@ pub async fn run_once<T: MailboxTransport>(
 		Ok(())
 	} else {
 		let transcripts = file_transcripts(db, subject, deletion, now, &mut outcome).await;
+		let pickups = if outcome.no_account {
+			Ok(())
+		} else {
+			file_pickups(db, subject, deletion, now, &mut outcome).await
+		};
 		let logs = if outcome.no_account {
 			Ok(())
 		} else {
 			file_leetype_logs(db, subject, deletion, settle, now, &mut outcome).await
 		};
-		transcripts.and(logs)
+		transcripts.and(pickups).and(logs)
 	};
 	let outbound = if outcome.no_account {
 		Ok(())
@@ -587,10 +623,11 @@ async fn hand_over<T: MailboxTransport>(
 			"reflection" => Folder::Reflection,
 			"prompt" => Folder::Prompt,
 			"feedback" => Folder::Feedback,
+			"pickup" => Folder::Pickup,
 			// `PUT /jobs/files/:name`, `PUT /routine/opened`,
 			// `PUT /routine/reflections/:id`, `PUT /routine/prompts/:stamp`,
-			// `PUT /feeds/:feed/notes/:id`, `file_transcripts` and
-			// `file_leetype_logs` file only these.
+			// `PUT /feeds/:feed/notes/:id`, `file_transcripts`,
+			// `file_pickups` and `file_leetype_logs` file only these.
 			_ => continue,
 		};
 		let answer = match mailbox.put(folder, &file.name, file.body).await {
@@ -631,6 +668,49 @@ async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 		}
 	}
 	Ok(())
+}
+
+/// Files a pickup for each Studio take the owner moved to
+/// `ready-for-pickup` that home has heard and has not filed one for, the
+/// one whose ready move home stored first, at most [`ITEMS_PER_PASS`]; more
+/// are filed by the next pass (`mailbox_repo::unfiled_pickups`).
+async fn file_pickups(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync), outcome: &mut Outcome) -> Result<(), Failure> {
+	let ready = {
+		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
+		mailbox_repo::unfiled_pickups(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
+	};
+	outcome.more |= ready.len() >= ITEMS_PER_PASS as usize;
+	for take in &ready {
+		match file_pickup(db, deletion, subject, take, &now()).await? {
+			// Moved, let go of or no longer heard since it was read above.
+			None => {}
+			Some(Change::NoAccount) => {
+				outcome.no_account = true;
+				return Ok(());
+			}
+			Some(Change::Added | Change::Unchanged) => outcome.filed += 1,
+		}
+	}
+	Ok(())
+}
+
+/// A Studio take's pickup as the mailbox takes it (paulgsc/some-ui#2875,
+/// CONVEYOR3): which take, what home heard in it, its labels (`[]` for
+/// none) and its ready move, by number and when the owner made it. Never
+/// the move's comment and never audio: "labels go, the per-move comment
+/// stays home" (the owner, call C296, 2026-11-13).
+fn pickup_body(take: &voice_repo::conveyor::TakeStation, of_ref: &str, heard: &str, ready_at: &str) -> Vec<u8> {
+	serde_json::json!({
+		"schema": PICKUP_SCHEMA,
+		"note": take.id,
+		"ref": of_ref,
+		"heard": heard,
+		"labels": take.labels,
+		"readyAt": ready_at,
+		"seq": take.seq,
+	})
+	.to_string()
+	.into_bytes()
 }
 
 /// One heard word as the mailbox takes it (paulgsc/server#577, ST22): its
@@ -973,9 +1053,13 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// new in `brief` as `rust-week-<id>.json` (`some-ui.rust-week/1`,
 /// paulgsc/some-ui#2687), has each ticket's program queued for the recorder
 /// in the same transaction (`rust_round_repo::queue_week`), so home never
-/// holds a week whose programs go unrecorded. Any other file, or one that
-/// does not read as its name says, is kept as every `brief` file is, and
-/// records nothing.
+/// holds a week whose programs go unrecorded. The routine's answer to a
+/// pickup, new in `picked` (`some-ui.take-picked/1`, paulgsc/some-ui#2875),
+/// moves its take to `picked-up` with its issue in the same transaction
+/// (`voice_repo::conveyor::pick_up`), only while the take's newest move is
+/// still the ready move it names by number; otherwise the take stays where
+/// the owner put it. Any other file, or one that does not read as its name
+/// says, is kept as every `brief` file is, and records nothing.
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
 	let in_brief = item.folder == Folder::Brief.as_str();
 	let listed = (in_brief && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX))
@@ -985,6 +1069,7 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 		.then(|| rust_round_repo::week::read(item.body).ok())
 		.flatten()
 		.filter(|week| rust_round_repo::week::mailbox_name(&week.id) == item.name);
+	let picked = (item.folder == Folder::Picked.as_str()).then(|| picked(item)).flatten();
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
@@ -995,8 +1080,32 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 	if let (Change::Added, Some(week)) = (change, &week) {
 		rust_round_repo::queue_week(&mut tx, week, now).await?;
 	}
+	if let (Change::Added, Some(picked)) = (change, &picked) {
+		voice_repo::conveyor::pick_up(&mut tx, subject, &picked.note, (picked.seq, &picked.issue), now)
+			.await
+			.map_err(|err| match err {
+				voice_repo::VoiceError::Storage(err) => mailbox_repo::MailboxError::Storage(err),
+				other => mailbox_repo::MailboxError::Storage(sqlx::Error::Protocol(other.to_string())),
+			})?;
+	}
 	tx.commit().await?;
 	Ok(change)
+}
+
+/// The routine's answer to a pickup, `some-ui.take-picked/1`.
+#[derive(serde::Deserialize)]
+struct Picked {
+	schema: String,
+	note: String,
+	seq: i64,
+	issue: String,
+}
+
+/// `item` as an answer to a pickup, if it reads as one under its own name.
+fn picked(item: ItemIn<'_>) -> Option<Picked> {
+	serde_json::from_slice::<Picked>(item.body)
+		.ok()
+		.filter(|picked| picked.schema == PICKED_SCHEMA && mailbox_repo::picked_name(&picked.note, picked.seq) == item.name)
 }
 
 /// As [`keep`], for a file about to be archived.
@@ -1046,6 +1155,48 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
 	tx.commit().await?;
 	Ok(Some(change))
+}
+
+/// As [`keep`], for a Studio take's pickup, built and filed in one
+/// transaction from the take as it stands; `None`, filing nothing, when the
+/// take is no longer at that ready move (moved on, let go of, named as an
+/// answer or deleted since [`mailbox_repo::unfiled_pickups`] read it), its
+/// newest hearing holds no text, or a pickup is already filed under its
+/// name: that one's bytes are the pickup's for good, and never built again.
+async fn file_pickup(db: &SqlitePool, deletion: &DeletionLock, subject: &str, ready: &mailbox_repo::Ready, now: &str) -> Result<Option<Change>, Failure> {
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
+	let name = mailbox_repo::pickup_name(&ready.note_id, ready.seq);
+	if mailbox_repo::outgoing_filed(&mut tx, subject, mailbox_repo::PICKUP, &name).await.map_err(storage)? {
+		return Ok(None);
+	}
+	let take = voice_repo::conveyor::station(&mut tx, subject, &ready.note_id).await.map_err(voice_storage)?;
+	let Some(take) = take.filter(|take| take.station == voice_repo::conveyor::Station::ReadyForPickup && take.seq == ready.seq) else {
+		return Ok(None);
+	};
+	let Some(ready_at) = take.history.last().map(|newest| newest.at.clone()) else {
+		return Ok(None);
+	};
+	let heard = match voice_repo::transcript::heard(&mut tx, subject, &ready.note_id).await.map_err(voice_storage)? {
+		voice_repo::transcript::Hearing::Heard(heard) if !heard.text.trim_matches(mailbox_repo::BLANK).is_empty() => heard.text,
+		_ => return Ok(None),
+	};
+	let body = pickup_body(&take, &ready.of_ref, &heard, &ready_at);
+	let sha256 = hex::encode(Sha256::digest(&body));
+	let change = mailbox_repo::file_outgoing(&mut tx, subject, mailbox_repo::PICKUP, &name, &sha256, &body, now)
+		.await
+		.map_err(storage)?;
+	tx.commit().await.map_err(Failure::Storage)?;
+	Ok(Some(change))
+}
+
+/// A `voice_repo` failure as a pass's: a stored row that does not read back
+/// is as much a storage failure as `sqlx`'s own.
+fn voice_storage(err: voice_repo::VoiceError) -> Failure {
+	match err {
+		voice_repo::VoiceError::Storage(err) => Failure::Storage(err),
+		other => Failure::Storage(sqlx::Error::Protocol(other.to_string())),
+	}
 }
 
 /// As [`keep`], for a `LeetType` session's log, built from the session's
@@ -1103,7 +1254,7 @@ async fn record(
 
 #[cfg(test)]
 mod tests {
-	use super::{file_transcript, run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
+	use super::{file_pickup, file_transcript, run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
 	use crate::auth::DeletionLock;
 	use crate::mailbox::index::LastIndexes;
 	use mailbox_kit::{Mailbox, MailboxError, MailboxTransport, Method, Request, Response, Token};
@@ -1123,6 +1274,8 @@ mod tests {
 	#[derive(Default)]
 	struct Fake {
 		items: Mutex<Vec<(i64, String, String, String)>>,
+		/// `picked`'s items, as `items` is `brief`'s.
+		picked: Mutex<Vec<(i64, String, String, String)>>,
 		bodies: Mutex<HashMap<String, String>>,
 		listing_fails: Mutex<bool>,
 		gets: Mutex<Vec<String>>,
@@ -1148,6 +1301,12 @@ mod tests {
 		fn add(&self, seq: i64, name: &str, body: &str) {
 			let sha = hex::encode(Sha256::digest(body.as_bytes()));
 			self.items.lock().unwrap().push((seq, name.to_owned(), body.to_owned(), sha));
+			self.bodies.lock().unwrap().insert(name.to_owned(), body.to_owned());
+		}
+
+		fn add_picked(&self, seq: i64, name: &str, body: &str) {
+			let sha = hex::encode(Sha256::digest(body.as_bytes()));
+			self.picked.lock().unwrap().push((seq, name.to_owned(), body.to_owned(), sha));
 			self.bodies.lock().unwrap().insert(name.to_owned(), body.to_owned());
 		}
 	}
@@ -1183,11 +1342,12 @@ mod tests {
 						"/v1/leetype-log/items/",
 						"/v1/reflection/items/",
 						"/v1/prompt/items/",
-						"/v1/feedback/items/"
+						"/v1/feedback/items/",
+						"/v1/pickup/items/"
 					]
 					.iter()
 					.any(|put| path.starts_with(put)),
-					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes, written reflections, drama prompts and episode notes: {path}"
+					"puts only decisions, scouts, which lessons were opened, transcripts, LeetType session logs, indexes, written reflections, drama prompts, episode notes and pickups: {path}"
 				);
 				if *self.puts_fail.lock().unwrap() {
 					return Err("connection refused");
@@ -1213,14 +1373,17 @@ mod tests {
 			{
 				return Ok(answer(200, r#"{"items":[]}"#));
 			}
-			if let Some(query) = path.strip_prefix("/v1/brief/items?") {
+			let listing = path
+				.strip_prefix("/v1/brief/items?")
+				.map(|query| (query, &self.items))
+				.or_else(|| path.strip_prefix("/v1/picked/items?").map(|query| (query, &self.picked)));
+			if let Some((query, items)) = listing {
 				if *self.listing_fails.lock().unwrap() {
 					return Err("connection refused");
 				}
 				let after: i64 = query.split('&').find_map(|pair| pair.strip_prefix("after=")).unwrap().parse().unwrap();
 				let limit: usize = query.split('&').find_map(|pair| pair.strip_prefix("limit=")).unwrap().parse().unwrap();
-				let listed: Vec<serde_json::Value> = self
-					.items
+				let listed: Vec<serde_json::Value> = items
 					.lock()
 					.unwrap()
 					.iter()
@@ -1235,7 +1398,7 @@ mod tests {
 					.collect();
 				return Ok(answer(200, &serde_json::json!({ "items": listed }).to_string()));
 			}
-			let name = path.strip_prefix("/v1/brief/items/").unwrap().to_owned();
+			let name = path.strip_prefix("/v1/brief/items/").or_else(|| path.strip_prefix("/v1/picked/items/")).unwrap().to_owned();
 			self.gets.lock().unwrap().push(name.clone());
 			Ok(self.bodies.lock().unwrap().get(&name).map_or_else(|| answer(404, "{}"), |body| answer(200, body)))
 		}
@@ -1864,6 +2027,265 @@ mod tests {
 		assert!(outgoing_transcripts(&pool).await.is_empty());
 	}
 
+	/// A Studio take recorded for `ep05:s1:<n>`.
+	async fn studio_take_on_conveyor(pool: &SqlitePool, note: &str) {
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'studio', 'ep05:s1:' || ?2, '2026-11-13T08:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+		)
+		.bind(OWNER)
+		.bind(note)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// The owner's move `seq` of take `note`, as `POST /voice-notes/:id/station`
+	/// stores one.
+	async fn moved(pool: &SqlitePool, note: &str, (seq, from, to): (i64, &str, &str), labels: Option<&str>, comment: Option<&str>) {
+		let at = String::from("2026-11-13T09:0") + &seq.to_string() + ":00.000Z";
+		sqlx::query(
+			"INSERT INTO studio_take_move (subject_id, note_id, seq, from_station, to_station, moved_at, labels, comment, issue, stored_at)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?6)",
+		)
+		.bind(OWNER)
+		.bind(note)
+		.bind(seq)
+		.bind(from)
+		.bind(to)
+		.bind(at)
+		.bind(labels)
+		.bind(comment)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// What home heard in take `note`, by `model`, at `heard_at`.
+	async fn take_heard(pool: &SqlitePool, note: &str, model: &str, text: &str, heard_at: &str) {
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'whisper.cpp', 1, 'heard', 'en', 0.9, 1000, ?4, 10, ?5)",
+		)
+		.bind(OWNER)
+		.bind(note)
+		.bind(model)
+		.bind(text)
+		.bind(heard_at)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	async fn outgoing_pickups(pool: &SqlitePool) -> Vec<(String, String)> {
+		sqlx::query_as::<_, (String, Vec<u8>)>("SELECT name, body FROM mailbox_outgoing WHERE folder = 'pickup' ORDER BY rowid")
+			.fetch_all(pool)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|(name, body)| (name, String::from_utf8(body).unwrap()))
+			.collect()
+	}
+
+	/// CONVEYOR3 (paulgsc/some-ui#2875): a take the owner moved to ready for
+	/// pickup is filed once home has heard it, with its labels and what was
+	/// heard, never the move's comment ("labels go, the per-move comment
+	/// stays home", C296). Its bytes are the pickup's for good: a later
+	/// transcript changes nothing, and a hand that never reached the mailbox
+	/// hands the same bytes again. A take moved on and back is filed anew,
+	/// under its new ready move's number.
+	#[tokio::test]
+	async fn a_take_ready_for_pickup_is_filed_once_heard_with_its_labels_and_never_its_comment() {
+		let (pool, fake) = (pool().await, Fake::default());
+		studio_take_on_conveyor(&pool, "t1").await;
+		moved(&pool, "t1", (1, "in-the-oven", "cooking"), Some(r#"["hook","intro"]"#), Some("keep this one home")).await;
+		moved(&pool, "t1", (2, "cooking", "ready-for-pickup"), None, Some("still home")).await;
+		// Cooking, or ready but unheard: no pickup.
+		studio_take_on_conveyor(&pool, "t2").await;
+		moved(&pool, "t2", (1, "in-the-oven", "cooking"), None, None).await;
+		take_heard(&pool, "t2", "ggml-small.bin", "not ready", "2026-11-13T09:10:00.000Z").await;
+
+		*fake.puts_fail.lock().unwrap() = true;
+		let unheard = pass(&pool, &fake).await;
+		assert!(outgoing_pickups(&pool).await.is_empty(), "{unheard:?}");
+
+		take_heard(&pool, "t1", "ggml-small.bin", "the opener, said once", "2026-11-13T09:20:00.000Z").await;
+		assert!(pass(&pool, &fake).await.is_err(), "the mailbox is not reached");
+		let filed = outgoing_pickups(&pool).await;
+		let expected = serde_json::json!({
+			"schema": "some-ui.take-pickup/1",
+			"note": "t1",
+			"ref": "ep05:s1:t1",
+			"heard": "the opener, said once",
+			"labels": ["hook", "intro"],
+			"readyAt": "2026-11-13T09:02:00.000Z",
+			"seq": 2,
+		});
+		assert_eq!(filed.len(), 1);
+		assert_eq!(filed[0].0, "pickup-t1-2.json");
+		assert_eq!(serde_json::from_str::<serde_json::Value>(&filed[0].1).unwrap(), expected);
+		assert!(!filed[0].1.contains("comment") && !filed[0].1.contains("home"), "no comment leaves home: {}", filed[0].1);
+
+		// A better model's transcript after filing changes no byte.
+		take_heard(&pool, "t1", "ggml-large.bin", "something else", "2026-11-13T09:30:00.000Z").await;
+		*fake.puts_fail.lock().unwrap() = false;
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(outgoing_pickups(&pool).await, filed);
+		let handed: Vec<(String, String)> = fake
+			.puts
+			.lock()
+			.unwrap()
+			.iter()
+			.zip(fake.put_bodies.lock().unwrap().iter())
+			.filter(|(path, _)| path.starts_with("/v1/pickup/items/"))
+			.map(|(path, body)| (path.clone(), body.clone()))
+			.collect();
+		assert_eq!(handed, [(String::from("/v1/pickup/items/pickup-t1-2.json"), filed[0].1.clone())]);
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(fake.puts.lock().unwrap().iter().filter(|path| path.starts_with("/v1/pickup/")).count(), 1, "handed once");
+
+		// Canned and ready again: a new pickup under the new move's number,
+		// with the labels it carries then, and the newest transcript.
+		moved(&pool, "t1", (3, "ready-for-pickup", "canned"), Some("[]"), None).await;
+		moved(&pool, "t1", (4, "canned", "ready-for-pickup"), None, None).await;
+		pass(&pool, &fake).await.unwrap();
+		let filed = outgoing_pickups(&pool).await;
+		assert_eq!(filed.len(), 2);
+		assert_eq!(filed[1].0, "pickup-t1-4.json");
+		let again: serde_json::Value = serde_json::from_str(&filed[1].1).unwrap();
+		assert_eq!(
+			(&again["labels"], &again["heard"], &again["seq"]),
+			(&serde_json::json!([]), &serde_json::json!("something else"), &serde_json::json!(4))
+		);
+		// Deleted for good from My data, its receipt says the words it carries
+		// stayed in the mailbox's copy.
+		let mut conn = pool.acquire().await.unwrap();
+		let deleted = voice_repo::delete::delete(&mut conn, OWNER, "t1", voice_repo::delete::SWITCHED_ON, "2026-11-13T11:00:00.000Z")
+			.await
+			.unwrap();
+		let voice_repo::delete::Deleted::Gone(receipt) = deleted else {
+			panic!("the take is gone");
+		};
+		assert_eq!(receipt.stayed, [voice_repo::delete::MAILBOX_COPY]);
+	}
+
+	/// A take let go of, or named as an idea's answer, is off the conveyor
+	/// (docs/conveyor.md invariant 3): no pickup is filed for it.
+	#[tokio::test]
+	async fn a_take_off_the_conveyor_is_never_filed_for_pickup() {
+		let (pool, fake) = (pool().await, Fake::default());
+		for note in ["let-go", "answer"] {
+			studio_take_on_conveyor(&pool, note).await;
+			moved(&pool, note, (1, "in-the-oven", "ready-for-pickup"), None, None).await;
+			take_heard(&pool, note, "ggml-small.bin", "words", "2026-11-13T09:20:00.000Z").await;
+		}
+		sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 'let-go', 'now', 'now')")
+			.bind(OWNER)
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO idea_answer (subject_id, idea_id, revision, question, note_id) VALUES (?1, 'i1', 1, 'q1', 'answer')")
+			.bind(OWNER)
+			.execute(&pool)
+			.await
+			.unwrap();
+		pass(&pool, &fake).await.unwrap();
+		assert!(outgoing_pickups(&pool).await.is_empty());
+	}
+
+	/// A take moved on between the read that found it due and the transaction
+	/// that files, files nothing; and a hearing of whitespace alone, Unicode's
+	/// included, is never due, so the filer never passes it over pass after
+	/// pass.
+	#[tokio::test]
+	async fn a_take_moved_since_it_was_read_or_heard_as_blank_is_not_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		studio_take_on_conveyor(&pool, "t1").await;
+		moved(&pool, "t1", (1, "in-the-oven", "ready-for-pickup"), None, None).await;
+		take_heard(&pool, "t1", "ggml-small.bin", "words", "2026-11-13T09:20:00.000Z").await;
+		let due = mailbox_repo::unfiled_pickups(&mut pool.acquire().await.unwrap(), OWNER, 20).await.unwrap();
+		assert_eq!(due.len(), 1);
+		moved(&pool, "t1", (2, "ready-for-pickup", "cooking"), None, None).await;
+		let filed = file_pickup(&pool, &DeletionLock::default(), OWNER, &due[0], "2026-11-13T10:00:00.000Z").await.unwrap();
+		assert_eq!(filed, None);
+		assert!(outgoing_pickups(&pool).await.is_empty());
+
+		studio_take_on_conveyor(&pool, "t2").await;
+		moved(&pool, "t2", (1, "in-the-oven", "ready-for-pickup"), None, None).await;
+		take_heard(&pool, "t2", "ggml-small.bin", " \n\t\u{b}\u{c}\u{a0}\u{3000} ", "2026-11-13T09:20:00.000Z").await;
+		assert!(mailbox_repo::unfiled_pickups(&mut pool.acquire().await.unwrap(), OWNER, 20).await.unwrap().is_empty());
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert!(!outcome.more);
+		assert!(outgoing_pickups(&pool).await.is_empty());
+	}
+
+	async fn take_now(pool: &SqlitePool, note: &str) -> (i64, String, Option<String>, String) {
+		sqlx::query_as("SELECT seq, to_station, issue, moved_at FROM studio_take_move WHERE subject_id = ?1 AND note_id = ?2 ORDER BY seq DESC LIMIT 1")
+			.bind(OWNER)
+			.bind(note)
+			.fetch_one(pool)
+			.await
+			.unwrap()
+	}
+
+	fn picked(note: &str, seq: i64, issue: &str) -> (String, String) {
+		(
+			mailbox_repo::picked_name(note, seq),
+			serde_json::json!({ "schema": "some-ui.take-picked/1", "note": note, "seq": seq, "issue": issue }).to_string(),
+		)
+	}
+
+	/// CONVEYOR3: the routine's answer names the ready move by its number,
+	/// never by a clock (docs/conveyor.md invariant 2). Home moves the take
+	/// to picked up with its issue, at home's clock, only while that move is
+	/// still the take's newest; a take the owner moved on stays where the
+	/// owner put it. An answer that does not read, or names another file than
+	/// its own, is kept and moves nothing.
+	#[tokio::test]
+	async fn an_answered_pickup_moves_its_take_only_from_the_ready_move_it_names() {
+		let (pool, fake) = (pool().await, Fake::default());
+		for note in ["t1", "t2", "t3"] {
+			studio_take_on_conveyor(&pool, note).await;
+			moved(&pool, note, (1, "in-the-oven", "cooking"), None, None).await;
+			moved(&pool, note, (2, "cooking", "ready-for-pickup"), None, None).await;
+		}
+		moved(&pool, "t2", (3, "ready-for-pickup", "cooking"), None, None).await;
+
+		let (name, body) = picked("t1", 1, "paulgsc/some-ui#3001");
+		fake.add_picked(1, &name, &body);
+		let (name, body) = picked("t2", 2, "paulgsc/some-ui#3002");
+		fake.add_picked(2, &name, &body);
+		let (_, body) = picked("t3", 2, "paulgsc/some-ui#3003");
+		fake.add_picked(3, "picked-t3-9.json", &body);
+		let (name, body) = picked("t3", 2, "not an issue");
+		fake.add_picked(4, &name.replace(".json", "-x.json"), &body);
+		let outcome = pass_at(&pool, &fake, "2026-11-13T10:00:00.000Z").await.unwrap();
+		assert_eq!(outcome.kept, 4, "each answer is kept as read");
+		assert_eq!(take_now(&pool, "t1").await.1, "ready-for-pickup", "named move 1, not its newest");
+		assert_eq!(take_now(&pool, "t2").await.1, "cooking", "the owner moved it on");
+		assert_eq!(take_now(&pool, "t3").await.1, "ready-for-pickup", "an answer under another name moves nothing");
+
+		let (name, body) = picked("t1", 2, "paulgsc/some-ui#3001");
+		fake.add_picked(5, &name, &body);
+		let (name, body) = picked("t3", 2, "paulgsc/some-ui#3003");
+		fake.add_picked(6, &name, &body);
+		let outcome = pass_at(&pool, &fake, "2026-11-13T10:15:00.000Z").await.unwrap();
+		assert_eq!(outcome.kept, 2);
+		assert_eq!(
+			take_now(&pool, "t1").await,
+			(
+				3,
+				String::from("picked-up"),
+				Some(String::from("paulgsc/some-ui#3001")),
+				String::from("2026-11-13T10:15:00.000Z")
+			)
+		);
+		assert_eq!(take_now(&pool, "t3").await.0, 3);
+		// Read again, it is held: nothing more moves.
+		pass_at(&pool, &fake, "2026-11-13T10:30:00.000Z").await.unwrap();
+		assert_eq!(take_now(&pool, "t1").await.0, 3);
+	}
+
 	#[tokio::test]
 	async fn no_transcript_is_filed_for_a_deleted_subject() {
 		let (pool, fake) = (pool().await, Fake::default());
@@ -2000,9 +2422,16 @@ mod tests {
 				}
 				assert!(
 					request.method == Method::Get
-						&& ["/v1/brief/items", "/v1/scene/items", "/v1/drama/items", "/v1/run/items", "/v1/leetype/items"]
-							.iter()
-							.any(|read| path.starts_with(read)),
+						&& [
+							"/v1/brief/items",
+							"/v1/scene/items",
+							"/v1/drama/items",
+							"/v1/run/items",
+							"/v1/leetype/items",
+							"/v1/picked/items"
+						]
+						.iter()
+						.any(|read| path.starts_with(read)),
 					"home's token: {path}"
 				);
 			} else {
@@ -2298,15 +2727,15 @@ mod tests {
 	}
 
 	/// The ledger's MI6 (paulgsc/some-ui `packages/assurance`): with nothing
-	/// to do, an archiving pass lists the five folders home reads, ten folders'
-	/// asks and ten folders' live files, 25 requests, and none of them is for
+	/// to do, an archiving pass lists the six folders home reads, ten folders'
+	/// asks and ten folders' live files, 26 requests, and none of them is for
 	/// written reflections, whether home filed none, or only ones too young.
 	#[tokio::test]
 	async fn an_idle_pass_asks_nothing_of_reflections() {
 		let (pool, vault) = (pool().await, Vault::default());
 		archive_pass(&pool, &vault).await;
 		let idle = vault.seen.lock().unwrap().clone();
-		assert_eq!(idle.len(), 25, "{idle:?}");
+		assert_eq!(idle.len(), 26, "{idle:?}");
 		assert!(!idle.iter().any(|path| path.contains(" /v1/reflection/")), "{idle:?}");
 
 		let (name, body) = reflection_handed(&pool, "r-young", YOUNG).await;
@@ -2316,7 +2745,7 @@ mod tests {
 		vault.seen.lock().unwrap().clear();
 		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 		let requests = vault.seen.lock().unwrap().clone();
-		assert_eq!(requests.len(), 25, "a reflection too young to archive costs no request: {requests:?}");
+		assert_eq!(requests.len(), 26, "a reflection too young to archive costs no request: {requests:?}");
 		assert!(!requests.iter().any(|path| path.contains(" /v1/reflection/")), "{requests:?}");
 	}
 
@@ -2377,7 +2806,7 @@ mod tests {
 			vault.seen.lock().unwrap().clear();
 			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 			let idle = vault.seen.lock().unwrap().clone();
-			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert_eq!(idle.len(), 26, "{idle:?}");
 			assert!(!idle.iter().any(|path| path.contains(" /v1/reflection/")), "answered, it is owed no more: {idle:?}");
 		}
 	}
@@ -2407,7 +2836,7 @@ mod tests {
 			vault.seen.lock().unwrap().clear();
 			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 			let idle = vault.seen.lock().unwrap().clone();
-			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert_eq!(idle.len(), 26, "{idle:?}");
 			assert!(!idle.iter().any(|path| path.contains(" /v1/prompt/")), "answered, it is owed no more: {idle:?}");
 		}
 	}
@@ -2477,7 +2906,7 @@ mod tests {
 		vault.seen.lock().unwrap().clear();
 		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 		let requests = vault.seen.lock().unwrap().clone();
-		assert_eq!(requests.len(), 25, "a prompt too young to archive costs no request: {requests:?}");
+		assert_eq!(requests.len(), 26, "a prompt too young to archive costs no request: {requests:?}");
 		assert!(!requests.iter().any(|path| path.contains(" /v1/prompt/")), "{requests:?}");
 	}
 
@@ -2603,7 +3032,7 @@ mod tests {
 		vault.add("feedback", 2, &young, &young_body, YOUNG);
 		assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 		let requests = vault.seen.lock().unwrap().clone();
-		assert_eq!(requests.len(), 25, "a note too young to archive costs no request: {requests:?}");
+		assert_eq!(requests.len(), 26, "a note too young to archive costs no request: {requests:?}");
 		assert!(!requests.iter().any(|path| path.contains(" /v1/feedback/")), "{requests:?}");
 
 		feedback_handed(&pool, "n-old", OLD).await;
@@ -2645,7 +3074,7 @@ mod tests {
 			vault.seen.lock().unwrap().clear();
 			assert!(archive_pass(&pool, &vault).await.archived.is_empty());
 			let idle = vault.seen.lock().unwrap().clone();
-			assert_eq!(idle.len(), 25, "{idle:?}");
+			assert_eq!(idle.len(), 26, "{idle:?}");
 			assert!(!idle.iter().any(|path| path.contains(" /v1/feedback/")), "answered, it is owed no more: {idle:?}");
 		}
 	}
@@ -3129,12 +3558,13 @@ mod tests {
 		assert_eq!(held, ["2026-10-23", "2026-10-16"]);
 	}
 
-	/// The index is a view, never archived or asked for (owner, #509).
+	/// The index is a view, never archived or asked for (owner, #509), and
+	/// pickups and their answers are not archived yet (CONVEYOR3).
 	#[test]
-	fn archiving_walks_every_folder_but_the_index() {
-		assert!(!ARCHIVES.contains(&mailbox_kit::Folder::Index));
-		let mut walked: Vec<&str> = ARCHIVES.iter().map(|folder| folder.as_str()).collect();
-		walked.push(mailbox_kit::Folder::Index.as_str());
+	fn archiving_walks_every_folder_but_the_index_and_the_pickups() {
+		let unwalked = [mailbox_kit::Folder::Index, mailbox_kit::Folder::Pickup, mailbox_kit::Folder::Picked];
+		assert!(unwalked.iter().all(|folder| !ARCHIVES.contains(folder)));
+		let mut walked: Vec<&str> = ARCHIVES.iter().chain(&unwalked).map(|folder| folder.as_str()).collect();
 		walked.sort_unstable();
 		let mut every: Vec<&str> = mailbox_kit::Folder::ALL.iter().map(|folder| folder.as_str()).collect();
 		every.sort_unstable();
@@ -3142,13 +3572,17 @@ mod tests {
 	}
 
 	/// MI6 (paulgsc/some-ui `packages/assurance`): with archiving, a pass with
-	/// nothing to do lists five folders it reads, ten folders' asks and ten
-	/// folders' live files, 25 requests, and never the index; once home holds
-	/// a file, a pass where nothing arrived, no pick lapsed and no moment the
-	/// reflections index carries passed, on a later day included, makes the
-	/// same 25.
+	/// nothing to do lists six folders it reads (`picked` the sixth,
+	/// CONVEYOR3), ten folders' asks and ten folders' live files, 26
+	/// requests, and never the index; once home holds a file, a pass where
+	/// nothing arrived, no pick lapsed and no moment the reflections index
+	/// carries passed, on a later day included, makes the same 26.
+	///
+	/// Named `an_idle_pass_makes_twenty_five_requests_and_none_reaches_the_index`
+	/// until `picked` was read: some-ui's assurance ledger may name this
+	/// proof by that name until it moves to this one.
 	#[tokio::test]
-	async fn an_idle_pass_makes_twenty_five_requests_and_none_reaches_the_index() {
+	async fn an_idle_pass_makes_twenty_six_requests_and_none_reaches_the_index() {
 		let (pool, vault) = (pool().await, Vault::default());
 		let last = LastIndexes::default();
 		let pass = |now: &'static str| {
@@ -3168,7 +3602,7 @@ mod tests {
 			}
 		};
 		let (_, seen) = pass("2026-10-23T15:00:00.000Z").await;
-		assert_eq!(seen.len(), 25, "{seen:?}");
+		assert_eq!(seen.len(), 26, "{seen:?}");
 		assert!(seen.iter().all(|request| request.starts_with("Get ") && !request.contains("/v1/index/")), "{seen:?}");
 
 		let (name, body) = digest_picking("2026-10-23", "sw-0001");
@@ -3177,11 +3611,11 @@ mod tests {
 		assert_eq!(busy.indexed, ["added"]);
 		assert_eq!(seen.iter().filter(|request| request.starts_with("Put /v1/index/items/index-jobs-")).count(), 1);
 		// Nothing arrived, and on the 24th and 25th in Los Angeles the open pick
-		// has not lapsed: 25 requests, the same as an empty mailbox's.
+		// has not lapsed: 26 requests, the same as an empty mailbox's.
 		for now in ["2026-10-23T15:30:00.000Z", "2026-10-24T15:30:00.000Z", "2026-10-25T15:30:00.000Z"] {
 			let (idle, seen) = pass(now).await;
 			assert!(idle.indexed.is_empty(), "{now}");
-			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
+			assert_eq!(seen.len(), 26, "nothing moved on {now}: {seen:?}");
 			assert!(seen.iter().all(|request| !request.contains("/v1/index/")), "{seen:?}");
 		}
 
@@ -3201,22 +3635,22 @@ mod tests {
 		.unwrap();
 		let reflections_put = |seen: &[String]| seen.iter().filter(|request| request.starts_with("Put /v1/index/items/index-reflections-")).count();
 		let (arrived, seen) = pass("2026-10-25T15:45:00.000Z").await;
-		assert_eq!((arrived.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 26), "{seen:?}");
+		assert_eq!((arrived.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 27), "{seen:?}");
 		// The 26th in Los Angeles: the Jobs pick lapses, which is the Jobs
 		// index's one put, not the reflections index's.
 		let (lapsed, seen) = pass("2026-10-26T15:00:00.000Z").await;
-		assert_eq!((lapsed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 0, 26), "{seen:?}");
+		assert_eq!((lapsed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 0, 27), "{seen:?}");
 		for now in ["2026-10-26T15:30:00.000Z", "2026-10-27T15:39:59.999Z"] {
 			let (idle, seen) = pass(now).await;
 			assert!(idle.indexed.is_empty(), "{now}");
-			assert_eq!(seen.len(), 25, "still waiting on {now}: {seen:?}");
+			assert_eq!(seen.len(), 26, "still waiting on {now}: {seen:?}");
 		}
 		let (missed, seen) = pass("2026-10-27T15:40:00.000Z").await;
-		assert_eq!((missed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 26), "the wait ends: {seen:?}");
+		assert_eq!((missed.indexed, reflections_put(&seen), seen.len()), (vec!["added"], 1, 27), "the wait ends: {seen:?}");
 		for now in ["2026-10-27T15:55:00.000Z", "2026-10-28T15:30:00.000Z", "2026-11-30T15:30:00.000Z"] {
 			let (idle, seen) = pass(now).await;
 			assert!(idle.indexed.is_empty(), "{now}");
-			assert_eq!(seen.len(), 25, "nothing moved on {now}: {seen:?}");
+			assert_eq!(seen.len(), 26, "nothing moved on {now}: {seen:?}");
 		}
 	}
 

@@ -21,7 +21,8 @@
 //!   `PUT /api/v1/jobs/files/:name`, `PUT /api/v1/routine/opened`,
 //!   `PUT /api/v1/routine/reflections/:id` and
 //!   `PUT /api/v1/routine/prompts/:stamp` the only
-//!   callers of [`file_outgoing`] besides it;
+//!   callers of [`file_outgoing`] besides it (which files transcripts,
+//!   `LeetType` logs and Studio takes' pickups);
 //!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
 //!   shows no other.
 //! - **A transcript is filed once, under a number decided once.**
@@ -58,6 +59,15 @@
 //! - **Handed once.** A file filed for the mailbox is handed until the
 //!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
 //!   filed files with no answer recorded.
+//! - **A pickup is filed once per ready move** (paulgsc/some-ui#2875,
+//!   CONVEYOR3). A Studio take the owner moved to `ready-for-pickup`, once
+//!   heard, is filed under [`pickup_name`] with that move's number. The
+//!   filer checks [`outgoing_filed`] in the transaction that files, so the
+//!   body is built once and a retry hands its first bytes. It carries the take's
+//!   labels and what home heard, never the move's comment and never audio
+//!   (the owner, call C296, 2026-11-13: "labels go, the per-move comment
+//!   stays home"). The routine's answer arrives in [`PICKED`] and is kept as
+//!   any file read is.
 
 use sqlx::SqliteConnection;
 
@@ -774,6 +784,115 @@ pub async fn file_transcript(
 		return Ok(Change::NoAccount);
 	}
 	file_outgoing(conn, subject, TRANSCRIPT, &transcript_name(note_id, n), sha256, body, now).await
+}
+
+/// The folder home files a Studio take ready for pickup in.
+pub const PICKUP: &str = "pickup";
+
+/// The folder the routine answers a pickup in.
+pub const PICKED: &str = "picked";
+
+/// A Studio take whose newest move put it at `ready-for-pickup` and has
+/// been heard, with no pickup filed for that move yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ready {
+	pub note_id: String,
+	/// The ready-for-pickup move's number.
+	pub seq: i64,
+	/// The take, `<project>:<shot>:<take>`: its note's `ref`, which no write
+	/// ever changes.
+	pub of_ref: String,
+}
+
+/// `subject`'s Studio takes due a pickup (paulgsc/some-ui#2875, CONVEYOR3),
+/// at most `limit`, the one home stored the ready move of first (home's
+/// clock, never a phone's; the take's id breaking a tie).
+///
+/// A take is due one when its newest move (`studio_take_move`, by number:
+/// docs/conveyor.md invariant 2) went to `ready-for-pickup`, it is on the
+/// conveyor (invariant 3: a `studio` note that answers no idea and was not
+/// let go of), its newest transcript that heard something holds text
+/// besides [`BLANK`] (`voice_repo::transcript::heard`'s order), so home has
+/// heard the take,
+/// and no pickup is filed under [`pickup_name`] for that move. A take moved
+/// on and back is due a new one, under the new move's number. The filer
+/// reads the take again in the transaction that files, since it can move
+/// after this read.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn unfiled_pickups(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<Ready>, MailboxError> {
+	let ready = sqlx::query_as!(
+		Ready,
+		r#"SELECT newest.note_id AS "note_id!", newest.seq AS "seq!: i64", note.of_ref AS "of_ref!"
+		   FROM studio_take_move newest
+		   JOIN voice_note note ON note.subject_id = newest.subject_id AND note.note_id = newest.note_id
+		   WHERE newest.subject_id = ?1 AND newest.to_station = 'ready-for-pickup'
+		     AND newest.seq = (SELECT MAX(later.seq) FROM studio_take_move later WHERE later.subject_id = newest.subject_id AND later.note_id = newest.note_id)
+		     -- On the conveyor: docs/conveyor.md invariant 3, as voice_repo::conveyor's
+		     -- holds_take and at_station hold it; the filer checks it again there.
+		     AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
+		     AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
+		     AND trim((SELECT heard.text FROM voice_transcript heard
+		               WHERE heard.subject_id = newest.subject_id AND heard.note_id = newest.note_id AND heard.outcome = 'heard'
+		               ORDER BY heard.heard_at DESC, heard.model DESC LIMIT 1),
+		              char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) <> ''
+		     AND NOT EXISTS (
+		       SELECT 1 FROM mailbox_outgoing filed
+		       WHERE filed.subject_id = newest.subject_id AND filed.folder = 'pickup'
+		         AND filed.name = 'pickup-' || newest.note_id || '-' || newest.seq || '.json'
+		     )
+		   ORDER BY newest.stored_at, newest.note_id
+		   LIMIT ?2"#,
+		subject,
+		limit
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(ready)
+}
+
+/// What a pickup's `heard` must hold more than.
+///
+/// Unicode `White_Space`, what Rust's `str::trim` and JavaScript's `trim`
+/// both strip (JavaScript's also strips U+FEFF, which a transcript does not
+/// hold). The filer and
+/// [`unfiled_pickups`] trim exactly these, the query by code point, so a
+/// take it reads as due is never one the filer passes over on every pass.
+pub const BLANK: [char; 25] = [
+	'\u{9}', '\u{a}', '\u{b}', '\u{c}', '\u{d}', '\u{20}', '\u{85}', '\u{a0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}',
+	'\u{2007}', '\u{2008}', '\u{2009}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{3000}',
+];
+
+/// The name the pickup of `note_id`'s ready-for-pickup move `seq` goes under.
+#[must_use]
+pub fn pickup_name(note_id: &str, seq: i64) -> String {
+	String::from("pickup-") + note_id + "-" + &seq.to_string() + ".json"
+}
+
+/// The name the routine's answer to that pickup comes under.
+#[must_use]
+pub fn picked_name(note_id: &str, seq: i64) -> String {
+	String::from("picked-") + note_id + "-" + &seq.to_string() + ".json"
+}
+
+/// Whether `subject` filed anything under (`folder`, `name`) for the
+/// mailbox: a pickup filed once is never built again, so its bytes are the
+/// first ones for good.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn outgoing_filed(conn: &mut SqliteConnection, subject: &str, folder: &str, name: &str) -> Result<bool, MailboxError> {
+	let filed = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM mailbox_outgoing WHERE subject_id = ?1 AND folder = ?2 AND name = ?3) AS "filed!: bool""#,
+		subject,
+		folder,
+		name
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(filed)
 }
 
 /// The folder the routine's `LeetType` session files arrive in.
@@ -1581,6 +1700,15 @@ mod tests {
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+	/// `BLANK` is Unicode `White_Space`, every code point of it and no other,
+	/// so the filer's `trim_matches(BLANK)` is `str::trim`, and
+	/// `unfiled_pickups` lists the same code points in its `char(...)`.
+	#[test]
+	fn blank_is_exactly_what_trim_strips() {
+		let every: Vec<char> = (0..=0x0010_FFFF_u32).filter_map(char::from_u32).filter(|c| c.is_whitespace()).collect();
+		assert_eq!(every, super::BLANK);
+	}
 	const PREVIOUS_MIGRATION: i64 = 20_261_020_000_100;
 	const NOW: &str = "2026-10-23T15:00:00.000Z";
 	const A: &str = "subject-a";
