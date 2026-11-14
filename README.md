@@ -234,6 +234,10 @@ make up                       # DEPLOY=home: the preflight, then docker compose 
 make compose ARGS="logs -f file-host"   # any other compose command, on the same files
 ```
 
+On home both run the release last applied, from its own tree, not this
+checkout's files (docs/release.md, RL12); they refuse until
+`make home-deploy` has applied one.
+
 `make up` decrypts `deploy/home/` with `sops decrypt` into envctl's memory and
 runs the preflight on it. Only then does it start compose: compose's own
 variables in its environment, and each labelled service's own file written
@@ -465,10 +469,12 @@ pass runs at a time. A failed release is remembered by its serial and the
 trees compose reads, so a fix on main to its compose files or
 `deploy/<role>/` is tried again by itself; to retry one after fixing the
 host (or envctl, with a `git pull`), remove its entry from
-`failed-releases.json`. A `make up` from the checkout after a deploy runs
-the checkout's tree, not the release's, and the deploy does not notice
-until the release's key changes: use `make home-deploy`, not `make up`, on
-home.
+`failed-releases.json`. On home, `make up` and `make compose` run the release
+last applied, from its tree under `releases/`, never the checkout's
+`deploy/home/release.json` (docs/release.md, RL12): `make up` restarts what
+runs, under the deploy's lock, and a `git pull` changes nothing until
+`make home-deploy` applies main. Before any release is applied they refuse
+and name `make home-deploy`.
 
 **The database is never restored automatically** (owner, 2026-11-10). A
 migration that ran stays applied, and the previous image serves the
@@ -480,8 +486,9 @@ restore by hand: stop `file-host` (`make compose ARGS="stop file-host"`),
 move the live `${STORAGE}/hopium.db` aside under `${STORAGE}/backups/` with
 a name of its own (never delete it, and never a `-before-` name, which the
 prune would count among its own), copy the backup to
-`${STORAGE}/hopium.db`, and `make up`. When a run ends with exit 3 it names
-the backup that start took.
+`${STORAGE}/hopium.db`, and `make up`, which starts the release last applied
+(the one `make home-deploy` printed as serving), not the checkout's. When a
+run ends with exit 3 it names the backup that start took.
 
 This is not a zero-downtime deploy: the old container stops before the new
 one proves itself. Two instances behind Caddy is #409 (deferred) and AS20

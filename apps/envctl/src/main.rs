@@ -324,14 +324,8 @@ fn check_preflight(repo: &Path, schemas: &[Schema], raw: &Value, deployment: &De
 /// While compose runs, envctl outlives the signals that end it (Ctrl-C on
 /// `logs -f` is the usual way out): SIGINT reaches compose from the terminal,
 /// SIGTERM and SIGHUP are passed on, and the files are removed either way.
-fn compose_on(
-	repo: &Path,
-	deployment: &Deployment,
-	env_dir: &Path,
-	args: &[String],
-	shell: &IndexMap<String, String>,
-	compose_variables: &compose::ComposeVariables,
-) -> Result<ExitCode> {
+fn compose_on(repo: &Path, deployment: &Deployment, env_dir: &Path, args: &[String], shell: &IndexMap<String, String>, project: Option<&str>) -> Result<ExitCode> {
+	let compose_variables = compose::read(repo)?;
 	let missing: Vec<String> = deployment
 		.apps
 		.iter()
@@ -365,6 +359,9 @@ fn compose_on(
 	// checks judged: a shell's COMPOSE_FILE would swap it (RELEASE R6, #795).
 	process.env_remove("COMPOSE_FILE");
 	process.envs(&deployment.compose);
+	if let Some(project) = project {
+		process.env("COMPOSE_PROJECT_NAME", project);
+	}
 	process.env("ENV_DIR", delivered.dir());
 	let mut child = process.spawn().context("running docker compose")?;
 	let status = loop {
@@ -380,6 +377,39 @@ fn compose_on(
 	};
 	drop(delivered);
 	Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))
+}
+
+/// The repository envctl reads and the project compose runs as, for `up` and
+/// `compose`: on home, the tree of the release last applied (R6d, #870), from
+/// the owner's state directory, the deploy's own; else the checkout as given.
+/// The release it returns holds the deploy's lock, with `lock`, until dropped.
+fn on_stack(repo: &Path, role: &str, shell: &IndexMap<String, String>, lock: bool) -> Result<(PathBuf, Option<String>, Option<deploy::AppliedStack>)> {
+	let home = shell.get("HOME").filter(|home| Path::new(home).is_absolute());
+	if role == "home" && home.is_none() {
+		bail!("HOME is not an absolute path, so the deploy's record of the release last applied cannot be found");
+	}
+	let state_dir = deploy::default_state_dir(None, home.map(String::as_str));
+	let Some(applied) = deploy::applied_stack(repo, &state_dir, role, lock)? else {
+		return Ok((repo.to_owned(), None, None));
+	};
+	eprintln!(
+		"{}: the release last applied (main {}), from its tree; `make home-deploy` applies main's",
+		applied.tree.display(),
+		applied.commit.get(..7).unwrap_or(&applied.commit)
+	);
+	Ok((applied.tree.clone(), Some(applied.project.clone()), Some(applied)))
+}
+
+/// `up`'s warnings on the services' caps against this box's memory.
+fn warn_caps(raw: &Value, deployment: &Deployment, shell: &IndexMap<String, String>) {
+	// Only `up` runs on the box it deploys, so only its MemTotal is home's.
+	let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
+	// The profiles `up` starts with: the deployment's, or else the shell's,
+	// which reaches compose unless a compose file reads the variable.
+	let profiles = deployment.compose.get("COMPOSE_PROFILES").cloned().or_else(|| shell.get("COMPOSE_PROFILES").cloned());
+	for warning in caps::warnings(&caps::caps(raw, &caps::profiles(profiles.as_deref())), meminfo.as_deref().and_then(caps::mem_total)) {
+		println!("warning: {warning}");
+	}
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
@@ -400,30 +430,25 @@ fn run(cli: Cli) -> Result<ExitCode> {
 		}
 		Command::Up { role, env_dir } => {
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
+			let (repo, project, _applied) = on_stack(&repo, &role, &shell, true)?;
 			let raw = compose::config(&repo).context("docker compose config failed, so no service was checked")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
 			if !check_preflight(&repo, &schemas, &raw, &deployment)? {
 				println!("Nothing was started.");
 				return Ok(ExitCode::FAILURE);
 			}
-			// Only `up` runs on the box it deploys, so only its MemTotal is home's.
-			let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
-			// The profiles `up` starts with: the deployment's, or else the shell's,
-			// which reaches compose unless a compose file reads the variable.
-			let profiles = deployment.compose.get("COMPOSE_PROFILES").cloned().or_else(|| shell.get("COMPOSE_PROFILES").cloned());
-			for warning in caps::warnings(&caps::caps(&raw, &caps::profiles(profiles.as_deref())), meminfo.as_deref().and_then(caps::mem_total)) {
-				println!("warning: {warning}");
-			}
-			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, &compose::read(&repo)?)
+			warn_caps(&raw, &deployment, &shell);
+			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, project.as_deref())
 		}
 		Command::Compose { role, env_dir, args } => {
 			if let Some(why) = compose::home_refusal(&role, &args) {
 				bail!("{why}");
 			}
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
+			let (repo, project, _applied) = on_stack(&repo, &role, &shell, false)?;
 			let raw = compose::config(&repo).context("docker compose config failed")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
-			compose_on(&repo, &deployment, &env_dir, &args, &shell, &compose::read(&repo)?)
+			compose_on(&repo, &deployment, &env_dir, &args, &shell, project.as_deref())
 		}
 		Command::Run { role, app, command } => {
 			let relative = sops::relative(&role, &app);

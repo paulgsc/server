@@ -128,6 +128,9 @@ case "$1" in
 esac
 "##;
 
+/// Where the deploy keeps a release's tree, under the fixture's `HOME`.
+const RELEASE_TREE: &str = "home/.local/state/server-deploy/releases/stand-in";
+
 struct Fixture {
 	root: PathBuf,
 	repo: PathBuf,
@@ -138,7 +141,10 @@ impl Fixture {
 	fn new(name: &str) -> std::io::Result<Self> {
 		let root = std::env::temp_dir().join(format!("envctl-stand-ins-{name}-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&root);
-		let repo = root.join("repo");
+		// The checkout is a release's tree under the deploy's state directory
+		// in `HOME`, the one tree home's `up` and `compose` run on as given
+		// (R6d, #870): these tests are of what they do there.
+		let repo = root.join(RELEASE_TREE);
 		let bin = root.join("bin");
 		fs::create_dir_all(repo.join("infra/env"))?;
 		fs::create_dir_all(&bin)?;
@@ -167,6 +173,7 @@ impl Fixture {
 			.arg(&self.repo)
 			.args(args)
 			.env_clear()
+			.env("HOME", self.root.join("home"))
 			.env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()));
 		command
 	}
