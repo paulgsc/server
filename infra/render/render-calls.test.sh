@@ -984,6 +984,10 @@ for key in nixos-upgrade-2026-11-14 zfs-2026-11-02 NotAKey-2026-11-01 nixos-2026
 done
 check "essays go by their day, not their name" \
   test "$(INPUT=$ROOT/cards-essays episodes cards-essay | tr '\n' ' ')" = "zfs-2026-11-02 nixos-upgrade-2026-11-14 "
+mkdir -p "$SCRATCH/same-day"
+for key in zfs-2026-11-14 btrfs-2026-11-14 ext4-2026-11-13; do echo '{}' > "$SCRATCH/same-day/$key.json"; done
+check "essays of one day go by their key" \
+  test "$(INPUT=$SCRATCH/same-day episodes cards-essay | tr '\n' ' ')" = "ext4-2026-11-13 btrfs-2026-11-14 zfs-2026-11-14 "
 run_job cards-essay > "$SCRATCH/pass.out" 2>&1
 check "an essay is recorded from its cut list, into its job's work folder, the older day first" \
   test "$(head -n 1 "$FAKE/cards-runs")" = "$ROOT/cards-essays/zfs-2026-11-02.json $ROOT/renders/cards-essay-work"
@@ -1020,6 +1024,15 @@ echo 77 > "$ROOT/renders/call-worker/job"
 printf 'id=77\nkind=preview\nkey=%s\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0' "$ID" > "$ROOT/renders/call-worker/job.state"
 resume_left > "$SCRATCH/pass.out" 2>&1
 check "a preview a restart left is resumed" test -e "$ROOT/renders/preview/$ID/preview.mp4"
+
+# A cards essay a restart left runs first, as any job does (CARDS7).
+fresh cards-left
+mkdir -p "$ROOT/cards-essays" "$ROOT/renders/call-worker"
+echo '{}' > "$ROOT/cards-essays/zfs-2026-11-02.json"
+echo 78 > "$ROOT/renders/call-worker/job"
+printf 'id=78\nkind=cards-essay\nkey=zfs-2026-11-02\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0' > "$ROOT/renders/call-worker/job.state"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a cards essay a restart left is resumed" test -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cards.mp4"
 
 # What every recorder is handed (CW5, paulgsc/some-ui#2659): the render
 # policy's caps, the pinned stage, and home's Kokoro speaker. Read from what

@@ -18,8 +18,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
 1. **At most one batch job runs on home at a time, across every kind.** The
    render worker is the one batch worker. It runs one job at a time and
    names it in `<lane>/job`, one file for every kind (the call, Playoff
-   Delta, previews, essays, clip walks, cards essays), and the lane admits one job per
-   run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
+   Delta, previews, essays, clip walks, cards essays), and the lane admits
+   one job per run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
    second batch worker joins this lane, never one of its own (L5,
    some-ui#2084).
 2. **Interactive work never waits behind batch work.** While a voice note

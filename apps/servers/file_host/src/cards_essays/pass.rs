@@ -7,9 +7,14 @@
 //! - **Only what is missing.** A pass is one request for the index, plus one
 //!   per listed essay home holds no essay of that key of. An essay home holds
 //!   is never fetched again.
+//! - **No index yet is no essays.** Until the first essay merges,
+//!   `paulgsc/testing` has no `cards/index.json`: a `404` for it is a pass
+//!   with nothing to take, not a failure, so a fresh home does not alert.
 //! - **Checked before kept.** The index must read as
 //!   `some-ui.cards-index/1`, each essay `{"key": …}` with a key
-//!   [`is_key`] takes, `<slug>-<YYYY-MM-DD>`. An essay's file must be a
+//!   [`is_key`] takes, `<slug>-<YYYY-MM-DD>`. An entry that isn't one (a day
+//!   that is no calendar day, say, which `cards-check`'s pattern lets
+//!   through) is skipped and counted, and the others are still taken. An essay's file must be a
 //!   cut list (`some-ui.cut-list/…`) whose stamp's day is its key's, and be
 //!   at most [`MAX_BODY`] bytes. Its full shape is the renderer's own
 //!   (`@some-ui/video-render`'s `parseCardsEssay`), held by the routine's
@@ -19,7 +24,7 @@
 //!   ([`Pass::failures`]): no URL, body or essay's words reaches a log.
 //! - **No network in tests.** Fetching is `game_feed`'s [`Fetch`] port.
 
-use crate::game_feed::pass::{fetch_capped, Fetch};
+use crate::game_feed::pass::{fetch_capped, Answer, Fetch, NoAnswer};
 use cards_essay_repo::{Essay, Kept};
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use serde_json::Value;
@@ -90,24 +95,37 @@ pub fn is_key(key: &str) -> bool {
 	day_of(key).is_some()
 }
 
-/// The keys `cards/index.json` lists, or `None` when it does not read as
-/// `some-ui.cards-index/1`.
+/// What `cards/index.json` lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Index {
+	/// Each entry that is `{"key": <an essay's key>}`.
+	pub keys: Vec<String>,
+	/// Entries that are not, each skipped.
+	pub bad: usize,
+}
+
+/// What `cards/index.json` lists, or `None` when it does not read as
+/// `some-ui.cards-index/1` (a schema, and an `essays` list).
 #[must_use]
-pub fn read_index(body: &[u8]) -> Option<Vec<String>> {
+pub fn read_index(body: &[u8]) -> Option<Index> {
 	let index: Value = serde_json::from_slice(body).ok()?;
 	if index.get("schema")?.as_str()? != INDEX_SCHEMA {
 		return None;
 	}
-	index
-		.get("essays")?
-		.as_array()?
-		.iter()
-		.map(|entry| {
-			let entry = entry.as_object()?;
-			let key = entry.get("key")?.as_str()?;
-			(entry.len() == 1 && is_key(key)).then(|| key.to_owned())
-		})
-		.collect()
+	let mut read = Index { keys: Vec::new(), bad: 0 };
+	for entry in index.get("essays")?.as_array()? {
+		let key = entry
+			.as_object()
+			.filter(|entry| entry.len() == 1)
+			.and_then(|entry| entry.get("key"))
+			.and_then(Value::as_str)
+			.filter(|key| is_key(key));
+		match key {
+			Some(key) => read.keys.push(key.to_owned()),
+			None => read.bad += 1,
+		}
+	}
+	Some(read)
 }
 
 /// Whether an essay's file reads as a cut list stamped on its key's day.
@@ -146,13 +164,24 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folder: &Path, clock
 /// holds none of, oldest day first. An essay that fails is left for the next
 /// pass; the others are still taken.
 async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> DateTime<Utc> + Sync), pass: &mut Pass) -> Result<(), sqlx::Error> {
-	let Some(body) = fetched(fetch, &(String::from(SOURCE) + "index.json"), pass).await else {
-		return Ok(());
+	let body = match fetch.get_at_most(&(String::from(SOURCE) + "index.json"), MAX_BODY).await {
+		Ok(Answer { status: 200, body }) => body,
+		// No essay has merged yet: nothing to take.
+		Ok(Answer { status: 404, .. }) => return Ok(()),
+		Ok(_) => {
+			pass.failures.push("refused");
+			return Ok(());
+		}
+		Err(NoAnswer(kind)) => {
+			pass.failures.push(kind);
+			return Ok(());
+		}
 	};
-	let Some(mut keys) = read_index(&body) else {
+	let Some(Index { mut keys, bad }) = read_index(&body) else {
 		pass.failures.push("unreadable");
 		return Ok(());
 	};
+	pass.failures.extend(std::iter::repeat_n("unreadable", bad));
 	let held: HashSet<String> = {
 		let mut conn = db.acquire().await?;
 		cards_essay_repo::held(&mut conn).await?.into_iter().map(|essay| essay.key).collect()
@@ -228,7 +257,6 @@ async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), s
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::game_feed::pass::{Answer, NoAnswer};
 	use sqlx::sqlite::SqlitePoolOptions;
 	use std::collections::HashMap;
 	use std::sync::Mutex;
@@ -352,20 +380,47 @@ mod tests {
 				body: b"404: Not Found".to_vec(),
 			}),
 		);
+		let none_yet = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		assert_eq!(none_yet, Pass::default(), "no index yet is no essays, not a failure");
+		fake.answer(
+			"index.json",
+			Ok(Answer {
+				status: 503,
+				body: b"busy".to_vec(),
+			}),
+		);
 		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["refused"]);
 		fake.ok("index.json", b"<html>busy</html>");
 		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["unreadable"]);
 		fake.ok("index.json", br#"{"schema":"some-ui.call-index/1","essays":[]}"#);
 		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["unreadable"], "another index");
+		fake.ok("index.json", br#"{"schema":"some-ui.cards-index/1"}"#);
+		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["unreadable"], "no essays list");
+		// An entry that isn't an essay's key is skipped and counted; the
+		// others are still taken.
+		fake.ok("zfs-2026-11-02.json", &essay("2026-11-02"));
 		for key in ["../secrets-2026-11-14", "NixOS-2026-11-14", "nixos-2026-02-30"] {
 			fake.ok("index.json", &index(&["zfs-2026-11-02", key]));
-			assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["unreadable"], "{key:?} is not a key");
+			let pass = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+			assert_eq!(pass.failures, ["unreadable"], "{key:?} is not a key");
+			assert!(
+				fake
+					.asked()
+					.iter()
+					.all(|asked| !asked.contains("secrets") && !asked.contains("NixOS") && !asked.contains("02-30")),
+				"{key:?} is never fetched"
+			);
 		}
 		fake.ok("index.json", br#"{"schema":"some-ui.cards-index/1","essays":[{"key":"zfs-2026-11-02","title":"x"}]}"#);
 		assert_eq!(
 			run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures,
 			["unreadable"],
 			"an entry is its key alone"
+		);
+		assert_eq!(
+			cards_essay_repo::held(&mut pool.acquire().await.unwrap()).await.unwrap().len(),
+			1,
+			"the good essay was taken beside the bad entries"
 		);
 		fake.asked();
 
