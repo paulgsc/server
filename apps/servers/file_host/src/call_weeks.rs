@@ -12,13 +12,17 @@
 //!
 //! **Why this is a poll.** GitHub tells home nothing, and home makes only
 //! outbound requests. A week is written once a week, so the worker reads the
-//! index every [`INTERVAL`], an hour, and an idle pass is that one request.
+//! index every [`INTERVAL`], an hour, and an idle pass is that one request;
+//! a held week still waiting for its video adds one request a pass, to see
+//! whether it was re-stamped ([`pass`]).
 //! The mailbox's note of a new week (MBP, paulgsc/some-ui#2142) can make it
 //! immediate later.
 //!
 //! It reads one public folder, `paulgsc/testing`'s `call/` on `main`,
-//! without a token, and writes one table, `call_week`, append-only; a week is
-//! kept once, as first served ([`pass`]'s module doc has the rest). It also
+//! without a token, and writes two tables, `call_week` and
+//! `call_week_revision`, append-only: a week is kept as first served, and a
+//! newer revision of it is appended only while no part of the week has a
+//! video (paulgsc/server#879; [`pass`]'s module doc has the rest). It also
 //! writes each week it holds to [`RENDER_FOLDER`] for home's render worker,
 //! which records and renders the call from it (`infra/compose/call-render.yml`).
 //!
@@ -144,7 +148,12 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 						continue;
 					}
 					crate::metrics::call_weeks::record_pass_started();
-					let result = pass::run_once(&db, &context.fetch, std::path::Path::new(RENDER_FOLDER), &chrono::Utc::now).await;
+					let folders = pass::Folders {
+						weeks: std::path::Path::new(RENDER_FOLDER),
+						renders: std::path::Path::new(render::RENDERS_FOLDER),
+						status: std::path::Path::new(render::STATUS_FOLDER),
+					};
+					let result = pass::run_once(&db, &context.fetch, folders, &chrono::Utc::now).await;
 					crate::metrics::call_weeks::record_pass(&result);
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
 						schedule.succeeded(now, INTERVAL);
@@ -177,12 +186,20 @@ async fn observe_renders(db: &sqlx::SqlitePool) {
 	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await.and(&pd).and(&essays).and(&cards));
 }
 
-/// The pass's one log line, when it added a week or something went wrong.
+/// The pass's one log line, when it added a week or a revision, or something
+/// went wrong.
 fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	match result {
-		Ok(done) if done.added == 0 && done.exported == 0 && done.failures.is_empty() => {}
-		Ok(done) if done.failures.is_empty() => info!(added = done.added, held = done.held, exported = done.exported, "call weeks pass"),
-		Ok(done) => warn!(added = done.added, held = done.held, exported = done.exported, failures = ?done.failures, "call weeks pass"),
+		Ok(done) if done.added == 0 && done.revised == 0 && done.exported == 0 && done.failures.is_empty() => {}
+		Ok(done) if done.failures.is_empty() => info!(added = done.added, revised = done.revised, held = done.held, exported = done.exported, "call weeks pass"),
+		Ok(done) => warn!(
+			added = done.added,
+			revised = done.revised,
+			held = done.held,
+			exported = done.exported,
+			failures = ?done.failures,
+			"call weeks pass"
+		),
 		Err(_) => error!(error = "storage", "call weeks pass failed"),
 	}
 }

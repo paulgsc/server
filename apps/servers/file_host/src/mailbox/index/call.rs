@@ -5,9 +5,10 @@
 //! the last few, and lets a week leave that repository only once home holds
 //! it (paulgsc/some-ui `packages/video-render/CALL-ROUTINE.md`, step 6). This
 //! index is how the routine knows: every week home holds (`call_week`, kept by
-//! [`crate::call_weeks`]), newest first, with the SHA-256 of the bytes home
-//! holds, so a week the repository has since edited reads as not the one home
-//! keeps.
+//! [`crate::call_weeks`]), newest first, with the SHA-256 of the newest
+//! revision home holds, so a week the repository has since edited reads as
+//! not the one home keeps until home takes it (a week takes a new revision
+//! only while no part of it has a video, paulgsc/server#879).
 //!
 //! `{"schema":"some-ui.routine-index/1","routine":"call","asOf","held":[{"from","to","sha256"}]}`:
 //! `asOf` is when home last took a week; `held` is every week it holds.
@@ -17,10 +18,11 @@
 //! Home holds weeks for nobody in particular (`call_week` is not
 //! subject-scoped), so the index is the same whoever the pass is for.
 //!
-//! **Put only when it moves.** `call_week` only grows, so how many weeks it
-//! holds says whether anything arrived. A pass that finds the count the last
+//! **Put only when it moves.** `call_week` and `call_week_revision` only
+//! grow, so how many weeks and revisions they hold says whether anything
+//! arrived. A pass that finds the count the last
 //! index the mailbox answered was computed from puts nothing; one that finds
-//! a new week puts `index-call-<stamp>.json`. Before home holds a week it
+//! a new week or revision puts `index-call-<stamp>.json`. Before home holds a week it
 //! puts none, and the routine prunes nothing.
 //!
 //! **What it carries:** days and hashes. Never a week's words.
@@ -97,8 +99,9 @@ pub(in crate::mailbox) async fn put_call_index<T: MailboxTransport>(
 		let Some((count, as_of)) = call_week_repo::as_of(&mut conn).await.map_err(Failure::Storage)? else {
 			return Ok(());
 		};
-		// What the index was computed from is how many weeks home holds:
-		// `call_week` only grows, so the count moves with every week taken,
+		// What the index was computed from is how many weeks and revisions
+		// home holds: both tables only grow, so the count moves with every
+		// week or revision taken,
 		// whatever the clock says of `taken_at`.
 		let marker = count.to_string();
 		if last.holds(subject, Some(&marker), |_| true) {
@@ -128,11 +131,13 @@ mod tests {
 				from: String::from("2026-11-06"),
 				to: String::from("2026-11-12"),
 				sha256: "b".repeat(64),
+				revision: 2,
 			},
 			HeldWeek {
 				from: String::from("2026-10-30"),
 				to: String::from("2026-11-05"),
 				sha256: "a".repeat(64),
+				revision: 1,
 			},
 		];
 		let index: Value = serde_json::from_slice(&call_index(&held, "2026-11-13T09:00:00.000Z")).unwrap();
