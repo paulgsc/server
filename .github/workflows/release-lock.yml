@@ -16,9 +16,11 @@
 # newer one: the newer one sees everything the cancelled one would have.
 #
 # It runs after server's images are pushed (publish-image-changesets.yml's
-# `release` job), when some-ui's www and render releases dispatch it (U1,
-# #791, `gh workflow run release-lock.yml` with SERVER_ROUTES_DISPATCH_TOKEN),
-# and by hand.
+# `release` job), when some-ui's render, www and resume-render publishes
+# dispatch it (U1, #791, `gh workflow run release-lock.yml` with
+# SERVER_ROUTES_DISPATCH_TOKEN), and by hand. A dispatch is only a reason to
+# look: render joins SOURCES with R4 (#793), once file-host is pinned by
+# digest, and www and resume-render join with #853's server half.
 #
 # A pull request opened with the default GITHUB_TOKEN gets its checks in an
 # approval-required state (docs/assurance.md, "A pull request the image bot …

@@ -75,9 +75,12 @@ per CLAUDE.md, "Drift is loud, not silent".
   `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
   the same release ("Constraints", below). CI checks it from the registry by
   digest (`scripts/check_release.py`, Lint's `Release set` job, on every pull
-  request that changes the release). A requirement that only a server image
-  without a digest could meet (the held `file-host`) is a warning naming
-  that image, not a failure, because what it provides cannot be read.
+  request that changes the release). A requirement whose name no readable
+  image provides, while a server image has no digest (the held `file-host`),
+  is a warning naming that image, not a failure: only it could meet it, and
+  what it provides cannot be read. One a readable image provides too low
+  fails. So until R4 (#793) pins `file-host`, CI cannot judge the edges
+  file_host is an end of, which is why render waits (RL7).
   The deploy checks the set again from the pulled images before `up`, where
   every image is read (`apps/envctl/src/release/constraints.rs`;
   **Planned:** wired in by R4, #793). The two sides run on the same cases.

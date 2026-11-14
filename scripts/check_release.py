@@ -124,6 +124,12 @@ def meets(provided: str, required: str) -> bool:
 
 def unmet(images: dict[str, Constraints]) -> list[str]:
     """Each requirement no other image in the set meets, as one line."""
+    return [line for line, _ in unmet_found(images)]
+
+
+def unmet_found(images: dict[str, Constraints]) -> list[tuple[str, bool]]:
+    """Each unmet requirement, with whether some other image provides its
+    name at all (too low, or another commit)."""
     problems = []
     for service in sorted(images):
         for name, required in sorted(images[service].requires.items()):
@@ -132,9 +138,9 @@ def unmet(images: dict[str, Constraints]) -> list[str]:
                 continue
             if offered:
                 given = ", ".join(f"{other} provides {name}={value}" for other, value in offered.items())
-                problems.append(f"{service} requires {name}={required}, but {given}")
+                problems.append((f"{service} requires {name}={required}, but {given}", True))
             else:
-                problems.append(f"{service} requires {name}={required}, which no other image in the release provides")
+                problems.append((f"{service} requires {name}={required}, which no other image in the release provides", False))
     return problems
 
 
@@ -238,7 +244,13 @@ def unreadable_server_images(release: dict) -> list[str]:
     """The release's own server images named without a digest (a held
     `pgathondu/...:latest`): what they provide cannot be read, so a
     requirement only they could meet is not known to be met."""
-    return sorted(service for service, entry in release["services"].items() if entry["image"].startswith("pgathondu/") and not hub_reference(entry["image"]))
+    def repository(image: str) -> str:
+        name = image.split("@", 1)[0]
+        for registry in ("docker.io/", "index.docker.io/", "registry-1.docker.io/"):
+            name = name.removeprefix(registry)
+        return name
+
+    return sorted(service for service, entry in release["services"].items() if repository(entry["image"]).startswith("pgathondu/") and not hub_reference(entry["image"]))
 
 
 def check(release: dict, labels: Callable[[Reference], dict[str, str]]) -> tuple[list[str], list[str]]:
@@ -261,11 +273,17 @@ def check(release: dict, labels: Callable[[Reference], dict[str, str]]) -> tuple
         except Malformed as err:
             problems.append(f"{service} ({entry['image']}): {err}")
     unknown = unreadable_server_images(release)
-    found = unmet(images)
-    if not unknown:
-        return problems + found, []
     held = ", ".join(f"{service} ({release['services'][service]['image']})" for service in unknown)
-    return problems, [f"{line}; not known to be unmet: {held} has no digest, so what it provides cannot be read" for line in found]
+    warnings = []
+    for line, provided_elsewhere in unmet_found(images):
+        # Only a requirement no readable image names at all could be the
+        # unreadable one's to meet; one a readable image provides too low
+        # (or as another commit) is unmet whatever the held image says.
+        if unknown and not provided_elsewhere:
+            warnings.append(f"{line}; not known to be unmet: {held} has no digest, so what it provides cannot be read")
+        else:
+            problems.append(line)
+    return problems, warnings
 
 
 def main() -> int:
@@ -378,6 +396,14 @@ class Tests(unittest.TestCase):
         self.assertIn("render requires render-folders=1", warnings[0])
         self.assertIn("file-host (pgathondu/server:latest) has no digest", warnings[0])
 
+    def test_a_held_server_image_does_not_excuse_a_requirement_a_readable_image_provides_too_low(self) -> None:
+        seen = registry({DA: label("rust-runner-protocol=1"), DB: label(requires="rust-runner-protocol=2")})
+        refs = release(**{"file-host": "docker.io/pgathondu/server:latest", "rust-runner": f"pgathondu/rust-runner:x@{DA}", "render": f"pgathondu/render:{SHA}@{DB}"})
+        found, warnings = check(refs, seen)
+        self.assertEqual(found, ["render requires rust-runner-protocol=2, but rust-runner provides rust-runner-protocol=1"])
+        self.assertEqual(warnings, [])
+        self.assertEqual(unreadable_server_images(refs), ["file-host"], "a registry prefix still names a held server image")
+
     def test_epochs_compare_at_any_length(self) -> None:
         big = "1" + "0" * 39
         self.assertFalse(meets("5", big))
@@ -396,7 +422,9 @@ class Tests(unittest.TestCase):
         """The cases apps/envctl/src/release/constraints.rs's `unmet` is tested on, run here."""
         source = (REPO_ROOT / "apps" / "envctl" / "src" / "release" / "constraints.rs").read_text()
         cases = re.findall(r'case\(\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)",\s*(true|false),?\s*\)', source)
-        self.assertGreaterEqual(len(cases), 5, "constraints.rs's shared cases were read")
+        calls = len(re.findall(r"^\s*case\(", source, re.MULTILINE))
+        self.assertGreaterEqual(len(cases), 5)
+        self.assertEqual(len(cases), calls, "every case(…) call in constraints.rs is read here: keep its arguments literals")
         for provides, requires, _, met in cases:
             seen = registry({DA: label(provides), DB: label(requires=requires)})
             self.assertEqual(problems(release(p=f"r/p:1@{DA}", r=f"r/r:1@{DB}"), seen) == [], met == "true", (provides, requires))

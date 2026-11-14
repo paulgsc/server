@@ -87,7 +87,6 @@ class Hub:
 # Every service the release follows, and where its newest reference comes
 # from. A service not here keeps whatever main's release says.
 COMMIT = r"[0-9a-f]{40}"
-VERSION = r"[0-9]+\.[0-9]+\.[0-9]+"
 
 SOURCES: dict[str, Changesets | Hub] = {
     "kokoro": Changesets("kokoro"),
@@ -316,7 +315,8 @@ class Tests(unittest.TestCase):
 
     def test_render_waits_until_the_check_can_see_file_host(self) -> None:
         """RL7: render is followed only once file-host is pinned by digest, so the set check reads both ends."""
-        if "file-host" in HELD:
+        file_host = json.loads(RELEASE.read_text())["services"]["file-host"]["image"]
+        if "@sha256:" not in file_host:
             self.assertNotIn("render", SOURCES)
 
     def test_the_checked_in_sources_name_real_services(self) -> None:
