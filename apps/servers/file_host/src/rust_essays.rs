@@ -982,7 +982,9 @@ mod tests {
 		std::fs::write(rendered.join(VIDEO), b"video").unwrap();
 
 		assert_eq!(
-			record_link(&pool, Feed::RustEssay, ME, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", AFTER).await.unwrap(),
+			record_link(&pool, Feed::RustEssay, ME, &folders.renders, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", AFTER)
+				.await
+				.unwrap(),
 			LinkRecorded::Kept(String::from("dQw4w9WgXcQ"))
 		);
 		let feed = FeedFolders {

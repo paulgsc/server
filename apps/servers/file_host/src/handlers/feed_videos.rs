@@ -129,9 +129,20 @@ impl From<Receipt> for ReceiptView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EpisodeView {
-	/// The call's week by its first day (`2026-10-30`), Playoff Delta's
-	/// episode by `<season>-<team>-<NN>` (`2026-SF-08`).
+	/// The call's week by its first day (`2026-10-30`), or a later part of a
+	/// week that is a series by `<day>-p<k>` (`2026-11-06-p2`); Playoff
+	/// Delta's episode by `<season>-<team>-<NN>` (`2026-SF-08`). Every route
+	/// under `/feeds/:feed/videos/:key` takes it as it is.
 	pub key: String,
+	/// What it is a part of: the call's week by its first day; every other
+	/// episode's own key (paulgsc/some-ui#2918). The phone shows a week's
+	/// parts together by it.
+	pub week: String,
+	/// Which part, from 1, of how many: 1 of 1 for a week of one video and
+	/// every other feed's episode. Each part has its own video, link and
+	/// receipts.
+	pub part: u32,
+	pub of: u32,
 	/// Bytes of its video, while home has it.
 	pub video_bytes: Option<u64>,
 	/// Bytes of the rest of its folder, while home has it.
@@ -150,6 +161,9 @@ impl From<EpisodeVideo> for EpisodeView {
 			}),
 			receipts: episode.receipts.into_iter().map(ReceiptView::from).collect(),
 			key: episode.key,
+			week: episode.week,
+			part: episode.part,
+			of: episode.of,
 			video_bytes: episode.video_bytes,
 			rest_bytes: episode.rest_bytes,
 		}
@@ -265,7 +279,7 @@ pub async fn put_link(
 	Json(body): Json<LinkBody>,
 ) -> Result<Json<LinkKept>, FileHostError> {
 	let feed = feed_of(&feed)?;
-	match videos::record_link(&db, feed, paired.subject.as_str(), &key, &body.link, &now()).await? {
+	match videos::record_link(&db, feed, paired.subject.as_str(), feed.renders(), &key, &body.link, &now()).await? {
 		LinkRecorded::Kept(id) => Ok(Json(LinkKept { url: link_of(&id) })),
 		LinkRecorded::NotAVideo => Err(FileHostError::unprocessable_entity([("link", "names no YouTube video")])),
 		LinkRecorded::NoEpisode => Err(FileHostError::NotFound),
@@ -433,7 +447,7 @@ mod tests {
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
 			listed,
-			json!({ "episodes": [{ "key": "2026-SF-09", "videoBytes": null, "restBytes": null, "link": null, "receipts": [] }] })
+			json!({ "episodes": [{ "key": "2026-SF-09", "week": "2026-SF-09", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [] }] })
 		);
 		let (status, calls) = send(&app, Method::GET, "/feeds/call/videos", Some(&phone), None).await;
 		assert_eq!((status, calls), (StatusCode::OK, json!({ "episodes": [] })), "each feed lists its own");

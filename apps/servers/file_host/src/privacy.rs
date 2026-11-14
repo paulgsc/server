@@ -78,12 +78,20 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 		"each clip frame home keeps: a screenshot of an app on sample data, by clip, side and file, with its SHA-256 — nobody's record",
 	),
 	(
+		"call_part_deletion",
+		"a receipt for each step of a part of a week of the call the owner let go from My data: the week, the part and how many, the step, its public YouTube video's id, the bytes and when; nobody's record",
+	),
+	(
+		"call_part_link",
+		"each part of a week of the call's public YouTube video id, as the owner recorded it; nobody's record",
+	),
+	(
 		"call_video_deletion",
-		"a receipt for each step of a week of the call the owner let go from My data: the week, the step, its public YouTube video's id, the bytes and when; nobody's record",
+		"a receipt for each step of a week of the call the owner let go from My data before parts: the week, the step, its public YouTube video's id, the bytes and when; frozen, the copy call_part_deletion was made from; nobody's record",
 	),
 	(
 		"call_video_link",
-		"each week of the call's public YouTube video id, as the owner recorded it; nobody's record",
+		"each week of the call's public YouTube video id, as the owner recorded it before parts; frozen, the copy call_part_link was made from; nobody's record",
 	),
 	(
 		"pd_video_deletion",

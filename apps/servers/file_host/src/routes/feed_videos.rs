@@ -2,7 +2,7 @@
 //! call's and Playoff Delta's alike (FEED4: paulgsc/some-ui#2647).
 //!
 //! ```text
-//! GET    /feeds/:feed/videos                  → { episodes: [{ key, videoBytes, restBytes, link, receipts }] }: newest first
+//! GET    /feeds/:feed/videos                  → { episodes: [{ key, week, part, of, videoBytes, restBytes, link, receipts }] }: newest first
 //! GET    /feeds/:feed/videos/:key/video       → the episode's video, streamed, with ranges
 //! GET    /feeds/:feed/videos/:key/description → its `YouTube` chapter lines, `text/plain`, or 404
 //! PUT    /feeds/:feed/videos/:key/link        → { url }: the body is { link }, a `YouTube` video's link as pasted
@@ -12,6 +12,12 @@
 //!
 //! `:feed` is `call`, `playoff-delta` or `rust-essay` (`feeds::Feed`; an
 //! essay is the caller's own, keyed by its week); any other is `404`.
+//!
+//! **A call's week that is a series of parts** (paulgsc/some-ui#2918) is
+//! listed as each part, first to last, each an episode of its own: part 1
+//! keyed by the week's day as a week of one video always was, part k by
+//! `<day>-p<k>`, all sharing `week` and `of`. Each part is brought, linked
+//! and let go on its own through the same routes, by its key.
 //!
 //! **Trust model:** a paired phone's only, as `routes::voice`'s delete. Every
 //! handler takes a `Paired`, so a request without a session is `401` and a

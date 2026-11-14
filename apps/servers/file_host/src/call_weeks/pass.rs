@@ -128,19 +128,42 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folder: &Path, clock
 ///
 /// A week whose video the owner let go from My data (`feeds::videos::let_go`) is
 /// never written, and its file is removed if one is left, so the worker
-/// never renders it again (CW8).
+/// never renders it again (CW8). A week that is a series of parts
+/// (paulgsc/some-ui#2918) is let go so only once every part's video is;
+/// until then each part let go is marked beside its file
+/// (`call_weeks::LET_GO`), and a mark that is missing is written again.
 async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), sqlx::Error> {
 	// Held for the whole pass, so a week let go while it runs is never
 	// written back (`feeds::FOLDERS`).
 	let _folders = crate::feeds::FOLDERS.lock().await;
-	let (held, let_go) = {
+	let (held, let_go, parts_gone) = {
 		let mut conn = db.acquire().await?;
-		(call_week_repo::held(&mut conn).await?, call_week_repo::video::let_go(&mut conn).await?)
+		(
+			call_week_repo::held(&mut conn).await?,
+			call_week_repo::video::weeks_let_go(&mut conn).await?,
+			call_week_repo::video::let_go(&mut conn).await?,
+		)
 	};
 	for from in &let_go {
 		match tokio::fs::remove_file(folder.join(String::from(from) + ".json")).await {
 			Err(error) if error.kind() != std::io::ErrorKind::NotFound => pass.failures.push("export"),
 			_ => {}
+		}
+	}
+	for key in &parts_gone {
+		let Some((week, _)) = call_week_repo::video::split_key(key) else { continue };
+		let mark = folder.join(String::from(key) + super::LET_GO);
+		let done = if let_go.iter().any(|gone| gone == week) {
+			// The week went whole: its marks go with its file.
+			match tokio::fs::remove_file(&mark).await {
+				Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+				Ok(()) => true,
+			}
+		} else {
+			crate::feeds::videos::mark_let_go(folder, key).await.is_ok()
+		};
+		if !done {
+			pass.failures.push("export");
 		}
 	}
 	let missing: Vec<_> = held
@@ -381,11 +404,51 @@ mod tests {
 			size: 1,
 			deleted_at: "2026-11-07T12:00:00.000Z".to_owned(),
 		};
-		call_week_repo::video::write_receipt(&mut conn, &receipt).await.unwrap();
+		call_week_repo::video::write_receipt(&mut conn, &receipt, 1).await.unwrap();
 		drop(conn);
 		let after = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
 		assert_eq!(after.exported, 0, "a week let go is not written again");
 		assert!(!file.exists(), "and a file left of it is removed");
+	}
+
+	/// A week that is a series (paulgsc/some-ui#2918): a part let go is marked
+	/// for the worker, a mark lost is written again, and the week's file and
+	/// marks leave once every part's video has.
+	#[tokio::test]
+	async fn a_part_let_go_is_marked_and_the_week_leaves_once_every_part_has() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&[("2026-11-06", "2026-11-12")]));
+		fake.ok("2026-11-06.json", &week("2026-11-06", "2026-11-12"));
+		run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let (file, mark) = (dir.path().join("2026-11-06.json"), dir.path().join("2026-11-06-p2.let-go"));
+		let go = |key: &'static str, id: &'static str| {
+			let pool = pool.clone();
+			async move {
+				let mut conn = pool.acquire().await.unwrap();
+				call_week_repo::video::record_link(&mut conn, key, id, "2026-11-14T12:00:00.000Z").await.unwrap();
+				let receipt = call_week_repo::video::Receipt {
+					from: key.to_owned(),
+					step: call_week_repo::video::Step::Video,
+					youtube_id: id.to_owned(),
+					size: 1,
+					deleted_at: "2026-11-14T12:00:00.000Z".to_owned(),
+				};
+				call_week_repo::video::write_receipt(&mut conn, &receipt, 2).await.unwrap();
+			}
+		};
+		go("2026-11-06-p2", "bbbbbbbbbbb").await;
+		run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		assert!(file.exists() && mark.exists(), "part 1 still renders; part 2 never again");
+		std::fs::remove_file(&mark).unwrap();
+		run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		assert!(mark.exists(), "a mark lost is written again");
+
+		go("2026-11-06", "aaaaaaaaaaa").await;
+		let after = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		assert!(after.failures.is_empty(), "{:?}", after.failures);
+		let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+		assert!(names.is_empty(), "the week and its marks are gone: {names:?}");
 	}
 
 	#[test]

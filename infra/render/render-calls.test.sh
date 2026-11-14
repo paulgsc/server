@@ -60,6 +60,7 @@ FAKE=$SCRATCH/fake
 APP_DIR=$SCRATCH/app
 TSX=$FAKE/tsx
 MOTION_DIR=$APP_DIR
+RENDER_DIR=$APP_DIR
 MOTION_TSX=$TSX
 mkdir -p "$FAKE" "$APP_DIR"
 # The worker's timing, at a test's pace; a failed week is tried again on the
@@ -161,6 +162,28 @@ cat > "$TSX" <<'FAKE_RECORDER'
 set -u
 fake=$(dirname "$0")
 script=$(basename "$1" .ts)
+# How many parts a week of the call is (paulgsc/some-ui#2918): `tsx
+# src/cli.ts call-parts <week file>` prints the renderer's JSON, with
+# $FAKE/parts-<week> parts (1 without it), each counted in
+# $FAKE/parts-runs; while $FAKE/parts-refuse exists it refuses the week in
+# the real renderer's words. It stamps no $FAKE/times: only recorders do.
+if [ "$1" = src/cli.ts ] && [ "$2" = call-parts ]; then
+  week=$(basename "$3" .json)
+  echo "$week" >> "$fake/parts-runs"
+  if [ -e "$fake/parts-refuse" ]; then
+    echo "$3 can't make a call:" >&2
+    echo "the week's template is version 9, which this checkout doesn't hold" >&2
+    exit 1
+  fi
+  of=$(cat "$fake/parts-$week" 2> /dev/null || echo 1)
+  printf '{\n "week": {\n  "from": "%s"\n },\n "parts": [' "$week"
+  for k in $(seq 1 "$of"); do
+    [ "$k" -eq 1 ] || printf ','
+    printf '\n  {\n   "part": %s,\n   "of": %s,\n   "scenes": 9,\n   "estimatedMs": 400000\n  }' "$k" "$of"
+  done
+  printf '\n ]\n}\n'
+  exit 0
+fi
 printf '%s\n' "$@" > "$fake/args-$script"
 echo "start $(date +%s)" >> "$fake/times"
 trap 'echo "end $(date +%s)" >> "$fake/times"' EXIT
@@ -293,15 +316,29 @@ if [ "$1" = tests/record/cards.ts ]; then
   exit 0
 fi
 [ "$1" = tests/record/call.ts ] || { echo "not the call's recorder: $1"; exit 2; }
-week_file= out=
+week_file= out= part=
 while [ $# -gt 0 ]; do
   case $1 in
     --week-file) week_file=$2; shift ;;
     --out) out=$2; shift ;;
+    --part) part=$2; shift ;;
   esac
   shift
 done
+# A part of a series (--part k) records into <out>/<week>/part-<k>, and is
+# named as the worker names it: its week for part 1, <week>-p<k> after. The
+# real recorder refuses a series recorded without --part.
 week=$(basename "$week_file" .json)
+of=$(cat "$fake/parts-$week" 2> /dev/null || echo 1)
+if [ -z "$part" ] && [ "$of" -gt 1 ]; then
+  echo "the week of $week is $of parts: record each with --part 1 to --part $of" >&2
+  exit 1
+fi
+root=$out/$week
+if [ -n "$part" ]; then
+  root=$out/$week/part-$part
+  [ "$part" -eq 1 ] || week=$week-p$part
+fi
 echo "$week" >> "$fake/runs"
 echo "recording $week: no cache warning here"
 # A pid file is written beside and moved into place, so a case reading it
@@ -311,7 +348,7 @@ keep_pid() {
 }
 keep_pid pid $$
 cat "$(dirname "$out")/call-worker/job" > "$fake/seen-job" 2> /dev/null
-dir=$out/$week
+dir=$root
 mkdir -p "$dir/steps"
 if [ -e "$dir/steps/said" ]; then
   echo "reused step said"
@@ -399,7 +436,8 @@ fresh() {
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
-    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards"
+    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
+    "$FAKE"/parts-*
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1092,6 +1130,62 @@ check "a preview past MAX_VIDEO_MB fails, with the cap named" \
 check "and leaves no folder in renders/preview" test ! -e "$ROOT/renders/preview/$ID"
 run_job preview > "$SCRATCH/pass.out" 2>&1
 check "and is never tried again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+
+# A week that is a series of parts (paulgsc/some-ui#2918): its first job asks
+# `render call-parts` how many, once, and keeps the answer where file_host
+# reads it; each part is then its own job, keyed (week, part), recorded with
+# --part k into its own folder in renders/call, failed, retried and resumed
+# from its own work on its own; a part let go is never rendered again; and
+# a week of one part records exactly as before, with no --part.
+fresh series 2026-11-06
+echo 3 > "$FAKE/parts-2026-11-06"
+pass
+check "a series' first pass asks how many parts, once, and keeps it" \
+  test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3 -a "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1
+check "and records part 1 with --part 1 into the week's own folder" \
+  test "$(cat "$ROOT/renders/call/2026-11-06/call.mp4" 2> /dev/null)" = "video of 2026-11-06"
+check "its arguments name the part" grep -qx -- --part "$FAKE/args-call"
+check "its later parts wait for their own jobs" test ! -e "$ROOT/renders/call/2026-11-06-p2"
+touch "$FAKE/fail-2026-11-06-p2"
+pass
+check "a part that fails fails alone" test -e "$ROOT/renders/call-worker/2026-11-06-p2.failed.log"
+check "and keeps its own work in its week's folder" test -e "$ROOT/renders/call-work/2026-11-06/part-2/steps/said"
+check "while the next part renders into its own folder" \
+  test "$(cat "$ROOT/renders/call/2026-11-06-p3/call.mp4" 2> /dev/null)" = "video of 2026-11-06-p3"
+check "and the parts are never asked for again" test "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1
+check "and no part's work is moved with another's" test ! -e "$ROOT/renders/call-work/2026-11-06/part-3"
+rm -f "$FAKE/fail-2026-11-06-p2"
+pass
+check "the failed part resumes from its own kept steps" grep -q "reused step said" "$SCRATCH/pass.out"
+check "and renders, its failed.log gone" \
+  test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a ! -e "$ROOT/renders/call-worker/2026-11-06-p2.failed.log"
+check "the week's work is gone once every part is made" test ! -e "$ROOT/renders/call-work/2026-11-06"
+check "the job is gone once the parts are made" test ! -e "$ROOT/renders/call-worker/job"
+runs=$(wc -l < "$FAKE/runs")
+pass
+check "a pass over a series made whole records nothing" test "$(wc -l < "$FAKE/runs")" -eq "$runs"
+
+fresh series-let-go 2026-11-06
+echo 2 > "$FAKE/parts-2026-11-06"
+pass
+touch "$ROOT/weeks/2026-11-06-p2.let-go"
+pass
+check "a part let go is never rendered" test ! -e "$ROOT/renders/call/2026-11-06-p2"
+check "nor tried" test "$(runs_of 2026-11-06-p2)" -eq 0
+
+fresh series-refused 2026-11-06
+touch "$FAKE/parts-refuse"
+pass
+check "a week call-parts refuses fails as its recorder's refusal does, with its words" \
+  grep -qF "can't make a call:" "$ROOT/renders/call-worker/2026-11-06.failed.log"
+check "and keeps no count of parts, so the next attempt asks again" test ! -e "$ROOT/renders/call/2026-11-06.parts"
+check "and records nothing" test "$(runs_of 2026-11-06)" -eq 0
+
+fresh series-of-one 2026-10-30
+pass
+check "a week of one part records as before, with no --part" \
+  test -e "$ROOT/renders/call/2026-10-30/call.mp4" -a -z "$(grep -x -- --part "$FAKE/args-call")"
+check "into the week's folder, its work gone" test ! -e "$ROOT/renders/call-work/2026-10-30"
 
 # The worker's own loop retries a failed week on its own clock (CW5): `serve`
 # runs unattended, every EVERY seconds, and the week's second attempt starts

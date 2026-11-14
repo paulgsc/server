@@ -8,7 +8,10 @@
 //! go) is one implementation over them all, [`videos`].
 //!
 //! An episode is named by its key, one plain path segment by its table's own
-//! checks: the call's week by its first day (`2026-10-30`), Playoff Delta's
+//! checks: the call's week by its first day (`2026-10-30`), or, for a week
+//! that is a series of parts (paulgsc/some-ui#2918), each part after the
+//! first by `<day>-p<k>` (`2026-11-06-p2`; `call_week_repo::video::split_key`),
+//! each its own episode with its own video, link and receipts; Playoff Delta's
 //! by `<season>-<team>-<NN>` (`2026-SF-08`), an essay by its week
 //! (`2026-w46`).
 //!
@@ -106,7 +109,8 @@ impl Feed {
 		}
 	}
 
-	/// Every episode home holds, newest first.
+	/// Every episode home holds, newest first: for the call, each week, whose
+	/// parts ([`videos::list`]) are read from the drive.
 	///
 	/// # Errors
 	/// A storage failure.
@@ -124,7 +128,10 @@ impl Feed {
 	/// A storage failure.
 	pub async fn holds(self, conn: &mut SqliteConnection, subject: &str, key: &str) -> Result<bool, sqlx::Error> {
 		Ok(match self {
-			Self::Call => call_week_repo::body(conn, key).await?.is_some(),
+			Self::Call => match call_week_repo::video::split_key(key) {
+				Some((week, _)) => call_week_repo::body(conn, week).await?.is_some(),
+				None => false,
+			},
 			Self::PlayoffDelta => match pd_fill_repo::parse_key(key) {
 				Some((season, team, week)) => pd_fill_repo::bodies(conn, &season, &team, week).await?.is_some(),
 				None => false,
@@ -184,13 +191,14 @@ impl Feed {
 		}
 	}
 
-	/// Writes a step's receipt.
+	/// Writes a step's receipt, for an episode of `of` parts (a call's week;
+	/// every other feed's episode is one).
 	///
 	/// # Errors
 	/// A storage failure, or what the feed's table refuses.
-	pub async fn write_receipt(self, conn: &mut SqliteConnection, subject: &str, receipt: &Receipt) -> Result<(), sqlx::Error> {
+	pub async fn write_receipt(self, conn: &mut SqliteConnection, subject: &str, receipt: &Receipt, of: u32) -> Result<(), sqlx::Error> {
 		match self {
-			Self::Call => call_week_repo::video::write_receipt(conn, receipt).await,
+			Self::Call => call_week_repo::video::write_receipt(conn, receipt, of).await,
 			Self::PlayoffDelta => pd_fill_repo::video::write_receipt(conn, receipt).await,
 			Self::RustEssay => rust_round_repo::essay_video::write_receipt(conn, subject, receipt).await,
 		}

@@ -202,7 +202,13 @@ point below with a fake lane and a recorder slow enough to be caught half
 way; CI runs it on every PR.
 
 - **A job** is one episode's attempt, from its first try until it renders,
-  fails or is let go. Its id (the time in nanoseconds, or one past the last
+  fails or is let go. A week of the call that is a series of parts
+  (some-ui#2918) is one job a part, keyed `<from>` for part 1 and
+  `<from>-p<k>` after, so a part is admitted, paused, stopped and resumed
+  from its own step cache on its own, never a whole week at once; the week's
+  first job asks the recorder's `render call-parts` how many parts there
+  are, once, inside the run the lane admitted, so no work starts outside the
+  lane. Its id (the time in nanoseconds, or one past the last
   id given, kept in `job-seq`) is never reused, and it keeps it through every
   pause and stop, so LA4 counts its stops alone and a resumed job is never
   admitted as new. Whichever job runs writes the one `job`: the lane admits

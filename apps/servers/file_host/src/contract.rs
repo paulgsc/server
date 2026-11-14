@@ -28,7 +28,7 @@
 //! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 8;
+pub const CONTRACT_EPOCH: u32 = 9;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
@@ -41,8 +41,10 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// `rust-essays` and `cards-essays`, which `file_host` writes and the render
 /// worker (paulgsc/some-ui) reads. `cards-essays` (#854) came without a
 /// raise: it is a new folder, so no layout an older render reads changed,
-/// and server's own `render-calls.sh` names each file to `record:cards`. `file_host`'s image provides
-/// `render-folders=<this>` and render's requires the layout it reads, so a
+/// and server's own `render-calls.sh` names each file to `record:cards`. A
+/// call's part let go (`<key>.let-go`, paulgsc/some-ui#2918) came without
+/// one too: only `render-calls.sh` reads it, never the image.
+/// `file_host`'s image provides `render-folders=<this>` and render's requires the layout it reads, so a
 /// release whose render reads a newer layout than its `file_host` writes is
 /// refused.
 ///
