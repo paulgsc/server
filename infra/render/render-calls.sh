@@ -342,6 +342,27 @@ heartbeat() {
   [ "$STATUS" = "$LANE" ] || put_in "$LANE" last-pass "$now"
 }
 
+# The worker's sign of life for Docker's healthcheck (#794): the time, in
+# <TMP_BASE>/worker.beat (/tmp/worker.beat, the path call-render.yml's
+# healthcheck reads: the container's tmpfs, so a restart starts with no
+# beat), at most every ALIVE_EVERY seconds, from every
+# loop the worker turns (a pass, a wait for room, a render), so it is never
+# stale while the worker runs, whatever the lane decides or however long a
+# render takes. Not last-pass, which a render leaves to go stale on purpose,
+# and not job.alive, which only a job writes. It says only that the loop
+# turns: a recorder that hangs while the worker lives is still
+# CallRenderOverdue's. call-render.yml's healthcheck takes a beat older than
+# 300 s as a worker gone: the longest silence is a pass's EVERY sleep and the
+# listing and tidying around it, since a wait or a render beats every
+# LANE_POLL.
+beat() {
+  local now
+  now=$(date +%s)
+  [ $(( now - ${BEAT_AT:-0} )) -ge "$ALIVE_EVERY" ] || return 0
+  BEAT_AT=$now
+  put_in "$TMP_BASE" worker.beat "$now" || true
+}
+
 # Now, in Unix seconds, against which a decision's age is read.
 # render-calls.test.sh puts its fake lane's own clock here, so a fake lane
 # a busy machine runs late is late, not stale.
@@ -626,6 +647,7 @@ wait_for_room() {
       say "the $job of $key waits for room on home (the lane: $LANE_VERB, $LANE_WHY)" "$log"
     fi
     heartbeat
+    beat
     sleep "$LANE_POLL"
   done
 }
@@ -658,6 +680,7 @@ attempt() {
     sleep "$LANE_POLL"
     kill -0 "$RECORDER" 2> /dev/null || break
     alive
+    beat
     [ "$paused" -eq 0 ] || heartbeat
     read_lane
     case $LANE_VERB in
@@ -925,6 +948,7 @@ RECORDER=
 serve() {
   local job
   while true; do
+    beat
     resume_left
     for job in "${JOBS[@]}"; do
       run_job "$job"
