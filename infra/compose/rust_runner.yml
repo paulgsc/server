@@ -100,6 +100,29 @@ services:
     # The cleanup of last resort: whenever the runner exits, it comes back
     # with fresh tmpfs, IPC and PID namespaces.
     restart: unless-stopped
+    # Healthy while the runner answers a toolchain ask (RELEASE R5, #794), as
+    # its client asks it: as file_host's uid and gid (10000:10001, see the
+    # head of this file), which the probe drops to with setpriv, with no
+    # supplementary groups. A probe is root's otherwise, and root is served
+    # too, so a refusal of file_host's uid would go unseen. It is a request
+    # like any other (RX3: one at a time, tidied after), never a program's,
+    # so it spends no program-uid process and needs no network (RX1). A job
+    # in progress holds it up to the runner's job deadline (132 s); `ask`
+    # waits ASK_TIMEOUT (137 s) and the probe's timeout outlasts both, so a
+    # busy runner is not an unhealthy one. Unhealthy restarts nothing here; the deploy
+    # gate reads it.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          echo '{"ask":"toolchain"}'
+          | setpriv --reuid 10000 --regid 10001 --clear-groups rust-runner ask
+          | grep -q '"answer":"toolchain"'
+      interval: 30s
+      timeout: 150s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
     # PID 1 ignores SIGTERM (no handler), and holds nothing to flush.
     stop_signal: SIGKILL
     logging:
