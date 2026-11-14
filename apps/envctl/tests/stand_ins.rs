@@ -128,7 +128,9 @@ case "$1" in
 esac
 "##;
 
-/// Where the deploy keeps a release's tree, under the fixture's `HOME`.
+/// The deploy's state directory, and a release's tree in it, under the
+/// fixture's `HOME`.
+const STATE_DIR: &str = "home/.local/state/server-deploy";
 const RELEASE_TREE: &str = "home/.local/state/server-deploy/releases/stand-in";
 
 struct Fixture {
@@ -141,9 +143,10 @@ impl Fixture {
 	fn new(name: &str) -> std::io::Result<Self> {
 		let root = std::env::temp_dir().join(format!("envctl-stand-ins-{name}-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&root);
-		// The checkout is a release's tree under the deploy's state directory
-		// in `HOME`, the one tree home's `up` and `compose` run on as given
-		// (R6d, #870): these tests are of what they do there.
+		// The checkout is a release's tree under the deploy's state directory,
+		// which `envctl` is told of as the deploy tells it: home's `up` and
+		// `compose` run on it as given (R6d, #870), and these tests are of
+		// what they do there.
 		let repo = root.join(RELEASE_TREE);
 		let bin = root.join("bin");
 		fs::create_dir_all(repo.join("infra/env"))?;
@@ -171,6 +174,8 @@ impl Fixture {
 		command
 			.arg("--repo")
 			.arg(&self.repo)
+			.arg("--release-state")
+			.arg(self.root.join(STATE_DIR))
 			.args(args)
 			.env_clear()
 			.env("HOME", self.root.join("home"))
@@ -649,4 +654,40 @@ fn a_value_wrapped_in_quotes_is_named_and_never_shown() {
 	assert!(run.status.success(), "named, never refused: {shown}");
 	assert!(shown.contains("deploy/home/tools.sops.env: DATABASE_URL wrapped in quotes"), "{shown}");
 	assert!(!shown.contains("sqlite"), "never the value: {shown}");
+}
+
+#[test]
+fn home_runs_only_the_release_last_applied() {
+	let fixture = Fixture::new("applied").unwrap();
+	// As the owner runs it: not the deploy, so no state directory is named.
+	let run = |home: &Path, args: &[&str]| {
+		let mut command = Command::new(env!("CARGO_BIN_EXE_envctl"));
+		command
+			.arg("--repo")
+			.arg(&fixture.repo)
+			.args(args)
+			.env_clear()
+			.env("HOME", home)
+			.env("PATH", format!("{}:/usr/bin:/bin", fixture.bin.display()));
+		printed(&command.output().unwrap())
+	};
+	let home = fixture.root.join("home");
+	// From a release's tree, only the deploy runs.
+	for args in [
+		&["up", "--role", "home"][..],
+		&["compose", "--role", "home", "--", "up", "-d"],
+		&["compose", "--role", "home", "--", "ps"],
+	] {
+		let said = run(&home, args);
+		assert!(said.contains("only the deploy runs"), "{args:?}: {said}");
+	}
+	// From a checkout, with no release applied: refused, naming the deploy,
+	// and nothing is made.
+	let elsewhere = fixture.root.join("elsewhere");
+	let said = run(&elsewhere, &["up", "--role", "home"]);
+	assert!(said.contains("`make home-deploy`"), "{said}");
+	assert!(!elsewhere.exists());
+	// Another role runs as given.
+	let said = run(&elsewhere, &["compose", "--role", "dev", "--", "ps"]);
+	assert!(!said.contains("`make home-deploy`") && !said.contains("only the deploy runs"), "{said}");
 }

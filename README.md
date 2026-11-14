@@ -471,10 +471,11 @@ trees compose reads, so a fix on main to its compose files or
 host (or envctl, with a `git pull`), remove its entry from
 `failed-releases.json`. On home, `make up` and `make compose` run the release
 last applied, from its tree under `releases/`, never the checkout's
-`deploy/home/release.json` (docs/release.md, RL12): `make up` restarts what
-runs, under the deploy's lock, and a `git pull` changes nothing until
-`make home-deploy` applies main. Before any release is applied they refuse
-and name `make home-deploy`.
+`deploy/home/release.json` (docs/release.md, RL12), checked against that
+tree's own schemas: `make up` restarts what runs, under the deploy's lock (as
+does a `make compose` that changes containers), and a `git pull` changes
+nothing they start until `make home-deploy` applies main. Before any release
+is applied they refuse and name `make home-deploy`.
 
 **The database is never restored automatically** (owner, 2026-11-10). A
 migration that ran stays applied, and the previous image serves the

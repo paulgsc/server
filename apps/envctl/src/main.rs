@@ -60,6 +60,11 @@ struct Cli {
 	/// and passes the owner's checkout here (C344; docs/release.md, RL10).
 	#[arg(long, global = true)]
 	state_root: Option<PathBuf>,
+	/// The deploy's own `up`, on a release's tree: the state directory that
+	/// keeps it. Without it, home's `up` and `compose` run the release last
+	/// applied (R6d, #870).
+	#[arg(long, global = true, hide = true)]
+	release_state: Option<PathBuf>,
 	#[command(subcommand)]
 	command: Command,
 }
@@ -382,15 +387,31 @@ fn compose_on(repo: &Path, deployment: &Deployment, env_dir: &Path, args: &[Stri
 /// The repository envctl reads and the project compose runs as, for `up` and
 /// `compose`: on home, the tree of the release last applied (R6d, #870), from
 /// the owner's state directory, the deploy's own; else the checkout as given.
-/// The release it returns holds the deploy's lock, with `lock`, until dropped.
-fn on_stack(repo: &Path, role: &str, shell: &IndexMap<String, String>, lock: bool) -> Result<(PathBuf, Option<String>, Option<deploy::AppliedStack>)> {
+/// The release it returns holds the deploy's lock, where the command changes
+/// containers, until dropped.
+fn stack_of(
+	repo: PathBuf,
+	command: &Command,
+	release_state: Option<&Path>,
+	shell: &IndexMap<String, String>,
+) -> Result<(PathBuf, Option<String>, Option<deploy::AppliedStack>)> {
+	let (role, lock) = match command {
+		Command::Up { role, .. } => (role, true),
+		Command::Compose { role, args, .. } => {
+			if let Some(why) = compose::home_refusal(role, args) {
+				bail!("{why}");
+			}
+			(role, compose::changes_containers(args))
+		}
+		_ => return Ok((repo, None, None)),
+	};
 	let home = shell.get("HOME").filter(|home| Path::new(home).is_absolute());
-	if role == "home" && home.is_none() {
+	if role == "home" && home.is_none() && release_state.is_none() {
 		bail!("HOME is not an absolute path, so the deploy's record of the release last applied cannot be found");
 	}
-	let state_dir = deploy::default_state_dir(None, home.map(String::as_str));
-	let Some(applied) = deploy::applied_stack(repo, &state_dir, role, lock)? else {
-		return Ok((repo.to_owned(), None, None));
+	let state_dir = release_state.map_or_else(|| deploy::default_state_dir(None, home.map(String::as_str)), Path::to_path_buf);
+	let Some(applied) = deploy::applied_stack(&repo, &state_dir, role, lock, release_state.is_some())? else {
+		return Ok((repo, None, None));
 	};
 	eprintln!(
 		"{}: the release last applied (main {}), from its tree; `make home-deploy` applies main's",
@@ -420,6 +441,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
 	if matches!(cli.command, Command::Deploy { .. }) {
 		return run_deploy(repo, &shell, cli.command);
 	}
+	// Home's `up` and `compose` read the release's tree, its schemas included.
+	let (repo, project, _applied) = stack_of(repo, &cli.command, cli.release_state.as_deref(), &shell)?;
 	let schemas = schema::load(&repo.join("infra/env"))?;
 	let sops_program = sops::program(&shell);
 	match cli.command {
@@ -428,9 +451,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			let deployment = deployment(&repo, &state_root, &role, &raw, Path::new("$XDG_RUNTIME_DIR/server"), &sops_program)?;
 			Ok(exit(!check_preflight(&repo, &schemas, &raw, &deployment)?))
 		}
-		Command::Up { role, env_dir } => {
+		Command::Up { role, env_dir, .. } => {
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
-			let (repo, project, _applied) = on_stack(&repo, &role, &shell, true)?;
 			let raw = compose::config(&repo).context("docker compose config failed, so no service was checked")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
 			if !check_preflight(&repo, &schemas, &raw, &deployment)? {
@@ -441,11 +463,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, project.as_deref())
 		}
 		Command::Compose { role, env_dir, args } => {
-			if let Some(why) = compose::home_refusal(&role, &args) {
-				bail!("{why}");
-			}
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
-			let (repo, project, _applied) = on_stack(&repo, &role, &shell, false)?;
 			let raw = compose::config(&repo).context("docker compose config failed")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
 			compose_on(&repo, &deployment, &env_dir, &args, &shell, project.as_deref())

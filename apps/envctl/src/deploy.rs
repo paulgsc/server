@@ -874,17 +874,22 @@ pub(crate) struct AppliedStack {
 }
 
 /// The release last applied on home, for `up` and `compose` from `checkout`.
-/// None where they run as given: a role other than home, and a release's own
-/// tree under the state directory's `releases/`, which only the deploy's own
-/// `up` runs on. A home with no release applied is refused, naming
-/// `make home-deploy`, so nothing on home starts from the checkout's release.
-pub(crate) fn applied_stack(checkout: &Path, state_dir: &Path, role: &str, lock: bool) -> Result<Option<AppliedStack>> {
+/// None where they run as given: a role other than home, and the deploy's
+/// own `up` (`deploy`: it names its state directory) on a release's tree
+/// under that directory's `releases/`. Anything else run from such a tree is
+/// refused: its untracked state is the checkout's (RL10). A home with no
+/// release applied is refused, naming `make home-deploy`, so nothing on home
+/// starts from the checkout's release.
+pub(crate) fn applied_stack(checkout: &Path, state_dir: &Path, role: &str, lock: bool, deploy: bool) -> Result<Option<AppliedStack>> {
 	if role != "home" {
 		return Ok(None);
 	}
 	let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
 	if real(checkout).starts_with(real(state_dir).join("releases")) {
-		return Ok(None);
+		if deploy {
+			return Ok(None);
+		}
+		anyhow::bail!("{} is a release's tree, which only the deploy runs; run this from the checkout", checkout.display());
 	}
 	let none = || {
 		anyhow::anyhow!(
@@ -1232,6 +1237,8 @@ impl Host for RealHost {
 			tree.display().to_string(),
 			"--state-root".to_owned(),
 			self.checkout.display().to_string(),
+			"--release-state".to_owned(),
+			self.state.display().to_string(),
 			"up".to_owned(),
 			"--role".to_owned(),
 			self.role.clone(),
@@ -2516,14 +2523,14 @@ mod tests {
 		let state = dir.join("state");
 
 		// None applied: refused, naming the deploy, and nothing is made.
-		let refused = applied_stack(&checkout, &state, "home", true).err().unwrap().to_string();
+		let refused = applied_stack(&checkout, &state, "home", true, false).err().unwrap().to_string();
 		assert!(refused.contains("`make home-deploy`"), "{refused}");
 		assert!(!state.exists());
 
 		// The checkout is at serial 2; the state says serial 1 was applied.
 		std::fs::create_dir_all(&state).unwrap();
 		std::fs::write(state.join("applied.json"), json!({"commit": first, "previous": null}).to_string()).unwrap();
-		let applied = applied_stack(&checkout, &state, "home", true).unwrap().unwrap();
+		let applied = applied_stack(&checkout, &state, "home", true, false).unwrap().unwrap();
 		assert_eq!(applied.commit, first);
 		assert_eq!(applied.tree, state.join("releases").join(&first));
 		assert_eq!(release::read(&applied.tree, "home").unwrap().unwrap().serial, 1);
@@ -2535,9 +2542,13 @@ mod tests {
 		assert!(held.is_err());
 		drop(applied);
 
-		// The deploy's own `up` on a release's tree, and another role, run as given.
-		assert!(applied_stack(&state.join("releases").join(&first), &state, "home", false).unwrap().is_none());
-		assert!(applied_stack(&checkout, &state, "dev", true).unwrap().is_none());
+		// The deploy's own `up` on a release's tree, and another role, run as
+		// given; anything else on a release's tree is refused.
+		let tree = state.join("releases").join(&first);
+		assert!(applied_stack(&tree, &state, "home", false, true).unwrap().is_none());
+		let refused = applied_stack(&tree, &state, "home", false, false).err().unwrap().to_string();
+		assert!(refused.contains("only the deploy runs"), "{refused}");
+		assert!(applied_stack(&checkout, &state, "dev", true, false).unwrap().is_none());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 

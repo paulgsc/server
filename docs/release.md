@@ -121,12 +121,15 @@ per CLAUDE.md, "Drift is loud, not silent".
   refusal has a test. `make up` and `make compose` on home run the release
   last applied (`applied.json` in the deploy's state directory), from its own
   tree and under the stack's project, never the checkout's
-  `deploy/home/release.json`, which `make home-deploy` does not move; `make up`
-  holds the deploy's lock while it runs. So a restart starts what runs and
-  nothing else. With no release applied they refuse, naming
-  `make home-deploy` (R6d, #870, C350; `deploy::applied_stack`). Only the
-  deploy's own `up`, on a release's tree under the state directory's
-  `releases/`, runs as given.
+  `deploy/home/release.json`, which `make home-deploy` does not move, and they
+  check it against that tree's own schemas. `make up`, and any `make compose`
+  command that may create, replace or stop containers, holds the deploy's lock
+  while it runs (`logs`, `ps`, `exec` and the other reads do not). So a
+  restart starts what runs and nothing else, and never during a deploy. With
+  no release applied they refuse, naming `make home-deploy` (R6d, #870, C350;
+  `deploy::applied_stack`). Only the deploy's own `up`, which names its state
+  directory, runs on a release's tree under that directory's `releases/` as
+  given; anything else run from such a tree is refused.
 
 ## Constraints
 
