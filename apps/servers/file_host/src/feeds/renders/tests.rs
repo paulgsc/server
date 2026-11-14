@@ -234,6 +234,7 @@ fn each_episode_is_in_one_place() {
 			at: NOW - 15 * 86_400,
 			template: None,
 			expires_at: None,
+			bytes: None,
 		}]
 	);
 	assert_eq!(read.failed.len(), 1);
@@ -451,7 +452,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	std::fs::write(status.join("job.state"), worker_text("paused", NOW - 10, 600)).unwrap();
 	std::fs::write(status.join("lane"), b"verb=pause\nwhy=busy\nstops=0\nstuck=false\nat=1794139198\n").unwrap();
 	let folders = Folders {
-		feeds: vec![(Feed::Call, renders, status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
+		feeds: vec![(Feed::Call, renders.clone(), status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
 		clip_walks: None,
 		previews: None,
 		cards_essays: None,
@@ -469,6 +470,15 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	assert_eq!((now.key.as_str(), now.state, now.held_by), ("2026-11-06", Phase::Paused, Some(HeldBy::Busy)));
 	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9);
 	assert_eq!(read.done.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["2026-10-30"]);
+	assert_eq!(read.done[0].bytes, Some(5), "a done call's video says its size");
+	// A feed's download follows a link to a plain file (`feeds::videos`), so
+	// its size is the file the link reaches.
+	let video = renders.join("2026-10-30").join("call.mp4");
+	let elsewhere = dir.path().join("elsewhere.mp4");
+	std::fs::write(&elsewhere, b"the linked video").unwrap();
+	std::fs::remove_file(&video).unwrap();
+	std::os::unix::fs::symlink(&elsewhere, &video).unwrap();
+	assert_eq!(read_now().await.done[0].bytes, Some(16), "a linked call video's size is what the download serves");
 	assert_eq!(read.waiting, []);
 	assert_eq!(
 		read.coming,
@@ -517,6 +527,7 @@ async fn a_clips_walks_are_on_the_board_as_episodes_are() {
 		read.done.iter().map(|e| (e.feed.as_str(), e.key.as_str())).collect::<Vec<_>>(),
 		[("clip-walk", "ledger-wake-after")]
 	);
+	assert_eq!(read.done[0].bytes, None, "a walk's walk.json is no video: no size");
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["ledger-wake-before"]);
 	assert_eq!(read.waiting, [], "the walk in progress is not also waiting, and what isn't a walk is not read");
 	assert_eq!(read.coming, [], "a walk is expected on no day");
@@ -551,16 +562,31 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 		feeds: vec![],
 		clip_walks: None,
 		previews: None,
-		cards_essays: Some((renders, status)),
+		cards_essays: Some((renders.clone(), status)),
 		lane,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
 	let shelf = |episodes: &[Episode]| episodes.iter().map(|e| (e.feed.clone(), e.key.clone())).collect::<Vec<_>>();
 	assert_eq!(shelf(&read.done), [(String::from("cards-essay"), String::from("zfs-2026-11-02"))]);
+	// Its size, from the stat that dates it: the total the phone's ranged
+	// fetch counts against.
+	assert_eq!(read.done[0].bytes, Some(5));
+	assert_eq!(serde_json::to_value(&read.done[0]).unwrap()["bytes"], serde_json::json!(5), "the phone reads it as `bytes`");
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["nixos-upgrade-2026-11-07"]);
 	assert_eq!(shelf(&read.waiting), [(String::from("cards-essay"), String::from("rust-scratchpad-2026-11-08"))]);
+	assert_eq!(read.waiting[0].bytes, None, "a waiting essay has no video yet");
 	assert_eq!(read.waiting[0].template, None, "an essay names no template");
 	assert_eq!(read.coming, [], "an essay is expected on no day");
+	// A link where the video goes is not one the download serves: done, as
+	// before, with no size.
+	let video = renders.join("zfs-2026-11-02").join(crate::cards_essays::VIDEO);
+	let elsewhere = dir.path().join("elsewhere.mp4");
+	std::fs::write(&elsewhere, b"not the video").unwrap();
+	std::fs::remove_file(&video).unwrap();
+	std::os::unix::fs::symlink(&elsewhere, &video).unwrap();
+	let read = super::read(&db, &folders, "", NOW).await.unwrap();
+	assert_eq!(shelf(&read.done), [(String::from("cards-essay"), String::from("zfs-2026-11-02"))]);
+	assert_eq!(read.done[0].bytes, None, "a link's size is not the video's");
 }
 
 #[tokio::test]
@@ -646,7 +672,7 @@ async fn a_template_s_previews_are_on_the_board_while_home_keeps_them() {
 	assert_eq!(now.template.as_deref(), Some("conference-call"));
 	assert_eq!(
 		serde_json::to_value(&read.done[0]).unwrap(),
-		serde_json::json!({ "feed": "preview", "key": ready, "at": NOW - 3_600, "template": "conference-call", "expiresAt": NOW - 3_600 + 86_400 })
+		serde_json::json!({ "feed": "preview", "key": ready, "at": NOW - 3_600, "template": "conference-call", "expiresAt": NOW - 3_600 + 86_400, "bytes": 3 })
 	);
 	assert_eq!(
 		serde_json::to_value(&read.waiting[0]).unwrap(),
