@@ -47,8 +47,9 @@
 #
 # And a cards essay (CARDS7, #854): each key file_host gave is recorded from
 # its cut list, oldest day first whatever its name, kept whole in
-# renders/cards-essay without its cache; a file of another shape is never
-# read, and one the recorder refuses keeps its words as its failed.log.
+# renders/cards-essay without its cache, each scene said by home's Kokoro
+# speaker as the call's are (EXPLAIN6, #878); a file of another shape is
+# never read, and one the recorder refuses keeps its words as its failed.log.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -1044,6 +1045,12 @@ check "and kept whole in renders/cards-essay" \
 check "without its cache, and its work gone" \
   test ! -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cache" -a ! -e "$ROOT/renders/cards-essay-work/zfs-2026-11-02"
 check "with the caps every job has" grep -qx -- --max-video-mb "$FAKE/args-cards"
+# Said by home's speaker, as the call is (EXPLAIN6, #878): a spoken cards
+# essay's scenes, its chapters' intros included, are Kokoro's, so its
+# recorder is handed Kokoro (a silent v1 essay just says nothing).
+check "and said by home's Kokoro speaker, as the call is (EXPLAIN6)" \
+  test "$(grep -A1 -xF -- --voices "$FAKE/args-cards" | sed -n 2p) $(grep -A1 -xF -- --speaker "$FAKE/args-cards" | sed -n 2p)" \
+  = "kokoro http://kokoro:8880"
 run_job cards-essay > "$SCRATCH/pass.out" 2>&1
 check "both essays are made, once each, and no other file is read" test "$(wc -l < "$FAKE/cards-runs")" -eq 2 \
   -a -e "$ROOT/renders/cards-essay/nixos-upgrade-2026-11-14/cards.mp4"
@@ -1232,6 +1239,13 @@ check "and compose takes it from the release" \
   grep -qE '^    image: \$\{IMAGE_RENDER:\?' "$COMPOSE"
 check "the speaker is built from a base pinned by digest" \
   grep -qE '^FROM [^ ]+@sha256:[0-9a-f]{64}$' "$HERE/../docker/Dockerfile.kokoro"
+# Every job waits on the speaker alike (EXPLAIN6, #878): the render
+# container, whose loop runs the call's job and the cards essay's, starts
+# only once `kokoro` has, so no job is recorded before its speaker is there.
+check "the render waits on the speaker, for every job alike" \
+  test "$(awk '/^  render:/ { r = 1; next } r && /^  [a-z]/ { r = 0 }
+    r && /^    depends_on:/ { d = 1; next } r && d && /^    [a-z]/ { d = 0 }
+    r && d' "$COMPOSE" | grep -A1 -xF '      kokoro:' | sed -n 2p | tr -d ' ')" = "condition:service_started"
 check "the stage is the image's own, never a container beside it" \
   test -z "$(grep -E '^  call-stage:|"call-stage"|--app ' "$COMPOSE" "$RELEASE" "$HERE/render-calls.sh")"
 

@@ -196,8 +196,11 @@ like the others: the motion replays an app's scripted walk in Chromium and
 keeps its stills, no speaker and no video, so it is the smallest job the
 lane admits, measured like any other once it has run. A cards essay
 (CARDS7, #854) is batch class too: the recorder draws each card on the
-stage's burn-ins page in Chromium and renders the video with ffmpeg, with no
-speaker, measured like any other once it has run. `infra/render/render-calls.test.sh` holds each
+stage's burn-ins page in Chromium, each scene of a spoken (v2) essay said
+by home's speaker as the call's are (EXPLAIN6, #878; an older v1 essay is
+silent), and renders the video with ffmpeg, measured like
+any other once it has run. Its declared peak is every job's, the speaker's
+room included, so voicing it changed neither its peak nor its class. `infra/render/render-calls.test.sh` holds each
 point below with a fake lane and a recorder slow enough to be caught half
 way; CI runs it on every PR.
 
