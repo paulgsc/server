@@ -71,7 +71,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   judge as a warning. www is not run on home (call-stage went with #802), so
   it is in no release; an image that joins from some-ui later joins
   `SOURCES` only with its `requires` labels.
-- **RL8. Every requirement is met inside the set.** Each image's
+- **RL9. Every requirement is met inside the set.** Each image's
   `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
   the same release ("Constraints", below). CI checks it from the registry by
   digest (`scripts/check_release.py`, Lint's `Release set` job, on every pull
