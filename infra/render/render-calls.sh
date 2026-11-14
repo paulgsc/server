@@ -255,7 +255,8 @@ episodes() {
   case $1 in
     call)
       # Each week, then its later parts once its first job has said how
-      # many: a week's parts render in order, before the next week's.
+      # many. Within a pass each week's parts are listed in order; a week's
+      # later parts first appear in the pass after its first job ran.
       local part of
       for entry in "$INPUT"/*.json; do
         [ -e "$entry" ] || continue
@@ -1015,6 +1016,11 @@ prune_week() {
       rm -rf "$part"
     fi
   done
+  # A week first worked as one part (by a worker from before parts) and
+  # found since to be more: what it left beside the parts is no part's.
+  if [ "$(parts_known "$from")" -gt 1 ] && [ -d "$WORK/$from" ]; then
+    find "$WORK/$from" -mindepth 1 -maxdepth 1 ! -name 'part-*' -exec rm -rf {} +
+  fi
   if ! compgen -G "$WORK/$from/part-*" > /dev/null &&
     { [ -e "$RENDERS/$from/$VIDEO" ] || ! holds call "$from"; } &&
     [ "$(parts_known "$from")" -eq 1 ]; then
@@ -1039,6 +1045,9 @@ failed_recently() {
 render_one() {
   local job=$1 key=$2 outcome
   [ -e "$RENDERS/$key/$VIDEO" ] && return 0
+  # Let go (a part of a call's week marked so) or no longer given: no job is
+  # named for it, so the lane never sees one it will not admit.
+  holds "$job" "$key" || return 0
   failed_recently "$job" "$key" && return 0
   echo "rendering the $job of $key"
   mkdir -p "$WORK" && prune_work "$job" "$key"

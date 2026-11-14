@@ -310,6 +310,11 @@ pub struct Folders<'a> {
 /// A storage failure, or a file the drive would not remove. The receipt is
 /// kept then, and asking for the step again finishes it.
 pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders<'_>, key: &str, step: Step, now: &str) -> Result<LetGo, LetGoError> {
+	// How many parts, read strictly: a parts file the drive won't give is
+	// never taken for a week of one video (`call_weeks::render::parts_read`).
+	if let (Feed::Call, Some((week, _))) = (feed, video::split_key(key)) {
+		crate::call_weeks::render::parts_read(folders.renders, week).await?;
+	}
 	let Some((week, _, of)) = part_of(feed, folders.renders, key).await else {
 		return Ok(LetGo::NoEpisode);
 	};
@@ -663,6 +668,28 @@ mod tests {
 		assert!(left.is_empty(), "its marks go with it");
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(video::weeks_let_go(&mut conn).await.unwrap(), ["2026-11-06"]);
+	}
+
+	/// A parts file the drive won't read as a count is never taken for a week
+	/// of one video: letting a part go refuses, writes no receipt, and leaves
+	/// the week's file for the worker.
+	#[tokio::test]
+	async fn a_parts_file_that_does_not_read_lets_nothing_go() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (renders, weeks) = (dir.path().join("call"), dir.path().join("call-weeks"));
+		std::fs::create_dir_all(&weeks).unwrap();
+		std::fs::write(weeks.join("2026-11-06.json"), b"{}").unwrap();
+		hold(&pool, "2026-11-06", "2026-11-12").await;
+		render(&renders, "2026-11-06");
+		record_link(&pool, Feed::Call, "", &renders, "2026-11-06", "https://youtu.be/aaaaaaaaaaa", NOW)
+			.await
+			.unwrap();
+		std::fs::write(renders.join("2026-11-06.parts"), b"three\n").unwrap();
+		let folders = Folders { renders: &renders, input: &weeks };
+		assert!(let_go(&pool, Feed::Call, "", folders, "2026-11-06", Step::Video, NOW).await.is_err());
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(video::receipt(&mut conn, "2026-11-06", Step::Video).await.unwrap(), None, "no receipt");
+		assert!(weeks.join("2026-11-06.json").exists() && renders.join("2026-11-06").join(Feed::Call.video()).exists());
 	}
 
 	#[tokio::test]

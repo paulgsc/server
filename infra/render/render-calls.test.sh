@@ -1139,6 +1139,8 @@ check "and is never tried again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
 # a week of one part records exactly as before, with no --part.
 fresh series 2026-11-06
 echo 3 > "$FAKE/parts-2026-11-06"
+# Work a worker from before parts left, flat, for the week: no part's.
+mkdir -p "$ROOT/renders/call-work/2026-11-06/steps" && echo said > "$ROOT/renders/call-work/2026-11-06/steps/said"
 pass
 check "a series' first pass asks how many parts, once, and keeps it" \
   test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3 -a "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1
@@ -1172,6 +1174,10 @@ touch "$ROOT/weeks/2026-11-06-p2.let-go"
 pass
 check "a part let go is never rendered" test ! -e "$ROOT/renders/call/2026-11-06-p2"
 check "nor tried" test "$(runs_of 2026-11-06-p2)" -eq 0
+seq_before=$(cat "$ROOT/renders/call-worker/job-seq")
+pass
+check "nor named a job the lane would see" \
+  test "$(cat "$ROOT/renders/call-worker/job-seq")" = "$seq_before" -a ! -e "$ROOT/renders/call-worker/job"
 
 fresh series-refused 2026-11-06
 touch "$FAKE/parts-refuse"

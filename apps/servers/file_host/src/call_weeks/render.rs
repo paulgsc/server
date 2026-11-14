@@ -139,10 +139,12 @@ fn drive(path: &Path) -> Option<(u64, u64)> {
 	Some((stat.f_bavail.saturating_mul(block), stat.f_blocks.saturating_mul(block)))
 }
 
-/// What the worker has made of the weeks home holds.
+/// What the worker has made of the weeks home holds, counted by episode:
+/// each part of a week that is a series counts as one (paulgsc/some-ui#2918),
+/// a week of one video as one, as before.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Renders {
-	/// Weeks home holds.
+	/// Episodes (weeks, or their parts) home holds.
 	pub held: usize,
 	/// Of those, weeks whose video the owner let go from My data (CW8): never
 	/// waiting, and never rendered again.
@@ -175,15 +177,30 @@ pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<R
 /// first part. A week it has not looked at yet, or one rendered before
 /// parts, is one part, as every week was.
 pub async fn parts(renders: &Path, week: &str) -> u32 {
-	let Ok(text) = tokio::fs::read_to_string(renders.join(String::from(week) + PARTS)).await else {
-		return 1;
+	parts_read(renders, week).await.unwrap_or(1)
+}
+
+/// [`parts`], strictly.
+///
+/// A parts file that is there but can't be read, or that names no count,
+/// is an error rather than one part. Letting a part go must never take a
+/// series for a week of one video, which would let the whole week go with
+/// its first part.
+///
+/// # Errors
+/// The drive refusing the read, or a file that names no count.
+pub async fn parts_read(renders: &Path, week: &str) -> std::io::Result<u32> {
+	let text = match tokio::fs::read_to_string(renders.join(String::from(week) + PARTS)).await {
+		Ok(text) => text,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+		Err(error) => return Err(error),
 	};
 	text
 		.trim()
 		.parse::<u32>()
 		.ok()
 		.filter(|of| (1..=call_week_repo::video::MOST_PARTS).contains(of))
-		.unwrap_or(1)
+		.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "a week's parts file names no count of parts"))
 }
 
 /// The file beside a week's folder that says how many parts it is.
