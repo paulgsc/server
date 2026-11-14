@@ -39,7 +39,9 @@
 //!   data ([`crate::delete`], whose receipt then lists
 //!   [`crate::delete::CONVEYOR_HISTORY`] among what went).
 //! - **Written only by `POST /voice-notes/:id/station`** (`file_host`'s
-//!   `handlers::voice`).
+//!   `handlers::voice`), and by the mailbox poller when the routine answers
+//!   a pickup ([`pick_up`], CONVEYOR3 paulgsc/some-ui#2875): the same
+//!   [`advance`], from the ready move the answer names by number.
 
 use crate::{instant, VoiceError};
 use serde::Serialize;
@@ -133,7 +135,8 @@ fn printable(text: &str) -> bool {
 }
 
 /// Whether `issue` reads `<owner>/<repo>#<n>`.
-fn is_issue(issue: &str) -> bool {
+#[must_use]
+pub fn is_issue(issue: &str) -> bool {
 	let name = |part: &str| !part.is_empty() && part.len() <= 100 && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
 	let Some((repo, number)) = issue.split_once('#') else {
 		return false;
@@ -404,6 +407,44 @@ pub async fn advance(conn: &mut SqliteConnection, subject: &str, note_id: &str, 
 	Ok(Advanced::Moved(TakeStation::of(note_id, moves)))
 }
 
+/// Records that the routine filed `subject`'s take `note_id` as `issue`
+/// (`<owner>/<repo>#<n>`), from the ready-for-pickup move numbered `seq`,
+/// recorded by home at `now`.
+///
+/// The routine's answer to a pickup (paulgsc/some-ui#2875, CONVEYOR3)
+/// names the ready move by its number, never by a clock (docs/conveyor.md
+/// invariant 2), so it is [`advance`] with that move as the one the mover
+/// saw: the take moves to picked up only while its newest move is still
+/// `seq` at ready for pickup, and is otherwise [`Advanced::Stale`] and left
+/// where the owner put it. Its `at` is `now`, home's clock: the routine's
+/// is never asked. It sets no labels and no comment. `None`, writing
+/// nothing, when `issue` does not read `<owner>/<repo>#<n>` or `seq` is no
+/// move's number.
+///
+/// Run it in a `BEGIN IMMEDIATE` transaction, as [`advance`].
+///
+/// # Errors
+/// Any `sqlx` failure, or a stored move that does not read back; nothing is
+/// written then.
+pub async fn pick_up(conn: &mut SqliteConnection, subject: &str, note_id: &str, (seq, issue): (i64, &str), now: &str) -> Result<Option<Advanced>, VoiceError> {
+	if seq < 1 || !is_issue(issue) {
+		return Ok(None);
+	}
+	let Some(at) = instant(now) else {
+		return Ok(None);
+	};
+	let asked = Asked {
+		seq,
+		from: Station::ReadyForPickup,
+		to: Station::PickedUp,
+		at,
+		labels: None,
+		comment: None,
+		issue: Some(issue.to_owned()),
+	};
+	advance(conn, subject, note_id, &asked, now).await.map(Some)
+}
+
 /// A take at a station, as the conveyor page and the routine's pickup list
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -537,7 +578,7 @@ async fn in_the_oven(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec<
 
 #[cfg(test)]
 mod tests {
-	use super::{advance, ask, at_station, station, Advanced, Asked, Said, Station, AT_STATION};
+	use super::{advance, ask, at_station, pick_up, station, Advanced, Asked, Said, Station, AT_STATION};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -826,6 +867,37 @@ mod tests {
 	/// is earlier than the take's newest still lands when it names the newest
 	/// move, and a station lists its takes by when home stored their newest
 	/// move, whatever the phone's clock said.
+	/// CONVEYOR3: the routine's answer to a pickup moves the take to picked
+	/// up only from the ready move it names by number, with an issue that
+	/// reads, at home's clock; anything else writes nothing.
+	#[tokio::test]
+	async fn a_pickup_answer_moves_the_take_only_from_the_ready_move_it_names() {
+		let pool = pool().await;
+		take(&pool, A, "t1", "2026-11-12T00:00:00.000Z").await;
+		go(&pool, A, "t1", &asked(0, "in-the-oven", "ready-for-pickup", "2026-11-13T08:00:00Z")).await;
+		let mut conn = pool.acquire().await.unwrap();
+		for (seq, issue) in [(1, "not an issue"), (0, "paulgsc/some-ui#1"), (1, "paulgsc/some-ui#01")] {
+			assert_eq!(pick_up(&mut conn, A, "t1", (seq, issue), NOW).await.unwrap(), None, "{seq} {issue}");
+		}
+		assert_eq!(
+			pick_up(&mut conn, A, "t1", (2, "paulgsc/some-ui#1"), NOW).await.unwrap(),
+			Some(Advanced::Stale(Station::ReadyForPickup, 1))
+		);
+		assert_eq!(pick_up(&mut conn, B, "t1", (1, "paulgsc/some-ui#1"), NOW).await.unwrap(), Some(Advanced::NotHeld));
+		let Some(Advanced::Moved(moved)) = pick_up(&mut conn, A, "t1", (1, "paulgsc/some-ui#1"), NOW).await.unwrap() else {
+			panic!("picked up");
+		};
+		let newest = moved.history.last().unwrap();
+		assert_eq!(
+			(moved.station, moved.seq, newest.issue.as_deref(), newest.at.as_str()),
+			(Station::PickedUp, 2, Some("paulgsc/some-ui#1"), NOW)
+		);
+		assert_eq!(
+			pick_up(&mut conn, A, "t1", (1, "paulgsc/some-ui#2"), NOW).await.unwrap(),
+			Some(Advanced::Stale(Station::PickedUp, 2))
+		);
+	}
+
 	#[tokio::test]
 	async fn moves_are_ordered_by_number_never_by_a_clock() {
 		let pool = pool().await;

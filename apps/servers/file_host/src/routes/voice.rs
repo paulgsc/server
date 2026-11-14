@@ -132,6 +132,7 @@ where
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
 	Option<MeaningContext>: FromRef<S>,
+	crate::mailbox::Outbox: FromRef<S>,
 {
 	let table = RouteTable::new()
 		.put("/voice-notes/:id", handlers::put_note)

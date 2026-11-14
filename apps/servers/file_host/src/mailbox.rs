@@ -35,13 +35,16 @@
 //! What this module promises, as docs/identity.md invariant 19 states:
 //!
 //! - It reads only the folders in [`pass::READS`] (`brief`, `scene`, `drama`,
-//!   `run` and `leetype`), for one subject, the owner's account unless
+//!   `run`, `leetype` and `picked`), for one subject, the owner's account unless
 //!   `MAILBOX_SUBJECT` names another ([`pass_subject`]), and writes only
-//!   `mailbox_item`, through [`pass::run_once`].
+//!   `mailbox_item`, through [`pass::run_once`], and, for an answer to a
+//!   pickup, the take's `picked-up` move (`voice_repo::conveyor::pick_up`).
 //! - It puts only what is filed for the mailbox: the phone's decisions,
 //!   scouts and opened lessons, each transcript home heard in a voice note
 //!   (`transcript`), text only, and each finished `LeetType` session's log
-//!   (`leetype-log`), with no soundbite, both of which it files itself, and
+//!   (`leetype-log`), with no soundbite, and each Studio take ready for
+//!   pickup (`pickup`), its labels and what home heard, never its comment or
+//!   audio, all of which it files itself, and
 //!   the Jobs routine's index (`index`), its bookkeeping computed from those
 //!   same tables ([`index`]): a view, not a record, which home keeps no copy
 //!   of and never archives. The weekly call's index is the same kind of view,
