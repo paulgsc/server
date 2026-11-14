@@ -135,8 +135,9 @@ it, which a test holds equal to the Dockerfile's label:
 | `nats-subjects` (subjects and payloads; only subjects are pinned by a test) | orchestrator | file_host | `NATS_SUBJECTS_EPOCH`, `crates/ws-events/src/events/common/event_type.rs` |
 
 `render-folders` covers the folders render reads and file_host writes:
-`call-weeks`, `playoff-delta-episodes`, `preview-requests` and
-`rust-essays`. There is no `stage` edge: call-stage was removed (#802), and
+`call-weeks`, `playoff-delta-episodes`, `preview-requests`, `rust-essays`
+and `cards-essays` (#854, added at epoch 1: a new folder changes no layout
+an older render reads, and server's `render-calls.sh` names each file). There is no `stage` edge: call-stage was removed (#802), and
 render carries its own stage slice. kokoro writes both labels empty.
 
 - **RL8. Third-party images are pinned, and refresh alone, when due**

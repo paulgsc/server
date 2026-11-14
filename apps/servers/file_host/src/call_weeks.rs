@@ -163,7 +163,8 @@ async fn observe_renders(db: &sqlx::SqlitePool) {
 	// CallRenderCacheFull, count both jobs.
 	let pd = crate::pd_fills::render::disk().await;
 	let essays = crate::rust_essays::disk().await;
-	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await.and(&pd).and(&essays));
+	let cards = crate::cards_essays::disk().await;
+	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await.and(&pd).and(&essays).and(&cards));
 }
 
 /// The pass's one log line, when it added a week or something went wrong.

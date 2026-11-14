@@ -200,5 +200,5 @@ LABEL org.opencontainers.image.title="${APP_NAME}" \
 # The numbers are apps/servers/file_host/src/contract.rs's (contract,
 # render-folders), ws-events' NATS_SUBJECTS_EPOCH and rust_rounds_wire's
 # protocol::EPOCH; contract.rs's own test holds them equal.
-LABEL io.paulgsc.provides="contract=6,render-folders=1" \
+LABEL io.paulgsc.provides="contract=7,render-folders=1" \
       io.paulgsc.requires="nats-subjects=1,rust-runner-protocol=1"
