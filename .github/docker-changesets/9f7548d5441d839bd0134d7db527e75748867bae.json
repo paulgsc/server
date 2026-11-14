@@ -1,0 +1,47 @@
+{
+  "source_sha": "9f7548d5441d839bd0134d7db527e75748867bae",
+  "include": [
+    {
+      "name": "file_host",
+      "dockerfile": "./infra/docker/Dockerfile.server",
+      "repo_suffix": "server",
+      "needs_sqlx": true,
+      "needs_migrations": true
+    },
+    {
+      "name": "maishatu-obs",
+      "dockerfile": "./infra/docker/Dockerfile.obs",
+      "repo_suffix": "obs",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "orchestrator",
+      "dockerfile": "./infra/docker/Dockerfile.orchestrator",
+      "repo_suffix": "orchestrator",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "rust-runner",
+      "dockerfile": "./infra/docker/Dockerfile.rust-runner",
+      "repo_suffix": "rust-runner",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "kokoro",
+      "dockerfile": "./infra/docker/Dockerfile.kokoro",
+      "repo_suffix": "kokoro",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    },
+    {
+      "name": "dashboard-builder",
+      "dockerfile": "./infra/docker/Dockerfile.grafana.builder",
+      "repo_suffix": "dashboard-builder",
+      "needs_sqlx": false,
+      "needs_migrations": false
+    }
+  ]
+}
