@@ -192,7 +192,15 @@ def clean(after: str) -> None:
 	deadline = time.monotonic() + 5
 	while leftovers() and time.monotonic() < deadline:
 		time.sleep(0.2)
-	expect(leftovers() == [], f"{after} left processes behind: {leftovers()}")
+	# Only what is still there a moment later: Docker's healthcheck passes
+	# through a process or two PROBE_PROCESSES can't name (its `runc init`,
+	# setpriv between setresuid and exec) for milliseconds every 30 s, and a
+	# survivor is still there.
+	left = leftovers()
+	if left:
+		time.sleep(0.5)
+		left = [process for process in leftovers() if process in left]
+	expect(left == [], f"{after} left processes behind: {left}")
 	expect(files_left() == [], f"{after} left files behind: {files_left()}")
 
 
@@ -658,7 +666,7 @@ def check_hostile() -> None:
 	# 30 s (#794), so one may fall between any two lines.
 	answered = [line.split("rust-runner: ", 1)[-1] for line in logged]
 	tail = [line for line in answered if line != "toolchain"][-2:]
-	expect(tail[0].startswith("recorded ok in ") and tail[1:] == ["refused peer"] and answered[-1] == "toolchain", f"the runner's log: {tail}")
+	expect(len(tail) == 2 and tail[0].startswith("recorded ok in ") and tail[1:] == ["refused peer"] and answered[-1] == "toolchain", f"the runner's log: {tail}")
 	clean("queueing a request")
 	print("ok: a request a program queues on the socket is refused, unread")
 

@@ -136,12 +136,6 @@ STALE_AFTER=30
 # or is paused, its sign of life (#739). The Renders read takes a stamp older
 # than `feeds::renders::ALIVE_STALE` (60 s) as a worker gone.
 ALIVE_EVERY=10
-# How old the worker's own beat (`beat`, below) may be before Docker reads
-# the container unhealthy: call-render.yml's healthcheck, which the deploy
-# gates render on (#794). Its longest silence is a pass's EVERY sleep and
-# the listing and tidying around it; a wait or a render beats every
-# LANE_POLL.
-BEAT_STALE=300
 # How long a killed recorder is given to go before the worker goes on.
 KILL_WAIT=10
 # A recorder that fails this soon after a pause or a resume is taken to have
@@ -357,7 +351,10 @@ heartbeat() {
 # render takes. Not last-pass, which a render leaves to go stale on purpose,
 # and not job.alive, which only a job writes. It says only that the loop
 # turns: a recorder that hangs while the worker lives is still
-# CallRenderOverdue's.
+# CallRenderOverdue's. call-render.yml's healthcheck takes a beat older than
+# 300 s as a worker gone: the longest silence is a pass's EVERY sleep and the
+# listing and tidying around it, since a wait or a render beats every
+# LANE_POLL.
 beat() {
   local now
   now=$(date +%s)
