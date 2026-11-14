@@ -180,7 +180,9 @@ pub(crate) const STABLE_SECONDS: f64 = 60.0;
 
 /// What one reading says about one service of a release, `observed`
 /// seconds into the wait: [`judge`], except that a service without a
-/// healthcheck is ready once it has run [`STABLE_SECONDS`] with no restart.
+/// healthcheck is ready once it has run [`STABLE_SECONDS`] with no restart,
+/// unless it is a one-shot (restart policy `no`), which is ready only by
+/// exiting 0.
 pub(crate) fn judge_service(reading: &Reading, baseline_restarts: u64, observed: f64) -> Verdict {
 	match judge(reading, baseline_restarts) {
 		// A one-shot is ready once it has exited 0, never by running a while.
@@ -520,11 +522,15 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		// judged on containers it never replaced. compose's `up` fails on a
 		// one-shot that exited non-zero (grafana waits on dashboard-builder)
 		// before the gate reads anything, so that one-shot is named, and its
-		// log shown.
-		let one_shot = target.services().into_iter().find_map(|service| {
-			let reading = host.reading(&service);
+		// log shown: only one this pass judges, on the release's image, and
+		// with compose's own reason still pointed at, since an old exit on an
+		// unchanged image reads the same.
+		let one_shot = judged.iter().find_map(|(service, id)| {
+			let reading = host.reading(service);
 			match judge(&reading, u64::MAX) {
-				Verdict::Failed(why) if reading.restart_policy.as_deref() == Some("no") => Some((service, format!("envctl up failed: {why}"))),
+				Verdict::Failed(why) if reading.restart_policy.as_deref() == Some("no") && reading.image.as_ref() == Some(id) => {
+					Some((service.clone(), format!("envctl up failed (its reason is above); the one-shot: {why}")))
+				}
 				_ => None,
 			}
 		});
@@ -1456,7 +1462,12 @@ mod tests {
 					self.running.remove(service);
 					continue;
 				};
-				if self.running.get(service).map(|(running, _)| running) != Some(&id) {
+				// compose starts a stopped container again, one-shots included.
+				let exited = self
+					.running
+					.get(service)
+					.is_some_and(|(running, started)| (self.images[running].1)(self.clock.now() - started).0 == "exited");
+				if exited || self.running.get(service).map(|(running, _)| running) != Some(&id) {
 					self.running.insert(service.clone(), (id, self.clock.now()));
 				}
 			}
@@ -1552,7 +1563,10 @@ mod tests {
 				.filter(|service| self.running.contains_key(*service) && look(self, service).4 == "no")
 				.cloned()
 				.collect();
-			while one_shots.iter().any(|service| look(self, service).0 == "running") {
+			for _ in 0..3600 {
+				if !one_shots.iter().any(|service| look(self, service).0 == "running") {
+					break;
+				}
 				self.clock.sleep(1.0);
 			}
 			!one_shots.iter().any(|service| look(self, service).3 != Some(0))
@@ -1862,10 +1876,24 @@ mod tests {
 		assert_eq!(host.running["dashboard-builder"].0, "sha256:dashboard-builder-1");
 		assert_eq!(host.applied.as_deref(), Some("c1"));
 		assert!(
-			said_any(&said, "dashboard-builder did not come up: envctl up failed: the container is exited (code 2)"),
+			said_any(
+				&said,
+				"dashboard-builder did not come up: envctl up failed (its reason is above); the one-shot: the container is exited (code 2)"
+			),
 			"{said:?}"
 		);
 		assert!(host.calls.iter().any(|call| call == "logs dashboard-builder"), "its log is shown: {:?}", host.calls);
+	}
+
+	#[test]
+	fn an_up_that_fails_is_not_blamed_on_a_one_shot_that_failed_before() {
+		let mut host = serving(&with_one_shot(one_shot(5.0, 1)));
+		host.clock.sleep(10.0);
+		publish(&mut host, "c2", 2, &with_one_shot(one_shot(5.0, 0)));
+		host.up_fails_for = Some(2);
+		let (_, said) = run_deploy_with(&mut host, &Options::default());
+		assert!(said_any(&said, "up did not come up: envctl up failed (its reason is above)"), "{said:?}");
+		assert!(!said_any(&said, "dashboard-builder did not come up"), "{said:?}");
 	}
 
 	#[test]
