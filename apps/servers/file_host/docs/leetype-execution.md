@@ -381,6 +381,10 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     either container, a program included, so **the peer's uid is the
     primary defence**: each connection's `SO_PEERCRED` uid is checked before
     anything is read, and only file_host's (10000) and root's are served.
+    Besides the runner and a job's 10101 processes, the container holds only
+    Docker's healthcheck every 30 s (#794): a root shell that drops to
+    10000:10001 with `setpriv` and sends one toolchain `ask`, as file_host
+    would.
     No source is exempt and no request
     field changes how a program is treated (the request type denies unknown
     fields). The container's environment holds only the names

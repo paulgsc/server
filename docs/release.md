@@ -137,6 +137,7 @@ carry, against RL2.
 |---|---|
 | The release | `deploy/home/release.json` |
 | Compose reads it | `infra/compose/*.yml` (`${IMAGE_*}`), `apps/envctl/src/release.rs` |
+| What the deploy's gate reads: each service's `healthy` (R5, #794; file-host, kokoro, rust-runner, orchestrator, render) | `infra/compose/*.yml` (`healthcheck:`), render's beat in `infra/render/render-calls.sh` |
 | CI reconciles it | `scripts/release_lock.py`, `.github/workflows/release-lock.yml` |
 | Called after a server publish | `.github/workflows/publish-image-changesets.yml` (`release`) |
 | The set check | `scripts/check_release.py` (CI), `apps/envctl/src/release/constraints.rs` (deploy) |

@@ -83,9 +83,12 @@ USER orchestrator
 
 ENTRYPOINT ["/usr/local/bin/orchestrator"]
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep orchestrator || exit 1
+# Healthy while the /metrics listener answers 200, over bash's /dev/tcp:
+# the image has no HTTP client and no pgrep (the check this replaces, which
+# read every container `unhealthy`). infra/compose/orchestrator.yml states
+# the same probe, so a release's older image is judged by it too (#794).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9464 && printf 'GET /metrics HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3 && read -r -t 5 status <&3 && [[ $status == 'HTTP/1.'?' 200'* ]]"]
 
 # What this image provides and requires of the others in home's release
 # (RELEASE R3, #790; docs/release.md, "Constraints"): comma-separated
