@@ -55,7 +55,7 @@ struct Cli {
 	#[arg(long, global = true)]
 	repo: Option<PathBuf>,
 	/// The checkout whose untracked state compose mounts (`STATE_ROOT`:
-	/// file_host's data, logs and config, Grafana's built dashboards).
+	/// `file_host`'s data, logs and config, Grafana's built dashboards).
 	/// Default: `--repo`. The deploy runs compose on a release's worktree
 	/// and passes the owner's checkout here (C344; docs/release.md, RL9).
 	#[arg(long, global = true)]
@@ -519,7 +519,11 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 		Some(user) => Some(deploy::home_of(user)?),
 		None => shell.get("HOME").cloned(),
 	};
-	let xdg = if as_user_name.is_some() { None } else { shell.get("XDG_STATE_HOME").map(String::as_str) };
+	let xdg = if as_user_name.is_some() {
+		None
+	} else {
+		shell.get("XDG_STATE_HOME").map(String::as_str)
+	};
 	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(xdg, home.as_deref()));
 	let mut host = deploy::RealHost::new(repo, &state_dir, &role, as_user_name, as_user)?;
 	let clock = deploy::Monotonic::new();

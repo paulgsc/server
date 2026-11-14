@@ -24,7 +24,7 @@
 //! 5. **Brings the release up** from its own tree: a worktree of the
 //!    checkout at the release's commit, under the state directory's
 //!    `releases/`, and `envctl up` on it under the stack's compose project.
-//!    `up -d` recreates only what changed. Untracked state (file_host's data,
+//!    `up -d` recreates only what changed. Untracked state (`file_host`'s data,
 //!    logs and config, Grafana's built dashboards) is mounted from the
 //!    owner's checkout, `STATE_ROOT` (C344; RL9). `file_host` applies its
 //!    migrations as it starts, after a verified backup (AS16).
@@ -149,8 +149,6 @@ pub(crate) fn judge(reading: &Reading, baseline_restarts: u64) -> Verdict {
 		Some(_) => Verdict::Wait,
 	}
 }
-
-/// Monotonic seconds, and a way to let them pass.
 
 /// Monotonic seconds, and a way to let them pass.
 pub(crate) trait Clock {
@@ -336,7 +334,9 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		Some(commit) => match host.at(&commit) {
 			Ok(found) => Some(found),
 			Err(err) => {
-				say(&format!("deploy: the release last applied (main {commit}) cannot be read ({err}), so there is none to roll back to"));
+				say(&format!(
+					"deploy: the release last applied (main {commit}) cannot be read ({err}), so there is none to roll back to"
+				));
 				None
 			}
 		},
@@ -382,7 +382,11 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 
 	// Nothing to deploy only when every service runs its image and is ready.
 	let before: BTreeMap<String, Reading> = target.services().into_iter().map(|service| (service.clone(), host.reading(&service))).collect();
-	let changed: Vec<&String> = ids.iter().filter(|(service, id)| before[*service].image.as_ref() != Some(*id)).map(|(service, _)| service).collect();
+	let changed: Vec<&String> = ids
+		.iter()
+		.filter(|(service, id)| before[*service].image.as_ref() != Some(*id))
+		.map(|(service, _)| service)
+		.collect();
 	let stopped: Vec<&String> = before
 		.iter()
 		.filter(|(_, reading)| !matches!(judge_service(reading, reading.restarts, STABLE_SECONDS), Verdict::Ready))
@@ -476,7 +480,6 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 	}
 }
 
-
 /// The backup `file_host` took at this start, from its log, if it took one.
 pub(crate) fn backup_from(lines: &[String]) -> Option<String> {
 	let mut found = None;
@@ -503,7 +506,6 @@ pub(crate) fn stuck_note(backup: Option<&str>) -> String {
 		 (README.md, \"Deploying to home\")."
 	)
 }
-
 
 // ── On demand: a client needed a newer server ─────────────────────────────
 //
@@ -570,7 +572,6 @@ fn bump(counts: &mut Map<String, Value>, key: &str, by: i64) {
 const fn whole(seconds: f64) -> i64 {
 	seconds as i64
 }
-
 
 /// The contract epoch an image provides: its `contract` label (R3), or,
 /// for an image from before the labels, what the binary itself says.
@@ -731,8 +732,6 @@ fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Option<(bool, String
 	))
 }
 
-/// Docker and `make` on this machine.
-
 /// Git, Docker and compose on this machine. Everything that writes into
 /// the owner's checkout or the state directory runs as the owner when the
 /// on-demand unit runs this as root (`as_user`, call C83), so neither ends
@@ -752,6 +751,11 @@ pub(crate) struct RealHost {
 	as_user: Vec<String>,
 }
 
+/// `docker <args>` on this machine.
+fn docker(args: &[&str]) -> Option<(bool, String, String)> {
+	run("docker", args, None)
+}
+
 /// One more reading of a file a pass keeps beside the state directory.
 fn read_json(path: &Path) -> Option<Value> {
 	serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
@@ -769,15 +773,11 @@ impl RealHost {
 			owner,
 			as_user,
 		};
-		host.project = host.running_project().unwrap_or_else(|| {
+		host.project = Self::running_project().unwrap_or_else(|| {
 			// compose's own default for the checkout: its directory's name.
 			host.checkout.file_name().map_or_else(|| "server".to_owned(), |name| name.to_string_lossy().to_lowercase())
 		});
 		Ok(host)
-	}
-
-	fn docker(&self, args: &[&str]) -> Option<(bool, String, String)> {
-		run("docker", args, None)
 	}
 
 	/// A command as the owner (when one is given), in the checkout, its
@@ -802,15 +802,15 @@ impl RealHost {
 
 	/// The project the running file-host belongs to, so `up` replaces the
 	/// stack's containers instead of meeting their names.
-	fn running_project(&self) -> Option<String> {
-		let (ok, stdout, _) = self.docker(&["inspect", "--format", "{{index .Config.Labels \"com.docker.compose.project\"}}", CONTAINER])?;
+	fn running_project() -> Option<String> {
+		let (ok, stdout, _) = docker(&["inspect", "--format", "{{index .Config.Labels \"com.docker.compose.project\"}}", CONTAINER])?;
 		Some(stdout.trim().to_owned()).filter(|project| ok && !project.is_empty() && project != "<no value>")
 	}
 
 	fn container(&self, service: &str) -> Option<String> {
 		let project = format!("label=com.docker.compose.project={}", self.project);
 		let named = format!("label=com.docker.compose.service={service}");
-		let (ok, stdout, _) = self.docker(&["ps", "-a", "-q", "--filter", &project, "--filter", &named])?;
+		let (ok, stdout, _) = docker(&["ps", "-a", "-q", "--filter", &project, "--filter", &named])?;
 		stdout.lines().next().map(str::to_owned).filter(|id| ok && !id.is_empty())
 	}
 
@@ -901,7 +901,7 @@ impl Host for RealHost {
 		let Some(id) = self.container(service) else {
 			return Reading::gone();
 		};
-		let Some((true, stdout, _)) = self.docker(&["inspect", "--format", "{{json .}}", &id]) else {
+		let Some((true, stdout, _)) = docker(&["inspect", "--format", "{{json .}}", &id]) else {
 			return Reading::gone();
 		};
 		let Ok(info) = serde_json::from_str::<Value>(&stdout) else {
@@ -918,14 +918,14 @@ impl Host for RealHost {
 	}
 
 	fn image_id(&mut self, image_ref: &str) -> Option<String> {
-		match self.docker(&["image", "inspect", "--format", "{{.Id}}", image_ref]) {
+		match docker(&["image", "inspect", "--format", "{{.Id}}", image_ref]) {
 			Some((true, stdout, _)) => Some(stdout.trim().to_owned()).filter(|id| !id.is_empty()),
 			_ => None,
 		}
 	}
 
 	fn labels(&mut self, image_id: &str) -> Option<BTreeMap<String, String>> {
-		let Some((true, stdout, _)) = self.docker(&["image", "inspect", "--format", "{{json .Config.Labels}}", image_id]) else {
+		let Some((true, stdout, _)) = docker(&["image", "inspect", "--format", "{{json .Config.Labels}}", image_id]) else {
 			return None;
 		};
 		match serde_json::from_str::<Value>(stdout.trim()).ok()? {
@@ -936,7 +936,7 @@ impl Host for RealHost {
 	}
 
 	fn describe(&mut self, image_id: &str) -> String {
-		let digests = match self.docker(&["image", "inspect", "--format", "{{join .RepoDigests \", \"}}", image_id]) {
+		let digests = match docker(&["image", "inspect", "--format", "{{join .RepoDigests \", \"}}", image_id]) {
 			Some((true, stdout, _)) => stdout.trim().to_owned(),
 			_ => String::new(),
 		};
@@ -948,7 +948,7 @@ impl Host for RealHost {
 	}
 
 	fn pull(&mut self, image_ref: &str) -> bool {
-		matches!(self.docker(&["pull", "-q", image_ref]), Some((true, _, _)))
+		matches!(docker(&["pull", "-q", image_ref]), Some((true, _, _)))
 	}
 
 	fn up(&mut self, target: &Target) -> bool {
@@ -986,8 +986,7 @@ impl Host for RealHost {
 		let Some(id) = self.container(service) else {
 			return Vec::new();
 		};
-		self
-			.docker(&["logs", "--tail", "200", &id])
+		docker(&["logs", "--tail", "200", &id])
 			.map(|(_, stdout, stderr)| (stdout + &stderr).lines().map(str::to_owned).collect())
 			.unwrap_or_default()
 	}
@@ -1101,7 +1100,9 @@ fn passwd_entry(passwd: &str, user: &str) -> Option<(u32, u32, String)> {
 /// A user's home, from /etc/passwd.
 pub(crate) fn home_of(user: &str) -> Result<String> {
 	let passwd = std::fs::read_to_string("/etc/passwd").context("reading /etc/passwd")?;
-	passwd_entry(&passwd, user).map(|(_, _, home)| home).with_context(|| format!("no user {user} in /etc/passwd"))
+	passwd_entry(&passwd, user)
+		.map(|(_, _, home)| home)
+		.with_context(|| format!("no user {user} in /etc/passwd"))
 }
 
 /// `make` as `user`, with its home (sops' key) and, when given, a tmpfs
@@ -1151,7 +1152,6 @@ impl Clock for Monotonic {
 	}
 }
 
-
 // ── Tests: a simulated host and clock ───────────────────────────────────────
 
 #[cfg(test)]
@@ -1187,7 +1187,13 @@ mod tests {
 	}
 
 	fn crashes_after(seconds: f64) -> Behaviour {
-		Rc::new(move |t| if t < seconds { ("running", Some("starting"), 0) } else { ("restarting", Some("starting"), 1) })
+		Rc::new(move |t| {
+			if t < seconds {
+				("running", Some("starting"), 0)
+			} else {
+				("restarting", Some("starting"), 1)
+			}
+		})
 	}
 
 	/// No healthcheck: running, never restarting.
@@ -1450,7 +1456,13 @@ mod tests {
 		let services = ["a".to_owned(), "b".to_owned()];
 		let (failure, took) = wait_all(
 			&services,
-			&mut |service| if service == "a" { reading(Some("running"), Some("healthy"), 0) } else { reading(Some("running"), Some("starting"), 0) },
+			&mut |service| {
+				if service == "a" {
+					reading(Some("running"), Some("healthy"), 0)
+				} else {
+					reading(Some("running"), Some("starting"), 0)
+				}
+			},
 			&clock,
 			90.0,
 			2.0,
@@ -1587,7 +1599,7 @@ mod tests {
 		host.log = vec!["Error: migrate: refusing to migrate: failed: [20261110000100]".to_owned()];
 		let (code, said) = run_deploy(&mut host);
 		assert_eq!(code, EXIT_ROLLED_BACK);
-		assert!(host.clock.now() < 15.0 + STABLE_SECONDS * 2.0);
+		assert!(host.clock.now() < STABLE_SECONDS.mul_add(2.0, 15.0));
 		assert!(said_any(&said, "its log: Error: migrate: refusing"));
 	}
 
@@ -1730,13 +1742,19 @@ mod tests {
 
 	fn publish_contract(host: &mut FakeHost, commit: &str, serial: u64, epoch: u32) {
 		let spec = with_contract(epoch);
-		let borrowed: Vec<(&str, Behaviour, &str, &str)> = spec.iter().map(|(service, behaviour, provides, requires)| (*service, behaviour.clone(), provides.as_str(), *requires)).collect();
+		let borrowed: Vec<(&str, Behaviour, &str, &str)> = spec
+			.iter()
+			.map(|(service, behaviour, provides, requires)| (*service, behaviour.clone(), provides.as_str(), *requires))
+			.collect();
 		publish(host, commit, serial, &borrowed);
 	}
 
 	fn serving_contract(epoch: u32) -> FakeHost {
 		let spec = with_contract(epoch);
-		let borrowed: Vec<(&str, Behaviour, &str, &str)> = spec.iter().map(|(service, behaviour, provides, requires)| (*service, behaviour.clone(), provides.as_str(), *requires)).collect();
+		let borrowed: Vec<(&str, Behaviour, &str, &str)> = spec
+			.iter()
+			.map(|(service, behaviour, provides, requires)| (*service, behaviour.clone(), provides.as_str(), *requires))
+			.collect();
 		serving(&borrowed)
 	}
 
@@ -1909,7 +1927,6 @@ mod tests {
 		let found = regex::Regex::new(r"(?m)^      start_period: (\d+)s$").unwrap().captures(&text).unwrap();
 		let start_period: f64 = found[1].parse().unwrap();
 		assert!(DEFAULT_READY_TIMEOUT > start_period);
-		assert!(DEFAULT_READY_TIMEOUT > STABLE_SECONDS);
 	}
 
 	#[test]

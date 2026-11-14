@@ -4,7 +4,7 @@
 //! Home's deploy runs compose on a release's worktree (R4, #793), where
 //! `REPO_ROOT` is that worktree: the files git holds at the release's
 //! commit, and nothing else. So a `${REPO_ROOT}/…` bind mount is a tracked
-//! path, mounted read-only. State that is not in git (file_host's data, logs
+//! path, mounted read-only. State that is not in git (`file_host`'s data, logs
 //! and config, Grafana's built dashboards) is mounted from `${STATE_ROOT}`,
 //! the owner's checkout, which envctl sets for `make up` and the deploy
 //! alike. A mount of untracked or written state from `REPO_ROOT` would start
