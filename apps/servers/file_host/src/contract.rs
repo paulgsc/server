@@ -37,9 +37,11 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// The layout of the folders render reads, as home's release states it.
 ///
 /// RELEASE R3, #790; docs/release.md, "Constraints". The folders are
-/// `call-weeks`, `playoff-delta-episodes`, `preview-requests` and
-/// `rust-essays`, which `file_host` writes and the render worker
-/// (paulgsc/some-ui) reads. `file_host`'s image provides
+/// `call-weeks`, `playoff-delta-episodes`, `preview-requests`,
+/// `rust-essays` and `cards-essays`, which `file_host` writes and the render
+/// worker (paulgsc/some-ui) reads. `cards-essays` (#854) came without a
+/// raise: it is a new folder, so no layout an older render reads changed,
+/// and server's own `render-calls.sh` names each file to `record:cards`. `file_host`'s image provides
 /// `render-folders=<this>` and render's requires the layout it reads, so a
 /// release whose render reads a newer layout than its `file_host` writes is
 /// refused.
