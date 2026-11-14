@@ -228,8 +228,8 @@ jobs:
       # AS7 (#525): each alert in infra/prometheus/rules/home.yml fires when
       # its behaviour breaks and stays quiet while it holds. Here, not in
       # infra_ci, because this job is required and runs on every PR. The image
-      # is pinned so a new release cannot move CI's verdict; home runs
-      # `:latest` (infra/compose/monitoring.yml).
+      # is pinned so a new release cannot move CI's verdict; home runs the
+      # release's pin (deploy/home/release.json, refreshed monthly: RL8).
       - name: Prove the alert rules fire (promtool)
         run: >-
           docker run --rm -v "$PWD/infra/prometheus:/prometheus-config:ro" -w /prometheus-config/rules
