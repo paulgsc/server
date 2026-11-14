@@ -354,7 +354,8 @@ pub struct FeedSeen {
 	/// Of those, each with its video, and when it was made.
 	pub videos: BTreeMap<String, i64>,
 	/// Of those, the size in bytes of each finished file that is a video
-	/// ([`Shelf::is_video`]) and a plain file, as the downloads serve one.
+	/// ([`Shelf::is_video`]) and that its shelf's download would serve
+	/// ([`Shelf::follows_links`]): a plain file, or for a feed's a link to one.
 	pub sizes: BTreeMap<String, u64>,
 	/// Of those with none, each whose last attempt failed: when, and how.
 	pub failed: BTreeMap<String, (i64, Failure)>,
