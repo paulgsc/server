@@ -487,10 +487,12 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		.filter(|(service, _)| !unjudged.contains(service))
 		.map(|(service, id)| (service.clone(), id.clone()))
 		.collect();
-	// The same key is the release applied: bring up its own tree, the one
-	// mounted now, not main's commit, whose new worktree path would recreate
-	// every service that mounts from ${REPO_ROOT} for nothing.
-	if let Some(applied) = previous.as_ref().filter(|_| same_tree) {
+	// The same key is the release applied: bring up its own tree (the one
+	// mounted now, once a pass has recorded it), not main's commit, whose
+	// new worktree path would recreate every service that mounts from
+	// ${REPO_ROOT} for nothing.
+	if let Some(applied) = previous.as_ref().filter(|applied| same_tree && applied.commit != target.commit) {
+		say(&format!("deploy: main's key is the one applied; bringing up its tree ({})", applied.name()));
 		target = applied.clone();
 	}
 	let (failure, took) = if host.up(&target) {

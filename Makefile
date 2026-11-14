@@ -201,7 +201,8 @@ up: envctl ## The preflight, then docker compose up -d on deploy/$(ROLE)/, decry
 # its set checked, brought up from its own worktree, every service gated,
 # and the previous release put back whole when any does not come up
 # (`envctl deploy`, apps/envctl/src/deploy.rs; README.md, "Deploying to
-# home"). ARGS passes its flags: make home-deploy ARGS="--no-pull".
+# home"). ARGS passes its flags: make home-deploy ARGS="--no-pull"; the role
+# is DEPLOY's (make home-deploy DEPLOY=dev), never ARGS="--role …".
 # Nothing home runs calls python: home has none (apps/envctl/tests/home_runs_no_python.rs).
 home-deploy: envctl ## Apply main's release whole: pull every image, check the set, up, gate every service, roll back whole
 	@$(ENVCTL_RUN) deploy --role $(ROLE) $(ARGS)
