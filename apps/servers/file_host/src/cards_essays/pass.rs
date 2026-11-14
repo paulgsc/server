@@ -1,6 +1,8 @@
-//! One pass of the cards essays: read `paulgsc/testing`'s `cards/index.json`,
-//! fetch and keep each essay it lists that home does not hold, then write
-//! each essay home holds that the render worker's folder lacks.
+//! One pass of the cards essays.
+//!
+//! It reads `paulgsc/testing`'s `cards/index.json`, fetches and keeps each
+//! essay it lists that home does not hold, then writes each essay home holds
+//! that the render worker's folder lacks.
 //!
 //! - **Only what is missing.** A pass is one request for the index, plus one
 //!   per listed essay home holds no essay of that key of. An essay home holds
@@ -66,10 +68,11 @@ fn is_day(text: &str) -> bool {
 	NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok_and(|day| day.format("%Y-%m-%d").to_string() == text)
 }
 
-/// The day of an essay's key, when the key is `<slug>-<YYYY-MM-DD>`: a slug
-/// of plain lowercase words joined by `-` (`@some-ui/video-render`'s
-/// `CARDS_KEY`), then a calendar day, at most [`MAX_KEY`] long. So a key is
-/// always one plain file name.
+/// The day of an essay's key, when it is one.
+///
+/// A key is `<slug>-<YYYY-MM-DD>`: a slug of plain lowercase words joined by
+/// `-` (`@some-ui/video-render`'s `CARDS_KEY`), then a calendar day, at most
+/// [`MAX_KEY`] long. So a key is always one plain file name.
 #[must_use]
 pub fn day_of(key: &str) -> Option<&str> {
 	if key.len() > MAX_KEY || !key.is_ascii() {

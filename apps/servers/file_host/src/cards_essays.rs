@@ -27,10 +27,12 @@
 //! the owner on Slack. A failed render is the worker's `<key>.failed.log`, as
 //! every job's.
 //!
-//! **Not yet:** the phone lists a cards essay on Studio › Renders (the
-//! `cards-essay` shelf, `feeds::renders`), but has no route to play it or let
-//! home's copy go: that waits on how a video that is never uploaded is let go
-//! (the feeds' let go needs its `YouTube` link first, `feeds::videos`).
+//! **Where the owner watches it** (C338): Studio › Renders lists each essay
+//! (the `cards-essay` shelf, `feeds::renders`), and a paired phone plays a
+//! done one from `GET /cards-essays/:key/video` (`routes::cards_essays`).
+//! Nothing lets home's copy go: a feed's let go needs its `YouTube` link
+//! first (`feeds::videos`), and an essay is never uploaded, so home keeps it
+//! until the owner rules how one that never was is let go.
 //!
 //! Cost: one request an hour, plus one per essay home lacks (a cut list is a
 //! few KB); one `stat` per essay each minute.
@@ -60,10 +62,11 @@ const _: () = assert!(RETRY.as_secs() <= INTERVAL.as_secs() && TICK.as_secs() <=
 /// How long one request may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Where each essay home holds is written for the render worker, as
-/// `<key>.json`, byte for byte: on the host, `${STORAGE}/cards-essays`,
-/// mounted read-only into the worker as `/cards-essays`
-/// (`infra/compose/call-render.yml`).
+/// Where each essay home holds is written for the render worker.
+///
+/// Each is `<key>.json`, byte for byte: on the host,
+/// `${STORAGE}/cards-essays`, mounted read-only into the worker as
+/// `/cards-essays` (`infra/compose/call-render.yml`).
 pub const ESSAYS_FOLDER: &str = "/app/dbs/cards-essays";
 
 /// Where the worker keeps each essay's video, as this server sees it.
@@ -153,10 +156,11 @@ pub fn start(state: &AppState) {
 	});
 }
 
-/// What the render worker has made of the essays home holds: each is
-/// rendered (`<renders>/<key>/cards.mp4`) or waiting, and failed when
-/// `<status>/<key>.failed.log` is there, as every job's
-/// (`call_weeks::render::tally`). Nothing is let go yet.
+/// What the render worker has made of the essays home holds.
+///
+/// Each is rendered (`<renders>/<key>/cards.mp4`) or waiting, and failed
+/// when `<status>/<key>.failed.log` is there, as every job's
+/// (`call_weeks::render::tally`). Nothing is let go.
 ///
 /// # Errors
 /// A storage failure reading `cards_essay`.
