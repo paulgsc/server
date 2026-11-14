@@ -210,9 +210,8 @@ services:
       timeout: 10s
       retries: 3
   dashboard-builder:
-    build:
-      context: ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}
-      dockerfile: ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/docker/Dockerfile.grafana.builder
+    # Published from infra/docker/Dockerfile.grafana.builder (R6a, #868; C349).
+    image: ${IMAGE_DASHBOARD_BUILDER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     container_name: dashboard-builder
     # Who the kernel kills first when home runs out of memory: tooling
     # (docs/home-compute.md, "Who is killed first").

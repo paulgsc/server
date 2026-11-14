@@ -107,7 +107,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   and `extends:` resolved) and refuses a service whose image is not
   `${IMAGE_*}` or that names none, a `build:` (local builds live in
   `infra/compose/dev.build.yml`, which the home role never loads;
-  `dashboard-builder`'s is named until its first publish), and any `:latest`;
+  `dashboard-builder` is published since R6a, #868), and any `:latest`;
   then a release entry without a digest, an image a NixOS module names itself
   (C127), and a doc that writes a command the run-time rule refuses (the same
   rule in Python, both tested on `scripts/home_refusal_cases.json`). `envctl

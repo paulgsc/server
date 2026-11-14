@@ -1,9 +1,10 @@
 {
-  "serial": 8,
+  "serial": 9,
   "server_commit": "0df43fd88d034cf45c65f6fea1721115d15a22b8",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:v0@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"},
+    "dashboard-builder": {"image": "pgathondu/dashboard-builder:9f7548d5441d839bd0134d7db527e75748867bae@sha256:11ad799995080d7c038760bf5a490bd06d9248453cfeeb39d6fac5ae75647384"},
     "file-host": {"image": "pgathondu/server:60ada0dbb20f994da78af0d16fa7b409b67d807f@sha256:1ea3b0952b0739f79554c64936f167fff31b788c184cde410ed19bec04ae3fd6"},
     "grafana": {"image": "grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2"},
     "kokoro": {"image": "pgathondu/kokoro:249470f9481783dcc993ad3c8003254e51b629f0@sha256:c9136773df09b0bd52a7615d3e98850ebd7f73f5d1d22d9840972d4b02f4550d"},

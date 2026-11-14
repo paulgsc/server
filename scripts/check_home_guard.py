@@ -47,12 +47,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# A service whose `build:` stays until its first publish, and the story that
-# frees it. Each entry is a debt with an owner, never a way around the rule:
-# the self-test holds the list to these names.
-BUILD_UNTIL_PUBLISHED = {
-    "dashboard-builder": "until pgathondu/dashboard-builder's first publish (R6a, #868): then compose reads ${IMAGE_DASHBOARD_BUILDER}",
-}
 
 FROM_RELEASE = re.compile(r"^\$\{IMAGE_[A-Z0-9_]+:\?[^}]*\}$")
 LATEST = re.compile(r":latest\b")
@@ -192,7 +186,7 @@ def strings(value: object):
             yield from strings(item)
 
 
-def config_refusals(config: dict, allowed_builds: dict[str, str]) -> list[Refusal]:
+def config_refusals(config: dict) -> list[Refusal]:
     found: list[Refusal] = []
     where = "docker-compose.yml"
     for name, service in sorted(config.get("services", {}).items()):
@@ -201,7 +195,7 @@ def config_refusals(config: dict, allowed_builds: dict[str, str]) -> list[Refusa
             found.append(Refusal(where, 0, f"service {name} names no image: it must read ${{IMAGE_<SERVICE>:?...}} from the release"))
         elif image is not None and not FROM_RELEASE.match(image):
             found.append(Refusal(where, 0, f"service {name}'s image is `{image}`, not ${{IMAGE_<SERVICE>:?...}} from deploy/home/release.json"))
-        if "build" in service and name not in allowed_builds:
+        if "build" in service:
             found.append(Refusal(where, 0, f"service {name} builds on home: move its `build:` to infra/compose/dev.build.yml and publish it"))
         if any(LATEST.search(text) for text in strings(service)):
             found.append(Refusal(where, 0, f"service {name} names a `:latest`, which floats: name the release's digest"))
@@ -252,7 +246,7 @@ def docs_refusals(path: str, text: str) -> list[Refusal]:
 
 
 def check(root: Path, config: dict) -> list[Refusal]:
-    found = config_refusals(config, BUILD_UNTIL_PUBLISHED)
+    found = config_refusals(config)
     release = root / "deploy" / "home" / "release.json"
     found += release_refusals(str(release.relative_to(root)), json.loads(release.read_text()))
     for module in sorted((root / "nix" / "modules").rglob("*.nix")):
@@ -301,27 +295,23 @@ def stack(**services: dict) -> dict:
 
 class Tests(unittest.TestCase):
     def test_an_image_from_the_release_passes(self) -> None:
-        self.assertEqual(config_refusals(stack(redis={"image": FROM}), {}), [])
+        self.assertEqual(config_refusals(stack(redis={"image": FROM})), [])
 
     def test_an_image_written_any_other_way_is_refused(self) -> None:
         for image in ("redis:7", "redis:latest", f"redis@{D}", "${REDIS_IMAGE}", "${IMAGE_REDIS}"):
-            found = config_refusals(stack(redis={"image": image}), {})
+            found = config_refusals(stack(redis={"image": image}))
             self.assertTrue(any("not ${IMAGE_" in str(r) for r in found), image)
 
     def test_a_service_with_no_image_is_refused(self) -> None:
-        self.assertTrue(any("names no image" in str(r) for r in config_refusals(stack(x={"container_name": "x"}), {})))
+        self.assertTrue(any("names no image" in str(r) for r in config_refusals(stack(x={"container_name": "x"}))))
 
-    def test_a_build_is_refused_unless_it_waits_on_a_named_publish(self) -> None:
+    def test_a_build_is_refused(self) -> None:
         build = {"build": {"context": "."}}
-        self.assertTrue(any("builds on home" in str(r) for r in config_refusals(stack(redis={"image": FROM, **build}), {})))
-        self.assertEqual(config_refusals(stack(redis=build), {"redis": "until its publish"}), [])
-
-    def test_the_build_debt_is_named_and_owned(self) -> None:
-        self.assertEqual(set(BUILD_UNTIL_PUBLISHED), {"dashboard-builder"})
-        self.assertTrue(all("#" in why for why in BUILD_UNTIL_PUBLISHED.values()), "each names the story that frees it")
+        self.assertTrue(any("builds on home" in str(r) for r in config_refusals(stack(redis={"image": FROM, **build}))))
+        self.assertTrue(any("builds on home" in str(r) for r in config_refusals(stack(redis=build))))
 
     def test_a_latest_anywhere_in_a_service_is_refused(self) -> None:
-        found = config_refusals(stack(x={"image": FROM, "environment": {"SIDECAR": "some:latest"}}), {})
+        found = config_refusals(stack(x={"image": FROM, "environment": {"SIDECAR": "some:latest"}}))
         self.assertTrue(any(":latest" in str(r) for r in found), found)
 
     def test_a_release_entry_needs_a_digest_and_no_latest(self) -> None:
@@ -383,15 +373,12 @@ class Tests(unittest.TestCase):
             self.assertEqual(docs_refusals("README.md", line), [], line)
 
     def test_the_real_home_stack_is_read_whole_by_compose(self) -> None:
-        """Never vacuous: compose reads every home service, each from the release, dashboard-builder the one build owed."""
+        """Never vacuous: compose reads every home service, each from the release, none built."""
         config = compose_config(REPO_ROOT)
         services = config.get("services", {})
-        self.assertGreaterEqual(len(services), 17)
-        found = config_refusals(config, {})
-        builds = [r.why for r in found if "builds on home" in r.why]
-        self.assertEqual(len(builds), 1, builds)
-        self.assertIn("dashboard-builder", builds[0])
-        self.assertEqual([r for r in found if "builds on home" not in r.why], [], "every image is the release's")
+        self.assertGreaterEqual(len(services), 18)
+        self.assertIn("dashboard-builder", services)
+        self.assertEqual(config_refusals(config), [], "every image is the release's")
 
 
 if __name__ == "__main__":
