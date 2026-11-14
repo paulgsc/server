@@ -89,3 +89,11 @@ ENTRYPOINT ["/usr/local/bin/orchestrator"]
 # the same probe, so a release's older image is judged by it too (#794).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9464 && printf 'GET /metrics HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3 && read -r -t 5 status <&3 && [[ $status == 'HTTP/1.'?' 200'* ]]"]
+
+# What this image provides and requires of the others in home's release
+# (RELEASE R3, #790; docs/release.md, "Constraints"): comma-separated
+# name=value pairs, a value an epoch (met by one at least as high) or a
+# 40-hex commit (met by the same one). Last, so no layer depends on them.
+# The number is ws-events' NATS_SUBJECTS_EPOCH; apps/orchestrator/src/lib.rs's test holds it equal.
+LABEL io.paulgsc.provides="nats-subjects=1" \
+      io.paulgsc.requires=""

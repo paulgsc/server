@@ -17,6 +17,8 @@
 //! `serial` rises with every release. `server_commit` is the commit the
 //! release was formed at (filled by CI once it forms releases, R2 #789).
 
+pub(crate) mod constraints;
+
 use crate::{compose, sops};
 use anyhow::{Context, Result};
 use indexmap::IndexMap;

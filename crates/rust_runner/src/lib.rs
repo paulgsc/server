@@ -427,3 +427,22 @@ mod tests {
 		assert_eq!(without_thread_ids("thread 'a' (1) then thread 'b' (22)"), "thread 'a' then thread 'b'");
 	}
 }
+
+/// What this image provides and requires, as home's release reads them
+/// (RELEASE R3, #790; docs/release.md, "Constraints"): the labels
+/// `infra/docker/Dockerfile.rust-runner` writes are these numbers.
+#[cfg(test)]
+mod image_labels {
+	fn label(name: &str) -> String {
+		let dockerfile = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../infra/docker/Dockerfile.rust-runner")).unwrap();
+		let start = ["io.paulgsc.", name, "=\""].concat();
+		let from = dockerfile.find(&start).unwrap() + start.len();
+		dockerfile[from..].split('"').next().unwrap().to_owned()
+	}
+
+	#[test]
+	fn the_image_labels_are_these_epochs() {
+		assert_eq!(label("provides"), ["rust-runner-protocol=", &rust_rounds_wire::protocol::EPOCH.to_string()].concat());
+		assert_eq!(label("requires"), "");
+	}
+}

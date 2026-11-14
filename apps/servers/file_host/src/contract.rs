@@ -21,6 +21,11 @@
 //!   older clients (a route removed or renamed: the PR is labelled
 //!   `client-breaking-route`). A client below it is told it is behind home,
 //!   and pulling cannot help it.
+//!
+//! Each number here is also an `io.paulgsc.provides` label in
+//! `infra/docker/Dockerfile.server`, so home's release can check the set
+//! (docs/release.md, "Constraints"); `the_image_labels_are_these_epochs`
+//! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
 pub const CONTRACT_EPOCH: u32 = 6;
@@ -28,6 +33,21 @@ pub const CONTRACT_EPOCH: u32 = 6;
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
 pub const OLDEST_SUPPORTED: u32 = 1;
+
+/// The layout of the folders render reads, as home's release states it.
+///
+/// RELEASE R3, #790; docs/release.md, "Constraints". The folders are
+/// `call-weeks`, `playoff-delta-episodes`, `preview-requests` and
+/// `rust-essays`, which `file_host` writes and the render worker
+/// (paulgsc/some-ui) reads. `file_host`'s image provides
+/// `render-folders=<this>` and render's requires the layout it reads, so a
+/// release whose render reads a newer layout than its `file_host` writes is
+/// refused.
+///
+/// Raise it by one whenever a folder, a file's name or a file's shape there
+/// changes in a way render must know, and raise render's `requires` with
+/// the render change that reads it.
+pub const RENDER_FOLDERS_EPOCH: u32 = 1;
 
 /// The route surface [`CONTRACT_EPOCH`] was last set for.
 ///
@@ -83,6 +103,30 @@ pub fn route_fingerprint() -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// One `io.paulgsc.*` label as `infra/docker/Dockerfile.server` writes it.
+	fn label(name: &str) -> String {
+		let dockerfile = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../infra/docker/Dockerfile.server")).unwrap();
+		let start = ["io.paulgsc.", name, "=\""].concat();
+		let from = dockerfile.find(&start).unwrap() + start.len();
+		dockerfile[from..].split('"').next().unwrap().to_owned()
+	}
+
+	/// What `file_host`'s image provides and requires is these numbers, and
+	/// the ones the images it talks to define (docs/release.md, "Constraints").
+	#[test]
+	fn the_image_labels_are_these_epochs() {
+		let provides = ["contract=", &CONTRACT_EPOCH.to_string(), ",render-folders=", &RENDER_FOLDERS_EPOCH.to_string()].concat();
+		let requires = [
+			"nats-subjects=",
+			&ws_events::events::NATS_SUBJECTS_EPOCH.to_string(),
+			",rust-runner-protocol=",
+			&rust_rounds_wire::protocol::EPOCH.to_string(),
+		]
+		.concat();
+		assert_eq!(label("provides"), provides);
+		assert_eq!(label("requires"), requires);
+	}
 
 	/// A route change is a contract change: this fails, naming the new
 	/// fingerprint, until `ROUTE_FINGERPRINT` is set to it and

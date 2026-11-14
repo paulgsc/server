@@ -3,8 +3,8 @@
 Home runs one release. `deploy/home/release.json` names the image of every
 service compose starts there. Each entry is `repo:tag@sha256:…` once it is
 published, and a few are held or not yet published (below). Epic #787 holds
-the design and its record. Stories R1 (#788) and R2 (#789) built what this doc
-declares; **Planned** marks what is not built yet, with its issue.
+the design and its record. Stories R1 (#788), R2 (#789) and R3 (#790) built
+what this doc declares; **Planned** marks what is not built yet, with its issue.
 
 The owner's ask (2026-11-11): "There's only one way to deploy this. We need
 all of them to be up". The deploy should know which versions go together,
@@ -39,7 +39,7 @@ per CLAUDE.md, "Drift is loud, not silent".
     `pgathondu/<suffix>:<source_sha>` tag exists. A changeset whose publish
     failed falls back to the one before it.
   - **A some-ui image:** the most recently pushed tag of its release's shape
-    (a whole commit for render, `X.Y.Z` for www), never `latest`.
+    (a whole commit for render), never `latest`.
 - **RL4. Bytes, not names.** A reference CI writes always carries its digest.
   A tag alone can move under a release.
 - **RL5. Held entries do not move.** `file-host` stays
@@ -61,10 +61,67 @@ per CLAUDE.md, "Drift is loud, not silent".
   for "Approve workflows to run" (docs/assurance.md), which is the owner's
   call.
 - **RL7. A cross-repo image is followed only once its set can be checked.**
-  render and www come from some-ui and must match what server writes for them
-  (#756: a www release without its matching render broke every preview). So
-  they enter `SOURCES` only with R3's set check (#790), which refuses an
-  inconsistent set. Until then their entries move by a reviewed pull request.
+  render comes from some-ui and must match what server writes for it (#756:
+  a www release without its matching render broke every preview). The set
+  check exists (R3, #790), but it reads labels by digest, and `file-host`,
+  the image providing what render requires, is held on `:latest` (RL5). So
+  render stays out of `SOURCES` until R4 (#793) pins `file-host` by digest,
+  and joins in the same change. Until then its entry moves by a reviewed
+  pull request, whose `Release set` job names the requirement it cannot
+  judge as a warning. www is not run on home (call-stage went with #802), so
+  it is in no release; an image that joins from some-ui later joins
+  `SOURCES` only with its `requires` labels.
+- **RL9. Every requirement is met inside the set.** Each image's
+  `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
+  the same release ("Constraints", below). CI checks it from the registry by
+  digest (`scripts/check_release.py`, Lint's `Release set` job, on every pull
+  request that changes the release). A requirement whose name no readable
+  image provides, while a server image has no digest (the held `file-host`),
+  is a warning naming that image, not a failure: only it could meet it, and
+  what it provides cannot be read. One a readable image provides too low
+  fails. So until R4 (#793) pins `file-host`, CI cannot judge the edges
+  file_host is an end of, which is why render waits (RL7).
+  The deploy checks the set again from the pulled images before `up`, where
+  every image is read (`apps/envctl/src/release/constraints.rs`;
+  **Planned:** wired in by R4, #793). The two sides run on the same cases.
+
+## Constraints
+
+Each image's Dockerfile writes two labels, last, so no layer depends on
+them:
+
+```dockerfile
+LABEL io.paulgsc.provides="contract=6,render-folders=1" \
+      io.paulgsc.requires="nats-subjects=1,rust-runner-protocol=1"
+```
+
+Each is comma-separated `name=value` pairs. A value is an **epoch** (an
+integer: a requirement of n is met by a provision of at least n) or a
+**commit** (40 hex: met by the same commit only). An image never meets its
+own requirement. An image without the labels requires and provides nothing:
+third-party images, `:latest` references (a tag can move, so nothing fixed
+is read), and images published before R3. A malformed label fails the check
+rather than being skipped.
+
+A provision of n promises what any requirement up to n needs. So a change
+that drops an older layout or protocol is shipped only where both ends move
+together, or with the provider still serving the older one until no
+release holds the old requirer.
+
+The edges written down so far, each a constant beside the code that owns
+it, which a test holds equal to the Dockerfile's label:
+
+| Edge | Provided by | Required by | Constant |
+|---|---|---|---|
+| `contract` | file_host | (clients, through `/compat`) | `CONTRACT_EPOCH`, `apps/servers/file_host/src/contract.rs` |
+| `render-folders` | file_host | render (some-ui, U2 #792) | `RENDER_FOLDERS_EPOCH`, same file |
+| `rust-runner-protocol` | rust-runner | file_host | `protocol::EPOCH`, `crates/rust_rounds_wire/src/protocol.rs` |
+| `nats-subjects` (subjects and payloads; only subjects are pinned by a test) | orchestrator | file_host | `NATS_SUBJECTS_EPOCH`, `crates/ws-events/src/events/common/event_type.rs` |
+
+`render-folders` covers the folders render reads and file_host writes:
+`call-weeks`, `playoff-delta-episodes`, `preview-requests` and
+`rust-essays`. There is no `stage` edge: call-stage was removed (#802), and
+render carries its own stage slice. kokoro writes both labels empty.
 
 - **RL8. Third-party images are pinned, and refresh alone, when due**
   (R7, #796; C120, C347). Every image nobody here publishes (`THIRD_PARTY` in
@@ -116,6 +173,7 @@ carry, against RL2.
 | CI reconciles it | `scripts/release_lock.py`, `.github/workflows/release-lock.yml` |
 | Third-party pins refresh (RL8) | `release_lock.py --third-party` and `--third-party-due`, release-lock.yml's daily `schedule` |
 | Called after a server publish | `.github/workflows/publish-image-changesets.yml` (`release`) |
-| **Planned:** set check | R3, #790 |
+| The set check | `scripts/check_release.py` (CI), `apps/envctl/src/release/constraints.rs` (deploy) |
+| Each image's labels | `infra/docker/Dockerfile.*`; render's in some-ui (U2, #792) |
 | **Planned:** deploy applies a release whole | R4, #793 |
 | **Planned:** guard against `:latest`, `build:`, per-service pulls | R6, #795 |

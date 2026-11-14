@@ -22,10 +22,13 @@ Where "newest published" comes from, per followed service (`SOURCES`):
   the image and whose `pgathondu/<suffix>:<source_sha>` tag Docker Hub has.
   A changeset whose publish failed has no tag, so the one before it is used.
 - **A some-ui image** (`hub`): the most recently pushed tag of the shape its
-  release publishes (a whole commit for render, a version for www), never
-  `latest`. None is followed yet: they enter with U1 (#791) once R3's set
-  check (#790) can refuse an inconsistent set, so a www release can never
-  again move without the render that records it (#756's break).
+  release publishes (a whole commit for render), never `latest`. None is
+  followed yet (RL7). R3 (#790) built the set check
+  (`scripts/check_release.py`), but it reads labels by digest, and
+  `file-host`, the image render's requirement names, is held on `:latest`
+  until R4 (#793). So render joins with R4, once the check can see both
+  ends; until then its entry moves by a reviewed pull request. www is not
+  run on home, so it is in no release.
 
 - **A third-party image** (`THIRD_PARTY`, R7 #796), only with
   `--third-party`: the current digest of the tag its entry already names (a
@@ -95,8 +98,11 @@ class Hub:
     shape: str  # a regex the whole tag matches
 
 
+COMMIT = r"[0-9a-f]{40}"
+
 # Every service the release follows, and where its newest reference comes
 # from. A service not here keeps whatever main's release says.
+
 SOURCES: dict[str, Changesets | Hub] = {
     "kokoro": Changesets("kokoro"),
     "orchestrator": Changesets("orchestrator"),
@@ -146,8 +152,6 @@ def located(repository: str) -> tuple[str | None, str]:
     path = rest if rest and first in HUB_HOSTS else repository
     return None, path if "/" in path else "library/" + path
 
-COMMIT = r"[0-9a-f]{40}"
-VERSION = r"[0-9]+\.[0-9]+\.[0-9]+"
 
 
 class Unreadable(Exception):
@@ -463,6 +467,12 @@ class Tests(unittest.TestCase):
     def test_following_a_service_the_release_lacks_is_unreadable(self) -> None:
         with self.assertRaises(Unreadable):
             reconcile(sample(), world({}, [], []), "main", {"ghost": Changesets("ghost")})
+
+    def test_render_waits_until_the_check_can_see_file_host(self) -> None:
+        """RL7: render is followed only once file-host is pinned by digest, so the set check reads both ends."""
+        file_host = json.loads(RELEASE.read_text())["services"]["file-host"]["image"]
+        if "@sha256:" not in file_host:
+            self.assertNotIn("render", SOURCES)
 
     def test_the_checked_in_sources_name_real_services(self) -> None:
         release = json.loads(RELEASE.read_text())
