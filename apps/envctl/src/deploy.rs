@@ -851,6 +851,69 @@ pub(crate) fn default_state_dir(xdg_state_home: Option<&str>, home: Option<&str>
 	base.join("server-deploy")
 }
 
+/// The commit whose release was last applied whole, from `applied.json` in
+/// the state directory.
+fn applied_in(state_dir: &Path) -> Option<String> {
+	read_json(&state_dir.join("applied.json"))?.get("commit")?.as_str().map(str::to_owned)
+}
+
+/// Where home's `envctl up` and `envctl compose` run (RELEASE R6d, #870,
+/// C350; docs/release.md, RL12): the tree of the release last applied, under
+/// the project the stack runs as, never the checkout's own release, which
+/// `make home-deploy` does not move. So `make up` restarts what runs and
+/// nothing else.
+pub(crate) struct AppliedStack {
+	/// The release's worktree, which envctl reads as its `--repo`.
+	pub(crate) tree: PathBuf,
+	pub(crate) commit: String,
+	pub(crate) project: String,
+	/// The deploy's lock, when asked for: a restart and a deploy never run at
+	/// once. Released when this is dropped.
+	#[allow(dead_code)] // held, never read: dropping it is what releases the lock
+	pub(crate) lock: Option<std::fs::File>,
+}
+
+/// The release last applied on home, for `up` and `compose` from `checkout`.
+/// None where they run as given: a role other than home, and the deploy's
+/// own `up` (`deploy`: it names its state directory) on a release's tree
+/// under that directory's `releases/`. Anything else run from such a tree is
+/// refused: its untracked state is the checkout's (RL10). A home with no
+/// release applied is refused, naming `make home-deploy`, so nothing on home
+/// starts from the checkout's release.
+pub(crate) fn applied_stack(checkout: &Path, state_dir: &Path, role: &str, lock: bool, deploy: bool) -> Result<Option<AppliedStack>> {
+	if role != "home" {
+		return Ok(None);
+	}
+	let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+	if real(checkout).starts_with(real(state_dir).join("releases")) {
+		if deploy {
+			return Ok(None);
+		}
+		anyhow::bail!("{} is a release's tree, which only the deploy runs; run this from the checkout", checkout.display());
+	}
+	let none = || {
+		anyhow::anyhow!(
+			"no release is recorded as applied on home ({} has none), so there is nothing to start; `make home-deploy` applies main's",
+			state_dir.join("applied.json").display()
+		)
+	};
+	// Refused before anything is made; read again under the lock, which a
+	// deploy holds while it moves the record.
+	applied_in(state_dir).ok_or_else(none)?;
+	let host = RealHost::new(checkout.to_owned(), state_dir, role, None, Vec::new())?;
+	let lock = if lock { Some(host.lock(false)?) } else { None };
+	let commit = applied_in(state_dir).ok_or_else(none)?;
+	let tree = host
+		.tree(&commit)
+		.map_err(|err| anyhow::anyhow!("the tree of the release last applied (main {commit}) could not be made: {err}"))?;
+	Ok(Some(AppliedStack {
+		tree,
+		commit,
+		project: host.project,
+		lock,
+	}))
+}
+
 fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Option<(bool, String, String)> {
 	let mut command = Command::new(program);
 	command.args(args).stdin(Stdio::null());
@@ -1078,7 +1141,7 @@ impl Host for RealHost {
 	}
 
 	fn applied(&mut self) -> Option<String> {
-		read_json(&self.state.join("applied.json"))?.get("commit")?.as_str().map(str::to_owned)
+		applied_in(&self.state)
 	}
 
 	fn checked_out(&mut self) -> Option<String> {
@@ -1174,6 +1237,8 @@ impl Host for RealHost {
 			tree.display().to_string(),
 			"--state-root".to_owned(),
 			self.checkout.display().to_string(),
+			"--release-state".to_owned(),
+			self.state.display().to_string(),
 			"up".to_owned(),
 			"--role".to_owned(),
 			self.role.clone(),
@@ -2424,6 +2489,66 @@ mod tests {
 		assert_eq!(kept.len(), FAILED_KEPT);
 		assert_eq!(kept.last().map(String::as_str), Some("10"));
 		assert_eq!(kept.first().map(String::as_str), Some("5"));
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
+
+	/// A checkout whose home release is serial 1, then serial 2: its first
+	/// commit and the checkout itself.
+	fn two_releases(dir: &Path) -> (PathBuf, String) {
+		let checkout = dir.join("checkout");
+		std::fs::create_dir_all(checkout.join("deploy/home")).unwrap();
+		let git = |args: &[&str]| {
+			let out = Command::new("git").arg("-C").arg(&checkout).args(args).output().unwrap();
+			assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+			String::from_utf8_lossy(&out.stdout).trim().to_owned()
+		};
+		let release = |serial: u32| {
+			let text = json!({"serial": serial, "server_commit": "c", "services": {"file-host": {"image": format!("x/file-host:{serial}@sha256:{serial}")}}});
+			std::fs::write(checkout.join(release::relative("home")), text.to_string()).unwrap();
+			git(&["add", "-A"]);
+			git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "release"]);
+			git(&["rev-parse", "HEAD"])
+		};
+		git(&["init", "-q"]);
+		let first = release(1);
+		release(2);
+		(checkout, first)
+	}
+
+	#[test]
+	fn home_starts_the_release_last_applied_from_its_tree() {
+		let dir = std::env::temp_dir().join(format!("envctl-applied-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let (checkout, first) = two_releases(&dir);
+		let state = dir.join("state");
+
+		// None applied: refused, naming the deploy, and nothing is made.
+		let refused = applied_stack(&checkout, &state, "home", true, false).err().unwrap().to_string();
+		assert!(refused.contains("`make home-deploy`"), "{refused}");
+		assert!(!state.exists());
+
+		// The checkout is at serial 2; the state says serial 1 was applied.
+		std::fs::create_dir_all(&state).unwrap();
+		std::fs::write(state.join("applied.json"), json!({"commit": first, "previous": null}).to_string()).unwrap();
+		let applied = applied_stack(&checkout, &state, "home", true, false).unwrap().unwrap();
+		assert_eq!(applied.commit, first);
+		assert_eq!(applied.tree, state.join("releases").join(&first));
+		assert_eq!(release::read(&applied.tree, "home").unwrap().unwrap().serial, 1);
+		assert_eq!(release::read(&checkout, "home").unwrap().unwrap().serial, 2);
+
+		// While it holds the lock, a deploy is refused, and so is a second restart.
+		assert!(applied.lock.is_some());
+		let held = RealHost::new(checkout.clone(), &state, "home", None, Vec::new()).unwrap().lock(false);
+		assert!(held.is_err());
+		drop(applied);
+
+		// The deploy's own `up` on a release's tree, and another role, run as
+		// given; any other `up` or `compose` on a release's tree is refused.
+		let tree = state.join("releases").join(&first);
+		assert!(applied_stack(&tree, &state, "home", false, true).unwrap().is_none());
+		let refused = applied_stack(&tree, &state, "home", false, false).err().unwrap().to_string();
+		assert!(refused.contains("only the deploy runs"), "{refused}");
+		assert!(applied_stack(&checkout, &state, "dev", true, false).unwrap().is_none());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 

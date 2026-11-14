@@ -234,6 +234,10 @@ make up                       # DEPLOY=home: the preflight, then docker compose 
 make compose ARGS="logs -f file-host"   # any other compose command, on the same files
 ```
 
+On home both run the release last applied, from its own tree, not this
+checkout's files (docs/release.md, RL12); they refuse until
+`make home-deploy` has applied one.
+
 `make up` decrypts `deploy/home/` with `sops decrypt` into envctl's memory and
 runs the preflight on it. Only then does it start compose: compose's own
 variables in its environment, and each labelled service's own file written
@@ -243,8 +247,9 @@ service's `env_file` alone, so two runs never touch each other's. They are remov
 once compose returns, and a running container keeps its environment. Compose
 runs with `--env-file /dev/null`, so a stray `.env` is read by nothing, and a
 compose variable the shell happens to export is dropped unless the role's
-file sets it. `REPO_ROOT` comes from make (`$(CURDIR)`), and so does
-`ENV_DIR`. `STATE_ROOT`, the checkout whose untracked state compose mounts
+file sets it. `REPO_ROOT` is the repository envctl runs on (on home, the
+tree of the release last applied), and `ENV_DIR` is that run's tmpfs
+directory. `STATE_ROOT`, the checkout whose untracked state compose mounts
 (file_host's `data/`, `logs/`, `config/`, Grafana's built dashboards), is
 envctl's: the checkout itself for `make up`, and the owner's checkout when
 the deploy runs compose on a release's worktree (C344; docs/release.md,
@@ -282,7 +287,8 @@ Every file states every variable of its binary but compose's own wiring,
 so a deployment decides each one. An empty value (`NAME=`) is "decided:
 unset" (#616): it reaches the binary unset, never set to nothing. To change
 a value: `sops edit deploy/<role>/<app>.sops.env` (or `sops set`), then
-`make up`. sops' dotenv does no quoting: `KEY="v"` gives
+`make up`; on home, `make preflight` checks it, then commit and push it and
+`make home-deploy`, since home's `make up` starts the release last applied. sops' dotenv does no quoting: `KEY="v"` gives
 the container `"v"`, quotes and all, so write `KEY=v`. To prune variables,
 `make prune APP=file_host` opens a checklist of the file's variables grouped
 by the schema's sections, a page at a time (`PAGE=10`), names and states
@@ -316,8 +322,8 @@ image sets, and every other variable of its schema stated too: at its
 default, or empty (unset) when it has none; and compose's own variables, read back from the container
 environment or bind mount compose put each into, else from `.env`. It names
 each step on stderr and each variable it writes, never a value, and ends by
-naming the `.env` to delete. Then commit `deploy/home/`, run `make up`, and
-delete `.env`.
+naming the `.env` to delete. Then check it with `make preflight`, commit and
+push `deploy/home/`, run `make home-deploy`, and delete `.env`.
 
 - **ENV3: the preflight names every gap before anything starts.**
   - _Claim:_ given a role's files, `make preflight` lists every variable a
@@ -465,10 +471,13 @@ pass runs at a time. A failed release is remembered by its serial and the
 trees compose reads, so a fix on main to its compose files or
 `deploy/<role>/` is tried again by itself; to retry one after fixing the
 host (or envctl, with a `git pull`), remove its entry from
-`failed-releases.json`. A `make up` from the checkout after a deploy runs
-the checkout's tree, not the release's, and the deploy does not notice
-until the release's key changes: use `make home-deploy`, not `make up`, on
-home.
+`failed-releases.json`. On home, `make up` and `make compose` run the release
+last applied, from its tree under `releases/`, never the checkout's
+`deploy/home/release.json` (docs/release.md, RL12), checked against that
+tree's own schemas: `make up` restarts what runs, under the deploy's lock (as
+does a `make compose` that changes containers), and a `git pull` changes
+nothing they start until `make home-deploy` applies main. Before any release
+is applied they refuse and name `make home-deploy`.
 
 **The database is never restored automatically** (owner, 2026-11-10). A
 migration that ran stays applied, and the previous image serves the
@@ -480,8 +489,9 @@ restore by hand: stop `file-host` (`make compose ARGS="stop file-host"`),
 move the live `${STORAGE}/hopium.db` aside under `${STORAGE}/backups/` with
 a name of its own (never delete it, and never a `-before-` name, which the
 prune would count among its own), copy the backup to
-`${STORAGE}/hopium.db`, and `make up`. When a run ends with exit 3 it names
-the backup that start took.
+`${STORAGE}/hopium.db`, and `make up`, which starts the release last applied
+(the one `make home-deploy` printed as serving), not the checkout's. When a
+run ends with exit 3 it names the backup that start took.
 
 This is not a zero-downtime deploy: the old container stops before the new
 one proves itself. Two instances behind Caddy is #409 (deferred) and AS20

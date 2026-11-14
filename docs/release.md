@@ -118,9 +118,24 @@ per CLAUDE.md, "Drift is loud, not silent".
   a `--build` on any command but `exec`, `up --watch` or `-w`, an `up` that
   names services, and another stack (`-f`, `--project-directory`); a shell's
   `COMPOSE_FILE` is dropped wherever envctl reads or runs compose. Each
-  refusal has a test. **Not covered yet:** a plain `make up` on home reads the
-  checkout's release, which `make home-deploy` does not move, so it can start
-  a release other than the one last applied (R6d, #870).
+  refusal has a test. `make up` and `make compose` on home run the release
+  last applied (`applied.json` in the deploy's state directory), from its own
+  tree and under the stack's project, never the checkout's
+  `deploy/home/release.json`, which `make home-deploy` does not move, and they
+  check it against that tree's own schemas. `make preflight` and `make env`
+  start nothing, so they read the checkout: that is how a change to
+  `deploy/home/` is checked before it is pushed. `make up`, and any
+  `make compose` command that may
+  create, replace or stop containers, holds the deploy's lock while it runs
+  (`logs`, `ps`, `exec` and the other reads do not, nor does a
+  `run --no-deps`, which starts none of the stack's, such as `make promo`).
+  A change to `deploy/home/` reaches home through commit, push and
+  `make home-deploy`. So a
+  restart starts what runs and nothing else, and never during a deploy. With
+  no release applied they refuse, naming `make home-deploy` (R6d, #870, C350;
+  `deploy::applied_stack`). Only the deploy's own `up`, which names its state
+  directory, runs on a release's tree under that directory's `releases/` as
+  given; any other `up` or `compose` run from such a tree is refused.
 
 ## Constraints
 

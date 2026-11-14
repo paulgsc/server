@@ -71,12 +71,14 @@ const DOCKER: &str = r#"#!/bin/sh
 here="$(dirname "$0")"
 case "$1" in
   ps) echo probe-1 ;;
-  inspect) cat "$here/inspect.json" ;;
+  inspect) if [ "$2" = --format ]; then echo stand-in-project; else cat "$here/inspect.json"; fi ;;
   compose)
     shift
     [ "$1" = "--env-file" ] && [ "$2" = "/dev/null" ] || { echo "compose without --env-file /dev/null" >&2; exit 9; }
     shift 2
     if [ "$1" = config ]; then cat "$here/config.json"; exit 0; fi
+    [ -n "$COMPOSE_PROJECT_NAME" ] && echo "compose $1: project $COMPOSE_PROJECT_NAME" >> "$here/log"
+    if [ "$1" = ps ]; then echo "compose ps" >> "$here/log"; exit 0; fi
     if [ "$1" = logs ]; then
       echo "compose logs: started" >> "$here/log"
       trap 'echo "compose logs: TERM" >> "$here/log"; exit 143' TERM
@@ -128,6 +130,11 @@ case "$1" in
 esac
 "##;
 
+/// The deploy's state directory, and a release's tree in it, under the
+/// fixture's `HOME`.
+const STATE_DIR: &str = "home/.local/state/server-deploy";
+const RELEASE_TREE: &str = "home/.local/state/server-deploy/releases/stand-in";
+
 struct Fixture {
 	root: PathBuf,
 	repo: PathBuf,
@@ -138,7 +145,11 @@ impl Fixture {
 	fn new(name: &str) -> std::io::Result<Self> {
 		let root = std::env::temp_dir().join(format!("envctl-stand-ins-{name}-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&root);
-		let repo = root.join("repo");
+		// The checkout is a release's tree under the deploy's state directory,
+		// which `envctl` is told of as the deploy tells it: home's `up` and
+		// `compose` run on it as given (R6d, #870), and these tests are of
+		// what they do there.
+		let repo = root.join(RELEASE_TREE);
 		let bin = root.join("bin");
 		fs::create_dir_all(repo.join("infra/env"))?;
 		fs::create_dir_all(&bin)?;
@@ -165,8 +176,11 @@ impl Fixture {
 		command
 			.arg("--repo")
 			.arg(&self.repo)
+			.arg("--release-state")
+			.arg(self.root.join(STATE_DIR))
 			.args(args)
 			.env_clear()
+			.env("HOME", self.root.join("home"))
 			.env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()));
 		command
 	}
@@ -268,7 +282,7 @@ fn import_writes_through_sops_only_and_prints_names_only() {
 	let again = fixture.envctl(&["import", "--role", "home", "--dry-run"]).output().unwrap();
 	let shown = printed(&again);
 	assert!(shown.contains("probe.sops.env\n  already what runs") && shown.contains("1. make import"), "{shown}");
-	assert!(shown.contains("rm ") && shown.contains("once make up has run"), "{shown}");
+	assert!(shown.contains("rm ") && shown.contains("once make home-deploy has run"), "{shown}");
 }
 
 #[test]
@@ -642,4 +656,90 @@ fn a_value_wrapped_in_quotes_is_named_and_never_shown() {
 	assert!(run.status.success(), "named, never refused: {shown}");
 	assert!(shown.contains("deploy/home/tools.sops.env: DATABASE_URL wrapped in quotes"), "{shown}");
 	assert!(!shown.contains("sqlite"), "never the value: {shown}");
+}
+
+#[test]
+fn home_runs_only_the_release_last_applied() {
+	let fixture = Fixture::new("applied").unwrap();
+	// As the owner runs it: not the deploy, so no state directory is named.
+	let run = |home: &Path, args: &[&str]| {
+		let mut command = Command::new(env!("CARGO_BIN_EXE_envctl"));
+		command
+			.arg("--repo")
+			.arg(&fixture.repo)
+			.args(args)
+			.env_clear()
+			.env("HOME", home)
+			.env("PATH", format!("{}:/usr/bin:/bin", fixture.bin.display()));
+		printed(&command.output().unwrap())
+	};
+	let home = fixture.root.join("home");
+	// From a release's tree, only the deploy runs.
+	for args in [
+		&["up", "--role", "home"][..],
+		&["compose", "--role", "home", "--", "up", "-d"],
+		&["compose", "--role", "home", "--", "ps"],
+	] {
+		let said = run(&home, args);
+		assert!(said.contains("only the deploy runs"), "{args:?}: {said}");
+	}
+	// From a checkout, with no release applied: refused, naming the deploy,
+	// and nothing is made.
+	let elsewhere = fixture.root.join("elsewhere");
+	let said = run(&elsewhere, &["up", "--role", "home"]);
+	assert!(said.contains("`make home-deploy`"), "{said}");
+	assert!(!elsewhere.exists());
+	// Another role runs as given: on to its own tmpfs, which this one lacks.
+	let said = run(&elsewhere, &["compose", "--role", "dev", "--", "ps"]);
+	assert!(said.contains("XDG_RUNTIME_DIR is not set"), "{said}");
+	// The preflight starts nothing, so it checks the checkout's files even on
+	// home, with none applied: how a change is checked before it is pushed.
+	let said = run(&elsewhere, &["preflight", "--role", "home"]);
+	assert!(!said.contains("`make home-deploy`") && !said.contains("only the deploy runs"), "{said}");
+}
+
+#[test]
+fn home_restarts_the_release_last_applied_from_its_tree() {
+	let Some(shm) = tmpfs() else {
+		return;
+	};
+	let fixture = Fixture::new("restart").unwrap();
+	imported(&fixture).unwrap();
+	// The release's tree is the fixture's repo, recorded applied; the
+	// checkout the owner runs from has moved on and cannot be read at all.
+	fs::write(fixture.repo.join(".git"), "gitdir: stand-in\n").unwrap();
+	let state = fixture.root.join(STATE_DIR);
+	fs::write(state.join("applied.json"), r#"{"commit": "stand-in", "previous": null}"#).unwrap();
+	let checkout = fixture.root.join("checkout");
+	fs::create_dir_all(checkout.join("infra/env")).unwrap();
+	fs::write(checkout.join("infra/env/probe.json"), "not a schema").unwrap();
+	fs::write(checkout.join("docker-compose.yml"), "not compose").unwrap();
+	let env_dir = shm.join(format!("envctl-restart-{}", std::process::id()));
+	let run = |args: &[&str]| {
+		Command::new(env!("CARGO_BIN_EXE_envctl"))
+			.arg("--repo")
+			.arg(&checkout)
+			.args(args)
+			.env_clear()
+			.env("HOME", fixture.root.join("home"))
+			.env("PATH", format!("{}:/usr/bin:/bin", fixture.bin.display()))
+			.output()
+			.unwrap()
+	};
+	let env = env_dir.to_str().unwrap();
+	let up = run(&["up", "--role", "home", "--env-dir", env]);
+	assert!(up.status.success(), "{}\n{}", printed(&up), fixture.log());
+	assert!(printed(&up).contains("the release last applied"), "{}", printed(&up));
+	assert!(fixture.log().contains("compose up -d: file ok"), "{}", fixture.log());
+	assert!(fixture.log().contains("compose up: project stand-in-project"), "{}", fixture.log());
+	// While a deploy holds the lock, a change is refused and a read is not.
+	let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(state.join(".lock")).unwrap();
+	lock.lock().unwrap();
+	let busy = run(&["compose", "--role", "home", "--env-dir", env, "--", "up", "-d"]);
+	assert!(!busy.status.success() && printed(&busy).contains("another deploy is running"), "{}", printed(&busy));
+	let ps = run(&["compose", "--role", "home", "--env-dir", env, "--", "ps"]);
+	assert!(ps.status.success(), "{}\n{}", printed(&ps), fixture.log());
+	assert!(fixture.log().contains("compose ps"), "{}", fixture.log());
+	drop(lock);
+	let _ = fs::remove_dir_all(&env_dir);
 }

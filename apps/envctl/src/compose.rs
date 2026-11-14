@@ -445,6 +445,28 @@ fn up_services<'a>(words: &[&'a str]) -> Vec<&'a str> {
 	services
 }
 
+// Compose commands that only read, or act inside a container already
+// running: every other one may create, replace or stop containers.
+const READS: &[&str] = &["ps", "logs", "config", "images", "top", "ls", "port", "events", "version", "exec", "stats", "wait"];
+
+/// Whether `docker compose <args>` may change the stack's containers, so on
+/// home it takes the deploy's lock (R6d, #870). No command reads as a change.
+/// A `run --no-deps` starts a container of its own and none of the stack's,
+/// so a long one (`make promo`) never holds a deploy back.
+pub(crate) fn changes_containers(args: &[String]) -> bool {
+	let mut rest = args.iter().map(String::as_str);
+	while let Some(arg) = rest.next() {
+		if !arg.starts_with('-') {
+			let after: Vec<&str> = rest.collect();
+			return !(READS.contains(&arg) || arg == "run" && options_of(arg, &after).contains(&"--no-deps"));
+		}
+		if consumes(arg, GLOBAL_LONG, GLOBAL_SHORT) || consumes(arg, OTHER_STACK, &['f']) {
+			rest.next();
+		}
+	}
+	true
+}
+
 /// Why `envctl compose --role <role>` refuses `args`, if it does (RELEASE R6,
 /// #795).
 ///
@@ -516,7 +538,7 @@ pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 // `${...}` is compose's syntax under test here, not a format argument.
 #[allow(clippy::literal_string_with_formatting_args)]
 mod tests {
-	use super::{home_refusal, included, own_paragraph, variables, wired};
+	use super::{changes_containers, home_refusal, included, own_paragraph, variables, wired};
 	use serde_json::json;
 
 	fn texts(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -612,6 +634,27 @@ mod tests {
 	fn another_role_is_never_refused() {
 		for line in ["pull", "build render", "up --build", "up -d render", "-f other.yml up -d"] {
 			assert_eq!(home_refusal("dev", &args(line)), None, "`{line}` on dev");
+		}
+	}
+
+	#[test]
+	fn only_what_changes_containers_takes_the_lock() {
+		let args = |line: &str| line.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+		for line in ["up -d", "restart file-host", "stop", "down", "-p server start", "--profile x run --rm a", ""] {
+			assert!(changes_containers(&args(line)), "`{line}`");
+		}
+		for line in ["run --rm render sh", "cp a:/x .", "attach a"] {
+			assert!(changes_containers(&args(line)), "`{line}`");
+		}
+		for line in [
+			"ps",
+			"logs -f file-host",
+			"-p server logs",
+			"--project-name x exec a sh",
+			"config",
+			"run --rm --no-deps -v a:b render x",
+		] {
+			assert!(!changes_containers(&args(line)), "`{line}`");
 		}
 	}
 }
