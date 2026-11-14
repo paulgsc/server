@@ -229,6 +229,9 @@ pub(crate) trait Host {
 	fn at(&mut self, commit: &str) -> Result<Target, String>;
 	/// The commit whose release was last applied whole here, if one was.
 	fn applied(&mut self) -> Option<String>;
+	/// The owner's checkout's own commit: the release `make up` last ran,
+	/// as far as anything says, before any release was recorded applied.
+	fn checked_out(&mut self) -> Option<String>;
 	fn record_applied(&mut self, commit: &str);
 	/// The service's container.
 	fn reading(&mut self, service: &str) -> Reading;
@@ -329,7 +332,18 @@ pub(crate) fn deploy(host: &mut dyn Host, options: &Options, clock: &dyn Clock, 
 /// Applies one release whole, or puts the previous one back whole.
 #[allow(clippy::too_many_lines)] // one pass, read top to bottom as the module's numbered steps
 pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clock: &dyn Clock, say: &mut dyn FnMut(&str)) -> Outcome {
-	let previous = match host.applied() {
+	// What serves now: the release last applied, or, before any was (the
+	// first pass after R4), the checkout's, which `make up` ran.
+	let recorded = host.applied();
+	let serving = recorded.clone().or_else(|| {
+		let commit = host.checked_out()?;
+		say(&format!(
+			"deploy: no release is recorded as applied here; taking the checkout's (main {}) as the one serving",
+			commit.get(..7).unwrap_or(&commit)
+		));
+		Some(commit)
+	});
+	let previous = match serving {
 		Some(commit) if commit == target.commit => Some(target.clone()),
 		Some(commit) => match host.at(&commit) {
 			Ok(found) => Some(found),
@@ -342,9 +356,10 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		},
 		None => None,
 	};
-	match &previous {
-		Some(previous) => say(&format!("deploy: home last applied release {}", previous.name())),
-		None => say("deploy: no release is recorded as applied here"),
+	match (&previous, &recorded) {
+		(Some(previous), Some(_)) => say(&format!("deploy: home last applied release {}", previous.name())),
+		(Some(_), None) => {}
+		(None, _) => say("deploy: no release is recorded as applied here"),
 	}
 	say(&format!("deploy: main's release is {}", target.name()));
 	let not_deployed = |previous: &Option<Target>| Outcome {
@@ -433,7 +448,7 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 	}
 
 	let Some(previous) = previous.filter(|previous| previous.release != target.release) else {
-		let why = if host.applied().is_some() {
+		let why = if recorded.is_some() {
 			"the release did not change, so the cause is not the release: look at deploy/<role>/, the config it refuses, or a dependency"
 		} else {
 			"no release was applied here before this one, so there is none to put back"
@@ -887,6 +902,10 @@ impl Host for RealHost {
 		read_json(&self.state.join("applied.json"))?.get("commit")?.as_str().map(str::to_owned)
 	}
 
+	fn checked_out(&mut self) -> Option<String> {
+		self.git(&["rev-parse", "HEAD"]).ok().map(|commit| commit.trim().to_owned())
+	}
+
 	fn record_applied(&mut self, commit: &str) {
 		let previous = self.applied().filter(|previous| previous != commit);
 		self.write_state_file("applied.json", &json!({"commit": commit, "previous": previous}));
@@ -1222,6 +1241,7 @@ mod tests {
 		/// service → (image id, started at).
 		running: BTreeMap<String, (String, f64)>,
 		applied: Option<String>,
+		checked_out: Option<String>,
 		failed: Vec<u64>,
 		pull_fails: bool,
 		up_fails: bool,
@@ -1264,6 +1284,10 @@ mod tests {
 
 		fn record_applied(&mut self, commit: &str) {
 			self.applied = Some(commit.to_owned());
+		}
+
+		fn checked_out(&mut self) -> Option<String> {
+			self.checked_out.clone()
 		}
 
 		fn reading(&mut self, service: &str) -> Reading {
@@ -1633,6 +1657,19 @@ mod tests {
 		let (code, said) = run_deploy(&mut host);
 		assert_eq!(code, EXIT_NOTHING_READY);
 		assert!(said_any(&said, "no release was applied here before"));
+	}
+
+	#[test]
+	fn a_first_pass_rolls_back_to_the_checkout_s_release() {
+		let mut host = serving(&three(ready_after(0.0), ready_after(0.0)));
+		host.applied = None;
+		host.checked_out = Some("c1".to_owned());
+		publish(&mut host, "c2", 2, &three(crashes_after(3.0), ready_after(0.0)));
+		let (outcome, said) = run_deploy_with(&mut host, &Options::default());
+		assert_eq!(outcome.code, EXIT_ROLLED_BACK);
+		assert_eq!(host.running["file-host"].0, "sha256:file-host-1");
+		assert_eq!(host.applied.as_deref(), Some("c1"));
+		assert!(said_any(&said, "taking the checkout's (main c1) as the one serving"), "{said:?}");
 	}
 
 	#[test]
