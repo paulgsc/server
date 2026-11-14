@@ -92,11 +92,14 @@ SERVE = (
 	"/usr/local/bin/rust-runner serve --rustc /usr/local/bin/rustc-pinned --socket /run/rust-runner/runner.sock"
 	" --work /work --program-uid 10101 --program-gid 10101 --client-uid 10000"
 )
-RESIDENTS = (SERVE,)
+# Known by uid as well as args, as the probe's are: a program can set its
+# argv[0] to anything, never its uid to root's.
+RESIDENTS = {("0", SERVE)}
 # The compose file's healthcheck (#794): a toolchain ask as file_host's uid,
 # every 30 s. Its processes are root's (the shell, grep) and the client's
 # (`ask`), never the programs' uid, so one is taken as the probe only with
-# its uid as well as its args, and no program's survivor can pass for it.
+# its uid as well as its args, and no program's survivor can pass for it
+# (nor for the runner: RESIDENTS).
 # check_sandbox holds the compose file to PROBE.
 PROBE = "echo '{\"ask\":\"toolchain\"}' | setpriv --reuid 10000 --regid 10001 --clear-groups rust-runner ask | grep -q '\"answer\":\"toolchain\"'"
 PROBE_PROCESSES = {
@@ -166,11 +169,11 @@ def wait_healthy(deadline_seconds: float = 60) -> None:
 	raise Failed(f"the runner was not healthy within {deadline_seconds} s: {status}")
 
 
-def leftovers() -> list[str]:
+def leftovers() -> list[tuple[str, str]]:
 	"""Every process in the container but the runner and the healthcheck's."""
 	result = subprocess.run(["docker", "top", CONTAINER, "-eo", "pid,uid,args"], capture_output=True, text=True, check=True)
 	processes = [line.split(None, 2)[1:] for line in result.stdout.splitlines()[1:] if len(line.split(None, 2)) == 3]
-	return [args for uid, args in processes if args not in RESIDENTS and (uid, args) not in PROBE_PROCESSES]
+	return [(uid, args) for uid, args in processes if (uid, args) not in RESIDENTS | PROBE_PROCESSES]
 
 
 def files_left() -> list[str]:
@@ -192,14 +195,15 @@ def clean(after: str) -> None:
 	deadline = time.monotonic() + 5
 	while leftovers() and time.monotonic() < deadline:
 		time.sleep(0.2)
-	# Only what is still there a moment later: Docker's healthcheck passes
-	# through a process or two PROBE_PROCESSES can't name (its `runc init`,
-	# setpriv between setresuid and exec) for milliseconds every 30 s, and a
-	# survivor is still there.
+	# Docker's healthcheck passes through a process or two PROBE_PROCESSES
+	# can't name (its root `runc init`, setpriv as 10000 between setresuid and
+	# exec) for milliseconds every 30 s, so another uid's process fails only if
+	# it is still there a moment later. The programs' uid gets no such grace:
+	# nothing but a program runs as it, and one could change its args.
 	left = leftovers()
-	if left:
+	if left and all(uid != PROGRAM_ID for uid, _ in left):
 		time.sleep(0.5)
-		left = [process for process in leftovers() if process in left]
+		left = [process for process in leftovers() if process in left or process[0] == PROGRAM_ID]
 	expect(left == [], f"{after} left processes behind: {left}")
 	expect(files_left() == [], f"{after} left files behind: {files_left()}")
 
