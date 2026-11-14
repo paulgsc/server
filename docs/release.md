@@ -140,6 +140,19 @@ and `cards-essays` (#854, added at epoch 1: a new folder changes no layout
 an older render reads, and server's `render-calls.sh` names each file). There is no `stage` edge: call-stage was removed (#802), and
 render carries its own stage slice. kokoro writes both labels empty.
 
+- **RL12. One way onto home** (R6, #795). Home starts nothing outside its
+  release, and only `make home-deploy` moves it. `scripts/check_home_guard.py`
+  (Lint's `Home guard`, every PR) refuses, across docker-compose.yml and every
+  file it includes: a service whose image is not `${IMAGE_*}` or that names
+  none, a `build:` (local builds live in `infra/compose/dev.build.yml`, which
+  the home role never loads; `dashboard-builder`'s is named until its first
+  publish), a release entry without a digest, any `:latest`, an image a NixOS
+  module names itself (C127), and a doc that pulls, builds or rebuilds by
+  hand. `envctl compose --role home` refuses the same at run time: `pull`,
+  `build`, `watch`, any `--build`, `up --watch`, and an `up` that names
+  services. Each refusal has a test. **Not covered:** a plain `make up` on
+  home reads the checkout's release, which `make home-deploy` does not move,
+  so it can start a release other than the one last applied (raised, #787).
 - **RL8. Third-party images are pinned, and refresh alone, when due**
   (R7, #796; C120, C347). Every image nobody here publishes (`THIRD_PARTY` in
   `release_lock.py`) is `repo:<real tag>@sha256:…`: the current major or
@@ -194,4 +207,4 @@ carry, against RL2.
 | Each image's labels | `infra/docker/Dockerfile.*`; render's in some-ui (U2, #792) |
 | The deploy applies a release whole | `apps/envctl/src/deploy.rs` (`make home-deploy`, `nix/modules/home-deploy.nix`) |
 | What compose may mount from a release's tree | `apps/envctl/src/mounts.rs` (RL10) |
-| **Planned:** guard against `:latest`, `build:`, per-service pulls | R6, #795 |
+| The guard (RL12) | `scripts/check_home_guard.py` (Lint's `Home guard`), `apps/envctl/src/compose.rs` (`home_refusal`), `infra/compose/dev.build.yml` |

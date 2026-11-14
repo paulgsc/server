@@ -361,11 +361,12 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 /// #795).
 ///
 /// Home runs one release, applied whole by `make home-deploy`, so on the home
-/// role compose may not pull, build, rebuild-and-start, or start some services
-/// on their own: each is a way back to running one image apart from its set.
-/// `ps`, `logs`, `exec`, `run`, a plain `up` and the rest pass.
-/// `scripts/check_home_guard.py` refuses the same commands written in the
-/// docs.
+/// role compose may not pull, build, watch, rebuild-and-start, or start some
+/// services on their own: each is a way back to running one image apart from
+/// its set. A `--build` on any command (`run`, `create`) is refused with
+/// them. `ps`, `logs`, `exec`, a plain `run`, a plain `up`, `restart` and the
+/// rest pass: they reuse the release's images. `scripts/check_home_guard.py`
+/// refuses the same commands written in the docs.
 pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 	// Compose's own options before the command, and those that take a value.
 	const GLOBAL_VALUED: &[&str] = &[
@@ -395,31 +396,41 @@ pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 			rest.next();
 		}
 	};
+	let rest: Vec<&str> = rest.collect();
+	// A boolean flag, as compose reads it: `--x`, or `--x=<anything but false>`.
+	let set = |flag: &str| {
+		rest
+			.iter()
+			.any(|arg| *arg == flag || arg.strip_prefix(flag).and_then(|value| value.strip_prefix('=')).is_some_and(|value| value != "false"))
+	};
 	let deploy = "home deploys one release, whole: run `make home-deploy`";
-	match command {
-		"pull" | "build" => Some(format!("`compose {command}` on the home role would move images apart from the release; {deploy}")),
-		"up" => {
-			let mut services = Vec::new();
-			let mut rest = rest.peekable();
-			while let Some(arg) = rest.next() {
-				if arg == "--build" {
-					return Some(format!("`compose up --build` on the home role builds an image the release does not name; {deploy}"));
-				}
-				if UP_VALUED.contains(&arg) {
-					rest.next();
-				} else if !arg.starts_with('-') {
-					services.push(arg);
-				}
-			}
-			(!services.is_empty()).then(|| {
-				format!(
-					"`compose up {}` on the home role starts some services apart from the rest of the release; {deploy}",
-					services.join(" ")
-				)
-			})
-		}
-		_ => None,
+	if matches!(command, "pull" | "build" | "watch") {
+		return Some(format!("`compose {command}` on the home role would move images apart from the release; {deploy}"));
 	}
+	if set("--build") {
+		return Some(format!("`compose {command} --build` on the home role builds an image the release does not name; {deploy}"));
+	}
+	if command != "up" {
+		return None;
+	}
+	if set("--watch") {
+		return Some(format!("`compose up --watch` on the home role rebuilds images the release does not name; {deploy}"));
+	}
+	let mut services = Vec::new();
+	let mut args = rest.iter();
+	while let Some(arg) = args.next() {
+		if UP_VALUED.contains(arg) {
+			args.next();
+		} else if !arg.starts_with('-') {
+			services.push(*arg);
+		}
+	}
+	(!services.is_empty()).then(|| {
+		format!(
+			"`compose up {}` on the home role starts some services apart from the rest of the release; {deploy}",
+			services.join(" ")
+		)
+	})
 }
 
 #[cfg(test)]
@@ -506,13 +517,21 @@ mod tests {
 			"pull rust-runner",
 			"build",
 			"build render",
+			"watch",
 			"up --build",
+			"up --build=true",
 			"up -d --build render",
+			"up --watch",
 			"up -d render",
 			"up render kokoro",
+			"up -- render",
 			"-p x pull",
+			"-f docker-compose.yml pull",
+			"--profile=tools build",
 			"--profile tools up -d render",
 			"up --timeout 30 render",
+			"run --build --rm render true",
+			"create --build",
 		] {
 			let refused = home_refusal("home", &args(line));
 			assert!(
@@ -532,8 +551,10 @@ mod tests {
 			"run --rm --no-deps render true",
 			"up -d",
 			"up",
+			"up --build=false -d",
 			"up --timeout 30 -d",
 			"up --pull never -d",
+			"restart render",
 			"down",
 			"config",
 			"-p x ps",

@@ -174,15 +174,11 @@ jobs:
       - name: Home's release follows what is published
         run: python3 scripts/release_lock.py --self-test
 
-  # Home's release fits together (RELEASE R3, #790; docs/release.md, RL9):
-  # every image's io.paulgsc.requires is met by another image's provides,
-  # read from the registry by digest. The self-test (the rule, envctl's cases,
-  # every server image's labels) always runs; the registry is read when the
-  # release or the check changed, which every release pull request does.
   # RELEASE R6 (#795): home starts nothing outside its release. No compose
   # service of the home include set builds or floats, no release entry lacks
   # a digest, no NixOS module names its own image, and no doc tells anyone
-  # to pull or build by hand. No path gate: stdlib python3, a second.
+  # to pull or build by hand (docs/release.md, RL12). No path gate: stdlib
+  # python3, a second.
   home_guard:
     name: Home guard
     runs-on: ubuntu-latest
@@ -194,6 +190,11 @@ jobs:
           python3 scripts/check_home_guard.py --self-test
           python3 scripts/check_home_guard.py
 
+  # Home's release fits together (RELEASE R3, #790; docs/release.md, RL9):
+  # every image's io.paulgsc.requires is met by another image's provides,
+  # read from the registry by digest. The self-test (the rule, envctl's cases,
+  # every server image's labels) always runs; the registry is read when the
+  # release or the check changed, which every release pull request does.
   # No path gate on the job: stdlib python3 and one file from the base.
   release_set:
     name: Release set
