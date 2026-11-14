@@ -185,6 +185,9 @@ pub(crate) fn config(repo: &Path) -> Result<Value> {
 	let output = Command::new("docker")
 		.args(["compose", "--env-file", "/dev/null", "config", "--no-interpolate", "--format", "json"])
 		.current_dir(repo)
+		// The repository's own stack, as `compose_on` runs it: a shell's
+		// COMPOSE_FILE would have the checks judge another (RELEASE R6, #795).
+		.env_remove("COMPOSE_FILE")
 		.output()
 		.context("running docker compose config")?;
 	if !output.status.success() {
@@ -357,6 +360,91 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 	environment
 }
 
+// What `home_refusal` reads compose's words by (RELEASE R6, #795), as
+// `scripts/check_home_guard.py` does too. Options before the command that
+// take a value:
+const GLOBAL_LONG: &[&str] = &["--project-name", "--profile", "--env-file", "--ansi", "--progress", "--parallel"];
+const GLOBAL_SHORT: &[char] = &['p'];
+// Options that point compose at another stack than the repository's.
+const OTHER_STACK: &[&str] = &["--file", "--project-directory"];
+// `up`'s options that take a value, so it is never read as a service.
+const UP_LONG: &[&str] = &["--timeout", "--scale", "--pull", "--wait-timeout", "--exit-code-from", "--attach", "--no-attach"];
+const UP_SHORT: &[char] = &['t'];
+// `run`'s and `create`'s: what follows the service is the container's own
+// command, never compose's.
+const RUN_LONG: &[&str] = &[
+	"--env",
+	"--env-from-file",
+	"--volume",
+	"--workdir",
+	"--user",
+	"--publish",
+	"--label",
+	"--name",
+	"--entrypoint",
+	"--cap-add",
+	"--cap-drop",
+	"--pull",
+	"--scale",
+];
+const RUN_SHORT: &[char] = &['e', 'v', 'w', 'u', 'p', 'l'];
+// The words compose (Go's `ParseBool`) reads as false.
+const FALSE: &[&str] = &["false", "0", "f", "F", "FALSE", "False"];
+
+/// A short option or a cluster of them (`-d`, `-dw`), not a long one.
+fn is_short(arg: &str) -> bool {
+	arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--")
+}
+
+/// Whether an option takes the next word as its value: a long one named, or
+/// a short cluster whose last letter is one (`-dt 10`).
+fn consumes(arg: &str, long: &[&str], shorts: &[char]) -> bool {
+	!arg.contains('=')
+		&& if is_short(arg) {
+			arg.chars().last().is_some_and(|c| shorts.contains(&c))
+		} else {
+			long.contains(&arg)
+		}
+}
+
+/// Compose's own options for `command`: none for `exec`, and for `run` and
+/// `create` only those before the service, past which is the container's
+/// own command.
+fn options_of<'a>(command: &str, words: &[&'a str]) -> Vec<&'a str> {
+	match command {
+		"exec" => Vec::new(),
+		"run" | "create" => {
+			let mut options = Vec::new();
+			let mut words = words.iter();
+			while let Some(word) = words.next() {
+				if !word.starts_with('-') {
+					break;
+				}
+				options.push(*word);
+				if consumes(word, RUN_LONG, RUN_SHORT) {
+					words.next();
+				}
+			}
+			options
+		}
+		_ => words.to_vec(),
+	}
+}
+
+/// The services an `up` names.
+fn up_services<'a>(words: &[&'a str]) -> Vec<&'a str> {
+	let mut services = Vec::new();
+	let mut words = words.iter();
+	while let Some(word) = words.next() {
+		if consumes(word, UP_LONG, UP_SHORT) {
+			words.next();
+		} else if !word.starts_with('-') {
+			services.push(*word);
+		}
+	}
+	services
+}
+
 /// Why `envctl compose --role <role>` refuses `args`, if it does (RELEASE R6,
 /// #795).
 ///
@@ -370,35 +458,6 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 /// release's images. `scripts/check_home_guard.py` refuses the same commands
 /// written in the docs.
 pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
-	// Compose's own options before the command, and those that take a value.
-	const GLOBAL_VALUED: &[&str] = &["-p", "--project-name", "--profile", "--env-file", "--ansi", "--progress", "--parallel"];
-	// Options that point compose at another stack than the repository's.
-	const OTHER_STACK: &[&str] = &["-f", "--file", "--project-directory"];
-	// `up`'s options that take a value, so it is never read as a service.
-	const UP_VALUED: &[&str] = &["-t", "--timeout", "--scale", "--pull", "--wait-timeout", "--exit-code-from", "--attach", "--no-attach"];
-	// `run`'s and `create`'s options that take a value: what follows the
-	// service is the container's own command, never compose's.
-	const RUN_VALUED: &[&str] = &[
-		"-e",
-		"--env",
-		"--env-from-file",
-		"-v",
-		"--volume",
-		"-w",
-		"--workdir",
-		"-u",
-		"--user",
-		"-p",
-		"--publish",
-		"-l",
-		"--label",
-		"--name",
-		"--entrypoint",
-		"--cap-add",
-		"--cap-drop",
-		"--pull",
-		"--scale",
-	];
 	if role != "home" {
 		return None;
 	}
@@ -409,43 +468,27 @@ pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 		if !arg.starts_with('-') {
 			break arg;
 		}
-		if OTHER_STACK
+		let other = OTHER_STACK
 			.iter()
-			.any(|option| arg == *option || arg.strip_prefix(option).is_some_and(|value| value.starts_with('=')))
-		{
+			.any(|option| arg == *option || arg.strip_prefix(option).is_some_and(|value| value.starts_with('=')));
+		if other || (is_short(arg) && arg[1..].contains('f')) {
 			return Some(format!("another stack (`{arg}`) on the home role could start an image the release does not name; {deploy}"));
 		}
-		if GLOBAL_VALUED.contains(&arg) {
+		if consumes(arg, GLOBAL_LONG, GLOBAL_SHORT) {
 			rest.next();
 		}
 	};
 	let all: Vec<&str> = rest.collect();
-	// Compose's own options for the command: for `exec` none count, and for
-	// `run` and `create` only those before the service, past which is the
-	// container's own command.
-	let options: Vec<&str> = match command {
-		"exec" => Vec::new(),
-		"run" | "create" => {
-			let mut options = Vec::new();
-			let mut args = all.iter();
-			while let Some(arg) = args.next() {
-				if !arg.starts_with('-') {
-					break;
-				}
-				options.push(*arg);
-				if RUN_VALUED.contains(arg) {
-					args.next();
-				}
-			}
-			options
-		}
-		_ => all.clone(),
-	};
-	// A boolean flag, as compose reads it: `--x`, or `--x=<anything but false>`.
+	let options = options_of(command, &all);
+	// A boolean flag, as compose reads it: `--x`, or `--x=<anything not false>`.
 	let set = |flag: &str| {
-		options
-			.iter()
-			.any(|arg| *arg == flag || arg.strip_prefix(flag).and_then(|value| value.strip_prefix('=')).is_some_and(|value| value != "false"))
+		options.iter().any(|arg| {
+			*arg == flag
+				|| arg
+					.strip_prefix(flag)
+					.and_then(|value| value.strip_prefix('='))
+					.is_some_and(|value| !FALSE.contains(&value))
+		})
 	};
 	if matches!(command, "pull" | "build" | "watch") {
 		return Some(format!("`compose {command}` on the home role would move images apart from the release; {deploy}"));
@@ -457,21 +500,10 @@ pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 		return None;
 	}
 	// `-w` is `up`'s short `--watch`, alone or in a cluster (`-dw`).
-	let short_watch = all
-		.iter()
-		.any(|arg| arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('w'));
-	if set("--watch") || short_watch {
+	if set("--watch") || all.iter().any(|arg| is_short(arg) && arg[1..].contains('w')) {
 		return Some(format!("`compose up --watch` on the home role rebuilds images the release does not name; {deploy}"));
 	}
-	let mut services = Vec::new();
-	let mut args = all.iter();
-	while let Some(arg) = args.next() {
-		if UP_VALUED.contains(arg) {
-			args.next();
-		} else if !arg.starts_with('-') {
-			services.push(*arg);
-		}
-	}
+	let services = up_services(&all);
 	(!services.is_empty()).then(|| {
 		format!(
 			"`compose up {}` on the home role starts some services apart from the rest of the release; {deploy}",
@@ -555,77 +587,30 @@ mod tests {
 		line.split_whitespace().map(str::to_owned).collect()
 	}
 
-	/// RELEASE R6 (#795): each way of moving one image apart from its release
-	/// is refused on home, and points at the one command.
+	/// RELEASE R6 (#795): what home refuses and lets through, from the one
+	/// file `scripts/check_home_guard.py`'s self-test reads too, so the docs
+	/// check and the run-time refusal cannot drift apart.
 	#[test]
-	fn home_refuses_pull_build_up_build_and_up_some_services() {
-		for line in [
-			"pull",
-			"pull rust-runner",
-			"build",
-			"build render",
-			"watch",
-			"up --build",
-			"up --build=true",
-			"up -d --build render",
-			"up --watch",
-			"up -d render",
-			"up render kokoro",
-			"up -- render",
-			"-p x pull",
-			"-f docker-compose.yml pull",
-			"--profile=tools build",
-			"--profile tools up -d render",
-			"up --timeout 30 render",
-			"run --build --rm render true",
-			"create --build",
-			"up -w",
-			"up -dw",
-			"-f other.yml up -d",
-			"--file=other.yml ps",
-			"--project-directory /elsewhere up -d",
-			"--project-directory=/elsewhere ps",
-			"run -e X=1 --build render true",
-		] {
-			let refused = home_refusal("home", &args(line));
+	fn home_refuses_and_lets_through_what_the_shared_cases_say() {
+		let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/home_refusal_cases.json");
+		let cases: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+		let lines = |key: &str| cases[key].as_array().unwrap().iter().map(|line| line.as_str().unwrap().to_owned()).collect::<Vec<_>>();
+		assert!(lines("refused").len() > 20 && lines("allowed").len() > 20);
+		for line in lines("refused") {
+			let refused = home_refusal("home", &args(&line));
 			assert!(
 				refused.as_deref().is_some_and(|why| why.contains("make home-deploy")),
 				"`{line}` was not refused: {refused:?}"
 			);
 		}
-	}
-
-	#[test]
-	fn home_lets_everything_else_through() {
-		for line in [
-			"",
-			"ps",
-			"logs -f render",
-			"exec render sh",
-			"run --rm --no-deps render true",
-			"up -d",
-			"up",
-			"up --build=false -d",
-			"up --timeout 30 -d",
-			"up --pull never -d",
-			"restart render",
-			"down",
-			"config",
-			"-p x ps",
-			"--profile tools ps",
-			"exec render node cli.js --build",
-			"run --rm -w /opt render true",
-			"up -d --no-build",
-			"run --rm render node cli.js --build",
-			"run --rm -w /opt render tool --build=x",
-		] {
-			assert_eq!(home_refusal("home", &args(line)), None, "`{line}` was refused");
+		for line in lines("allowed") {
+			assert_eq!(home_refusal("home", &args(&line)), None, "`{line}` was refused");
 		}
 	}
 
 	#[test]
 	fn another_role_is_never_refused() {
-		for line in ["pull", "build render", "up --build", "up -d render"] {
+		for line in ["pull", "build render", "up --build", "up -d render", "-f other.yml up -d"] {
 			assert_eq!(home_refusal("dev", &args(line)), None, "`{line}` on dev");
 		}
 	}

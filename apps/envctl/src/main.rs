@@ -361,11 +361,9 @@ fn compose_on(
 			process.env_remove(name);
 		}
 	}
-	// On home a shell's COMPOSE_FILE would swap the stack the release names
-	// (RELEASE R6, #795): compose reads the repository's own files only.
-	if deployment.role == "home" {
-		process.env_remove("COMPOSE_FILE");
-	}
+	// The repository's own stack, the one `compose::config` read and the
+	// checks judged: a shell's COMPOSE_FILE would swap it (RELEASE R6, #795).
+	process.env_remove("COMPOSE_FILE");
 	process.envs(&deployment.compose);
 	process.env("ENV_DIR", delivered.dir());
 	let mut child = process.spawn().context("running docker compose")?;

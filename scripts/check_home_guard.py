@@ -13,16 +13,18 @@ its own:
 - a `:latest` anywhere in the home stack, the release, or the NixOS modules;
 - a release entry without a digest;
 - an image a NixOS module names itself (C127);
-- a README or docs line telling someone to pull, build, watch or
-  rebuild-and-start by hand, when `make home-deploy` is the one command.
+- a README or docs line writing a compose command that `envctl compose
+  --role home` refuses (pull, build, watch, `--build`, an `up` of some
+  services, another stack), when `make home-deploy` is the one command: the
+  doc's command is judged by the same rule, ported word for word
+  (`home_refusal`), both sides tested on scripts/home_refusal_cases.json.
 
 The home stack is read as compose itself reads it,
 `docker compose config --no-interpolate --format json` from the repository
 root, the call envctl makes (`apps/envctl/src/compose.rs`, `config`): every
 include, nested or short, every anchor, merge and `extends:` resolved, so
 nothing is parsed by hand and nothing passes for being written oddly.
-`envctl compose --role home` refuses the matching commands at run time
-(`home_refusal`).
+`envctl compose --role home` refuses the same commands at run time.
 
     python3 scripts/check_home_guard.py
     python3 scripts/check_home_guard.py --self-test
@@ -59,19 +61,90 @@ LATEST = re.compile(r":latest\b")
 # parentheses.
 NIX_IMAGE = re.compile(r"\bimage\s*=\s*(.*)$")
 NIX_LITERAL = re.compile(r"""^(?:(?:lib\.)?mk(?:Default|Force|Override\s+\d+)\s+)?\(?\s*["']""")
-# Pulling, building, watching or rebuilding by hand, through make or compose,
-# whatever options come before the command. A word ends at a space, a quote
-# or the line: `pull-worker` and `--build-arg` are other words.
-END = r"""(?=["'\s`.,;:)]|$)"""
-OPTION = r"(?:-{1,2}[\w-]+(?:[= ][^\s\"'`-]\S*)?\s+)*"
-# `--build`/`--watch`, `=` and a value or not, and up's `-w` alone or in a
-# cluster (`-dw`).
-BUILDS = rf"""\s(?:--(?:build|watch)(?:=(?!false\b)\S+)?|-[a-vx-z]*w[a-z]*){END}"""
-BY_HAND = re.compile(
-    rf"""ARGS=["']?{OPTION}(?:pull|build|watch){END}|ARGS=["'][^"']*?up\b[^"']*{BUILDS}"""
-    rf"""|docker[ -]compose\s+{OPTION}(?:pull|build|watch){END}|docker[ -]compose\b[^\n`]*?\sup\b[^\n`]*{BUILDS}"""
-)
+# A command written in a doc: make's `ARGS="..."` (quoted or one word), or
+# what follows `docker compose` / `docker-compose` up to the end of a code
+# span, a `;`, `&` or `|`, or the line.
+DOC_ARGS = re.compile(r"""ARGS=(?:"([^"]*)"|'([^']*)'|(\S+))""")
+DOC_COMPOSE = re.compile(r"""docker[ -]compose(?:\s+([^`;&|\n]*))?""")
 
+# The rule `envctl compose --role home` keeps (apps/envctl/src/compose.rs,
+# `home_refusal`), word for word: both read scripts/home_refusal_cases.json in
+# their tests, so they cannot drift apart.
+GLOBAL_LONG = ("--project-name", "--profile", "--env-file", "--ansi", "--progress", "--parallel")
+GLOBAL_SHORT = "p"
+OTHER_STACK = ("--file", "--project-directory")
+UP_LONG = ("--timeout", "--scale", "--pull", "--wait-timeout", "--exit-code-from", "--attach", "--no-attach")
+UP_SHORT = "t"
+RUN_LONG = ("--env", "--env-from-file", "--volume", "--workdir", "--user", "--publish", "--label", "--name", "--entrypoint", "--cap-add", "--cap-drop", "--pull", "--scale")
+RUN_SHORT = "evwupl"
+FALSE = ("false", "0", "f", "F", "FALSE", "False")
+CASES = REPO_ROOT / "scripts" / "home_refusal_cases.json"
+
+
+def short(arg: str) -> bool:
+    return len(arg) > 1 and arg.startswith("-") and not arg.startswith("--")
+
+
+def consumes(arg: str, long: tuple[str, ...], shorts: str) -> bool:
+    """Whether an option takes the next word as its value (a short cluster by its last letter)."""
+    if "=" in arg:
+        return False
+    return arg[-1] in shorts if short(arg) else arg in long
+
+
+def home_refusal(args: list[str]) -> str | None:
+    """Why `envctl compose --role home` refuses `args` (the words after `docker compose`), if it does."""
+    rest = iter(args)
+    for arg in rest:
+        if not arg.startswith("-"):
+            command = arg
+            break
+        if any(arg == option or arg.startswith(option + "=") for option in OTHER_STACK) or (short(arg) and "f" in arg[1:]):
+            return f"another stack (`{arg}`)"
+        if consumes(arg, GLOBAL_LONG, GLOBAL_SHORT):
+            next(rest, None)
+    else:
+        return None
+    every = list(rest)
+    if command == "exec":
+        options: list[str] = []
+    elif command in ("run", "create"):
+        options, words = [], iter(every)
+        for arg in words:
+            if not arg.startswith("-"):
+                break
+            options.append(arg)
+            if consumes(arg, RUN_LONG, RUN_SHORT):
+                next(words, None)
+    else:
+        options = every
+
+    def set_(flag: str) -> bool:
+        return any(arg == flag or (arg.startswith(flag + "=") and arg[len(flag) + 1 :] not in FALSE) for arg in options)
+
+    if command in ("pull", "build", "watch"):
+        return f"`compose {command}`"
+    if set_("--build"):
+        return f"`compose {command} --build`"
+    if command != "up":
+        return None
+    if set_("--watch") or any(short(arg) and "w" in arg[1:] for arg in every):
+        return "`compose up --watch`"
+    services, words = [], iter(every)
+    for arg in words:
+        if consumes(arg, UP_LONG, UP_SHORT):
+            next(words, None)
+        elif not arg.startswith("-"):
+            services.append(arg)
+    return f"`compose up {' '.join(services)}`" if services else None
+
+
+def doc_commands(line: str) -> list[list[str]]:
+    """Each compose command a doc line writes, as words."""
+    found = [(m.group(1) or m.group(2) or m.group(3) or "").split() for m in DOC_ARGS.finditer(line)]
+    found += [(m.group(1) or "").split() for m in DOC_COMPOSE.finditer(line)]
+    # A sentence's punctuation is not part of the last word.
+    return [words[:-1] + [words[-1].rstrip(".,;:)")] if words else words for words in found]
 
 @dataclass(frozen=True)
 class Refusal:
@@ -169,11 +242,13 @@ def nix_refusals(path: str, text: str) -> list[Refusal]:
 
 
 def docs_refusals(path: str, text: str) -> list[Refusal]:
-    return [
-        Refusal(path, number, "pulls, builds, watches or rebuilds by hand: home deploys with `make home-deploy` alone")
-        for number, line in enumerate(text.splitlines(), 1)
-        if BY_HAND.search(line)
-    ]
+    found = []
+    for number, line in enumerate(text.splitlines(), 1):
+        for words in doc_commands(line):
+            if why := home_refusal(words):
+                found.append(Refusal(path, number, f"{why} by hand: envctl refuses it on home, which deploys with `make home-deploy` alone"))
+                break
+    return found
 
 
 def check(root: Path, config: dict) -> list[Refusal]:
@@ -270,39 +345,40 @@ class Tests(unittest.TestCase):
         ):
             self.assertEqual(len(nix_refusals("m.nix", literal)), 1, literal)
 
-    def test_docs_never_pull_build_or_watch_by_hand(self) -> None:
+    def test_the_rule_is_envctl_s_word_for_word(self) -> None:
+        """The cases apps/envctl/src/compose.rs's test reads too."""
+        cases = json.loads(CASES.read_text())
+        self.assertGreater(len(cases["refused"]), 20)
+        for line in cases["refused"]:
+            self.assertIsNotNone(home_refusal(line.split()), line)
+        for line in cases["allowed"]:
+            self.assertIsNone(home_refusal(line.split()), line)
+
+    def test_docs_are_judged_by_the_same_rule(self) -> None:
+        cases = json.loads(CASES.read_text())
+        for line in cases["refused"]:
+            for written in (f'make compose ARGS="{line}"', f"docker compose {line}", f"`docker compose {line}`."):
+                if line.strip():
+                    self.assertEqual(len(docs_refusals("README.md", written)), 1, written)
+        for line in cases["allowed"]:
+            for written in (f'make compose ARGS="{line}"', f"docker compose {line}"):
+                self.assertEqual(docs_refusals("README.md", written), [], written)
+
+    def test_a_doc_s_quotes_punctuation_and_second_command(self) -> None:
         for line in (
-            'make compose ARGS="pull rust-runner"',
-            'make compose ARGS="build render"',
-            'make compose ARGS="up --build -d render"',
             "make compose ARGS='pull'",
             "make compose ARGS=pull",
-            'make compose ARGS="-p x pull"',
-            'make compose ARGS="watch"',
-            "docker compose pull",
-            "docker compose build kokoro",
-            "docker compose up -d --build render",
-            "docker compose -f x.yml pull",
-            "docker compose --profile t build",
             "docker-compose up -d --build file-host",
-            'make compose ARGS="up -w"',
-            'make compose ARGS="up -dw"',
-            'make compose ARGS="up --build=true"',
             "docker compose pull.",
+            "first `docker compose up -d`, then `docker compose pull`",
         ):
             self.assertEqual(len(docs_refusals("README.md", line)), 1, line)
         for line in (
             "make home-deploy",
-            'make compose ARGS="ps"',
-            'make compose ARGS="logs render"',
-            'make compose ARGS="logs pull-worker"',
-            'make compose ARGS="up -d"',
             "make compose ARGS=pull-thing",
-            "docker compose ps",
+            "docker compose up -d; docker compose exec x tool -w",
+            'make compose ARGS="exec backup tool --build"',
             "docker compose run --build-arg X=1 tool",
-            "docker compose exec render node cli.js --build",
-            'make compose ARGS="up --build=false -d"',
-            'make compose ARGS="run --rm -w /opt render true"',
         ):
             self.assertEqual(docs_refusals("README.md", line), [], line)
 

@@ -107,15 +107,17 @@ per CLAUDE.md, "Drift is loud, not silent".
   and `extends:` resolved) and refuses a service whose image is not
   `${IMAGE_*}` or that names none, a `build:` (local builds live in
   `infra/compose/dev.build.yml`, which the home role never loads;
-  `dashboard-builder`'s is named until its first publish), and any
-  `:latest`; then a release entry without a digest, an image a NixOS module
-  names itself (C127), and a doc that pulls, builds, watches or rebuilds by
-  hand. `envctl compose --role home` refuses the same at run time: `pull`,
-  `build`, `watch`, a `--build` on any command but `exec`, `up --watch` or
-  `-w`, an `up` that names services, and another stack (`-f`, `--project-directory`, or a shell's `COMPOSE_FILE`, which envctl drops).
-  Each refusal has a test. **Not covered yet:** a plain `make up` on home
-  reads the checkout's release, which `make home-deploy` does not move, so
-  it can start a release other than the one last applied (R6d, #870).
+  `dashboard-builder`'s is named until its first publish), and any `:latest`;
+  then a release entry without a digest, an image a NixOS module names itself
+  (C127), and a doc that writes a command the run-time rule refuses (the same
+  rule in Python, both tested on `scripts/home_refusal_cases.json`). `envctl
+  compose --role home` refuses the same at run time: `pull`, `build`, `watch`,
+  a `--build` on any command but `exec`, `up --watch` or `-w`, an `up` that
+  names services, and another stack (`-f`, `--project-directory`); a shell's
+  `COMPOSE_FILE` is dropped wherever envctl reads or runs compose. Each
+  refusal has a test. **Not covered yet:** a plain `make up` on home reads the
+  checkout's release, which `make home-deploy` does not move, so it can start
+  a release other than the one last applied (R6d, #870).
 
 ## Constraints
 
