@@ -87,11 +87,16 @@ per CLAUDE.md, "Drift is loud, not silent".
   it applied only once every service runs that release's image and is ready
   (`healthy`, or running a minute with no restart). A release whose `up`
   fails, or any of whose services does not come up, is put back: the release
-  last applied, its tree and its images, already here by digest, so the
-  rollback pulls nothing. A service that was not ready before the pass, on
-  an image the release keeps, is named but not judged: it is not the
-  release's failure. The failed release is skipped by serial until a newer
-  one forms. One pass runs at a time (a lock in the state directory). Home
+  last applied, its tree and its images, already here, so the rollback pulls
+  nothing. A release is its serial and the git trees compose reads
+  (`infra/`, `deploy/<role>/`, `docker-compose.yml`): a commit that moves
+  either is applied, judged and remembered as a release of its own; one
+  that moves neither is the release applied, and restarts nothing. An image
+  named by tag alone is not the release's bytes (RL4) and is pulled only
+  when absent, so a pass never moves it. A service that was failing before
+  the pass, on an image the release keeps, is named but not judged: it is
+  not the release's failure. A failed release is skipped by its key until
+  one with another key forms. One pass runs at a time (a lock in the state directory). Home
   never runs python (#786). **Gap:** `up` does not remove a service a
   release drops, and a rollback does not stop one the failed release added
   (#861).

@@ -388,7 +388,9 @@ rest of envctl; home has no python, and nothing home runs needs it):
    working tree is never touched), and the release at that commit. A
    release that failed here before is skipped: the one last applied is
    applied instead, until a newer release forms.
-2. **Pulls every image it names, by digest**, then **checks they fit
+2. **Pulls every image it names by digest** (one named by tag alone, the
+   third-party `:latest` ones until R7 #796, is pulled only when it is not
+   here, so a deploy never moves it), then **checks they fit
    together**: each image's `io.paulgsc.requires` met by another's
    `io.paulgsc.provides`, read from the pulled images (RL8). An unmet one
    replaces nothing.
@@ -402,7 +404,9 @@ rest of envctl; home has no python, and nothing home runs needs it):
    `logs/`, `config/` and Grafana's built dashboards) is mounted from the
    checkout (`STATE_ROOT`, RL9), so the release brings its own compose files
    and `deploy/<role>/`. A main that changed only those, with no image, is
-   brought up too. The one thing the checkout still decides is envctl
+   brought up too; one that changed neither (code, docs) is the release
+   already applied, and restarts nothing. The one thing the checkout still
+   decides is envctl
    itself: `up` runs the envctl make built from the checkout, so a release
    that needs a newer envctl fails its preflight and is put back; `git pull`
    the checkout and run `make home-deploy` again.
@@ -440,9 +444,15 @@ release did not change (so the cause is a dependency or the host).
 
 The record (`applied.json`, `failed-releases.json`, the kept worktrees) is
 the checkout owner's, in `~/.local/state/server-deploy/`, whether you run
-`make home-deploy` or the on-demand unit runs it as root for you. To retry a
-release that failed, after fixing what it needed on the host, remove its
-serial from `failed-releases.json`.
+`make home-deploy` or the on-demand unit runs it as root for you, and one
+pass runs at a time. A failed release is remembered by its serial and the
+trees compose reads, so a fix on main to its compose files or
+`deploy/<role>/` is tried again by itself; to retry one after fixing the
+host (or envctl, with a `git pull`), remove its line from
+`failed-releases.json`. A `make up` from the checkout after a deploy runs
+the checkout's tree, not the release's, and the deploy does not notice
+until the release's key changes: use `make home-deploy`, not `make up`, on
+home.
 
 **The database is never restored automatically** (owner, 2026-11-10). A
 migration that ran stays applied, and the previous image serves the

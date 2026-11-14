@@ -519,12 +519,9 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 		Some(user) => Some(deploy::home_of(user)?),
 		None => shell.get("HOME").cloned(),
 	};
-	let xdg = if as_user_name.is_some() {
-		None
-	} else {
-		shell.get("XDG_STATE_HOME").map(String::as_str)
-	};
-	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(xdg, home.as_deref()));
+	// One rule for both, so they share one record and one lock: the
+	// owner's home, never a $XDG_STATE_HOME only one of them sees.
+	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(None, home.as_deref()));
 	let mut host = deploy::RealHost::new(repo, &state_dir, &role, as_user_name, as_user)?;
 	let _held = match host.lock(on_demand.is_some()) {
 		Ok(file) => file,
