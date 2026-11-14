@@ -385,6 +385,15 @@ and no other step (RELEASE R4 #793; AS16 #563, AS18 #564):
 make home-deploy
 ```
 
+It is the only way (RELEASE R6, #795; docs/release.md, RL12): `make compose` on
+the home role refuses `pull`, `build`, `watch`, a `--build`, `up --watch`/`-w`,
+an `up` that names services, and another stack (`-f`, `--project-directory`),
+each of which would move one image apart from its release. `scripts/check_home_guard.py`
+(Lint's `Home guard`) refuses a home service whose image is not the release's,
+a `build:` or a `:latest` in the home stack, a release entry without a digest,
+an image a NixOS module names itself, and a doc that pulls, builds or watches by
+hand.
+
 It runs `envctl deploy` (`apps/envctl/src/deploy.rs`, built by make like the
 rest of envctl; home has no python, and nothing home runs needs it):
 
@@ -392,9 +401,9 @@ rest of envctl; home has no python, and nothing home runs needs it):
    working tree is never touched), and the release at that commit. A
    release that failed here before is skipped: the one last applied is
    applied instead, until a newer release forms.
-2. **Pulls every image it names by digest** (one named by tag alone, the
-   third-party `:latest` ones until R7 #796, is pulled only when it is not
-   here, so a deploy never moves it), then **checks they fit
+2. **Pulls every image it names by digest** (every entry carries one: R7
+   #796 pinned the third-party images, and the guard refuses an entry
+   without), then **checks they fit
    together**: each image's `io.paulgsc.requires` met by another's
    `io.paulgsc.provides`, read from the pulled images (RL9). An unmet one
    replaces nothing.
@@ -431,8 +440,11 @@ rest of envctl; home has no python, and nothing home runs needs it):
    `make dev`.
 6. **It gates every service, up to 360 s**: `healthy` where it has a
    healthcheck (`file-host`'s is `file_host --health-check`: `/ready` ready
-   or degraded), otherwise running with no restart for 60 s. A container
-   that exits, restarts or turns `unhealthy` fails at once. `file-host`'s
+   or degraded), a one-shot once it has exited 0 under `restart: 'no'`
+   (`dashboard-builder`, never by running a while), otherwise running with no
+   restart for 60 s. A container that exits any other way, restarts or turns
+   `unhealthy` fails at once; a one-shot that exits non-zero fails compose's
+   own `up`, and the deploy names it and prints its log. `file-host`'s
    `start_period` is 300 s, so the backup and migrations of a large database
    can finish before any failed probe counts, and the wait outlasts it.
 7. **A release that does not come up is rolled back whole**: the release

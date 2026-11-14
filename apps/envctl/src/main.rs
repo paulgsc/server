@@ -361,6 +361,9 @@ fn compose_on(
 			process.env_remove(name);
 		}
 	}
+	// The repository's own stack, the one `compose::config` read and the
+	// checks judged: a shell's COMPOSE_FILE would swap it (RELEASE R6, #795).
+	process.env_remove("COMPOSE_FILE");
 	process.envs(&deployment.compose);
 	process.env("ENV_DIR", delivered.dir());
 	let mut child = process.spawn().context("running docker compose")?;
@@ -414,6 +417,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
 			compose_on(&repo, &deployment, &env_dir, &["up".to_owned(), "-d".to_owned()], &shell, &compose::read(&repo)?)
 		}
 		Command::Compose { role, env_dir, args } => {
+			if let Some(why) = compose::home_refusal(&role, &args) {
+				bail!("{why}");
+			}
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
 			let raw = compose::config(&repo).context("docker compose config failed")?;
 			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;

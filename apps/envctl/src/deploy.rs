@@ -32,8 +32,9 @@
 //!    owner's checkout, `STATE_ROOT` (C344; RL10). `file_host` applies its
 //!    migrations as it starts, after a verified backup (AS16).
 //! 6. **Gates every service, up to `--ready-timeout` seconds**: `healthy`
-//!    where it has a healthcheck, otherwise running with no restart for
-//!    [`STABLE_SECONDS`]. A container that exits, restarts or turns
+//!    where it has a healthcheck, a one-shot (restart policy `no`) once it
+//!    has exited 0, otherwise running with no restart for
+//!    [`STABLE_SECONDS`]. A container that exits any other way, restarts or turns
 //!    `unhealthy` fails at once.
 //! 7. **Rolls back whole** when any service does not come up: the release
 //!    last applied, its tree and its images, through the same `up` and the
@@ -108,6 +109,10 @@ pub(crate) struct Reading {
 	pub(crate) health: Option<String>,
 	pub(crate) restarts: u64,
 	pub(crate) image: Option<String>,
+	/// The exit code of a container that has exited.
+	pub(crate) exit_code: Option<i64>,
+	/// Its restart policy: `no`, `unless-stopped`, `always`, `on-failure`.
+	pub(crate) restart_policy: Option<String>,
 }
 
 impl Reading {
@@ -124,9 +129,11 @@ pub(crate) enum Verdict {
 	Unjudgeable(String),
 }
 
-/// What one reading says about whether file-host came up.
+/// What one reading says about whether a service came up.
 ///
-/// Only `healthy` is ready. A container that is gone, has exited, is being
+/// Only `healthy` is ready, and a one-shot that finished: restart policy
+/// `no` and exited 0 (`dashboard-builder`, which grafana waits on; RL11,
+/// C351). A container that is gone, has exited any other way, is being
 /// restarted or has restarted since the wait began has failed now: a server
 /// that exits at start (a migration it refused, a config it refuses) will
 /// not become ready by waiting. `unhealthy` is Docker giving up. No
@@ -136,8 +143,16 @@ pub(crate) fn judge(reading: &Reading, baseline_restarts: u64) -> Verdict {
 		return Verdict::Failed("there is no container".to_owned());
 	}
 	let status = reading.status.as_deref();
+	if status == Some("exited") && reading.restart_policy.as_deref() == Some("no") && reading.exit_code == Some(0) {
+		return Verdict::Ready;
+	}
 	if let Some(status @ ("exited" | "dead" | "restarting" | "removing" | "paused")) = status {
-		return Verdict::Failed(format!("the container is {status}"));
+		return Verdict::Failed(
+			reading
+				.exit_code
+				.filter(|_| status == "exited")
+				.map_or_else(|| format!("the container is {status}"), |code| format!("the container is exited (code {code})")),
+		);
 	}
 	if reading.restarts > baseline_restarts {
 		return Verdict::Failed(format!("the container restarted {} time(s)", reading.restarts - baseline_restarts));
@@ -165,9 +180,13 @@ pub(crate) const STABLE_SECONDS: f64 = 60.0;
 
 /// What one reading says about one service of a release, `observed`
 /// seconds into the wait: [`judge`], except that a service without a
-/// healthcheck is ready once it has run [`STABLE_SECONDS`] with no restart.
+/// healthcheck is ready once it has run [`STABLE_SECONDS`] with no restart,
+/// unless it is a one-shot (restart policy `no`), which is ready only by
+/// exiting 0.
 pub(crate) fn judge_service(reading: &Reading, baseline_restarts: u64, observed: f64) -> Verdict {
 	match judge(reading, baseline_restarts) {
+		// A one-shot is ready once it has exited 0, never by running a while.
+		Verdict::Unjudgeable(_) if reading.restart_policy.as_deref() == Some("no") => Verdict::Wait,
 		Verdict::Unjudgeable(_) if observed >= STABLE_SECONDS => Verdict::Ready,
 		Verdict::Unjudgeable(_) => Verdict::Wait,
 		verdict => verdict,
@@ -500,8 +519,23 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		wait_all(&judged, &mut |service| host.reading(service), clock, options.ready_timeout, options.poll)
 	} else {
 		// Whatever up left half done is the release's failure: it is not
-		// judged on containers it never replaced.
-		(Some(("up".to_owned(), "envctl up failed (its reason is above)".to_owned())), 0.0)
+		// judged on containers it never replaced. compose's `up` fails on a
+		// one-shot that exited non-zero (grafana waits on dashboard-builder)
+		// before the gate reads anything, so that one-shot is named, and its
+		// log shown: only one this pass judges, on the release's image, and
+		// with compose's own reason still pointed at, since an old exit on an
+		// unchanged image reads the same.
+		let one_shot = judged.iter().find_map(|(service, id)| {
+			let reading = host.reading(service);
+			match judge(&reading, u64::MAX) {
+				Verdict::Failed(why) if reading.restart_policy.as_deref() == Some("no") && reading.image.as_ref() == Some(id) => {
+					Some((service.clone(), format!("envctl up failed (its reason is above); the one-shot: {why}")))
+				}
+				_ => None,
+			}
+		});
+		let failure = one_shot.unwrap_or_else(|| ("up".to_owned(), "envctl up failed (its reason is above)".to_owned()));
+		(Some(failure), 0.0)
 	};
 	let Some((service, reason)) = failure else {
 		host.record_applied(&target.commit);
@@ -923,7 +957,18 @@ impl RealHost {
 	fn container(&self, service: &str) -> Option<String> {
 		let project = format!("label=com.docker.compose.project={}", self.project);
 		let named = format!("label=com.docker.compose.service={service}");
-		let (ok, stdout, _) = docker(&["ps", "-a", "-q", "--filter", &project, "--filter", &named])?;
+		// The stack's own container, never a `compose run` one left behind.
+		let (ok, stdout, _) = docker(&[
+			"ps",
+			"-a",
+			"-q",
+			"--filter",
+			&project,
+			"--filter",
+			&named,
+			"--filter",
+			"label=com.docker.compose.oneoff=False",
+		])?;
 		stdout.lines().next().map(str::to_owned).filter(|id| ok && !id.is_empty())
 	}
 
@@ -1067,6 +1112,8 @@ impl Host for RealHost {
 			health: text(&info["State"]["Health"]["Status"]),
 			restarts: info["RestartCount"].as_u64().unwrap_or(0),
 			image: text(&info["Image"]),
+			exit_code: info["State"]["ExitCode"].as_i64(),
+			restart_policy: text(&info["HostConfig"]["RestartPolicy"]["Name"]),
 		}
 	}
 
@@ -1326,32 +1373,49 @@ mod tests {
 		}
 	}
 
-	/// How an image behaves once started: seconds since start ->
-	/// (status, health, restarts).
-	type Behaviour = Rc<dyn Fn(f64) -> (&'static str, Option<&'static str>, u64)>;
+	/// What one look at a container shows: status, health, restarts, exit
+	/// code and restart policy.
+	type Look = (&'static str, Option<&'static str>, u64, Option<i64>, &'static str);
+
+	/// How an image behaves once started: seconds since start -> a look.
+	type Behaviour = Rc<dyn Fn(f64) -> Look>;
+
+	/// A service: restarted unless stopped, as compose's long-running ones are.
+	const SERVICE: &str = "unless-stopped";
 
 	fn ready_after(seconds: f64) -> Behaviour {
-		Rc::new(move |t| ("running", Some(if t >= seconds { "healthy" } else { "starting" }), 0))
+		Rc::new(move |t| ("running", Some(if t >= seconds { "healthy" } else { "starting" }), 0, None, SERVICE))
 	}
 
 	fn never_ready() -> Behaviour {
 		// start_period 300 s, then 5 failed probes 30 s apart.
-		Rc::new(|t| ("running", Some(if t >= 450.0 { "unhealthy" } else { "starting" }), 0))
+		Rc::new(|t| ("running", Some(if t >= 450.0 { "unhealthy" } else { "starting" }), 0, None, SERVICE))
 	}
 
 	fn crashes_after(seconds: f64) -> Behaviour {
 		Rc::new(move |t| {
 			if t < seconds {
-				("running", Some("starting"), 0)
+				("running", Some("starting"), 0, None, SERVICE)
 			} else {
-				("restarting", Some("starting"), 1)
+				("restarting", Some("starting"), 1, None, SERVICE)
 			}
 		})
 	}
 
 	/// No healthcheck: running, never restarting.
 	fn plain() -> Behaviour {
-		Rc::new(|_| ("running", None, 0))
+		Rc::new(|_| ("running", None, 0, None, SERVICE))
+	}
+
+	/// A one-shot (`restart: no`): runs `seconds`, then exits with `code`.
+	fn one_shot(seconds: f64, code: i64) -> Behaviour {
+		Rc::new(move |t| {
+			if t < seconds {
+				("running", None, 0, None, "no")
+			} else {
+				("exited", None, 0, Some(code), "no")
+			}
+		})
 	}
 
 	/// An image: its id, labels and behaviour.
@@ -1398,7 +1462,12 @@ mod tests {
 					self.running.remove(service);
 					continue;
 				};
-				if self.running.get(service).map(|(running, _)| running) != Some(&id) {
+				// compose starts a stopped container again, one-shots included.
+				let exited = self
+					.running
+					.get(service)
+					.is_some_and(|(running, started)| (self.images[running].1)(self.clock.now() - started).0 == "exited");
+				if exited || self.running.get(service).map(|(running, _)| running) != Some(&id) {
 					self.running.insert(service.clone(), (id, self.clock.now()));
 				}
 			}
@@ -1438,13 +1507,15 @@ mod tests {
 			let Some((id, started)) = self.running.get(service) else {
 				return Reading::gone();
 			};
-			let (status, health, restarts) = (self.images[id].1)(self.clock.now() - started);
+			let (status, health, restarts, exit_code, policy) = (self.images[id].1)(self.clock.now() - started);
 			Reading {
 				container: Some(service.to_owned()),
 				status: Some(status.to_owned()),
 				health: health.map(str::to_owned),
 				restarts,
 				image: Some(id.clone()),
+				exit_code,
+				restart_policy: Some(policy.to_owned()),
 			}
 		}
 
@@ -1479,10 +1550,30 @@ mod tests {
 				return false;
 			}
 			self.bring_up(target);
-			true
+			// compose waits for a one-shot others depend on to exit, and
+			// fails `up` when it exits non-zero.
+			let look = |host: &Self, service: &str| {
+				let (id, started) = &host.running[service];
+				(host.images[id].1)(host.clock.now() - started)
+			};
+			let one_shots: Vec<String> = target
+				.release
+				.services
+				.keys()
+				.filter(|service| self.running.contains_key(*service) && look(self, service).4 == "no")
+				.cloned()
+				.collect();
+			for _ in 0..3600 {
+				if !one_shots.iter().any(|service| look(self, service).0 == "running") {
+					break;
+				}
+				self.clock.sleep(1.0);
+			}
+			!one_shots.iter().any(|service| look(self, service).3 != Some(0))
 		}
 
-		fn logs(&mut self, _service: &str) -> Vec<String> {
+		fn logs(&mut self, service: &str) -> Vec<String> {
+			self.calls.push(format!("logs {service}"));
 			self.log.clone()
 		}
 
@@ -1583,6 +1674,16 @@ mod tests {
 			health: health.map(str::to_owned),
 			restarts,
 			image: None,
+			exit_code: None,
+			restart_policy: Some(SERVICE.to_owned()),
+		}
+	}
+
+	fn exited(code: i64, policy: &str) -> Reading {
+		Reading {
+			exit_code: Some(code),
+			restart_policy: Some(policy.to_owned()),
+			..reading(Some("exited"), None, 0)
 		}
 	}
 
@@ -1609,6 +1710,31 @@ mod tests {
 		assert!(is_failed(&judge(&reading(Some("running"), Some("unhealthy"), 0), 0)));
 		assert!(is_failed(&judge(&Reading::gone(), 0)));
 		assert!(matches!(judge(&reading(Some("running"), None, 0), 0), Verdict::Unjudgeable(_)));
+	}
+
+	#[test]
+	fn only_a_one_shot_that_exited_zero_is_ready_by_exiting() {
+		assert_eq!(judge(&exited(0, "no"), 0), Verdict::Ready);
+		assert_eq!(judge_service(&exited(0, "no"), 0, 0.0), Verdict::Ready, "at once, not after a minute");
+		assert_eq!(judge(&exited(1, "no"), 0), Verdict::Failed("the container is exited (code 1)".to_owned()));
+		for policy in [SERVICE, "always", "on-failure", ""] {
+			assert!(is_failed(&judge(&exited(0, policy), 0)), "an exited container under `{policy}` has failed");
+		}
+		let mut unknown = exited(0, "no");
+		unknown.exit_code = None;
+		assert!(is_failed(&judge(&unknown, 0)), "an exit code that cannot be read is not 0");
+		let mut dead = exited(0, "no");
+		dead.status = Some("dead".to_owned());
+		assert!(is_failed(&judge(&dead, 0)));
+	}
+
+	#[test]
+	fn a_one_shot_still_running_is_waited_for_never_ready_by_time() {
+		let running = Reading {
+			restart_policy: Some("no".to_owned()),
+			..reading(Some("running"), None, 0)
+		};
+		assert_eq!(judge_service(&running, 0, STABLE_SECONDS * 10.0), Verdict::Wait);
 	}
 
 	#[test]
@@ -1677,7 +1803,7 @@ mod tests {
 		assert!(said_any(&said, "render has no container; bringing it up"), "{said:?}");
 		// A container that exited, with the release's image, is brought up too.
 		let mut host = serving(&three(ready_after(0.0), ready_after(0.0)));
-		host.registry.get_mut("pgathondu/render:1@sha256:x").unwrap().behaviour = Rc::new(|_| ("exited", None, 0));
+		host.registry.get_mut("pgathondu/render:1@sha256:x").unwrap().behaviour = Rc::new(|_| ("exited", None, 0, Some(1), SERVICE));
 		let (_, said) = run_deploy(&mut host);
 		assert_eq!(ups(&host), ["up 1"]);
 		assert!(said_any(&said, "render was not ready before this pass"), "{said:?}");
@@ -1711,6 +1837,63 @@ mod tests {
 		assert_eq!(host.running["file-host"].0, "sha256:file-host-2");
 		assert!(host.clock.now() >= STABLE_SECONDS, "rust-runner has no healthcheck: it ran a minute first");
 		assert!(said_any(&said, "is ready after"));
+	}
+
+	/// `three`, with dashboard-builder, a one-shot, beside them.
+	fn with_one_shot(one_shot: Behaviour) -> Vec<(&'static str, Behaviour, &'static str, &'static str)> {
+		let mut spec = three(ready_after(0.0), ready_after(0.0));
+		spec.push(("dashboard-builder", one_shot, "", ""));
+		spec
+	}
+
+	#[test]
+	fn a_one_shot_that_exits_zero_is_deployed_and_kept_without_a_restart() {
+		let mut host = serving(&with_one_shot(one_shot(5.0, 0)));
+		host.clock.sleep(10.0);
+		publish(&mut host, "c2", 2, &with_one_shot(one_shot(20.0, 0)));
+		let (outcome, said) = run_deploy_with(&mut host, &Options::default());
+		assert_eq!(outcome.code, EXIT_DEPLOYED, "{said:?}");
+		assert_eq!(host.applied.as_deref(), Some("c2"));
+		assert_eq!(host.running["dashboard-builder"].0, "sha256:dashboard-builder-2");
+		// Its finished container is the release's, so the next pass restarts nothing.
+		host.calls.clear();
+		host.clock.sleep(30.0);
+		let (code, said) = run_deploy(&mut host);
+		assert_eq!(code, EXIT_DEPLOYED);
+		assert!(ups(&host).is_empty(), "{said:?}");
+		assert!(said_any(&said, "nothing restarted"));
+	}
+
+	#[test]
+	fn a_one_shot_that_exits_non_zero_rolls_back_every_service() {
+		let mut host = serving(&with_one_shot(one_shot(5.0, 0)));
+		host.clock.sleep(10.0);
+		publish(&mut host, "c2", 2, &with_one_shot(one_shot(5.0, 2)));
+		let (outcome, said) = run_deploy_with(&mut host, &Options::default());
+		assert_eq!(outcome.code, EXIT_ROLLED_BACK, "{said:?}");
+		assert_eq!(outcome.serving, Some(1));
+		assert_eq!(ups(&host), ["up 2", "up 1"]);
+		assert_eq!(host.running["dashboard-builder"].0, "sha256:dashboard-builder-1");
+		assert_eq!(host.applied.as_deref(), Some("c1"));
+		assert!(
+			said_any(
+				&said,
+				"dashboard-builder did not come up: envctl up failed (its reason is above); the one-shot: the container is exited (code 2)"
+			),
+			"{said:?}"
+		);
+		assert!(host.calls.iter().any(|call| call == "logs dashboard-builder"), "its log is shown: {:?}", host.calls);
+	}
+
+	#[test]
+	fn an_up_that_fails_is_not_blamed_on_a_one_shot_that_failed_before() {
+		let mut host = serving(&with_one_shot(one_shot(5.0, 1)));
+		host.clock.sleep(10.0);
+		publish(&mut host, "c2", 2, &with_one_shot(one_shot(5.0, 0)));
+		host.up_fails_for = Some(2);
+		let (_, said) = run_deploy_with(&mut host, &Options::default());
+		assert!(said_any(&said, "up did not come up: envctl up failed (its reason is above)"), "{said:?}");
+		assert!(!said_any(&said, "dashboard-builder did not come up"), "{said:?}");
 	}
 
 	#[test]
