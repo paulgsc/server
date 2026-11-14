@@ -244,7 +244,11 @@ once compose returns, and a running container keeps its environment. Compose
 runs with `--env-file /dev/null`, so a stray `.env` is read by nothing, and a
 compose variable the shell happens to export is dropped unless the role's
 file sets it. `REPO_ROOT` comes from make (`$(CURDIR)`), and so does
-`ENV_DIR`. Every image compose starts comes from the role's release,
+`ENV_DIR`. `STATE_ROOT`, the checkout whose untracked state compose mounts
+(file_host's `data/`, `logs/`, `config/`, Grafana's built dashboards), is
+envctl's: the checkout itself for `make up`, and the owner's checkout when
+the deploy runs compose on a release's worktree (C344; docs/release.md,
+RL10). Every image compose starts comes from the role's release,
 `deploy/<role>/release.json` (RELEASE #787, R1 #788): each service's
 `image:` is `${IMAGE_<SERVICE>:?…}` (`file-host` reads `IMAGE_FILE_HOST`),
 and envctl sets those from the release, never from a deployment file or the
@@ -254,8 +258,9 @@ not secret. A release moves when an image is published, not by hand
 it with what has been published, by tag and digest (`scripts/release_lock.py`),
 and opens one release pull request, which auto-merges once its checks pass
 (C119). It runs after server's image changesets are pushed, and when some-ui's
-www or render release dispatches it. `file-host` stays `pgathondu/server:latest` until the
-deploy applies whole releases (R4 #793). `make deploy-check` refuses an
+render, www or resume-render publish dispatches it. Since R4 (#793) it follows
+`file-host` and render too, and `make home-deploy` applies the release whole.
+`make deploy-check` refuses an
 `image:` written any other way, a service the release does not name, and a
 release entry no service starts. A bare `docker compose` stops on
 the first of these variables it lacks, naming it, which is why every compose
@@ -372,8 +377,9 @@ delete `.env`.
 
 ### Deploying to home
 
-A new `file_host` image takes one command and no other step (AS16 #563, AS18
-#564; the owner's ask of 2026-11-10):
+Home runs one release, `deploy/home/release.json` on main: every image, by
+digest (docs/release.md, epic #787). Moving to the newest takes one command
+and no other step (RELEASE R4 #793; AS16 #563, AS18 #564):
 
 ```bash
 make home-deploy
@@ -382,20 +388,33 @@ make home-deploy
 It runs `envctl deploy` (`apps/envctl/src/deploy.rs`, built by make like the
 rest of envctl; home has no python, and nothing home runs needs it):
 
-1. **Pulls `pgathondu/server:latest`**, and stops there, having restarted
-   nothing, when it is the image already serving. Only that image:
-   `rust-runner` and `orchestrator` are pulled by hand
-   (`make compose ARGS="pull rust-runner orchestrator"`, then `make up`), and
-   nothing third-party is pulled. It does not update the checkout either:
-   see "Needs a newer checkout", below.
-2. **Skips an image that already failed here**: its id is in
-   `~/.local/state/server-deploy/failed-images.json` (the on-demand unit's:
-   `/var/lib/home-deploy/`), so `:latest` is tagged
-   back to what serves and nothing restarts until a newer one is published.
-3. Otherwise tags the serving image `pgathondu/server:previous` and runs
-   **`make up`**: envctl's preflight on `deploy/<role>/`, then
-   `docker compose up -d`. A preflight that refuses replaces nothing.
-4. **`file_host` migrates as it starts** (`apps/servers/file_host/src/migrate.rs`):
+1. **Resolves the release**: `git fetch origin main` in the checkout (its
+   working tree is never touched), and the release at that commit. A
+   release that failed here before is skipped: the one last applied is
+   applied instead, until a newer release forms.
+2. **Pulls every image it names by digest** (one named by tag alone, the
+   third-party `:latest` ones until R7 #796, is pulled only when it is not
+   here, so a deploy never moves it), then **checks they fit
+   together**: each image's `io.paulgsc.requires` met by another's
+   `io.paulgsc.provides`, read from the pulled images (RL9). An unmet one
+   replaces nothing.
+3. **Stops here, having restarted nothing,** when every service runs its
+   image and is ready.
+4. **Brings the release up from its own tree**: a worktree of the checkout
+   at the release's commit, in `~/.local/state/server-deploy/releases/`,
+   and envctl's preflight then `docker compose up -d` on it, under the
+   stack's compose project. `up -d` recreates only the services whose image
+   or configuration changed. What git does not hold (file_host's `data/`,
+   `logs/`, `config/` and Grafana's built dashboards) is mounted from the
+   checkout (`STATE_ROOT`, RL10), so the release brings its own compose files
+   and `deploy/<role>/`. A main that changed only those, with no image, is
+   brought up too; one that changed neither (code, docs) is the release
+   already applied, and restarts nothing. The one thing the checkout still
+   decides is envctl
+   itself: `up` runs the envctl make built from the checkout, so a release
+   that needs a newer envctl fails its preflight and is put back; `git pull`
+   the checkout and run `make home-deploy` again.
+5. **`file_host` migrates as it starts** (`apps/servers/file_host/src/migrate.rs`):
    with nothing pending it does nothing; otherwise it copies the database
    (`VACUUM INTO ${STORAGE}/backups/hopium-<UTC>-before-<version>.db`),
    checks the copy (`PRAGMA integrity_check`, the same applied migrations),
@@ -410,30 +429,34 @@ rest of envctl; home has no python, and nothing home runs needs it):
    failed migration ends the process, so no build serves on a schema half
    applied. The same happens on every start: a reboot, a restart, `make up`,
    `make dev`.
-5. **It waits up to 360 s** for `file-host`'s healthcheck to say `healthy`
-   (`file_host --health-check`: `/ready` ready or degraded). A container
-   that exits or restarts fails at once. The healthcheck's `start_period`
-   is 300 s, so the backup and migrations of a large database can finish
-   before any failed probe counts, and the wait outlasts it.
-6. **A new image that does not come up is rolled back**: the previous image
-   is tagged back as `pgathondu/server:latest`, `file-host` alone is
-   recreated from it, it waits the same bound, and the failed image's id is
-   recorded (step 2). It prints the container's last log lines.
+6. **It gates every service, up to 360 s**: `healthy` where it has a
+   healthcheck (`file-host`'s is `file_host --health-check`: `/ready` ready
+   or degraded), otherwise running with no restart for 60 s. A container
+   that exits, restarts or turns `unhealthy` fails at once. `file-host`'s
+   `start_period` is 300 s, so the backup and migrations of a large database
+   can finish before any failed probe counts, and the wait outlasts it.
+7. **A release that does not come up is rolled back whole**: the release
+   last applied, its tree and its images, through the same `up` and the
+   same gate, whichever service failed. The failed release's key is
+   recorded (step 1), and its failing service's last log lines are printed.
 
 It prints each step as `deploy: …` and exits `0` deployed or nothing to do,
-`1` not deployed (the pull, the preflight or `up` failed; the old container
-serves), `2` rolled back, or `3` nothing ready, which needs you: the
-previous image failed too, there was none, or the image did not change (so
-the cause is `deploy/<role>/` or a dependency).
+`1` not deployed (main could not be read, a pull failed, or the set does not
+fit together; nothing was replaced), `2` rolled back, or `3` nothing ready,
+which needs you: the previous release failed too, there was none, or the
+release did not change (so the cause is a dependency or the host).
 
-**Needs a newer checkout.** The compose files and `deploy/<role>/` are the
-checkout's, and the deploy does not pull it (the owner's call, 2026-11-10).
-An image that needs a variable or compose change the checkout lacks fails
-its preflight or its start, and is put back; the deploy then says "this
-image needs a newer checkout on home". `git pull` in the checkout and run
-`make home-deploy` again. An image that failed is skipped by later runs
-until a newer one is published, so after a `git pull` that fixes it,
-remove its id from `failed-images.json` (or wait for the next publish).
+The record (`applied.json`, `failed-releases.json`, the kept worktrees) is
+the checkout owner's, in `~/.local/state/server-deploy/`, whether you run
+`make home-deploy` or the on-demand unit runs it as root for you, and one
+pass runs at a time. A failed release is remembered by its serial and the
+trees compose reads, so a fix on main to its compose files or
+`deploy/<role>/` is tried again by itself; to retry one after fixing the
+host (or envctl, with a `git pull`), remove its entry from
+`failed-releases.json`. A `make up` from the checkout after a deploy runs
+the checkout's tree, not the release's, and the deploy does not notice
+until the release's key changes: use `make home-deploy`, not `make up`, on
+home.
 
 **The database is never restored automatically** (owner, 2026-11-10). A
 migration that ran stays applied, and the previous image serves the
@@ -477,11 +500,12 @@ home, home sends no request anywhere (the owner's ask, 2026-11-10):
 3. **The trigger.** For `wanted`, `file_host` writes `${STORAGE}/deploy/wanted`.
    A systemd path unit (`nixosModules.home-deploy`) starts
    `envctl deploy --on-demand ${STORAGE}/deploy` (built as the checkout's
-   user first, `make envctl`): it pulls
-   `pgathondu/server:latest`, reads the pulled image's epoch
-   (`file_host --contract-epoch`), and deploys it, as above, only when that
-   epoch is above the running one; a newer build of the same contract is not
-   a reason to restart, and `:latest` goes back to what serves. It records
+   user first, `make envctl`): it resolves main's release, pulls its
+   `file-host` image, reads the image's epoch (its `contract` label, or
+   `file_host --contract-epoch` for an image from before the labels), and
+   applies the release, as above, only when that epoch is above the running
+   one; a newer build of the same contract is not a reason to restart, and
+   waits for a `make home-deploy`. It records
    what it did in `${STORAGE}/deploy/state.json`, which `file_host` reads for
    its answers and its metrics, and removes the marker.
 4. **The bounds** (`apps/servers/file_host/src/deploy.rs`): one marker at a

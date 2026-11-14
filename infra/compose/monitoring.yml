@@ -160,7 +160,7 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/var/lib/grafana/dashboards:ro
+      - ${STATE_ROOT:?envctl sets STATE_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/var/lib/grafana/dashboards:ro
     networks:
       - monitoring-network
     restart: unless-stopped
@@ -218,8 +218,8 @@ services:
     # (docs/home-compute.md, "Who is killed first").
     oom_score_adj: 500
     volumes:
-      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/dashboards:/workspace
-      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/generated:rw
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/grafana/dashboards:/workspace:ro
+      - ${STATE_ROOT:?envctl sets STATE_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/generated:rw
     command: ./build.sh
     restart: 'no'
     mem_limit: 1G

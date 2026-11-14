@@ -21,6 +21,7 @@ mod deliver;
 mod deploy;
 mod dotenv;
 mod import;
+mod mounts;
 mod nix;
 mod preflight;
 mod prune;
@@ -53,6 +54,12 @@ struct Cli {
 	/// `infra/env` and `docker-compose.yml`.
 	#[arg(long, global = true)]
 	repo: Option<PathBuf>,
+	/// The checkout whose untracked state compose mounts (`STATE_ROOT`:
+	/// `file_host`'s data, logs and config, Grafana's built dashboards).
+	/// Default: `--repo`. The deploy runs compose on a release's worktree
+	/// and passes the owner's checkout here (C344; docs/release.md, RL10).
+	#[arg(long, global = true)]
+	state_root: Option<PathBuf>,
 	#[command(subcommand)]
 	command: Command,
 }
@@ -132,9 +139,9 @@ enum Command {
 		#[arg(long = "prune", value_delimiter = ',')]
 		names: Vec<String>,
 	},
-	/// Home's deploy of `file_host` (AS18, #564; `make home-deploy`): pull
-	/// pgathondu/server:latest and, only when it changed, `make up`, wait for
-	/// it to be ready, and put the previous image back when it is not. With
+	/// Home's deploy (RELEASE R4, #793; `make home-deploy`): main's release,
+	/// applied whole from its own worktree, every service gated, and the
+	/// previous release put back whole when any does not come up. With
 	/// --on-demand, only when `file_host`'s marker asks for a newer contract
 	/// epoch (`nix/modules/home-deploy.nix`). Exit 0 deployed or nothing to
 	/// do, 1 not deployed, 2 rolled back, 3 nothing ready.
@@ -145,13 +152,15 @@ enum Command {
 		/// Seconds to wait for each start to be ready.
 		#[arg(long, default_value_t = deploy::DEFAULT_READY_TIMEOUT)]
 		ready_timeout: f64,
-		/// Where the failed images are remembered (default
-		/// `$XDG_STATE_HOME/server-deploy`).
+		/// Where the applied and failed releases are recorded and their
+		/// worktrees kept (default: the owner's
+		/// `$XDG_STATE_HOME/server-deploy`, the same for `make home-deploy`
+		/// and the on-demand unit).
 		#[arg(long)]
 		state_dir: Option<PathBuf>,
-		/// The image file-host runs, as `infra/compose/file_host.yml` names it.
-		#[arg(long, default_value = deploy::IMAGE)]
-		image: String,
+		/// The role under deploy/ whose release is applied.
+		#[arg(long, default_value = "home")]
+		role: String,
 		/// Run only if `DEPLOY_DIR/wanted` asks (`${STORAGE}/deploy`).
 		#[arg(long, value_name = "DEPLOY_DIR")]
 		on_demand: Option<PathBuf>,
@@ -245,7 +254,7 @@ fn files_of(repo: &Path, role: &str) -> Vec<String> {
 }
 
 /// One role's files, decrypted into memory, and what make gives compose.
-fn deployment(repo: &Path, role: &str, raw: &Value, env_dir: &Path, sops_program: &[String]) -> Result<Deployment> {
+fn deployment(repo: &Path, state_root: &Path, role: &str, raw: &Value, env_dir: &Path, sops_program: &[String]) -> Result<Deployment> {
 	// An empty value is "decided: unset" (#616): the binary sees it unset.
 	let read = |app: &str| -> Result<Option<sops::Plain>> {
 		let relative = sops::relative(role, app);
@@ -257,6 +266,7 @@ fn deployment(repo: &Path, role: &str, raw: &Value, env_dir: &Path, sops_program
 	};
 	let mut compose = read(sops::COMPOSE)?.unwrap_or_default();
 	compose.insert("REPO_ROOT".to_owned(), repo.display().to_string());
+	compose.insert("STATE_ROOT".to_owned(), state_root.display().to_string());
 	compose.insert("ENV_DIR".to_owned(), env_dir.display().to_string());
 	// Every image compose starts, from the role's release (#788), never from
 	// a deployment file or the shell.
@@ -371,6 +381,7 @@ fn compose_on(
 
 fn run(cli: Cli) -> Result<ExitCode> {
 	let repo = find_repo(cli.repo)?;
+	let state_root = cli.state_root.clone().unwrap_or_else(|| repo.clone());
 	let shell = shell();
 	// The deploy reads no schema: it pulls, runs `make up` and waits.
 	if matches!(cli.command, Command::Deploy { .. }) {
@@ -381,13 +392,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
 	match cli.command {
 		Command::Preflight { role } => {
 			let raw = compose::config(&repo).context("docker compose config failed, so no service was checked")?;
-			let deployment = deployment(&repo, &role, &raw, Path::new("$XDG_RUNTIME_DIR/server"), &sops_program)?;
+			let deployment = deployment(&repo, &state_root, &role, &raw, Path::new("$XDG_RUNTIME_DIR/server"), &sops_program)?;
 			Ok(exit(!check_preflight(&repo, &schemas, &raw, &deployment)?))
 		}
 		Command::Up { role, env_dir } => {
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
 			let raw = compose::config(&repo).context("docker compose config failed, so no service was checked")?;
-			let deployment = deployment(&repo, &role, &raw, &env_dir, &sops_program)?;
+			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
 			if !check_preflight(&repo, &schemas, &raw, &deployment)? {
 				println!("Nothing was started.");
 				return Ok(ExitCode::FAILURE);
@@ -405,7 +416,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
 		Command::Compose { role, env_dir, args } => {
 			let env_dir = deliver::env_dir(env_dir.as_deref(), &shell)?;
 			let raw = compose::config(&repo).context("docker compose config failed")?;
-			let deployment = deployment(&repo, &role, &raw, &env_dir, &sops_program)?;
+			let deployment = deployment(&repo, &state_root, &role, &raw, &env_dir, &sops_program)?;
 			compose_on(&repo, &deployment, &env_dir, &args, &shell, &compose::read(&repo)?)
 		}
 		Command::Run { role, app, command } => {
@@ -480,7 +491,7 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 		no_pull,
 		ready_timeout,
 		state_dir,
-		image,
+		role,
 		on_demand,
 		as_user,
 		runtime_dir,
@@ -490,19 +501,35 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 	};
 	let options = deploy::Options {
 		pull: !no_pull,
-		image,
 		ready_timeout,
 		poll: deploy::POLL_SECONDS,
 	};
 	if options.ready_timeout <= 0.0 || !options.ready_timeout.is_finite() {
 		bail!("--ready-timeout must be positive");
 	}
+	let as_user_name = as_user.clone();
 	let as_user = match as_user.as_deref() {
 		Some(user) => deploy::runuser_prefix(user, runtime_dir.as_deref())?,
 		None => Vec::new(),
 	};
-	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(shell.get("XDG_STATE_HOME").map(String::as_str), shell.get("HOME").map(String::as_str)));
-	let mut host = deploy::RealHost::new(repo, &state_dir, as_user);
+	// The owner's own state directory, whoever runs the pass: the on-demand
+	// unit (root, --as-user) and `make home-deploy` (the owner) keep one
+	// record of the release applied.
+	let home = match &as_user_name {
+		Some(user) => Some(deploy::home_of(user)?),
+		None => shell.get("HOME").cloned(),
+	};
+	// One rule for both, so they share one record and one lock: the
+	// owner's home, never a $XDG_STATE_HOME only one of them sees.
+	let state_dir = state_dir.unwrap_or_else(|| deploy::default_state_dir(None, home.as_deref()));
+	let mut host = deploy::RealHost::new(repo, &state_dir, &role, as_user_name, as_user)?;
+	let _held = match host.lock(on_demand.is_some()) {
+		Ok(file) => file,
+		Err(err) => {
+			println!("deploy: {err:#}");
+			return Ok(ExitCode::from(deploy::EXIT_NOT_DEPLOYED));
+		}
+	};
 	let clock = deploy::Monotonic::new();
 	let mut say = |line: &str| println!("{line}");
 	let code = if let Some(folder) = on_demand {
@@ -524,7 +551,7 @@ fn run_deploy(repo: PathBuf, shell: &IndexMap<String, String>, command: Command)
 			}
 		}
 	} else {
-		deploy::deploy(&mut host, &options, &clock, &mut say)
+		deploy::deploy(&mut host, &options, &clock, &mut say).code
 	};
 	Ok(ExitCode::from(code))
 }
@@ -595,7 +622,10 @@ fn check(repo: &Path, schemas: &[Schema], base_classes: Option<&Path>) -> Result
 	if !tracked.status.success() {
 		bail!("git ls-files failed: {}", String::from_utf8_lossy(&tracked.stderr).trim());
 	}
-	for path in String::from_utf8_lossy(&tracked.stdout).split('\0').filter(|path| conform::plain_env_file(path)) {
+	let listed = String::from_utf8_lossy(&tracked.stdout);
+	let tracked_paths: Vec<&str> = listed.split('\0').filter(|path| !path.is_empty()).collect();
+	problems.extend(mounts::problems(&raw, &tracked_paths));
+	for path in tracked_paths.iter().copied().filter(|path| conform::plain_env_file(path)) {
 		problems.push(format!(
 			"{path} is tracked and is a plain-text env file; every value is encrypted (deploy/<role>/<app>{})",
 			sops::SUFFIX

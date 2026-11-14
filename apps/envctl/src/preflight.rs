@@ -23,9 +23,11 @@ pub(crate) static DEPENDENCY: LazyLock<Regex> = LazyLock::new(|| dotenv::regex(r
 /// Read by docker compose itself, in the compose file.
 static COMPOSE_OWN: LazyLock<Regex> = LazyLock::new(|| dotenv::regex(r"^(COMPOSE_\w+|DOCKER_\w+)$"));
 
-/// What `make` gives compose itself, never a deployment file: the
-/// checkout's path and where the decrypted files are.
-pub(crate) const FROM_MAKE: [&str; 2] = ["REPO_ROOT", "ENV_DIR"];
+/// What `make` gives compose itself, never a deployment file: the tree the
+/// release's tracked files are read from, the checkout whose untracked state
+/// is mounted (`STATE_ROOT`, C344; docs/release.md, RL10), and where the
+/// decrypted files are.
+pub(crate) const FROM_MAKE: [&str; 3] = ["REPO_ROOT", "STATE_ROOT", "ENV_DIR"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Gap {
