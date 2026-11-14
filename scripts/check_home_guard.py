@@ -195,6 +195,8 @@ def config_refusals(config: dict) -> list[Refusal]:
             found.append(Refusal(where, 0, f"service {name} names no image: it must read ${{IMAGE_<SERVICE>:?...}} from the release"))
         elif image is not None and not FROM_RELEASE.match(image):
             found.append(Refusal(where, 0, f"service {name}'s image is `{image}`, not ${{IMAGE_<SERVICE>:?...}} from deploy/home/release.json"))
+        if "restart" not in service:
+            found.append(Refusal(where, 0, f"service {name} states no `restart:`: one with none reads as `no`, which the deploy judges as a one-shot (RL11)"))
         if "build" in service:
             found.append(Refusal(where, 0, f"service {name} builds on home: move its `build:` to infra/compose/dev.build.yml and publish it"))
         if any(LATEST.search(text) for text in strings(service)):
@@ -290,12 +292,19 @@ FROM = "${IMAGE_REDIS:?deploy/<role>/release.json sets it}"
 
 
 def stack(**services: dict) -> dict:
-    return {"services": services}
+    """Services as compose prints them, each with a `restart:` unless it says None."""
+    restart = {"restart": "unless-stopped"}
+    return {"services": {name: {k: v for k, v in {**restart, **service}.items() if v is not None} for name, service in services.items()}}
 
 
 class Tests(unittest.TestCase):
     def test_an_image_from_the_release_passes(self) -> None:
         self.assertEqual(config_refusals(stack(redis={"image": FROM})), [])
+
+    def test_a_service_must_state_its_restart(self) -> None:
+        found = config_refusals(stack(redis={"image": FROM, "restart": None}))
+        self.assertTrue(any("states no `restart:`" in str(r) for r in found), found)
+        self.assertEqual(config_refusals(stack(builder={"image": FROM, "restart": "no"})), [])
 
     def test_an_image_written_any_other_way_is_refused(self) -> None:
         for image in ("redis:7", "redis:latest", f"redis@{D}", "${REDIS_IMAGE}", "${IMAGE_REDIS}"):

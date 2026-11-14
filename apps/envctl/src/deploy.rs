@@ -183,6 +183,8 @@ pub(crate) const STABLE_SECONDS: f64 = 60.0;
 /// healthcheck is ready once it has run [`STABLE_SECONDS`] with no restart.
 pub(crate) fn judge_service(reading: &Reading, baseline_restarts: u64, observed: f64) -> Verdict {
 	match judge(reading, baseline_restarts) {
+		// A one-shot is ready once it has exited 0, never by running a while.
+		Verdict::Unjudgeable(_) if reading.restart_policy.as_deref() == Some("no") => Verdict::Wait,
 		Verdict::Unjudgeable(_) if observed >= STABLE_SECONDS => Verdict::Ready,
 		Verdict::Unjudgeable(_) => Verdict::Wait,
 		verdict => verdict,
@@ -515,8 +517,19 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 		wait_all(&judged, &mut |service| host.reading(service), clock, options.ready_timeout, options.poll)
 	} else {
 		// Whatever up left half done is the release's failure: it is not
-		// judged on containers it never replaced.
-		(Some(("up".to_owned(), "envctl up failed (its reason is above)".to_owned())), 0.0)
+		// judged on containers it never replaced. compose's `up` fails on a
+		// one-shot that exited non-zero (grafana waits on dashboard-builder)
+		// before the gate reads anything, so that one-shot is named, and its
+		// log shown.
+		let one_shot = target.services().into_iter().find_map(|service| {
+			let reading = host.reading(&service);
+			match judge(&reading, u64::MAX) {
+				Verdict::Failed(why) if reading.restart_policy.as_deref() == Some("no") => Some((service, format!("envctl up failed: {why}"))),
+				_ => None,
+			}
+		});
+		let failure = one_shot.unwrap_or_else(|| ("up".to_owned(), "envctl up failed (its reason is above)".to_owned()));
+		(Some(failure), 0.0)
 	};
 	let Some((service, reason)) = failure else {
 		host.record_applied(&target.commit);
@@ -938,7 +951,18 @@ impl RealHost {
 	fn container(&self, service: &str) -> Option<String> {
 		let project = format!("label=com.docker.compose.project={}", self.project);
 		let named = format!("label=com.docker.compose.service={service}");
-		let (ok, stdout, _) = docker(&["ps", "-a", "-q", "--filter", &project, "--filter", &named])?;
+		// The stack's own container, never a `compose run` one left behind.
+		let (ok, stdout, _) = docker(&[
+			"ps",
+			"-a",
+			"-q",
+			"--filter",
+			&project,
+			"--filter",
+			&named,
+			"--filter",
+			"label=com.docker.compose.oneoff=False",
+		])?;
 		stdout.lines().next().map(str::to_owned).filter(|id| ok && !id.is_empty())
 	}
 
@@ -1515,10 +1539,27 @@ mod tests {
 				return false;
 			}
 			self.bring_up(target);
-			true
+			// compose waits for a one-shot others depend on to exit, and
+			// fails `up` when it exits non-zero.
+			let look = |host: &Self, service: &str| {
+				let (id, started) = &host.running[service];
+				(host.images[id].1)(host.clock.now() - started)
+			};
+			let one_shots: Vec<String> = target
+				.release
+				.services
+				.keys()
+				.filter(|service| self.running.contains_key(*service) && look(self, service).4 == "no")
+				.cloned()
+				.collect();
+			while one_shots.iter().any(|service| look(self, service).0 == "running") {
+				self.clock.sleep(1.0);
+			}
+			!one_shots.iter().any(|service| look(self, service).3 != Some(0))
 		}
 
-		fn logs(&mut self, _service: &str) -> Vec<String> {
+		fn logs(&mut self, service: &str) -> Vec<String> {
+			self.calls.push(format!("logs {service}"));
 			self.log.clone()
 		}
 
@@ -1674,6 +1715,15 @@ mod tests {
 	}
 
 	#[test]
+	fn a_one_shot_still_running_is_waited_for_never_ready_by_time() {
+		let running = Reading {
+			restart_policy: Some("no".to_owned()),
+			..reading(Some("running"), None, 0)
+		};
+		assert_eq!(judge_service(&running, 0, STABLE_SECONDS * 10.0), Verdict::Wait);
+	}
+
+	#[test]
 	fn a_service_without_a_healthcheck_is_ready_once_it_has_run_a_minute() {
 		let plain = reading(Some("running"), None, 0);
 		assert_eq!(judge_service(&plain, 0, STABLE_SECONDS - 1.0), Verdict::Wait);
@@ -1811,7 +1861,11 @@ mod tests {
 		assert_eq!(ups(&host), ["up 2", "up 1"]);
 		assert_eq!(host.running["dashboard-builder"].0, "sha256:dashboard-builder-1");
 		assert_eq!(host.applied.as_deref(), Some("c1"));
-		assert!(said_any(&said, "dashboard-builder did not come up: the container is exited (code 2)"), "{said:?}");
+		assert!(
+			said_any(&said, "dashboard-builder did not come up: envctl up failed: the container is exited (code 2)"),
+			"{said:?}"
+		);
+		assert!(host.calls.iter().any(|call| call == "logs dashboard-builder"), "its log is shown: {:?}", host.calls);
 	}
 
 	#[test]

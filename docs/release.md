@@ -87,7 +87,8 @@ per CLAUDE.md, "Drift is loud, not silent".
   it applied only once every service runs that release's image and is ready
   (`healthy`, or running a minute with no restart). A one-shot is ready once
   it has finished, and only if its restart policy is `no` and it exited 0
-  (`dashboard-builder`; C351). A release whose `up`
+  (`dashboard-builder`; C351); the home guard requires every service to state
+  its `restart:`, since one with none reads as `no`. A release whose `up`
   fails, or any of whose services does not come up, is put back: the release
   last applied, its tree and its images, already here, so the rollback pulls
   nothing. A release is its serial and the git trees compose reads
