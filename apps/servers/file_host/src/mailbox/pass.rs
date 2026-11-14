@@ -2153,6 +2153,10 @@ mod tests {
 		assert_eq!(filed.len(), 2);
 		assert_eq!(filed[1].0, "pickup-t1-4.json");
 		let again: serde_json::Value = serde_json::from_str(&filed[1].1).unwrap();
+		assert_eq!(
+			(&again["labels"], &again["heard"], &again["seq"]),
+			(&serde_json::json!([]), &serde_json::json!("something else"), &serde_json::json!(4))
+		);
 		// Deleted for good from My data, its receipt says the words it carries
 		// stayed in the mailbox's copy.
 		let mut conn = pool.acquire().await.unwrap();
@@ -2163,10 +2167,6 @@ mod tests {
 			panic!("the take is gone");
 		};
 		assert_eq!(receipt.stayed, [voice_repo::delete::MAILBOX_COPY]);
-		assert_eq!(
-			(&again["labels"], &again["heard"], &again["seq"]),
-			(&serde_json::json!([]), &serde_json::json!("something else"), &serde_json::json!(4))
-		);
 	}
 
 	/// A take let go of, or named as an idea's answer, is off the conveyor

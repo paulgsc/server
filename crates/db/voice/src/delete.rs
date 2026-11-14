@@ -559,24 +559,26 @@ mod tests {
 	#[tokio::test]
 	async fn a_takes_pickup_is_a_mailbox_copy_that_stays() {
 		let pool = pool().await;
-		note(&pool, A, "take", "studio").await;
-		note(&pool, A, "other", "studio").await;
+		// `a`'s pickups' names are a prefix of `a-b`'s: only the body says
+		// whose a pickup is.
+		note(&pool, A, "a", "studio").await;
+		note(&pool, A, "a-b", "studio").await;
 		run(
 			&pool,
 			r#"INSERT INTO mailbox_outgoing (subject_id, folder, name, sha256, body, filed_at)
 			   VALUES (?1, 'pickup', 'pickup-' || ?2 || '-1.json', 's', CAST('{"note":"' || ?2 || '","heard":"w"}' AS BLOB), 'now')"#,
 			A,
-			"take",
+			"a-b",
 		)
 		.await;
-		let Deleted::Gone(receipt) = gone(&pool, A, "take", ON).await else {
+		let Deleted::Gone(receipt) = gone(&pool, A, "a", ON).await else {
 			panic!("the take is gone");
 		};
-		assert_eq!(receipt.stayed, [MAILBOX_COPY]);
-		let Deleted::Gone(receipt) = gone(&pool, A, "other", ON).await else {
+		assert!(receipt.stayed.is_empty(), "another take's pickup is not this one's");
+		let Deleted::Gone(receipt) = gone(&pool, A, "a-b", ON).await else {
 			panic!("the other take is gone");
 		};
-		assert!(receipt.stayed.is_empty(), "another take's pickup is not this one's");
+		assert_eq!(receipt.stayed, [MAILBOX_COPY]);
 	}
 
 	#[tokio::test]
