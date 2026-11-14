@@ -863,10 +863,6 @@ mod tests {
 		assert_eq!(station(&mut conn, A, "t1").await.unwrap(), Some(picked), "the read is what the move answered");
 	}
 
-	/// Moves are ordered by their number, never by a clock: a move whose time
-	/// is earlier than the take's newest still lands when it names the newest
-	/// move, and a station lists its takes by when home stored their newest
-	/// move, whatever the phone's clock said.
 	/// CONVEYOR3: the routine's answer to a pickup moves the take to picked
 	/// up only from the ready move it names by number, with an issue that
 	/// reads, at home's clock; anything else writes nothing.
@@ -898,6 +894,10 @@ mod tests {
 		);
 	}
 
+	/// Moves are ordered by their number, never by a clock: a move whose time
+	/// is earlier than the take's newest still lands when it names the newest
+	/// move, and a station lists its takes by when home stored their newest
+	/// move, whatever the phone's clock said.
 	#[tokio::test]
 	async fn moves_are_ordered_by_number_never_by_a_clock() {
 		let pool = pool().await;

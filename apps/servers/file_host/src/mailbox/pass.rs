@@ -1178,7 +1178,7 @@ async fn file_pickup(db: &SqlitePool, deletion: &DeletionLock, subject: &str, re
 		return Ok(None);
 	};
 	let heard = match voice_repo::transcript::heard(&mut tx, subject, &ready.note_id).await.map_err(voice_storage)? {
-		voice_repo::transcript::Hearing::Heard(heard) if !heard.text.trim().is_empty() => heard.text,
+		voice_repo::transcript::Hearing::Heard(heard) if !heard.text.trim_matches(mailbox_repo::BLANK).is_empty() => heard.text,
 		_ => return Ok(None),
 	};
 	let body = pickup_body(&take, &ready.of_ref, &heard, &ready_at);
@@ -1254,7 +1254,7 @@ async fn record(
 
 #[cfg(test)]
 mod tests {
-	use super::{file_transcript, run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
+	use super::{file_pickup, file_transcript, run_once, Failure, Outcome, Phase, ARCHIVES, ITEMS_PER_PASS};
 	use crate::auth::DeletionLock;
 	use crate::mailbox::index::LastIndexes;
 	use mailbox_kit::{Mailbox, MailboxError, MailboxTransport, Method, Request, Response, Token};
@@ -2180,6 +2180,31 @@ mod tests {
 			.await
 			.unwrap();
 		pass(&pool, &fake).await.unwrap();
+		assert!(outgoing_pickups(&pool).await.is_empty());
+	}
+
+	/// A take moved on between the read that found it due and the transaction
+	/// that files, files nothing; and a hearing of whitespace alone is never
+	/// due, so it never holds back the takes after it.
+	#[tokio::test]
+	async fn a_take_moved_since_it_was_read_or_heard_as_blank_is_not_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		studio_take_on_conveyor(&pool, "t1").await;
+		moved(&pool, "t1", (1, "in-the-oven", "ready-for-pickup"), None, None).await;
+		take_heard(&pool, "t1", "ggml-small.bin", "words", "2026-11-13T09:20:00.000Z").await;
+		let due = mailbox_repo::unfiled_pickups(&mut pool.acquire().await.unwrap(), OWNER, 20).await.unwrap();
+		assert_eq!(due.len(), 1);
+		moved(&pool, "t1", (2, "ready-for-pickup", "cooking"), None, None).await;
+		let filed = file_pickup(&pool, &DeletionLock::default(), OWNER, &due[0], "2026-11-13T10:00:00.000Z").await.unwrap();
+		assert_eq!(filed, None);
+		assert!(outgoing_pickups(&pool).await.is_empty());
+
+		studio_take_on_conveyor(&pool, "t2").await;
+		moved(&pool, "t2", (1, "in-the-oven", "ready-for-pickup"), None, None).await;
+		take_heard(&pool, "t2", "ggml-small.bin", " \n\t ", "2026-11-13T09:20:00.000Z").await;
+		assert!(mailbox_repo::unfiled_pickups(&mut pool.acquire().await.unwrap(), OWNER, 20).await.unwrap().is_empty());
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert!(!outcome.more);
 		assert!(outgoing_pickups(&pool).await.is_empty());
 	}
 

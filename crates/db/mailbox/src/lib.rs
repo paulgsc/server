@@ -22,7 +22,7 @@
 //!   `PUT /api/v1/routine/reflections/:id` and
 //!   `PUT /api/v1/routine/prompts/:stamp` the only
 //!   callers of [`file_outgoing`] besides it (which files transcripts,
-//!   `LeetType` logs and Studio takes' pickups, [`unfiled_pickups`]);
+//!   `LeetType` logs and Studio takes' pickups);
 //!   `git grep -n 'mailbox_item\|mailbox_outgoing\|mailbox_handed\|mailbox_archive\|mailbox_transcript\|mailbox_leetype_log' -- '*.rs'`
 //!   shows no other.
 //! - **A transcript is filed once, under a number decided once.**
@@ -61,9 +61,9 @@
 //!   filed files with no answer recorded.
 //! - **A pickup is filed once per ready move** (paulgsc/some-ui#2875,
 //!   CONVEYOR3). A Studio take the owner moved to `ready-for-pickup`, once
-//!   heard, is filed under [`pickup_name`] with that move's number, and
-//!   [`unfiled_pickups`] passes over a name already filed, so the body is
-//!   built once and a retry hands its first bytes. It carries the take's
+//!   heard, is filed under [`pickup_name`] with that move's number. The
+//!   filer checks [`outgoing_filed`] in the transaction that files, so the
+//!   body is built once and a retry hands its first bytes. It carries the take's
 //!   labels and what home heard, never the move's comment and never audio
 //!   (the owner, call C296, 2026-11-13: "labels go, the per-move comment
 //!   stays home"). The routine's answer arrives in [`PICKED`] and is kept as
@@ -812,7 +812,8 @@ pub struct Ready {
 /// docs/conveyor.md invariant 2) went to `ready-for-pickup`, it is on the
 /// conveyor (invariant 3: a `studio` note that answers no idea and was not
 /// let go of), its newest transcript that heard something holds text
-/// (`voice_repo::transcript::heard`'s order), so home has heard the take,
+/// besides [`BLANK`] (`voice_repo::transcript::heard`'s order), so home has
+/// heard the take,
 /// and no pickup is filed under [`pickup_name`] for that move. A take moved
 /// on and back is due a new one, under the new move's number. The filer
 /// reads the take again in the transaction that files, since it can move
@@ -828,12 +829,15 @@ pub async fn unfiled_pickups(conn: &mut SqliteConnection, subject: &str, limit: 
 		   JOIN voice_note note ON note.subject_id = newest.subject_id AND note.note_id = newest.note_id
 		   WHERE newest.subject_id = ?1 AND newest.to_station = 'ready-for-pickup'
 		     AND newest.seq = (SELECT MAX(later.seq) FROM studio_take_move later WHERE later.subject_id = newest.subject_id AND later.note_id = newest.note_id)
+		     -- On the conveyor: docs/conveyor.md invariant 3, as voice_repo::conveyor's
+		     -- holds_take and at_station hold it; the filer checks it again there.
 		     AND note.of_kind = 'studio' AND substr(note.of_ref, 1, 5) <> 'idea:'
 		     AND NOT EXISTS (SELECT 1 FROM idea_answer answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
 		     AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
 		     AND trim((SELECT heard.text FROM voice_transcript heard
 		               WHERE heard.subject_id = newest.subject_id AND heard.note_id = newest.note_id AND heard.outcome = 'heard'
-		               ORDER BY heard.heard_at DESC, heard.model DESC LIMIT 1)) <> ''
+		               ORDER BY heard.heard_at DESC, heard.model DESC LIMIT 1),
+		              ' ' || char(9) || char(10) || char(11) || char(12) || char(13)) <> ''
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_outgoing filed
 		       WHERE filed.subject_id = newest.subject_id AND filed.folder = 'pickup'
@@ -848,6 +852,11 @@ pub async fn unfiled_pickups(conn: &mut SqliteConnection, subject: &str, limit: 
 	.await?;
 	Ok(ready)
 }
+
+/// What a pickup's `heard` must hold more than: the filer and
+/// [`unfiled_pickups`] trim the same characters, so a take this reads as due
+/// is never one the filer passes over on every pass.
+pub const BLANK: [char; 6] = [' ', '\t', '\n', '\u{b}', '\u{c}', '\r'];
 
 /// The name the pickup of `note_id`'s ready-for-pickup move `seq` goes under.
 #[must_use]
