@@ -2153,6 +2153,16 @@ mod tests {
 		assert_eq!(filed.len(), 2);
 		assert_eq!(filed[1].0, "pickup-t1-4.json");
 		let again: serde_json::Value = serde_json::from_str(&filed[1].1).unwrap();
+		// Deleted for good from My data, its receipt says the words it carries
+		// stayed in the mailbox's copy.
+		let mut conn = pool.acquire().await.unwrap();
+		let deleted = voice_repo::delete::delete(&mut conn, OWNER, "t1", voice_repo::delete::SWITCHED_ON, "2026-11-13T11:00:00.000Z")
+			.await
+			.unwrap();
+		let voice_repo::delete::Deleted::Gone(receipt) = deleted else {
+			panic!("the take is gone");
+		};
+		assert_eq!(receipt.stayed, [voice_repo::delete::MAILBOX_COPY]);
 		assert_eq!(
 			(&again["labels"], &again["heard"], &again["seq"]),
 			(&serde_json::json!([]), &serde_json::json!("something else"), &serde_json::json!(4))
@@ -2184,8 +2194,9 @@ mod tests {
 	}
 
 	/// A take moved on between the read that found it due and the transaction
-	/// that files, files nothing; and a hearing of whitespace alone is never
-	/// due, so it never holds back the takes after it.
+	/// that files, files nothing; and a hearing of whitespace alone, Unicode's
+	/// included, is never due, so the filer never passes it over pass after
+	/// pass.
 	#[tokio::test]
 	async fn a_take_moved_since_it_was_read_or_heard_as_blank_is_not_filed() {
 		let (pool, fake) = (pool().await, Fake::default());
@@ -2201,7 +2212,7 @@ mod tests {
 
 		studio_take_on_conveyor(&pool, "t2").await;
 		moved(&pool, "t2", (1, "in-the-oven", "ready-for-pickup"), None, None).await;
-		take_heard(&pool, "t2", "ggml-small.bin", " \n\t ", "2026-11-13T09:20:00.000Z").await;
+		take_heard(&pool, "t2", "ggml-small.bin", " \n\t\u{b}\u{c}\u{a0}\u{3000} ", "2026-11-13T09:20:00.000Z").await;
 		assert!(mailbox_repo::unfiled_pickups(&mut pool.acquire().await.unwrap(), OWNER, 20).await.unwrap().is_empty());
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert!(!outcome.more);

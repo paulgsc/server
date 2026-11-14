@@ -246,7 +246,9 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 		r#"SELECT EXISTS (SELECT 1 FROM mailbox_transcript WHERE subject_id = ?1 AND note_id = ?2)
 		       OR EXISTS (
 		         SELECT 1 FROM mailbox_outgoing
-		         WHERE subject_id = ?1 AND folder = 'pickup' AND json_extract(CAST(body AS TEXT), '$.note') = ?2
+		         WHERE subject_id = ?1 AND folder = 'pickup'
+		           AND name >= 'pickup-' || ?2 || '-' AND name < 'pickup-' || ?2 || '.'
+		           AND CASE WHEN json_valid(CAST(body AS TEXT)) THEN json_extract(CAST(body AS TEXT), '$.note') END = ?2
 		       ) AS "filed!: bool""#,
 		subject,
 		note_id
