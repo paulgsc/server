@@ -30,9 +30,10 @@
 //! **Where the owner watches it** (C338): Studio › Renders lists each essay
 //! (the `cards-essay` shelf, `feeds::renders`), and a paired phone plays a
 //! done one from `GET /cards-essays/:key/video` (`routes::cards_essays`).
-//! Nothing lets home's copy go: a feed's let go needs its `YouTube` link
-//! first (`feeds::videos`), and an essay is never uploaded, so home keeps it
-//! until the owner rules how one that never was is let go.
+//! Nothing lets home's copy go yet: the owner ruled that a cards essay lives
+//! like every other episode, its copy let go once a confirmed `YouTube` link
+//! is recorded (`feeds::videos`), which is a later story
+//! (paulgsc/some-ui#2999).
 //!
 //! Cost: one request an hour, plus one per essay home lacks (a cut list is a
 //! few KB); one `stat` per essay each minute.
@@ -160,7 +161,7 @@ pub fn start(state: &AppState) {
 ///
 /// Each is rendered (`<renders>/<key>/cards.mp4`) or waiting, and failed
 /// when `<status>/<key>.failed.log` is there, as every job's
-/// (`call_weeks::render::tally`). Nothing is let go.
+/// (`call_weeks::render::tally`). Nothing is let go yet (some-ui#2999).
 ///
 /// # Errors
 /// A storage failure reading `cards_essay`.
