@@ -68,10 +68,16 @@ impl Constraints {
 	}
 }
 
-/// An epoch is met by one at least as high; a commit by itself.
+/// An epoch is met by one at least as high; a commit by itself. A value of
+/// digits only is an epoch, whatever its length, compared as a number
+/// without parsing it, so no length overflows (as python's `int` reads it).
 fn meets(provided: &str, required: &str) -> bool {
 	if is_epoch(required) {
-		return is_epoch(provided) && provided.parse::<u128>().ok() >= required.parse::<u128>().ok();
+		let number = |value: &str| {
+			let digits = value.trim_start_matches('0');
+			(digits.len(), digits.to_owned())
+		};
+		return is_epoch(provided) && number(provided) >= number(required);
 	}
 	provided == required
 }
@@ -147,6 +153,8 @@ mod tests {
 		);
 		case("ui=10", "ui=d495258000000000000000000000000000000000", "an epoch never meets a commit", false);
 		case("", "", "nothing either way", true);
+		case("x=5", "x=1000000000000000000000000000000000000000", "an epoch longer than any integer type", false);
+		case("x=1000000000000000000000000000000000000000", "x=0005", "a long epoch above a padded one", true);
 	}
 
 	#[test]

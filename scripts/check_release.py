@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -114,7 +115,8 @@ def constraints(labels: dict[str, str] | None) -> Constraints:
 
 
 def meets(provided: str, required: str) -> bool:
-    """An epoch is met by one at least as high; a commit by itself."""
+    """An epoch is met by one at least as high; a commit by itself. A value
+    of digits only is an epoch, whatever its length."""
     if EPOCH.fullmatch(required):
         return bool(EPOCH.fullmatch(provided)) and int(provided) >= int(required)
     return provided == required
@@ -186,7 +188,7 @@ def fetch(url: str, headers: dict[str, str], *, follow: bool = True) -> tuple[by
                 time.sleep(5 * 2**attempt)
                 continue
             raise Unreadable(f"{url} answered {err.code}") from err
-        except (urllib.error.URLError, TimeoutError) as err:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
             if attempt < 3:
                 time.sleep(5 * 2**attempt)
                 continue
@@ -199,7 +201,13 @@ def token(repository: str) -> str:
     user, secret = os.environ.get("DOCKERHUB_USERNAME"), os.environ.get("DOCKERHUB_TOKEN")
     if user and secret:  # a higher pull limit than anonymous; the same answers
         headers["Authorization"] = "Basic " + base64.b64encode(f"{user}:{secret}".encode()).decode()
-    body, _ = fetch(f"{AUTH}?service=registry.docker.io&scope=repository:{repository}:pull", headers)
+    url = f"{AUTH}?service=registry.docker.io&scope=repository:{repository}:pull"
+    try:
+        body, _ = fetch(url, headers)
+    except Unreadable:
+        if not headers:
+            raise
+        body, _ = fetch(url, {})  # credentials refused: anonymous reads the same labels
     try:
         return json.loads(body)["token"]
     except (ValueError, KeyError) as err:
@@ -226,8 +234,24 @@ def registry_labels(reference: Reference) -> dict[str, str]:
     return (config.get("config") or {}).get("Labels") or {}
 
 
-def check(release: dict, labels: Callable[[Reference], dict[str, str]]) -> list[str]:
-    """Every problem with a release, given a way to read an image's labels."""
+def unreadable_server_images(release: dict) -> list[str]:
+    """The release's own server images named without a digest (a held
+    `pgathondu/...:latest`): what they provide cannot be read, so a
+    requirement only they could meet is not known to be met."""
+    return sorted(service for service, entry in release["services"].items() if entry["image"].startswith("pgathondu/") and not hub_reference(entry["image"]))
+
+
+def check(release: dict, labels: Callable[[Reference], dict[str, str]]) -> tuple[list[str], list[str]]:
+    """Every problem with a release, and every warning, given a way to read
+    an image's labels.
+
+    A requirement left unmet while one of the release's own server images
+    has no digest is a warning, naming that image, not a problem: until R4
+    (#793) pins `file-host` by digest (RL5), what it provides cannot be
+    read, and failing on it would refuse every release once render states a
+    requirement (U2, #792). docs/release.md, RL7, keeps render out of the
+    reconciler's sources for as long as that holds, so no image this check
+    cannot judge moves by itself."""
     images: dict[str, Constraints] = {}
     problems: list[str] = []
     for service, entry in sorted(release["services"].items()):
@@ -236,7 +260,12 @@ def check(release: dict, labels: Callable[[Reference], dict[str, str]]) -> list[
             images[service] = constraints(labels(reference) if reference else None)
         except Malformed as err:
             problems.append(f"{service} ({entry['image']}): {err}")
-    return problems + unmet(images)
+    unknown = unreadable_server_images(release)
+    found = unmet(images)
+    if not unknown:
+        return problems + found, []
+    held = ", ".join(f"{service} ({release['services'][service]['image']})" for service in unknown)
+    return problems, [f"{line}; not known to be unmet: {held} has no digest, so what it provides cannot be read" for line in found]
 
 
 def main() -> int:
@@ -249,10 +278,12 @@ def main() -> int:
         return 0 if result.wasSuccessful() else 1
     try:
         release = json.loads(args.release.read_text())
-        problems = check(release, registry_labels)
+        problems, warnings = check(release, registry_labels)
     except Unreadable as err:
         print(f"check_release: {err}", file=sys.stderr)
         return 2
+    for warning in warnings:
+        print(f"::warning::check_release: {warning}")
     if problems:
         print(f"check_release: {args.release} does not fit together:", file=sys.stderr)
         for problem in problems:
@@ -266,6 +297,11 @@ def main() -> int:
 
 DA, DB, DC = ("sha256:" + "1" * 64, "sha256:" + "2" * 64, "sha256:" + "3" * 64)
 SHA = "d495258" + "0" * 33
+
+
+def problems(release_: dict, labels: Callable[[Reference], dict[str, str]]) -> list[str]:
+    found, warnings = check(release_, labels)
+    return found + [f"warning: {warning}" for warning in warnings]
 
 
 def release(**images: str) -> dict:
@@ -291,27 +327,27 @@ class Tests(unittest.TestCase):
     def test_render_reading_a_newer_layout_than_file_host_writes_is_refused(self) -> None:
         """#790's own case: render requires render-folders=4, file_host provides 3."""
         seen = registry({DA: label("contract=6,render-folders=3"), DB: label(requires="render-folders=4")})
-        problems = check(release(**{"file-host": f"pgathondu/server:x@{DA}", "render": f"pgathondu/render:{SHA}@{DB}"}), seen)
-        self.assertEqual(problems, ["render requires render-folders=4, but file-host provides render-folders=3"])
+        found = problems(release(**{"file-host": f"pgathondu/server:x@{DA}", "render": f"pgathondu/render:{SHA}@{DB}"}), seen)
+        self.assertEqual(found, ["render requires render-folders=4, but file-host provides render-folders=3"])
 
     def test_an_epoch_at_or_above_the_requirement_meets_it(self) -> None:
         for provided in ("4", "5"):
             seen = registry({DA: label(f"render-folders={provided}"), DB: label(requires="render-folders=4")})
-            self.assertEqual(check(release(a=f"r/a:1@{DA}", b=f"r/b:1@{DB}"), seen), [], provided)
+            self.assertEqual(problems(release(a=f"r/a:1@{DA}", b=f"r/b:1@{DB}"), seen), [], provided)
 
     def test_a_commit_is_met_by_itself_only(self) -> None:
         other = "e" * 40
         seen = registry({DA: label(f"ui={SHA}"), DB: label(requires=f"ui={SHA}"), DC: label(requires=f"ui={other}")})
-        self.assertEqual(check(release(a=f"r/a:1@{DA}", b=f"r/b:1@{DB}"), seen), [])
-        self.assertEqual(check(release(a=f"r/a:1@{DA}", c=f"r/c:1@{DC}"), seen), [f"c requires ui={other}, but a provides ui={SHA}"])
+        self.assertEqual(problems(release(a=f"r/a:1@{DA}", b=f"r/b:1@{DB}"), seen), [])
+        self.assertEqual(problems(release(a=f"r/a:1@{DA}", c=f"r/c:1@{DC}"), seen), [f"c requires ui={other}, but a provides ui={SHA}"])
 
     def test_a_requirement_nothing_provides_is_named(self) -> None:
         seen = registry({DA: label(requires="nats-subjects=1")})
-        self.assertEqual(check(release(a=f"r/a:1@{DA}"), seen), ["a requires nats-subjects=1, which no other image in the release provides"])
+        self.assertEqual(problems(release(a=f"r/a:1@{DA}"), seen), ["a requires nats-subjects=1, which no other image in the release provides"])
 
     def test_an_image_does_not_meet_its_own_requirement(self) -> None:
         seen = registry({DA: label("x=2", "x=1")})
-        self.assertEqual(check(release(a=f"r/a:1@{DA}"), seen), ["a requires x=1, which no other image in the release provides"])
+        self.assertEqual(problems(release(a=f"r/a:1@{DA}"), seen), ["a requires x=1, which no other image in the release provides"])
 
     def test_a_reference_without_a_digest_or_off_hub_requires_nothing_and_is_not_read(self) -> None:
         read: list[Reference] = []
@@ -321,17 +357,32 @@ class Tests(unittest.TestCase):
             return label(requires="never=1")
 
         refs = release(redis="redis:latest", fh="pgathondu/server:latest", cad=f"gcr.io/cadvisor/cadvisor:v1@{DA}")
-        self.assertEqual(check(refs, labels), [])
+        self.assertEqual(problems(refs, labels), [])
         self.assertEqual(read, [])
 
     def test_an_image_without_labels_requires_nothing(self) -> None:
-        self.assertEqual(check(release(a=f"r/a:1@{DA}"), registry({DA: {"org.opencontainers.image.title": "a"}})), [])
+        self.assertEqual(problems(release(a=f"r/a:1@{DA}"), registry({DA: {"org.opencontainers.image.title": "a"}})), [])
 
     def test_a_malformed_label_is_refused_not_skipped(self) -> None:
         for bad in ("render-folders", "render-folders=x", "Render=1", "a=1,a=2", "c=abc123"):
-            problems = check(release(a=f"r/a:1@{DA}"), registry({DA: label(requires=bad)}))
-            self.assertEqual(len(problems), 1, bad)
-            self.assertIn("a (r/a:1@", problems[0])
+            found = problems(release(a=f"r/a:1@{DA}"), registry({DA: label(requires=bad)}))
+            self.assertEqual(len(found), 1, bad)
+            self.assertIn("a (r/a:1@", found[0])
+
+    def test_a_held_server_image_turns_an_unmet_requirement_into_a_named_warning(self) -> None:
+        """file-host on :latest (RL5) provides nothing readable: render's requirement is a warning naming it, not a failure."""
+        seen = registry({DB: label(requires="render-folders=1")})
+        found, warnings = check(release(**{"file-host": "pgathondu/server:latest", "render": f"pgathondu/render:{SHA}@{DB}"}), seen)
+        self.assertEqual(found, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("render requires render-folders=1", warnings[0])
+        self.assertIn("file-host (pgathondu/server:latest) has no digest", warnings[0])
+
+    def test_epochs_compare_at_any_length(self) -> None:
+        big = "1" + "0" * 39
+        self.assertFalse(meets("5", big))
+        self.assertTrue(meets(big, "5"))
+        self.assertFalse(meets("1" + "0" * 40, "2" + "0" * 40))
 
     def test_hub_references_name_their_repository(self) -> None:
         self.assertEqual(hub_reference(f"redis:7.4@{DA}"), Reference("library/redis", DA))
@@ -348,7 +399,7 @@ class Tests(unittest.TestCase):
         self.assertGreaterEqual(len(cases), 5, "constraints.rs's shared cases were read")
         for provides, requires, _, met in cases:
             seen = registry({DA: label(provides), DB: label(requires=requires)})
-            self.assertEqual(check(release(p=f"r/p:1@{DA}", r=f"r/r:1@{DB}"), seen) == [], met == "true", (provides, requires))
+            self.assertEqual(problems(release(p=f"r/p:1@{DA}", r=f"r/r:1@{DB}"), seen) == [], met == "true", (provides, requires))
 
     def test_every_image_home_runs_from_server_says_what_it_provides_and_requires(self) -> None:
         """Each Dockerfile the detector publishes, for an image the release names, writes both labels, well formed."""

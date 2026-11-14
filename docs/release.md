@@ -62,19 +62,24 @@ per CLAUDE.md, "Drift is loud, not silent".
   call.
 - **RL7. A cross-repo image is followed only once its set can be checked.**
   render comes from some-ui and must match what server writes for it (#756:
-  a www release without its matching render broke every preview). It is in
-  `SOURCES` because the set check exists (R3, #790): the release pull
-  request runs `scripts/check_release.py`, which refuses a set whose render
-  requires what its file_host does not provide, so auto-merge cannot land
-  it. www is not run on home (call-stage went with #802), so it is in no
-  release; an image that joins from some-ui later joins `SOURCES` only with
-  its `requires` labels.
+  a www release without its matching render broke every preview). The set
+  check exists (R3, #790), but it reads labels by digest, and `file-host`,
+  the image providing what render requires, is held on `:latest` (RL5). So
+  render stays out of `SOURCES` until R4 (#793) pins `file-host` by digest,
+  and joins in the same change. Until then its entry moves by a reviewed
+  pull request, whose `Release set` job names the requirement it cannot
+  judge as a warning. www is not run on home (call-stage went with #802), so
+  it is in no release; an image that joins from some-ui later joins
+  `SOURCES` only with its `requires` labels.
 - **RL8. Every requirement is met inside the set.** Each image's
   `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
   the same release ("Constraints", below). CI checks it from the registry by
   digest (`scripts/check_release.py`, Lint's `Release set` job, on every pull
-  request that changes the release), and the deploy checks it again from
-  the pulled images before `up` (`apps/envctl/src/release/constraints.rs`;
+  request that changes the release). A requirement that only a server image
+  without a digest could meet (the held `file-host`) is a warning naming
+  that image, not a failure, because what it provides cannot be read.
+  The deploy checks the set again from the pulled images before `up`, where
+  every image is read (`apps/envctl/src/release/constraints.rs`;
   **Planned:** wired in by R4, #793). The two sides run on the same cases.
 
 ## Constraints

@@ -107,66 +107,56 @@ mod tests {
 
 	/// The subjects [`NATS_SUBJECTS_EPOCH`] was last set for. A change to
 	/// any of them is a change both `orchestrator` and `file_host` must see.
-	/// Every variant, so a new one fails to compile here until it is listed.
-	const fn listed(event: &EventType) {
+	/// The subject each variant had when [`NATS_SUBJECTS_EPOCH`] was last
+	/// set. A new variant fails to compile here until it has a subject
+	/// pinned, and `ALL` must name it too or the count below fails.
+	const fn pinned(event: &EventType) -> &'static str {
 		match event {
-			EventType::ObsStatus
-			| EventType::ObsCommand
-			| EventType::ClientCount
-			| EventType::Ping
-			| EventType::Pong
-			| EventType::Error
-			| EventType::TabMetaData
-			| EventType::Utterance
-			| EventType::OrchestratorCommandData
-			| EventType::OrchestratorState
-			| EventType::SystemEvent
-			| EventType::AudioChunk
-			| EventType::Subtitle => {}
+			EventType::ObsStatus => "obs.status",
+			EventType::ObsCommand => "obs.command",
+			EventType::ClientCount => "system.client_count",
+			EventType::Ping | EventType::Pong => "system.ping",
+			EventType::Error => "system.error",
+			EventType::TabMetaData => "tab.metadata",
+			EventType::Utterance => "utterance",
+			EventType::OrchestratorCommandData => "orchestrator.command",
+			EventType::OrchestratorState => "orchestrator.state",
+			EventType::SystemEvent => "system",
+			EventType::AudioChunk => "audio.chunk",
+			EventType::Subtitle => "audio.subtitle",
 		}
 	}
 
+	/// Every variant, once; [`pinned`]'s arms name 13.
+	const ALL: [EventType; 13] = [
+		EventType::ObsStatus,
+		EventType::ObsCommand,
+		EventType::ClientCount,
+		EventType::Ping,
+		EventType::Pong,
+		EventType::Error,
+		EventType::TabMetaData,
+		EventType::Utterance,
+		EventType::OrchestratorCommandData,
+		EventType::OrchestratorState,
+		EventType::SystemEvent,
+		EventType::AudioChunk,
+		EventType::Subtitle,
+	];
+
+	/// A changed subject is a change both `orchestrator` and `file_host` must
+	/// see: update [`pinned`] and raise [`NATS_SUBJECTS_EPOCH`] by one.
 	#[test]
 	fn the_subjects_are_this_epoch_s() {
-		let all = [
-			EventType::ObsStatus,
-			EventType::ObsCommand,
-			EventType::ClientCount,
-			EventType::Ping,
-			EventType::Pong,
-			EventType::Error,
-			EventType::TabMetaData,
-			EventType::Utterance,
-			EventType::OrchestratorCommandData,
-			EventType::OrchestratorState,
-			EventType::SystemEvent,
-			EventType::AudioChunk,
-			EventType::Subtitle,
-		];
-		all.iter().for_each(listed);
-		let subjects: Vec<&str> = all.iter().map(EventType::subject).collect();
-		assert_eq!(
-			(NATS_SUBJECTS_EPOCH, subjects.as_slice()),
-			(
-				1,
-				[
-					"obs.status",
-					"obs.command",
-					"system.client_count",
-					"system.ping",
-					"system.ping",
-					"system.error",
-					"tab.metadata",
-					"utterance",
-					"orchestrator.command",
-					"orchestrator.state",
-					"system",
-					"audio.chunk",
-					"audio.subtitle",
-				]
-				.as_slice()
-			),
-			"a NATS subject changed: update this list and raise NATS_SUBJECTS_EPOCH by one"
-		);
+		assert_eq!(NATS_SUBJECTS_EPOCH, 1, "raised with pinned's subjects, and only then");
+		let distinct: std::collections::HashSet<&EventType> = ALL.iter().collect();
+		assert_eq!(distinct.len(), ALL.len(), "ALL names each variant once");
+		for event in &ALL {
+			assert_eq!(
+				event.subject(),
+				pinned(event),
+				"{event:?}'s NATS subject changed: update pinned and raise NATS_SUBJECTS_EPOCH by one"
+			);
+		}
 	}
 }
