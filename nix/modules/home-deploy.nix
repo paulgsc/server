@@ -7,10 +7,12 @@
 #   allow it), file_host writes ${STORAGE}/deploy/wanted;
 # - the path unit below starts home-deploy.service when that file exists;
 # - the service builds envctl as `user` (`make envctl`), then runs
-#   `envctl deploy --on-demand` (apps/envctl/src/deploy.rs): pull, read the image's
-#   epoch, deploy only a newer one (file_host migrates as it starts),
-#   health-wait, roll back, record ${STORAGE}/deploy/state.json, and remove
-#   the marker. It never restores the database. Nothing here runs python:
+#   `envctl deploy --on-demand` (apps/envctl/src/deploy.rs): resolve main's
+#   release, read its file_host's epoch, apply the whole release only for a
+#   newer one (file_host migrates as it starts), gate every service, roll
+#   back whole, record ${STORAGE}/deploy/state.json, and remove the marker.
+#   The applied and failed releases and their worktrees are the user's
+#   (~user/.local/state/server-deploy), shared with `make home-deploy`. It never restores the database. Nothing here runs python:
 #   home has none (apps/envctl/tests/home_runs_no_python.rs).
 #
 # It runs as root, since ${STORAGE} is file_host's uid's and docker is
@@ -102,8 +104,6 @@ in {
         # envctl's decrypted files: tmpfs, handed to `user` by envctl deploy.
         RuntimeDirectory = "home-deploy";
         RuntimeDirectoryMode = "0700";
-        # The images that failed here, so a bad one is not put up again.
-        StateDirectory = "home-deploy";
         # envctl is built as `user`, into the checkout's target/, the way
         # `make up` builds it: root never writes there.
         ExecStartPre = "${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- ${pkgs.bash}/bin/bash -c 'HOME=~${cfg.user} exec make -s envctl'";
@@ -113,11 +113,11 @@ in {
           "deploy"
           "--on-demand ${cfg.storage}/deploy"
           "--as-user ${cfg.user}"
+          "--role ${cfg.role}"
           "--runtime-dir /run/home-deploy"
-          "--state-dir /var/lib/home-deploy"
         ];
-        # Maybe envctl's first build, a pull, and up to 360 s of waiting,
-        # twice when it rolls back.
+        # Maybe envctl's first build, the release's pulls, and up to 360 s
+        # of waiting, twice when it rolls back.
         TimeoutStartSec = "30min";
       };
     };

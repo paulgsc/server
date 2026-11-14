@@ -3,8 +3,9 @@
 Home runs one release. `deploy/home/release.json` names the image of every
 service compose starts there. Each entry is `repo:tag@sha256:…` once it is
 published, and a few are held or not yet published (below). Epic #787 holds
-the design and its record. Stories R1 (#788), R2 (#789) and R3 (#790) built
-what this doc declares; **Planned** marks what is not built yet, with its issue.
+the design and its record. Stories R1 (#788), R2 (#789), R3 (#790) and R4
+(#793) built what this doc declares; **Planned** marks what is not built yet,
+with its issue.
 
 The owner's ask (2026-11-11): "There's only one way to deploy this. We need
 all of them to be up". The deploy should know which versions go together,
@@ -42,18 +43,10 @@ per CLAUDE.md, "Drift is loud, not silent".
     (a whole commit for render), never `latest`.
 - **RL4. Bytes, not names.** A reference CI writes always carries its digest.
   A tag alone can move under a release.
-- **RL5. Held entries do not move.** `file-host` stays
-  `pgathondu/server:latest` until the deploy applies whole releases (R4,
-  #793), because `envctl deploy` pulls, tags and rolls back that tag. An
-  entry the release does not follow keeps whatever main says, and a
-  third-party entry moves only by RL8. kokoro is followed (R2b, #805), but until its
-  first publish main's entry is still `some-kokoro:local`, the image home
-  last built, and nothing builds it any more. Home has it, so home is
-  unaffected. On a box without it, `make up` fails pulling
-  `docker.io/library/some-kokoro:local` and compose starts nothing, file-host
-  included, so `envctl deploy` (which runs `make up`) fails too. That lasts
-  until the first release naming `pgathondu/kokoro` by digest, which follows
-  the first image publish after R2b merges.
+- **RL5. Held entries do not move.** An entry in `HELD` keeps whatever main
+  says; none is held since R4 (#793) pinned `file-host` by digest, once the
+  deploy applies whole releases. An entry the release does not follow keeps
+  whatever main says, and a third-party entry moves only by RL8.
 - **RL6. No approval of its own.** Forming the set adds no human step
   (C119). Each image keeps the one approval it has where it is published, and
   the release pull request auto-merges once its checks pass. **Planned:**
@@ -62,28 +55,51 @@ per CLAUDE.md, "Drift is loud, not silent".
   call.
 - **RL7. A cross-repo image is followed only once its set can be checked.**
   render comes from some-ui and must match what server writes for it (#756:
-  a www release without its matching render broke every preview). The set
-  check exists (R3, #790), but it reads labels by digest, and `file-host`,
-  the image providing what render requires, is held on `:latest` (RL5). So
-  render stays out of `SOURCES` until R4 (#793) pins `file-host` by digest,
-  and joins in the same change. Until then its entry moves by a reviewed
-  pull request, whose `Release set` job names the requirement it cannot
-  judge as a warning. www is not run on home (call-stage went with #802), so
-  it is in no release; an image that joins from some-ui later joins
-  `SOURCES` only with its `requires` labels.
+  a www release without its matching render broke every preview). It is in
+  `SOURCES` since R4 (#793): the set check (R3, #790) reads labels by digest,
+  and with `file-host` pinned by digest it reads both ends of render's
+  requirement, so the release pull request refuses a render that requires
+  what its file_host does not provide. www is not run on home (call-stage
+  went with #802), so it is in no release; an image that joins from some-ui
+  later (resume-render, www: #853's server half) joins `SOURCES` only with
+  its `requires` labels.
 - **RL9. Every requirement is met inside the set.** Each image's
   `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
   the same release ("Constraints", below). CI checks it from the registry by
   digest (`scripts/check_release.py`, Lint's `Release set` job, on every pull
   request that changes the release). A requirement whose name no readable
-  image provides, while a server image has no digest (the held `file-host`),
-  is a warning naming that image, not a failure: only it could meet it, and
-  what it provides cannot be read. One a readable image provides too low
-  fails. So until R4 (#793) pins `file-host`, CI cannot judge the edges
-  file_host is an end of, which is why render waits (RL7).
-  The deploy checks the set again from the pulled images before `up`, where
-  every image is read (`apps/envctl/src/release/constraints.rs`;
-  **Planned:** wired in by R4, #793). The two sides run on the same cases.
+  image provides, while a server image has no digest, is a warning naming
+  that image, not a failure; since R4 none has. The deploy checks the set
+  again from the pulled images before `up`, where every image is read
+  (`apps/envctl/src/release/constraints.rs`, called by `deploy.rs`): an
+  unmet requirement replaces nothing. The two sides run on the same cases.
+- **RL10. A release's tree holds only what git holds** (C344). The deploy runs
+  compose on a worktree of the checkout at the release's commit, where
+  `REPO_ROOT` is that worktree. So every `${REPO_ROOT}/…` bind mount is a
+  tracked path, mounted read-only. State git does not hold (file_host's
+  `data/`, `logs/` and `config/`, Grafana's built dashboards) is mounted
+  from `${STATE_ROOT}`, the owner's checkout, which envctl sets for
+  `make up` and the deploy alike (`--state-root`). `envctl check` refuses a
+  `${REPO_ROOT}` mount that is writable or names an untracked path
+  (`apps/envctl/src/mounts.rs`).
+- **RL11. Applied whole, or put back whole.** `envctl deploy` brings up a
+  release only after every image is pulled and the set checks, and records
+  it applied only once every service runs that release's image and is ready
+  (`healthy`, or running a minute with no restart). A release whose `up`
+  fails, or any of whose services does not come up, is put back: the release
+  last applied, its tree and its images, already here, so the rollback pulls
+  nothing. A release is its serial and the git trees compose reads
+  (`infra/`, `deploy/<role>/`, `docker-compose.yml`): a commit that moves
+  either is applied, judged and remembered as a release of its own; one
+  that moves neither is the release applied, and restarts nothing. An image
+  named by tag alone is not the release's bytes (RL4) and is pulled only
+  when absent, so a pass never moves it. A service that was failing before
+  the pass, on an image the release keeps, is named but not judged: it is
+  not the release's failure. A failed release is skipped by its key until
+  one with another key forms. One pass runs at a time (a lock in the state directory). Home
+  never runs python (#786). **Gap:** `up` does not remove a service a
+  release drops, and a rollback does not stop one the failed release added
+  (#861).
 
 ## Constraints
 
@@ -176,5 +192,6 @@ carry, against RL2.
 | Called after a server publish | `.github/workflows/publish-image-changesets.yml` (`release`) |
 | The set check | `scripts/check_release.py` (CI), `apps/envctl/src/release/constraints.rs` (deploy) |
 | Each image's labels | `infra/docker/Dockerfile.*`; render's in some-ui (U2, #792) |
-| **Planned:** deploy applies a release whole | R4, #793 |
+| The deploy applies a release whole | `apps/envctl/src/deploy.rs` (`make home-deploy`, `nix/modules/home-deploy.nix`) |
+| What compose may mount from a release's tree | `apps/envctl/src/mounts.rs` (RL10) |
 | **Planned:** guard against `:latest`, `build:`, per-service pulls | R6, #795 |

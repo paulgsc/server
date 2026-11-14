@@ -22,13 +22,10 @@ Where "newest published" comes from, per followed service (`SOURCES`):
   the image and whose `pgathondu/<suffix>:<source_sha>` tag Docker Hub has.
   A changeset whose publish failed has no tag, so the one before it is used.
 - **A some-ui image** (`hub`): the most recently pushed tag of the shape its
-  release publishes (a whole commit for render), never `latest`. None is
-  followed yet (RL7). R3 (#790) built the set check
-  (`scripts/check_release.py`), but it reads labels by digest, and
-  `file-host`, the image render's requirement names, is held on `:latest`
-  until R4 (#793). So render joins with R4, once the check can see both
-  ends; until then its entry moves by a reviewed pull request. www is not
-  run on home, so it is in no release.
+  release publishes (a whole commit for render), never `latest`. render is
+  followed since R4 (#793), once `file-host` is pinned by digest and so the
+  set check (`scripts/check_release.py`, R3 #790) reads both ends of its
+  requirement (RL7). www is not run on home, so it is in no release.
 
 - **A third-party image** (`THIRD_PARTY`, R7 #796), only with
   `--third-party`: the current digest of the tag its entry already names (a
@@ -44,8 +41,7 @@ Docker Hub's tag API gives each tag's digest (another registry's v2 API, for
 an image named with its host), so every reference is `repo:tag@sha256:…`.
 What it never does:
 
-- **Moves a held entry.** `file-host` stays `pgathondu/server:latest` until R4
-  (#793), because `envctl deploy` pulls, tags and rolls back that tag.
+- **Moves a held entry** (`HELD`, none since R4 #793 pinned `file-host`).
 - **Moves an entry it does not follow**, or adds or removes a service. The
   default mode moves only `SOURCES`; `--third-party` only `THIRD_PARTY`.
 - **Moves an entry backwards in serial**: `serial` rises once, from main's,
@@ -78,9 +74,7 @@ CHANGESETS = REPO_ROOT / ".github" / "docker-changesets"
 HUB = "https://hub.docker.com/v2/repositories"
 
 # Entries no source moves, and why. Each names the story that frees it.
-HELD = {
-    "file-host": "held on pgathondu/server:latest until R4 (#793): envctl deploy pulls, tags and rolls back that tag",
-}
+HELD: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -104,8 +98,14 @@ COMMIT = r"[0-9a-f]{40}"
 # from. A service not here keeps whatever main's release says.
 
 SOURCES: dict[str, Changesets | Hub] = {
+    # Since R4 (#793): envctl deploy applies whole releases by digest, so
+    # file_host is followed like any server image.
+    "file-host": Changesets("server"),
     "kokoro": Changesets("kokoro"),
     "orchestrator": Changesets("orchestrator"),
+    # Since R4 (#793): file-host is pinned by digest, so the release pull
+    # request's set check reads both ends of render's requirement (RL7).
+    "render": Hub("pgathondu/render", COMMIT),
     "rust-runner": Changesets("rust-runner"),
 }
 
@@ -445,12 +445,12 @@ class Tests(unittest.TestCase):
         self.assertIs(twice, once, "idempotent: a second run on the same sources writes nothing")
         self.assertEqual((twice["serial"], said), (5, []))
 
-    def test_file_host_is_held_until_r4(self) -> None:
+    def test_file_host_is_followed_by_digest_since_r4(self) -> None:
         seen = world({("pgathondu/server", A): DA}, [changeset(A, "server")], [A])
-        before = sample()
-        updated, said = reconcile(before, seen, "main", {"file-host": Changesets("server")})
-        self.assertIs(updated, before)
-        self.assertTrue(any("file-host: held" in line and "#793" in line for line in said), said)
+        updated, said = reconcile(sample(), seen, "main", {"file-host": SOURCES["file-host"]})
+        self.assertEqual(updated["services"]["file-host"]["image"], f"pgathondu/server:{A}@{DA}")
+        self.assertEqual(len(said), 1)
+        self.assertNotIn("file-host", HELD)
 
     def test_a_hub_source_takes_the_newest_tag_of_its_shape_never_latest(self) -> None:
         tags = {"pgathondu/render": [("latest", DC), ("v-test", DC), (B, DB), (A, DA)]}
@@ -468,11 +468,12 @@ class Tests(unittest.TestCase):
         with self.assertRaises(Unreadable):
             reconcile(sample(), world({}, [], []), "main", {"ghost": Changesets("ghost")})
 
-    def test_render_waits_until_the_check_can_see_file_host(self) -> None:
-        """RL7: render is followed only once file-host is pinned by digest, so the set check reads both ends."""
+    def test_render_is_followed_once_file_host_is_pinned(self) -> None:
+        """RL7: render is followed only while file-host is pinned by digest, so the set check reads both ends."""
         file_host = json.loads(RELEASE.read_text())["services"]["file-host"]["image"]
-        if "@sha256:" not in file_host:
-            self.assertNotIn("render", SOURCES)
+        self.assertIn("@sha256:", file_host)
+        self.assertEqual(SOURCES["render"], Hub("pgathondu/render", COMMIT))
+        self.assertEqual(SOURCES["file-host"], Changesets("server"))
 
     def test_the_checked_in_sources_name_real_services(self) -> None:
         release = json.loads(RELEASE.read_text())
