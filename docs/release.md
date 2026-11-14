@@ -122,8 +122,10 @@ per CLAUDE.md, "Drift is loud, not silent".
   last applied (`applied.json` in the deploy's state directory), from its own
   tree and under the stack's project, never the checkout's
   `deploy/home/release.json`, which `make home-deploy` does not move, and they
-  check it against that tree's own schemas; `make preflight` and `make env`
-  read the same tree. `make up`, and any `make compose` command that may
+  check it against that tree's own schemas. `make preflight` and `make env`
+  start nothing, so they read the checkout: that is how a change to
+  `deploy/home/` is checked before it is pushed. `make up`, and any
+  `make compose` command that may
   create, replace or stop containers, holds the deploy's lock while it runs
   (`logs`, `ps`, `exec` and the other reads do not, nor does a
   `run --no-deps`, which starts none of the stack's, such as `make promo`).

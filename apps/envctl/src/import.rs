@@ -371,6 +371,7 @@ pub(crate) fn next_steps(repo: &Path, role: &str, conflicts: &[String], unverifi
 	let start = if role == "home" { "make home-deploy" } else { "make up" };
 	if dry_run || wrote || !unfound.is_empty() {
 		if role == "home" {
+			steps.push("make preflight          check the files before they reach home".to_owned());
 			steps.push(format!("git add deploy/{role} && git commit && git push"));
 			steps.push("make home-deploy        start the stack from main's deploy/home/".to_owned());
 		} else {

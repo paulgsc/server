@@ -689,8 +689,12 @@ fn home_runs_only_the_release_last_applied() {
 	let said = run(&elsewhere, &["up", "--role", "home"]);
 	assert!(said.contains("`make home-deploy`"), "{said}");
 	assert!(!elsewhere.exists());
-	// Another role runs as given.
+	// Another role runs as given: on to its own tmpfs, which this one lacks.
 	let said = run(&elsewhere, &["compose", "--role", "dev", "--", "ps"]);
+	assert!(said.contains("XDG_RUNTIME_DIR is not set"), "{said}");
+	// The preflight starts nothing, so it checks the checkout's files even on
+	// home, with none applied: how a change is checked before it is pushed.
+	let said = run(&elsewhere, &["preflight", "--role", "home"]);
 	assert!(!said.contains("`make home-deploy`") && !said.contains("only the deploy runs"), "{said}");
 }
 

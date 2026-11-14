@@ -396,9 +396,9 @@ fn stack_of(
 	shell: &IndexMap<String, String>,
 ) -> Result<(PathBuf, Option<String>, Option<deploy::AppliedStack>)> {
 	let (role, lock) = match command {
+		// The preflight and the listing start nothing: they check the
+		// checkout's files, which is how a change is checked before its push.
 		Command::Up { role, .. } => (role, true),
-		// What the preflight and the listing read is what `up` would start.
-		Command::Preflight { role } | Command::List { role } => (role, false),
 		Command::Compose { role, args, .. } => {
 			if let Some(why) = compose::home_refusal(role, args) {
 				bail!("{why}");

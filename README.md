@@ -247,8 +247,9 @@ service's `env_file` alone, so two runs never touch each other's. They are remov
 once compose returns, and a running container keeps its environment. Compose
 runs with `--env-file /dev/null`, so a stray `.env` is read by nothing, and a
 compose variable the shell happens to export is dropped unless the role's
-file sets it. `REPO_ROOT` comes from make (`$(CURDIR)`), and so does
-`ENV_DIR`. `STATE_ROOT`, the checkout whose untracked state compose mounts
+file sets it. `REPO_ROOT` is the repository envctl runs on (on home, the
+tree of the release last applied), and `ENV_DIR` is that run's tmpfs
+directory. `STATE_ROOT`, the checkout whose untracked state compose mounts
 (file_host's `data/`, `logs/`, `config/`, Grafana's built dashboards), is
 envctl's: the checkout itself for `make up`, and the owner's checkout when
 the deploy runs compose on a release's worktree (C344; docs/release.md,
@@ -286,8 +287,8 @@ Every file states every variable of its binary but compose's own wiring,
 so a deployment decides each one. An empty value (`NAME=`) is "decided:
 unset" (#616): it reaches the binary unset, never set to nothing. To change
 a value: `sops edit deploy/<role>/<app>.sops.env` (or `sops set`), then
-`make up`; on home, commit and push it, then `make home-deploy`, since home's
-`make up` starts the release last applied. sops' dotenv does no quoting: `KEY="v"` gives
+`make up`; on home, `make preflight` checks it, then commit and push it and
+`make home-deploy`, since home's `make up` starts the release last applied. sops' dotenv does no quoting: `KEY="v"` gives
 the container `"v"`, quotes and all, so write `KEY=v`. To prune variables,
 `make prune APP=file_host` opens a checklist of the file's variables grouped
 by the schema's sections, a page at a time (`PAGE=10`), names and states
@@ -321,8 +322,8 @@ image sets, and every other variable of its schema stated too: at its
 default, or empty (unset) when it has none; and compose's own variables, read back from the container
 environment or bind mount compose put each into, else from `.env`. It names
 each step on stderr and each variable it writes, never a value, and ends by
-naming the `.env` to delete. Then commit `deploy/home/`, run `make up`, and
-delete `.env`.
+naming the `.env` to delete. Then check it with `make preflight`, commit and
+push `deploy/home/`, run `make home-deploy`, and delete `.env`.
 
 - **ENV3: the preflight names every gap before anything starts.**
   - _Claim:_ given a role's files, `make preflight` lists every variable a

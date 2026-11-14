@@ -643,7 +643,7 @@ mod tests {
 		for line in ["up -d", "restart file-host", "stop", "down", "-p server start", "--profile x run --rm a", ""] {
 			assert!(changes_containers(&args(line)), "`{line}`");
 		}
-		for line in ["up -d", "run --rm render sh", "cp a:/x .", "attach a"] {
+		for line in ["run --rm render sh", "cp a:/x .", "attach a"] {
 			assert!(changes_containers(&args(line)), "`{line}`");
 		}
 		for line in [
