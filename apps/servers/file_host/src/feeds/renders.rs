@@ -51,6 +51,15 @@
 //! `previews`' short class (`reason`): fields only a preview's row carries, so
 //! every other row reads as it did.
 //!
+//! **A done row's size** (`bytes`): a finished video's length on the drive,
+//! for every shelf whose finished file is a video (not a clip's walk, whose
+//! is `walk.json`), and only when that shelf's download would serve the file
+//! (`Shelf::follows_links`): a feed's (`feeds::videos`) follows a link to a
+//! plain file, a preview's and a cards essay's serve a plain file only. The
+//! phone fetches a home video in ranged parts and its home link carries no
+//! headers, so this is the total it counts against, and how it tells a whole
+//! cached copy from a part.
+//!
 //! **How far a render is** (C138): the worker keeps the recorder's own
 //! count in `renders/call-worker/job.progress` as it goes (its station,
 //! `recording` or `assembling`, the scenes recorded, how many there are once
@@ -308,6 +317,22 @@ impl Shelf {
 		}
 	}
 
+	/// Whether its finished file is a video, whose size a done row carries
+	/// (`bytes`): every shelf's but a clip's walk, whose is `walk.json`.
+	#[must_use]
+	pub const fn is_video(self) -> bool {
+		!matches!(self, Self::ClipWalk)
+	}
+
+	/// Whether its download follows a link to its video
+	/// (`feeds::videos::video_file`, a feed's), or serves a plain file only
+	/// (`handlers::previews`, `handlers::cards_essays`): what a done row's
+	/// size is read by, so `bytes` is said for what the download serves.
+	#[must_use]
+	pub const fn follows_links(self) -> bool {
+		matches!(self, Self::Feed(_))
+	}
+
 	/// The file a finished episode is known by.
 	#[must_use]
 	pub const fn video(self) -> &'static str {
@@ -328,6 +353,10 @@ pub struct FeedSeen {
 	pub held: Vec<(String, i64)>,
 	/// Of those, each with its video, and when it was made.
 	pub videos: BTreeMap<String, i64>,
+	/// Of those, the size in bytes of each finished file that is a video
+	/// ([`Shelf::is_video`]) and that its shelf's download would serve
+	/// ([`Shelf::follows_links`]): a plain file, or for a feed's a link to one.
+	pub sizes: BTreeMap<String, u64>,
 	/// Of those with none, each whose last attempt failed: when, and how.
 	pub failed: BTreeMap<String, (i64, Failure)>,
 	/// Each episode the owner let go.
@@ -458,6 +487,10 @@ pub struct Episode {
 	/// was made.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub expires_at: Option<i64>,
+	/// A done row's video size in bytes, its shelf's finished file being a
+	/// video: the total the phone's ranged fetch counts against.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub bytes: Option<u64>,
 }
 
 /// An episode whose last attempt couldn't finish.
@@ -636,6 +669,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					at: *made,
 					expires_at: template.is_some().then(|| made.saturating_add(preview_life())),
 					template,
+					bytes: seen.sizes.get(key).copied(),
 				});
 			} else if let Some((at, failure)) = seen.failed.get(key).filter(|_| !current) {
 				failed.push(Failed {
@@ -653,6 +687,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					at: *taken,
 					template: template_of(Some(*feed), key),
 					expires_at: None,
+					bytes: None,
 				});
 			}
 		}
@@ -859,6 +894,7 @@ fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64
 			continue;
 		}
 		seen.videos.remove(key);
+		seen.sizes.remove(key);
 		seen.failed.insert(key.clone(), (*at, Failure { by: FailedBy::Home, exit: None }));
 		seen.reasons.insert(key.clone(), "overdue");
 		seen.ended.insert(key.clone());
@@ -872,6 +908,7 @@ fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64
 		.collect();
 	for key in expired {
 		seen.videos.remove(&key);
+		seen.sizes.remove(&key);
 		seen.held.retain(|(held, _)| *held != key);
 	}
 }
@@ -900,8 +937,11 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 			continue;
 		}
 		seen.held.push((episode.key.clone(), taken));
-		if let Some(made) = modified(&renders.join(&episode.key).join(feed.video())).await {
+		if let Some((made, size)) = made_and_size(&renders.join(&episode.key).join(feed.video()), feed.follows_links()).await {
 			seen.videos.insert(episode.key.clone(), made);
+			if let Some(size) = size.filter(|_| feed.is_video()) {
+				seen.sizes.insert(episode.key.clone(), size);
+			}
 			continue;
 		}
 		let mut name = episode.key.clone();
@@ -933,6 +973,26 @@ async fn modified(path: &Path) -> Option<i64> {
 	let at = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
 	let since = at.duration_since(std::time::UNIX_EPOCH).ok()?;
 	i64::try_from(since.as_secs()).ok()
+}
+
+/// When a finished file was last written, Unix seconds, if it is there, and
+/// its length in bytes if its shelf's download would serve it: a plain file,
+/// reached through a link where the download follows one (`follows`). One
+/// `stat` for the file the worker moves into place; a second only for
+/// anything else, whose date is read as before and whose size is none.
+async fn made_and_size(path: &Path, follows: bool) -> Option<(i64, Option<u64>)> {
+	let meta = if follows {
+		tokio::fs::metadata(path).await
+	} else {
+		tokio::fs::symlink_metadata(path).await
+	};
+	if let Ok(meta) = meta {
+		if meta.file_type().is_file() {
+			let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+			return Some((i64::try_from(since.as_secs()).ok()?, Some(meta.len())));
+		}
+	}
+	modified(path).await.map(|at| (at, None))
 }
 
 /// The end of a failed attempt's log.
