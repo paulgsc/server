@@ -70,6 +70,10 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 		"each week of the weekly call, as paulgsc/testing served it — what merged in two public repositories, nobody's record",
 	),
 	(
+		"call_week_revision",
+		"each later revision of a week of the weekly call, as paulgsc/testing served it — what merged in two public repositories, nobody's record",
+	),
+	(
 		"cards_essay",
 		"each cards essay home keeps, as paulgsc/testing served it — a cut list a session wrote about public repositories at stamped commits, nobody's record",
 	),
