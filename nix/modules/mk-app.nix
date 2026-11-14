@@ -15,9 +15,15 @@
 #
 # The module carries no host values: the host's configuration sets them
 # (#406). It is off unless `enable`.
+#
+# Its image is home's release's (deploy/home/release.json, RELEASE R6 #795,
+# call C127): the entry named `name`, by tag and digest, read when the
+# configuration is evaluated, never written here. So NixOS starts the same
+# image compose does, from the one source, and a host cannot set another
+# (the option is read-only). A module whose name the release lacks fails to
+# evaluate.
 {
   name,
-  image,
   generated,
   ports ? [],
 }: {
@@ -27,6 +33,10 @@
 }: let
   cfg = config.services.${name};
   schema = import generated {inherit lib;};
+  release = builtins.fromJSON (builtins.readFile ../../deploy/home/release.json);
+  image =
+    release.services.${name}.image
+    or (throw "nix/modules: deploy/home/release.json names no service ${name}, so its module has no image");
 
   # A float through `toJSON`, not `toString`, which keeps six decimals and
   # would hand the binary 0.000000 for 0.0000001; Rust reads `1e-07` back.
@@ -93,7 +103,8 @@ in {
     image = lib.mkOption {
       type = lib.types.str;
       default = image;
-      description = "The image the container runs.";
+      readOnly = true;
+      description = "The image the container runs: home's release's (deploy/home/release.json), by tag and digest. Read-only: the release is the one source of images.";
     };
 
     settings = lib.mkOption {

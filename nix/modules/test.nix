@@ -19,6 +19,7 @@
         settings
       ];
     };
+  release = builtins.fromJSON (builtins.readFile ../../deploy/home/release.json);
   failed = configuration: map (assertion: assertion.message) (builtins.filter (assertion: !assertion.assertion) configuration.config.assertions);
   expect = what: condition:
     if condition
@@ -99,7 +100,16 @@ in
         REDIS_URL = "redis://redis:6379";
       }))
     (expect "secrets reach the container through its files" (container.environmentFiles == ["/run/secrets/file-host.env"]))
-    (expect "file-host publishes what compose does" (container.ports == ["127.0.0.1:3000:3000"] && container.image == "pgathondu/server:latest"))
+    (expect "file-host publishes what compose does" (container.ports == ["127.0.0.1:3000:3000"]))
+    # RELEASE R6 (#795, C127): each module starts the release's image, the
+    # one compose starts, and a host cannot name another.
+    (expect "file-host runs the release's image" (container.image == release.services."file-host".image))
+    (expect "orchestrator runs the release's image" (complete.config.virtualisation.oci-containers.containers.orchestrator.image == release.services.orchestrator.image))
+    (expect "every image a module runs is pinned by digest" (lib.all (c: lib.hasInfix "@sha256:" c.image) (builtins.attrValues complete.config.virtualisation.oci-containers.containers)))
+    (expect "a host cannot set a module's image" (!(builtins.tryEval (builtins.seq (eval {
+        services.file-host.enable = true;
+        services.file-host.image = "pgathondu/server:latest";
+      }).config.virtualisation.oci-containers.containers.file-host.image true)).success))
     (expect "orchestrator publishes no port" (complete.config.virtualisation.oci-containers.containers.orchestrator.ports == []))
     (expect "the mailbox's own requirements are named while it is on" (builtins.any (lib.hasInfix "MAILBOX_URL is required while MAILBOX_ENABLED is true") mailbox
         && builtins.any (lib.hasInfix "MAILBOX_TOKEN is required while MAILBOX_ENABLED is true (a secret") mailbox))

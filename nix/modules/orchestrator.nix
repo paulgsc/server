@@ -3,6 +3,5 @@
 # port, as infra/compose/orchestrator.yml does not (#143).
 import ./mk-app.nix {
   name = "orchestrator";
-  image = "pgathondu/orchestrator:latest";
   generated = ./generated/orchestrator.nix;
 }
