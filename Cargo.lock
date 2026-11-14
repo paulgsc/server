@@ -612,6 +612,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cards_essay_repo"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1755,6 +1765,7 @@ dependencies = [
  "base64 0.22.1",
  "call_week_repo",
  "capture_repo",
+ "cards_essay_repo",
  "chrono",
  "chrono-tz",
  "clap",

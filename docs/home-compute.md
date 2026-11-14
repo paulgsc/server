@@ -18,7 +18,7 @@ says what holds it, or **Planned** with its issue where nothing does yet.
 1. **At most one batch job runs on home at a time, across every kind.** The
    render worker is the one batch worker. It runs one job at a time and
    names it in `<lane>/job`, one file for every kind (the call, Playoff
-   Delta, previews, essays, clip walks), and the lane admits one job per
+   Delta, previews, essays, clip walks, cards essays), and the lane admits one job per
    run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
    second batch worker joins this lane, never one of its own (L5,
    some-ui#2084).
@@ -190,11 +190,14 @@ how long, and `CallRenderOverdue` fires on the week left waiting.
 ### What the render worker does
 
 `infra/render/render-calls.sh` (L4c #708), for each of its jobs alike (the
-call's, Playoff Delta's, a template's preview's, a Rust Rounds essay's and a
-clip's walk). A clip's walk (paulgsc/some-ui#2670's clips) is batch class
+call's, Playoff Delta's, a template's preview's, a Rust Rounds essay's, a
+clip's walk and a cards essay's). A clip's walk (paulgsc/some-ui#2670's clips) is batch class
 like the others: the motion replays an app's scripted walk in Chromium and
 keeps its stills, no speaker and no video, so it is the smallest job the
-lane admits, measured like any other once it has run. `infra/render/render-calls.test.sh` holds each
+lane admits, measured like any other once it has run. A cards essay
+(CARDS7, #854) is batch class too: the recorder draws each card on the
+stage's burn-ins page in Chromium and renders the video with ffmpeg, with no
+speaker, measured like any other once it has run. `infra/render/render-calls.test.sh` holds each
 point below with a fake lane and a recorder slow enough to be caught half
 way; CI runs it on every PR.
 

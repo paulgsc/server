@@ -454,6 +454,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 		feeds: vec![(Feed::Call, renders, status.clone()), (Feed::PlayoffDelta, pd_renders, pd_status)],
 		clip_walks: None,
 		previews: None,
+		cards_essays: None,
 		lane: status.clone(),
 	};
 	// Another job's stale sign of life is not this one's.
@@ -506,6 +507,7 @@ async fn a_clips_walks_are_on_the_board_as_episodes_are() {
 		feeds: vec![],
 		clip_walks: Some((given, renders, status)),
 		previews: None,
+		cards_essays: None,
 		lane,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
@@ -518,6 +520,47 @@ async fn a_clips_walks_are_on_the_board_as_episodes_are() {
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["ledger-wake-before"]);
 	assert_eq!(read.waiting, [], "the walk in progress is not also waiting, and what isn't a walk is not read");
 	assert_eq!(read.coming, [], "a walk is expected on no day");
+}
+
+/// Each cards essay home holds is on the board as an episode is: done once
+/// its `cards.mp4` is made, failed with its log, or waiting (CARDS7, #854).
+#[tokio::test]
+async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let (renders, status, lane) = (dir.path().join("cards-essay"), dir.path().join("cards-essay-worker"), dir.path().join("call-worker"));
+	for folder in [&renders, &status, &lane] {
+		std::fs::create_dir_all(folder).unwrap();
+	}
+	{
+		let mut conn = db.acquire().await.unwrap();
+		for key in ["zfs-2026-11-02", "nixos-upgrade-2026-11-07", "rust-scratchpad-2026-11-08"] {
+			let essay = cards_essay_repo::Essay {
+				key,
+				day: &key[key.len() - 10..],
+				body: b"{}",
+				taken_at: "2026-11-08T10:00:00.000Z",
+			};
+			cards_essay_repo::keep(&mut conn, &essay).await.unwrap();
+		}
+	}
+	std::fs::create_dir_all(renders.join("zfs-2026-11-02")).unwrap();
+	std::fs::write(renders.join("zfs-2026-11-02").join(crate::cards_essays::VIDEO), b"video").unwrap();
+	std::fs::write(status.join("nixos-upgrade-2026-11-07.failed.log"), b"C1: its picture is a capture, not a card\n").unwrap();
+	let folders = Folders {
+		feeds: vec![],
+		clip_walks: None,
+		previews: None,
+		cards_essays: Some((renders, status)),
+		lane,
+	};
+	let read = read(&db, &folders, "", NOW).await.unwrap();
+	let shelf = |episodes: &[Episode]| episodes.iter().map(|e| (e.feed.clone(), e.key.clone())).collect::<Vec<_>>();
+	assert_eq!(shelf(&read.done), [(String::from("cards-essay"), String::from("zfs-2026-11-02"))]);
+	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["nixos-upgrade-2026-11-07"]);
+	assert_eq!(shelf(&read.waiting), [(String::from("cards-essay"), String::from("rust-scratchpad-2026-11-08"))]);
+	assert_eq!(read.waiting[0].template, None, "an essay names no template");
+	assert_eq!(read.coming, [], "an essay is expected on no day");
 }
 
 #[tokio::test]
@@ -568,6 +611,7 @@ async fn a_template_s_previews_are_on_the_board_while_home_keeps_them() {
 		feeds: vec![],
 		clip_walks: None,
 		previews: Some((requests, renders, status)),
+		cards_essays: None,
 		lane,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
@@ -641,6 +685,7 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 		feeds: vec![],
 		clip_walks: None,
 		previews: Some((requests, renders, status)),
+		cards_essays: None,
 		lane,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
@@ -708,6 +753,7 @@ async fn a_run_s_progress_is_its_job_s_only() {
 		feeds: vec![],
 		clip_walks: None,
 		previews: None,
+		cards_essays: None,
 		lane: lane.clone(),
 	};
 	assert_eq!(read(&db, &folders, "", NOW).await.unwrap().now.unwrap().progress, None, "the recorder has said nothing yet");

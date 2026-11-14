@@ -32,6 +32,12 @@
 //! walk `file_host` gave the worker (`clips::WALKS_FOLDER`) waiting until its
 //! `walk.json` is made, or failed with its log, as any episode.
 //!
+//! **A cards essay** (CARDS7, #854) is on the board too, as the
+//! `cards-essay` shelf, keyed by its key (`<slug>-<YYYY-MM-DD>`): no feed
+//! (no link, nothing let go yet), each essay home holds (`cards_essays`)
+//! waiting until its `cards.mp4` is made, failed with its log, as any
+//! episode, or done.
+//!
 //! **A template's preview** (SFEED12, `previews`) is on the board too, as
 //! the `preview` shelf, keyed by its id, `<template>-<UTC stamp>`: no feed,
 //! each request `file_host` wrote for the worker (`previews::REQUESTS_FOLDER`)
@@ -274,6 +280,9 @@ pub enum Shelf {
 	/// A template's preview (`previews`): keyed by its id,
 	/// `<template>-<UTC stamp>`, done once its video is made, while it lives.
 	Preview,
+	/// A cards essay (`cards_essays`): keyed `<slug>-<YYYY-MM-DD>`, done once
+	/// its video is made.
+	CardsEssay,
 }
 
 impl Shelf {
@@ -284,6 +293,7 @@ impl Shelf {
 			Self::Feed(feed) => feed.as_str(),
 			Self::ClipWalk => "clip-walk",
 			Self::Preview => "preview",
+			Self::CardsEssay => "cards-essay",
 		}
 	}
 
@@ -292,6 +302,7 @@ impl Shelf {
 		match kind {
 			"clip-walk" => Some(Self::ClipWalk),
 			"preview" => Some(Self::Preview),
+			"cards-essay" => Some(Self::CardsEssay),
 			_ => Feed::parse(kind).map(Self::Feed),
 		}
 	}
@@ -303,6 +314,7 @@ impl Shelf {
 			Self::Feed(feed) => feed.video(),
 			Self::ClipWalk => crate::clips::WALK_FILE,
 			Self::Preview => crate::previews::VIDEO,
+			Self::CardsEssay => crate::cards_essays::VIDEO,
 		}
 	}
 }
@@ -679,6 +691,9 @@ pub struct Folders {
 	/// The templates' previews: the requests `file_host` wrote for the
 	/// worker, and its renders and status folders.
 	pub previews: Option<(PathBuf, PathBuf, PathBuf)>,
+	/// The cards essays: the worker's renders and status folders (what it
+	/// was given is what `cards_essay` holds).
+	pub cards_essays: Option<(PathBuf, PathBuf)>,
 	/// The lane's folder: `job.state` and `lane`.
 	pub lane: PathBuf,
 }
@@ -714,6 +729,7 @@ impl Folders {
 				PathBuf::from(crate::previews::RENDERS_FOLDER),
 				PathBuf::from(crate::previews::STATUS_FOLDER),
 			)),
+			cards_essays: Some((PathBuf::from(crate::cards_essays::RENDERS_FOLDER), PathBuf::from(crate::cards_essays::STATUS_FOLDER))),
 			lane: PathBuf::from(crate::call_weeks::render::STATUS_FOLDER),
 		}
 	}
@@ -748,6 +764,10 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 		let mut seen = seen(Shelf::Preview, &asked, &[], renders, status).await;
 		previews_lived(&mut seen, &overdue, now);
 		feeds.push((Shelf::Preview, seen));
+	}
+	if let Some((renders, status)) = &folders.cards_essays {
+		let held = crate::cards_essays::held(db).await?;
+		feeds.push((Shelf::CardsEssay, seen(Shelf::CardsEssay, &held, &[], renders, status).await));
 	}
 	let mut job = small(&folders.lane.join("job.state")).await.as_deref().and_then(Job::parse);
 	if let Some(job) = job.as_mut() {

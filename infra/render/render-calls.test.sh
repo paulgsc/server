@@ -44,6 +44,11 @@
 # And a clip's walk (paulgsc/some-ui#2670's clips): the motion walks the app
 # file_host named over its sample, kept whole in renders/clip-walk; a walk
 # naming an app that is not a plain name is never run.
+#
+# And a cards essay (CARDS7, #854): each key file_host gave is recorded from
+# its cut list, oldest day first whatever its name, kept whole in
+# renders/cards-essay without its cache; a file of another shape is never
+# read, and one the recorder refuses keeps its words as its failed.log.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -256,6 +261,37 @@ if [ "$1" = tests/record/essay.ts ]; then
   too_large "$out/$week/essay.mp4"
   exit 0
 fi
+# A cards essay (CARDS7): `tsx tests/record/cards.ts … --cut-list-file
+# <key>.json --out <w>` writes cards.mp4, cut-list.json, shot-times.json and
+# a cache into <w>/<key>, the key being the file's name, or refuses it in the
+# real recorder's words while $FAKE/not-cards exists. Each run is counted in
+# $FAKE/cards-runs as `<file> <out>`.
+if [ "$1" = tests/record/cards.ts ]; then
+  file= out=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --cut-list-file) file=$2; shift ;;
+      --out) out=$2; shift ;;
+      --week | --week-file) echo "cards.ts takes no $1"; exit 2 ;;
+    esac
+    shift
+  done
+  echo "$file $out" >> "$fake/cards-runs"
+  key=$(basename "$file" .json)
+  if [ -e "$fake/not-cards" ]; then
+    echo "$file isn't a cards essay:" >&2
+    echo "C1: its picture is a capture, not a card" >&2
+    exit 1
+  fi
+  mkdir -p "$out/$key/cache"
+  echo intermediate > "$out/$key/cache/frame"
+  cp "$file" "$out/$key/cut-list.json"
+  echo '[]' > "$out/$key/shot-times.json"
+  echo assembling
+  echo "cards of $key" > "$out/$key/cards.mp4"
+  too_large "$out/$key/cards.mp4"
+  exit 0
+fi
 [ "$1" = tests/record/call.ts ] || { echo "not the call's recorder: $1"; exit 2; }
 week_file= out=
 while [ $# -gt 0 ]; do
@@ -363,7 +399,7 @@ fresh() {
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
-    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs"
+    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -937,6 +973,44 @@ check "a walk naming no plain app fails, unwalked" grep -q "names no app" "$ROOT
 run_job clip-walk > "$SCRATCH/pass.out" 2>&1
 check "a walk is not made again, and no other folder is read" test "$(wc -l < "$FAKE/walk-runs")" -eq 1
 
+# A cards essay (CARDS7, #854): each <key>.json file_host gave is recorded
+# from its cut list, by its stamp's day, oldest first, not by name; kept
+# whole in renders/cards-essay without its cache. A file whose name is not
+# a key is never read.
+fresh cards
+mkdir -p "$ROOT/cards-essays"
+for key in nixos-upgrade-2026-11-14 zfs-2026-11-02 NotAKey-2026-11-01 nixos-2026-11; do
+  echo "{\"key\":\"$key\"}" > "$ROOT/cards-essays/$key.json"
+done
+check "essays go by their day, not their name" \
+  test "$(INPUT=$ROOT/cards-essays episodes cards-essay | tr '\n' ' ')" = "zfs-2026-11-02 nixos-upgrade-2026-11-14 "
+run_job cards-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay is recorded from its cut list, into its job's work folder, the older day first" \
+  test "$(head -n 1 "$FAKE/cards-runs")" = "$ROOT/cards-essays/zfs-2026-11-02.json $ROOT/renders/cards-essay-work"
+check "and kept whole in renders/cards-essay" \
+  test -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cards.mp4" -a -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cut-list.json" \
+  -a -e "$ROOT/renders/cards-essay/zfs-2026-11-02/shot-times.json"
+check "without its cache, and its work gone" \
+  test ! -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cache" -a ! -e "$ROOT/renders/cards-essay-work/zfs-2026-11-02"
+check "with the caps every job has" grep -qx -- --max-video-mb "$FAKE/args-cards"
+run_job cards-essay > "$SCRATCH/pass.out" 2>&1
+check "both essays are made, once each, and no other file is read" test "$(wc -l < "$FAKE/cards-runs")" -eq 2 \
+  -a -e "$ROOT/renders/cards-essay/nixos-upgrade-2026-11-14/cards.mp4"
+
+# An essay the recorder refuses keeps its words for the owner and is tried
+# again, as any episode.
+fresh cards-refused
+mkdir -p "$ROOT/cards-essays"
+echo '{}' > "$ROOT/cards-essays/zfs-2026-11-02.json"
+touch "$FAKE/not-cards"
+run_job cards-essay > "$SCRATCH/pass.out" 2>&1
+check "a refused essay's words are its failed.log" grep -q "not a card" "$ROOT/renders/cards-essay-worker/zfs-2026-11-02.failed.log"
+check "and it leaves no folder in renders/cards-essay" test ! -e "$ROOT/renders/cards-essay/zfs-2026-11-02"
+rm "$FAKE/not-cards"
+run_job cards-essay > "$SCRATCH/pass.out" 2>&1
+check "and once it is fixed it renders, and its failed.log goes" \
+  test -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cards.mp4" -a ! -e "$ROOT/renders/cards-essay-worker/zfs-2026-11-02.failed.log"
+
 # A preview a restart left runs first, as any job does.
 fresh preview-left
 mkdir -p "$ROOT/previews" "$ROOT/renders/call-worker"
@@ -965,8 +1039,12 @@ mkdir -p "$ROOT/previews"
 echo '{}' > "$ROOT/previews/conference-call-20261108T090000Z.json"
 pass
 run_job preview > "$SCRATCH/pass.out" 2>&1
+mkdir -p "$ROOT/cards-essays"
+echo '{}' > "$ROOT/cards-essays/zfs-2026-11-02.json"
+run_job cards-essay > "$SCRATCH/pass.out" 2>&1
 check "the call's recorder is handed the policy's caps, the pinned stage and home's speaker" handed "$FAKE/args-call"
 check "and a preview's recorder the same" handed "$FAKE/args-preview"
+check "and a cards essay's recorder the same (CARDS7)" handed "$FAKE/args-cards"
 
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
 # made and removes it, and the worker takes that as any failed attempt. A
