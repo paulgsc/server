@@ -112,7 +112,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   names itself (C127), and a doc that pulls, builds, watches or rebuilds by
   hand. `envctl compose --role home` refuses the same at run time: `pull`,
   `build`, `watch`, a `--build` on any command but `exec`, `up --watch` or
-  `-w`, an `up` that names services, and a compose file of one's own (`-f`).
+  `-w`, an `up` that names services, and another stack (`-f`, `--project-directory`, or a shell's `COMPOSE_FILE`, which envctl drops).
   Each refusal has a test. **Not covered yet:** a plain `make up` on home
   reads the checkout's release, which `make home-deploy` does not move, so
   it can start a release other than the one last applied (R6d, #870).

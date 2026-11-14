@@ -371,20 +371,34 @@ pub(crate) fn environment_of(service: &Value, file: &crate::sops::Plain, given: 
 /// written in the docs.
 pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 	// Compose's own options before the command, and those that take a value.
-	const GLOBAL_VALUED: &[&str] = &[
-		"-f",
-		"--file",
-		"-p",
-		"--project-name",
-		"--profile",
-		"--env-file",
-		"--project-directory",
-		"--ansi",
-		"--progress",
-		"--parallel",
-	];
+	const GLOBAL_VALUED: &[&str] = &["-p", "--project-name", "--profile", "--env-file", "--ansi", "--progress", "--parallel"];
+	// Options that point compose at another stack than the repository's.
+	const OTHER_STACK: &[&str] = &["-f", "--file", "--project-directory"];
 	// `up`'s options that take a value, so it is never read as a service.
 	const UP_VALUED: &[&str] = &["-t", "--timeout", "--scale", "--pull", "--wait-timeout", "--exit-code-from", "--attach", "--no-attach"];
+	// `run`'s and `create`'s options that take a value: what follows the
+	// service is the container's own command, never compose's.
+	const RUN_VALUED: &[&str] = &[
+		"-e",
+		"--env",
+		"--env-from-file",
+		"-v",
+		"--volume",
+		"-w",
+		"--workdir",
+		"-u",
+		"--user",
+		"-p",
+		"--publish",
+		"-l",
+		"--label",
+		"--name",
+		"--entrypoint",
+		"--cap-add",
+		"--cap-drop",
+		"--pull",
+		"--scale",
+	];
 	if role != "home" {
 		return None;
 	}
@@ -395,41 +409,62 @@ pub(crate) fn home_refusal(role: &str, args: &[String]) -> Option<String> {
 		if !arg.starts_with('-') {
 			break arg;
 		}
-		if arg == "-f" || arg == "--file" || arg.starts_with("--file=") {
-			return Some(format!(
-				"a compose file of one's own (`{arg}`) on the home role could start an image the release does not name; {deploy}"
-			));
+		if OTHER_STACK
+			.iter()
+			.any(|option| arg == *option || arg.strip_prefix(option).is_some_and(|value| value.starts_with('=')))
+		{
+			return Some(format!("another stack (`{arg}`) on the home role could start an image the release does not name; {deploy}"));
 		}
 		if GLOBAL_VALUED.contains(&arg) {
 			rest.next();
 		}
 	};
-	let rest: Vec<&str> = rest.collect();
+	let all: Vec<&str> = rest.collect();
+	// Compose's own options for the command: for `exec` none count, and for
+	// `run` and `create` only those before the service, past which is the
+	// container's own command.
+	let options: Vec<&str> = match command {
+		"exec" => Vec::new(),
+		"run" | "create" => {
+			let mut options = Vec::new();
+			let mut args = all.iter();
+			while let Some(arg) = args.next() {
+				if !arg.starts_with('-') {
+					break;
+				}
+				options.push(*arg);
+				if RUN_VALUED.contains(arg) {
+					args.next();
+				}
+			}
+			options
+		}
+		_ => all.clone(),
+	};
 	// A boolean flag, as compose reads it: `--x`, or `--x=<anything but false>`.
 	let set = |flag: &str| {
-		rest
+		options
 			.iter()
 			.any(|arg| *arg == flag || arg.strip_prefix(flag).and_then(|value| value.strip_prefix('=')).is_some_and(|value| value != "false"))
 	};
 	if matches!(command, "pull" | "build" | "watch") {
 		return Some(format!("`compose {command}` on the home role would move images apart from the release; {deploy}"));
 	}
-	// What follows `exec`'s service is the container's own command.
-	if command != "exec" && set("--build") {
+	if set("--build") {
 		return Some(format!("`compose {command} --build` on the home role builds an image the release does not name; {deploy}"));
 	}
 	if command != "up" {
 		return None;
 	}
 	// `-w` is `up`'s short `--watch`, alone or in a cluster (`-dw`).
-	let short_watch = rest
+	let short_watch = all
 		.iter()
 		.any(|arg| arg.len() > 1 && arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('w'));
 	if set("--watch") || short_watch {
 		return Some(format!("`compose up --watch` on the home role rebuilds images the release does not name; {deploy}"));
 	}
 	let mut services = Vec::new();
-	let mut args = rest.iter();
+	let mut args = all.iter();
 	while let Some(arg) = args.next() {
 		if UP_VALUED.contains(arg) {
 			args.next();
@@ -548,6 +583,9 @@ mod tests {
 			"up -dw",
 			"-f other.yml up -d",
 			"--file=other.yml ps",
+			"--project-directory /elsewhere up -d",
+			"--project-directory=/elsewhere ps",
+			"run -e X=1 --build render true",
 		] {
 			let refused = home_refusal("home", &args(line));
 			assert!(
@@ -578,6 +616,8 @@ mod tests {
 			"exec render node cli.js --build",
 			"run --rm -w /opt render true",
 			"up -d --no-build",
+			"run --rm render node cli.js --build",
+			"run --rm -w /opt render tool --build=x",
 		] {
 			assert_eq!(home_refusal("home", &args(line)), None, "`{line}` was refused");
 		}

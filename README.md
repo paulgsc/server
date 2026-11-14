@@ -385,12 +385,14 @@ and no other step (RELEASE R4 #793; AS16 #563, AS18 #564):
 make home-deploy
 ```
 
-It is the only way (RELEASE R6, #795): `make compose` on the home role refuses
-`pull`, `build`, `up --build` and an `up` that names services, each of which
-would move one image apart from its release, and `scripts/check_home_guard.py`
-(Lint's `Home guard`) refuses a `build:` or a `:latest` in the home include set,
-a release entry without a digest, an image a NixOS module names itself, and a
-doc that pulls or builds by hand.
+It is the only way (RELEASE R6, #795; docs/release.md, RL12): `make compose` on
+the home role refuses `pull`, `build`, `watch`, a `--build`, `up --watch`/`-w`,
+an `up` that names services, and another stack (`-f`, `--project-directory`),
+each of which would move one image apart from its release. `scripts/check_home_guard.py`
+(Lint's `Home guard`) refuses a home service whose image is not the release's,
+a `build:` or a `:latest` in the home stack, a release entry without a digest,
+an image a NixOS module names itself, and a doc that pulls, builds or watches by
+hand.
 
 It runs `envctl deploy` (`apps/envctl/src/deploy.rs`, built by make like the
 rest of envctl; home has no python, and nothing home runs needs it):

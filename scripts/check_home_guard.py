@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -61,11 +62,14 @@ NIX_LITERAL = re.compile(r"""^(?:(?:lib\.)?mk(?:Default|Force|Override\s+\d+)\s+
 # Pulling, building, watching or rebuilding by hand, through make or compose,
 # whatever options come before the command. A word ends at a space, a quote
 # or the line: `pull-worker` and `--build-arg` are other words.
-END = r"""(?=["'\s`]|$)"""
+END = r"""(?=["'\s`.,;:)]|$)"""
 OPTION = r"(?:-{1,2}[\w-]+(?:[= ][^\s\"'`-]\S*)?\s+)*"
+# `--build`/`--watch`, `=` and a value or not, and up's `-w` alone or in a
+# cluster (`-dw`).
+BUILDS = rf"""\s(?:--(?:build|watch)(?:=(?!false\b)\S+)?|-[a-vx-z]*w[a-z]*){END}"""
 BY_HAND = re.compile(
-    rf"""ARGS=["']?{OPTION}(?:pull|build|watch){END}|ARGS=["'][^"']*\s--(?:build|watch){END}"""
-    rf"""|docker[ -]compose\s+{OPTION}(?:pull|build|watch){END}|docker[ -]compose\b[^\n`]*\s--(?:build|watch){END}"""
+    rf"""ARGS=["']?{OPTION}(?:pull|build|watch){END}|ARGS=["'][^"']*?up\b[^"']*{BUILDS}"""
+    rf"""|docker[ -]compose\s+{OPTION}(?:pull|build|watch){END}|docker[ -]compose\b[^\n`]*?\sup\b[^\n`]*{BUILDS}"""
 )
 
 
@@ -85,13 +89,19 @@ class Unreadable(Exception):
 
 def compose_config(root: Path) -> dict:
     """The home stack as compose reads it: docker-compose.yml and all it includes."""
-    done = subprocess.run(
-        ["docker", "compose", "--env-file", "/dev/null", "config", "--no-interpolate", "--format", "json"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # The repository's own files only: a shell's COMPOSE_FILE would read another stack.
+    env = {name: value for name, value in os.environ.items() if name != "COMPOSE_FILE"}
+    try:
+        done = subprocess.run(
+            ["docker", "compose", "--env-file", "/dev/null", "config", "--no-interpolate", "--format", "json"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except OSError as err:
+        raise Unreadable(f"docker compose could not run: {err}") from err
     if done.returncode != 0:
         raise Unreadable(f"docker compose config failed: {done.stderr.strip() or done.returncode}")
     return json.loads(done.stdout)
@@ -275,6 +285,10 @@ class Tests(unittest.TestCase):
             "docker compose -f x.yml pull",
             "docker compose --profile t build",
             "docker-compose up -d --build file-host",
+            'make compose ARGS="up -w"',
+            'make compose ARGS="up -dw"',
+            'make compose ARGS="up --build=true"',
+            "docker compose pull.",
         ):
             self.assertEqual(len(docs_refusals("README.md", line)), 1, line)
         for line in (
@@ -286,6 +300,9 @@ class Tests(unittest.TestCase):
             "make compose ARGS=pull-thing",
             "docker compose ps",
             "docker compose run --build-arg X=1 tool",
+            "docker compose exec render node cli.js --build",
+            'make compose ARGS="up --build=false -d"',
+            'make compose ARGS="run --rm -w /opt render true"',
         ):
             self.assertEqual(docs_refusals("README.md", line), [], line)
 
