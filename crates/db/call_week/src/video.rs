@@ -120,13 +120,25 @@ pub const MOST_PARTS: u32 = 99;
 /// A part is named by its week's first day, as a week was before parts: part
 /// 1 is the bare day (`2026-11-06`), so a week of one video keeps the key it
 /// always had, and each later part adds `-p<k>` (`2026-11-06-p2`). `-p1` and
-/// anything past [`MOST_PARTS`] name none. The day is checked by
-/// `call_week`'s own table, never here.
+/// anything past [`MOST_PARTS`] name none, as does a key whose week is not
+/// `YYYY-MM-DD` in shape. Whether the day is held is `call_week`'s to say.
 #[must_use]
 pub fn split_key(key: &str) -> Option<(&str, u32)> {
-	let Some((week, part)) = key.split_once("-p") else {
-		return Some((key, 1));
+	// The day's shape here too, so a key is one plain path segment before
+	// any path is joined from it (`feeds::videos`' "Paths").
+	let day = |week: &str| {
+		week.len() == 10
+			&& week
+				.bytes()
+				.enumerate()
+				.all(|(at, byte)| if at == 4 || at == 7 { byte == b'-' } else { byte.is_ascii_digit() })
 	};
+	let Some((week, part)) = key.split_once("-p") else {
+		return day(key).then_some((key, 1));
+	};
+	if !day(week) {
+		return None;
+	}
 	let digits = !part.is_empty() && part.len() <= 2 && part.bytes().all(|byte| byte.is_ascii_digit()) && !part.starts_with('0');
 	let part: u32 = if digits { part.parse().ok()? } else { return None };
 	(2..=MOST_PARTS).contains(&part).then_some((week, part))
@@ -433,7 +445,19 @@ mod tests {
 		assert_eq!(split_key("2026-11-06"), Some(("2026-11-06", 1)));
 		assert_eq!(split_key("2026-11-06-p2"), Some(("2026-11-06", 2)));
 		assert_eq!(split_key("2026-11-06-p99"), Some(("2026-11-06", 99)));
-		for key in ["2026-11-06-p1", "2026-11-06-p0", "2026-11-06-p02", "2026-11-06-p100", "2026-11-06-p", "2026-11-06-px"] {
+		for key in [
+			"2026-11-06-p1",
+			"2026-11-06-p0",
+			"2026-11-06-p02",
+			"2026-11-06-p100",
+			"2026-11-06-p",
+			"2026-11-06-px",
+			"../../x",
+			"../../x-p2",
+			"2026-11-6",
+			"2026/11/06",
+			"",
+		] {
 			assert_eq!(split_key(key), None, "{key}");
 		}
 		assert_eq!(part_key("2026-11-06", 1), "2026-11-06");
