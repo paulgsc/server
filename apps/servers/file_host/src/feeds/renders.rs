@@ -315,6 +315,13 @@ impl Shelf {
 		}
 	}
 
+	/// Whether its finished file is a video, whose size a done row carries
+	/// (`bytes`): every shelf's but a clip's walk, whose is `walk.json`.
+	#[must_use]
+	pub const fn is_video(self) -> bool {
+		!matches!(self, Self::ClipWalk)
+	}
+
 	/// The file a finished episode is known by.
 	#[must_use]
 	pub const fn video(self) -> &'static str {
@@ -335,8 +342,8 @@ pub struct FeedSeen {
 	pub held: Vec<(String, i64)>,
 	/// Of those, each with its video, and when it was made.
 	pub videos: BTreeMap<String, i64>,
-	/// Of those, each video's size in bytes, a shelf's whose finished file is
-	/// a video (not a clip's walk).
+	/// Of those, the size in bytes of each finished file that is a video
+	/// ([`Shelf::is_video`]) and a plain file, as the downloads serve one.
 	pub sizes: BTreeMap<String, u64>,
 	/// Of those with none, each whose last attempt failed: when, and how.
 	pub failed: BTreeMap<String, (i64, Failure)>,
@@ -920,7 +927,7 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 		seen.held.push((episode.key.clone(), taken));
 		if let Some((made, size)) = made_and_size(&renders.join(&episode.key).join(feed.video())).await {
 			seen.videos.insert(episode.key.clone(), made);
-			if feed != Shelf::ClipWalk {
+			if let Some(size) = size.filter(|_| feed.is_video()) {
 				seen.sizes.insert(episode.key.clone(), size);
 			}
 			continue;
@@ -951,15 +958,24 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 
 /// When `path` was last written, Unix seconds, if it is there.
 async fn modified(path: &Path) -> Option<i64> {
-	made_and_size(path).await.map(|(at, _)| at)
+	let at = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
+	let since = at.duration_since(std::time::UNIX_EPOCH).ok()?;
+	i64::try_from(since.as_secs()).ok()
 }
 
-/// When `path` was last written, Unix seconds, and its length in bytes, from
-/// one `stat`, if it is there.
-async fn made_and_size(path: &Path) -> Option<(i64, u64)> {
-	let meta = tokio::fs::metadata(path).await.ok()?;
-	let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
-	Some((i64::try_from(since.as_secs()).ok()?, meta.len()))
+/// When a finished file was last written, Unix seconds, if it is there, and
+/// its length in bytes if it is a plain file, as the downloads serve only one
+/// (`handlers::cards_essays`, `handlers::previews`, `feeds::videos`): one
+/// `stat` for the file the worker moves into place, a second only for
+/// anything else, whose date is read as before and whose size is none.
+async fn made_and_size(path: &Path) -> Option<(i64, Option<u64>)> {
+	if let Ok(meta) = tokio::fs::symlink_metadata(path).await {
+		if meta.file_type().is_file() {
+			let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+			return Some((i64::try_from(since.as_secs()).ok()?, Some(meta.len())));
+		}
+	}
+	modified(path).await.map(|at| (at, None))
 }
 
 /// The end of a failed attempt's log.

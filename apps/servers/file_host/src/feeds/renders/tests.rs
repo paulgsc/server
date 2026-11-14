@@ -554,7 +554,7 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 		feeds: vec![],
 		clip_walks: None,
 		previews: None,
-		cards_essays: Some((renders, status)),
+		cards_essays: Some((renders.clone(), status)),
 		lane,
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
@@ -564,11 +564,21 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	// fetch counts against.
 	assert_eq!(read.done[0].bytes, Some(5));
 	assert_eq!(serde_json::to_value(&read.done[0]).unwrap()["bytes"], serde_json::json!(5), "the phone reads it as `bytes`");
-	assert_eq!(read.waiting[0].bytes, None, "a waiting essay has no video yet");
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["nixos-upgrade-2026-11-07"]);
 	assert_eq!(shelf(&read.waiting), [(String::from("cards-essay"), String::from("rust-scratchpad-2026-11-08"))]);
+	assert_eq!(read.waiting[0].bytes, None, "a waiting essay has no video yet");
 	assert_eq!(read.waiting[0].template, None, "an essay names no template");
 	assert_eq!(read.coming, [], "an essay is expected on no day");
+	// A link where the video goes is not one the download serves: done, as
+	// before, with no size.
+	let video = renders.join("zfs-2026-11-02").join(crate::cards_essays::VIDEO);
+	let elsewhere = dir.path().join("elsewhere.mp4");
+	std::fs::write(&elsewhere, b"not the video").unwrap();
+	std::fs::remove_file(&video).unwrap();
+	std::os::unix::fs::symlink(&elsewhere, &video).unwrap();
+	let read = super::read(&db, &folders, "", NOW).await.unwrap();
+	assert_eq!(shelf(&read.done), [(String::from("cards-essay"), String::from("zfs-2026-11-02"))]);
+	assert_eq!(read.done[0].bytes, None, "a link's size is not the video's");
 }
 
 #[tokio::test]
