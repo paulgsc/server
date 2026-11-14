@@ -86,6 +86,19 @@ const IMAGES: &[ImageSpec] = &[
 		manifest: None,
 		inputs: &["infra/kokoro"],
 	},
+	// Grafana's dashboard builder (infra/compose/monitoring.yml): jsonnet and
+	// jb on a base pinned by digest, plus scripts/build.sh. Published so home
+	// runs it by digest from its release (RELEASE R6, #795, C349), not a local
+	// build; the dashboards themselves are mounted, never baked.
+	ImageSpec {
+		name: "dashboard-builder",
+		dockerfile: "./infra/docker/Dockerfile.grafana.builder",
+		repo_suffix: "dashboard-builder",
+		needs_sqlx: false,
+		needs_migrations: false,
+		manifest: None,
+		inputs: &["scripts/build.sh"],
+	},
 ];
 
 /* ------------------------- METADATA TYPES ------------------------- */
@@ -423,5 +436,25 @@ mod tests {
 			.inputs
 			.iter()
 			.any(|input| is_under_dir(&script, &normalize_path(Path::new(input), workspace_root))));
+	}
+
+	/// The dashboard builder (RELEASE R6, #795) rebuilds when its script
+	/// changes, a single file named as its input, and never for a crate.
+	#[test]
+	fn the_dashboard_builder_rebuilds_on_its_script_alone() {
+		let workspace_root = Path::new("/tmp/detect-workspace");
+		let builder = IMAGES.iter().find(|image| image.name == "dashboard-builder").unwrap();
+		let server_file = normalize_path(Path::new("apps/servers/file_host/src/main.rs"), workspace_root);
+		assert!(!is_image_crate_file(builder, &server_file, workspace_root));
+		let inputs = |file: &str| {
+			let file = normalize_path(Path::new(file), workspace_root);
+			builder
+				.inputs
+				.iter()
+				.any(|input| is_under_dir(&file, &normalize_path(Path::new(input), workspace_root)))
+		};
+		assert!(inputs("scripts/build.sh"));
+		assert!(!inputs("scripts/build.sh.bak"), "a sibling with the name as a prefix is no input");
+		assert!(!inputs("infra/grafana/dashboards/dashboard.jsonnet"), "the dashboards are mounted, never baked");
 	}
 }
