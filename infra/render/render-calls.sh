@@ -339,10 +339,16 @@ week_made() {
 }
 
 # The week file the call of `from` is recorded from: the revision this
-# worker took in (`promote`), or the week as file_host first gave it.
+# worker took in (`promote`), or the week as file_host first gave it. A week
+# that took one in and has lost its copy names none: falling back to the
+# first would record its parts from two revisions. What the worker took in
+# of a week stays, a few bytes, as long as anything of the week might.
 week_file() {
   if [ -e "$RENDERS/.taken/$1.json" ]; then
     echo "$RENDERS/.taken/$1.json"
+  elif [ -e "$RENDERS/$1.served" ]; then
+    echo "the week of $1 took in a revision ($RENDERS/$1.served) whose copy is gone; it is not recorded from another" >&2
+    return 1
   else
     echo "$INPUT/$1.json"
   fi
@@ -369,7 +375,7 @@ promote() {
     if [ ! -e "$STATUS/$from.frozen.log" ]; then
       mkdir -p "$STATUS" &&
         echo "a newer revision of the week of $from was given after a part of it was made; the week stays at the revision its parts were made from" |
-        tee "$STATUS/$from.frozen.log"
+        tee -a "$STATUS/$from.frozen.log"
     fi
     return 0
   fi
@@ -396,7 +402,9 @@ call_parts() {
     parts_known "$from"
     return 0
   fi
-  if ! said=$(cd "$RENDER_DIR" && "$TSX" src/cli.ts call-parts "$(week_file "$from")"); then
+  local file
+  file=$(week_file "$from") || return 1
+  if ! said=$(cd "$RENDER_DIR" && "$TSX" src/cli.ts call-parts "$file"); then
     printf '%s\n' "$said" >&2
     echo "render call-parts refused the week of $from" >&2
     return 1
@@ -441,8 +449,9 @@ record() {
     call)
       # How many parts first, then this one. A week of one part is
       # recorded as it always was, with no --part.
-      local from part of
+      local from part of file
       from=$(week_of "$key") part=$(part_of "$key")
+      file=$(week_file "$from") || return 1
       of=$(call_parts "$from") || return 2
       if [ "$part" -gt "$of" ]; then
         echo "the week of $from is $of part(s): it has no part $part"
@@ -450,10 +459,10 @@ record() {
       fi
       if [ "$of" -eq 1 ]; then
         (cd "$APP_DIR" && "$TSX" tests/record/call.ts "${COMMON[@]}" \
-          --week-file "$(week_file "$from")" --out "$WORK")
+          --week-file "$file" --out "$WORK")
       else
         (cd "$APP_DIR" && "$TSX" tests/record/call.ts "${COMMON[@]}" \
-          --week-file "$(week_file "$from")" --part "$part" --out "$WORK")
+          --week-file "$file" --part "$part" --out "$WORK")
       fi ;;
     playoff-delta)
       (cd "$APP_DIR" && "$TSX" tests/record/playoff-delta.ts "${COMMON[@]}" \
@@ -1109,12 +1118,15 @@ render_one() {
   # render (`promote`); one that can't be is tried again next pass.
   if [ "$job" = call ] && ! promote "$(week_of "$key")"; then
     echo "the newer revision of the week of $(week_of "$key") could not be taken in; it is tried again next pass" >&2
+    end_job
     return 0
   fi
   # A part the week no longer has, or may not: a revision taken in this pass
   # drops the count its later parts were listed from, and a part past 1 is
   # listed only from a count, so none is named a job until one is asked.
   if [ "$job" = call ] && [ "$(part_of "$key")" -gt "$(parts_known "$(week_of "$key")")" ]; then
+    # A job a restart left of it is over too.
+    end_job
     return 0
   fi
   failed_recently "$job" "$key" && return 0
@@ -1144,20 +1156,9 @@ render_one() {
 
 # One pass of `job`: each of its episodes with no video, oldest first.
 run_job() {
-  local job=$1 key taken
+  local job=$1 key
   use_job "$job"
   mkdir -p "$STATUS" && put last-pass "$(date +%s)"
-  # A week of the call no longer given takes the revision it took in, its
-  # record of it and its frozen note with it.
-  if [ "$job" = call ]; then
-    for taken in "$RENDERS/.taken"/*.json "$STATUS"/*.frozen.log; do
-      [ -e "$taken" ] || continue
-      key=${taken##*/}
-      key=${key%%.*}
-      [ -e "$INPUT/$key.json" ] ||
-        rm -f "$RENDERS/.taken/$key.json" "$RENDERS/.taken/.$key.json" "$RENDERS/$key.served" "$STATUS/$key.frozen.log"
-    done
-  fi
   for key in $(episodes "$job"); do
     render_one "$job" "$key"
   done

@@ -1226,10 +1226,18 @@ check "a revision of one part is recorded as one, from fresh work" \
   test -e "$ROOT/renders/call/2026-11-06/call.mp4" -a "$(grep -c "reused step said" "$SCRATCH/pass.out")" -eq 0
 check "and the parts it no longer has are never tried" \
   test "$(runs_of 2026-11-06-p2)" -eq 0 -a "$(runs_of 2026-11-06-p3)" -eq 0 -a ! -e "$ROOT/renders/call-worker/2026-11-06-p3.failed.log"
-rm "$ROOT/weeks/2026-11-06.json"
+
+# A week that took a revision in and lost its copy is never recorded from
+# another file: its next part fails, saying so.
+fresh series-copy-lost 2026-11-06
+mkdir -p "$ROOT/renders/call/2026-11-06"
+echo 2 > "$ROOT/renders/call/2026-11-06.parts"
+echo made > "$ROOT/renders/call/2026-11-06/call.mp4"
+echo 0000 > "$ROOT/renders/call/2026-11-06.served"
 pass
-check "a week no longer given loses what was taken in of it" \
-  test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a ! -e "$ROOT/renders/call/2026-11-06.served"
+check "a week whose revision taken in is lost records nothing from another file" \
+  test "$(runs_of 2026-11-06-p2)" -eq 0 -a ! -e "$ROOT/renders/call/2026-11-06-p2/call.mp4"
+check "and says so" grep -q "whose copy is gone" "$ROOT/renders/call-worker/2026-11-06-p2.failed.log"
 
 # A revision whose parts can't be asked: its first part fails, and the later
 # parts listed from the old count are never named a job.
@@ -1249,7 +1257,10 @@ check "and names no job for a part of the old count" \
 for made in video let-go; do
   fresh "series-frozen-$made" 2026-11-06
   mkdir -p "$ROOT/renders/call/2026-11-06"
-  echo 2 > "$ROOT/renders/call/2026-11-06.parts"
+  echo 3 > "$ROOT/renders/call/2026-11-06.parts"
+  # Part 3 fails, so a second pass takes its job, and looks at the
+  # revision, again.
+  touch "$FAKE/fail-2026-11-06-p3"
   if [ "$made" = video ]; then
     echo made > "$ROOT/renders/call/2026-11-06/call.mp4"
   else
@@ -1259,10 +1270,11 @@ for made in video let-go; do
   echo 3 > "$FAKE/parts-2026-11-06"
   pass
   check "a newer revision of a week with a part $made is never taken in" \
-    test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 2
+    test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3
   pass
-  check "and that is said, once" \
-    test "$(grep -c "stays at the revision its parts were made from" "$ROOT/renders/call-worker/2026-11-06.frozen.log")" -eq 1 \
+  check "and that is said, once, though its waiting part is tried again" \
+    test "$(runs_of 2026-11-06-p3)" -eq 2 \
+    -a "$(grep -c "stays at the revision its parts were made from" "$ROOT/renders/call-worker/2026-11-06.frozen.log")" -eq 1 \
     -a "$(grep -c "stays at the revision its parts were made from" "$SCRATCH/pass.out")" -eq 0
   check "and its other part recorded from the file it was" \
     test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a -n "$(grep -x -- "$ROOT/weeks/2026-11-06.json" "$FAKE/args-call")"
