@@ -437,7 +437,7 @@ fresh() {
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
-    "$FAKE"/parts-*
+    "$FAKE"/parts-* "$FAKE/parts-refuse"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1231,6 +1231,18 @@ pass
 check "a week no longer given loses what was taken in of it" \
   test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a ! -e "$ROOT/renders/call/2026-11-06.served"
 
+# A revision whose parts can't be asked: its first part fails, and the later
+# parts listed from the old count are never named a job.
+fresh series-uncounted 2026-11-06
+mkdir -p "$ROOT/renders/call"
+echo 3 > "$ROOT/renders/call/2026-11-06.parts"
+echo '{"template":9}' > "$ROOT/weeks/2026-11-06.next"
+touch "$FAKE/parts-refuse"
+pass
+check "a revision the parts can't be asked of fails its first part" test -e "$ROOT/renders/call-worker/2026-11-06.failed.log"
+check "and names no job for a part of the old count" \
+  test ! -e "$ROOT/renders/call-worker/2026-11-06-p2.failed.log" -a ! -e "$ROOT/renders/call-worker/2026-11-06-p3.failed.log"
+
 # A newer revision of a week a part of which is made, or was and was let go:
 # never taken in, said once, and the rest of the series recorded from the
 # file its made parts were.
@@ -1248,7 +1260,10 @@ for made in video let-go; do
   pass
   check "a newer revision of a week with a part $made is never taken in" \
     test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 2
-  check "and that is said" grep -q "stays at the revision its parts were made from" "$ROOT/renders/call-worker/2026-11-06.frozen.log"
+  pass
+  check "and that is said, once" \
+    test "$(grep -c "stays at the revision its parts were made from" "$ROOT/renders/call-worker/2026-11-06.frozen.log")" -eq 1 \
+    -a "$(grep -c "stays at the revision its parts were made from" "$SCRATCH/pass.out")" -eq 0
   check "and its other part recorded from the file it was" \
     test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a -n "$(grep -x -- "$ROOT/weeks/2026-11-06.json" "$FAKE/args-call")"
 done

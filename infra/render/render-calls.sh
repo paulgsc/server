@@ -1111,10 +1111,10 @@ render_one() {
     echo "the newer revision of the week of $(week_of "$key") could not be taken in; it is tried again next pass" >&2
     return 0
   fi
-  # A part the week no longer has, once a revision of fewer parts was
-  # counted this pass: no job is named for it.
-  if [ "$job" = call ] && [ -r "$RENDERS/$(week_of "$key").parts" ] &&
-    [ "$(part_of "$key")" -gt "$(parts_known "$(week_of "$key")")" ]; then
+  # A part the week no longer has, or may not: a revision taken in this pass
+  # drops the count its later parts were listed from, and a part past 1 is
+  # listed only from a count, so none is named a job until one is asked.
+  if [ "$job" = call ] && [ "$(part_of "$key")" -gt "$(parts_known "$(week_of "$key")")" ]; then
     return 0
   fi
   failed_recently "$job" "$key" && return 0
@@ -1147,13 +1147,15 @@ run_job() {
   local job=$1 key taken
   use_job "$job"
   mkdir -p "$STATUS" && put last-pass "$(date +%s)"
-  # A week of the call no longer given takes the revision it took in, and
-  # its record of it, with it.
+  # A week of the call no longer given takes the revision it took in, its
+  # record of it and its frozen note with it.
   if [ "$job" = call ]; then
-    for taken in "$RENDERS/.taken"/*.json; do
+    for taken in "$RENDERS/.taken"/*.json "$STATUS"/*.frozen.log; do
       [ -e "$taken" ] || continue
-      key=$(basename "$taken" .json)
-      [ -e "$INPUT/$key.json" ] || rm -f "$taken" "$RENDERS/$key.served"
+      key=${taken##*/}
+      key=${key%%.*}
+      [ -e "$INPUT/$key.json" ] ||
+        rm -f "$RENDERS/.taken/$key.json" "$RENDERS/.taken/.$key.json" "$RENDERS/$key.served" "$STATUS/$key.frozen.log"
     done
   fi
   for key in $(episodes "$job"); do
