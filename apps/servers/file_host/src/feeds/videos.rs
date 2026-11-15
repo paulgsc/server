@@ -16,6 +16,10 @@
 //!   paulgsc/some-ui#2763).
 //! - [`let_go`]: one step of letting an episode go, with its receipt.
 //!
+//! A cards essay is listed, brought and described like any episode, with its
+//! cut list's title; it is never linked or let go (`Feed::lets_go`), so
+//! [`record_link`] and [`let_go`] answer it as no episode (EXPLAIN6, #878).
+//!
 //! **What a step deletes, and in what order.** The video's step removes the
 //! episode from the feed's input (`Feed::input`), so the render worker is
 //! never given it again, then its video. A part of a call's week that is a
@@ -72,6 +76,21 @@ pub struct EpisodeVideo {
 	pub link: Option<video::Link>,
 	/// Each step let go, video first.
 	pub receipts: Vec<Receipt>,
+	/// Its title, where the feed keeps one: a cards essay's cut list's
+	/// (EXPLAIN6). `None` for every other feed's episode.
+	pub title: Option<String>,
+}
+
+/// The most characters of a title the phone is given: a cut list's title
+/// is a line, and one longer than this is cut, never refused.
+pub const TITLE_CHARS: usize = 200;
+
+/// A cut list's title as the phone is given it: one line (each run of
+/// whitespace, newlines included, one space), at most [`TITLE_CHARS`]
+/// characters, and `None` when nothing is left.
+fn title_line(title: &str) -> Option<String> {
+	let line: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(TITLE_CHARS).collect();
+	(!line.is_empty()).then_some(line)
 }
 
 /// The episode `key` names, as (its week, its part, of how many), if it is
@@ -85,7 +104,7 @@ async fn part_of(feed: Feed, renders: &Path, key: &str) -> Option<(String, u32, 
 			let of = crate::call_weeks::render::parts(renders, week).await;
 			(part <= of).then(|| (week.to_owned(), part, of))
 		}
-		Feed::PlayoffDelta | Feed::RustEssay => Some((key.to_owned(), 1, 1)),
+		Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => Some((key.to_owned(), 1, 1)),
 	}
 }
 
@@ -95,19 +114,27 @@ async fn part_of(feed: Feed, renders: &Path, key: &str) -> Option<(String, u32, 
 /// # Errors
 /// A storage failure.
 pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) -> Result<Vec<EpisodeVideo>, sqlx::Error> {
-	let (held, links, receipts) = {
+	let (held, links, receipts, titles) = {
 		let mut tx = db.begin().await?;
 		let held = feed.held(&mut tx, subject).await?;
 		let links = feed.links(&mut tx, subject).await?;
 		let receipts = feed.receipts(&mut tx, subject).await?;
+		let titles: std::collections::BTreeMap<String, String> = match feed {
+			Feed::CardsEssay => cards_essay_repo::titles(&mut tx)
+				.await?
+				.into_iter()
+				.filter_map(|(key, title)| Some((key, title_line(&title?)?)))
+				.collect(),
+			Feed::Call | Feed::PlayoffDelta | Feed::RustEssay => std::collections::BTreeMap::new(),
+		};
 		tx.commit().await?;
-		(held, links, receipts)
+		(held, links, receipts, titles)
 	};
 	let mut listed = Vec::with_capacity(held.len());
 	for week in held {
 		let keys = match feed {
 			Feed::Call => crate::call_weeks::render::part_keys(renders, &week).await,
-			Feed::PlayoffDelta | Feed::RustEssay => vec![week.clone()],
+			Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => vec![week.clone()],
 		};
 		let of = u32::try_from(keys.len()).unwrap_or(u32::MAX);
 		for (part, key) in (1..).zip(keys) {
@@ -124,6 +151,7 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 			};
 			let mine: Vec<Receipt> = receipts.iter().filter(|receipt| receipt.from == key).cloned().collect();
 			listed.push(EpisodeVideo {
+				title: titles.get(&key).cloned(),
 				link: links.get(&key).cloned(),
 				week: week.clone(),
 				part,
@@ -256,6 +284,9 @@ pub enum LinkRecorded {
 /// # Errors
 /// A storage failure.
 pub async fn record_link(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path, key: &str, pasted: &str, now: &str) -> Result<LinkRecorded, sqlx::Error> {
+	if !feed.lets_go() {
+		return Ok(LinkRecorded::NoEpisode);
+	}
 	let Some(id) = video::youtube_id(pasted) else {
 		return Ok(LinkRecorded::NotAVideo);
 	};
@@ -310,6 +341,9 @@ pub struct Folders<'a> {
 /// A storage failure, or a file the drive would not remove. The receipt is
 /// kept then, and asking for the step again finishes it.
 pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders<'_>, key: &str, step: Step, now: &str) -> Result<LetGo, LetGoError> {
+	if !feed.lets_go() {
+		return Ok(LetGo::NoEpisode);
+	}
 	// How many parts, read once and strictly: a parts file the drive won't
 	// give is never taken for a week of one video
 	// (`call_weeks::render::parts_read`), and the count the receipt records
@@ -325,7 +359,7 @@ pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders
 			}
 			(week.to_owned(), of)
 		}
-		Feed::PlayoffDelta | Feed::RustEssay => (key.to_owned(), 1),
+		Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => (key.to_owned(), 1),
 	};
 	let gone = Gone { week: &week, of };
 	let _folders = super::FOLDERS.lock().await;
@@ -385,7 +419,7 @@ struct Gone<'a> {
 async fn whole(feed: Feed, conn: &mut sqlx::SqliteConnection, week: &str) -> Result<bool, sqlx::Error> {
 	Ok(match feed {
 		Feed::Call => call_week_repo::video::weeks_let_go(conn).await?.iter().any(|gone| gone == week),
-		Feed::PlayoffDelta | Feed::RustEssay => true,
+		Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => true,
 	})
 }
 
@@ -408,6 +442,8 @@ async fn finish(feed: Feed, folders: Folders<'_>, key: &str, step: Step, gone: G
 				}
 				Feed::Call => mark_let_go(folders.input, key).await?,
 				Feed::PlayoffDelta | Feed::RustEssay => remove_dir(&input).await?,
+				// Never let go (`let_go` refuses it first); its input is a file.
+				Feed::CardsEssay => remove_file(&input).await?,
 			}
 			remove_file(&folder.join(feed.video())).await
 		}
@@ -793,6 +829,91 @@ mod tests {
 		let LetGo::Gone(rest) = go(Step::Rest).await.unwrap() else { panic!("the rest goes") };
 		assert_eq!((rest.size, folder.exists()), (2, false));
 		assert_eq!(list(&pool, Feed::PlayoffDelta, "", &renders).await.unwrap()[0].receipts, [video, rest]);
+	}
+
+	#[test]
+	fn a_title_is_one_line_and_never_empty() {
+		assert_eq!(title_line("  Snapshots,\n\tnot   backups "), Some(String::from("Snapshots, not backups")));
+		assert_eq!(title_line(" \n "), None);
+		assert_eq!(title_line(""), None);
+		assert_eq!(title_line(&"é".repeat(TITLE_CHARS + 1)).map(|line| line.chars().count()), Some(TITLE_CHARS));
+	}
+
+	/// A cards essay is an episode like any (EXPLAIN6, #878): listed newest
+	/// day first with its cut list's title, done once its video is made,
+	/// brought and described; never linked or let go, so its files stay.
+	#[tokio::test]
+	async fn a_cards_essay_is_listed_with_its_title_and_brought_but_never_let_go() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (renders, essays) = (dir.path().join("cards-essay"), dir.path().join("cards-essays"));
+		let long = "x".repeat(TITLE_CHARS + 5);
+		let titled = String::from(r#"{"title":""#) + &long + r#""}"#;
+		{
+			let mut conn = pool.acquire().await.unwrap();
+			for (key, body) in [
+				("zfs-2026-11-02", br#"{"title":"Snapshots, not backups"}"#.as_slice()),
+				("nixos-upgrade-2026-11-14", titled.as_bytes()),
+				("ext4-2026-11-03", br#"{"schema":"some-ui.cut-list/2"}"#.as_slice()),
+			] {
+				let essay = cards_essay_repo::Essay {
+					key,
+					day: &key[key.len() - 10..],
+					body,
+					taken_at: NOW,
+				};
+				cards_essay_repo::keep(&mut conn, &essay).await.unwrap();
+			}
+		}
+		let folder = renders.join("zfs-2026-11-02");
+		std::fs::create_dir_all(&folder).unwrap();
+		std::fs::write(folder.join(Feed::CardsEssay.video()), [0_u8; 10]).unwrap();
+		std::fs::write(folder.join(DESCRIPTION), b"0:00 Snapshots").unwrap();
+		std::fs::write(folder.join("cut-list.json"), [0_u8; 2]).unwrap();
+		std::fs::create_dir_all(&essays).unwrap();
+		std::fs::write(essays.join("zfs-2026-11-02.json"), b"{}").unwrap();
+
+		let listed = list(&pool, Feed::CardsEssay, "anyone", &renders).await.unwrap();
+		let seen: Vec<_> = listed
+			.iter()
+			.map(|e| (e.key.as_str(), e.video_bytes, e.rest_bytes, e.title.as_deref().map(str::len)))
+			.collect();
+		assert_eq!(
+			seen,
+			[
+				("nixos-upgrade-2026-11-14", None, None, Some(TITLE_CHARS)),
+				("ext4-2026-11-03", None, None, None),
+				("zfs-2026-11-02", Some(10), Some(2 + 14), Some(22)),
+			],
+			"newest day first; done once its video is made; a long title cut, a missing one null"
+		);
+		assert_eq!((listed[2].week.as_str(), listed[2].part, listed[2].of), ("zfs-2026-11-02", 1, 1));
+		assert_eq!(listed[2].title.as_deref(), Some("Snapshots, not backups"));
+		assert_eq!(
+			video_file(&pool, Feed::CardsEssay, "", &renders, "zfs-2026-11-02").await.unwrap(),
+			Some(folder.join("cards.mp4"))
+		);
+		assert_eq!(video_file(&pool, Feed::CardsEssay, "", &renders, "ext4-2026-11-03").await.unwrap(), None, "not made yet");
+		assert_eq!(video_file(&pool, Feed::CardsEssay, "", &renders, "btrfs-2026-11-03").await.unwrap(), None, "not held");
+		assert_eq!(
+			description(&pool, Feed::CardsEssay, "", &renders, "zfs-2026-11-02").await.unwrap(),
+			Description::Text(b"0:00 Snapshots".to_vec())
+		);
+
+		assert_eq!(
+			record_link(&pool, Feed::CardsEssay, "", &renders, "zfs-2026-11-02", "https://youtu.be/dQw4w9WgXcQ", NOW)
+				.await
+				.unwrap(),
+			LinkRecorded::NoEpisode,
+			"no link is kept"
+		);
+		let folders = Folders {
+			renders: &renders,
+			input: &essays,
+		};
+		for step in [Step::Video, Step::Rest] {
+			assert_eq!(let_go(&pool, Feed::CardsEssay, "", folders, "zfs-2026-11-02", step, NOW).await.unwrap(), LetGo::NoEpisode);
+		}
+		assert!(folder.join("cards.mp4").exists() && essays.join("zfs-2026-11-02.json").exists(), "nothing is let go");
 	}
 
 	/// An essay's video is its subject's: listed, brought, linked and let go

@@ -88,6 +88,42 @@ pub async fn body(conn: &mut SqliteConnection, key: &str) -> Result<Option<Vec<u
 		.await
 }
 
+/// Whether home holds an essay of `key`.
+///
+/// # Errors
+/// A storage failure.
+pub async fn holds(conn: &mut SqliteConnection, key: &str) -> Result<bool, sqlx::Error> {
+	Ok(
+		sqlx::query_scalar!(r#"SELECT 1 AS "one!: i64" FROM cards_essay WHERE essay_key = ?"#, key)
+			.fetch_optional(&mut *conn)
+			.await?
+			.is_some(),
+	)
+}
+
+/// Each essay's title, by key.
+///
+/// Its cut list's top-level `title` when that is a string, extracted by
+/// `SQLite` so no body crosses into the server (`SQLite` still parses each one,
+/// so a call is O(essays held), as the feed's list already is); `None` for
+/// an essay whose cut list has none (or one that is not text).
+///
+/// # Errors
+/// A storage failure.
+pub async fn titles(conn: &mut SqliteConnection) -> Result<Vec<(String, Option<String>)>, sqlx::Error> {
+	let rows = sqlx::query!(
+		r#"SELECT essay_key AS "key!",
+		          CASE WHEN json_valid(CAST(body AS TEXT))
+		               THEN CASE WHEN json_type(CAST(body AS TEXT), '$.title') = 'text'
+		                         THEN json_extract(CAST(body AS TEXT), '$.title') END
+		          END AS "title?: String"
+		   FROM cards_essay"#
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(rows.into_iter().map(|row| (row.key, row.title)).collect())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -130,6 +166,33 @@ mod tests {
 
 		let keys: Vec<String> = held(&mut conn).await.unwrap().into_iter().map(|held| held.key).collect();
 		assert_eq!(keys, ["zfs-2026-11-02", "nixos-upgrade-2026-11-14", "rust-scratchpad-2026-11-14"], "by day, not by name");
+	}
+
+	#[tokio::test]
+	async fn an_essay_is_held_by_its_key_and_titled_by_its_cut_list() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		let at = "2026-11-14T08:00:00.000Z";
+		keep(&mut conn, &essay("nixos-upgrade-2026-11-14", br#"{"title":"A machine upgrades itself"}"#, at))
+			.await
+			.unwrap();
+		keep(&mut conn, &essay("zfs-2026-11-02", br#"{"schema":"some-ui.cut-list/2"}"#, at)).await.unwrap();
+		keep(&mut conn, &essay("btrfs-2026-11-03", br#"{"title":7}"#, at)).await.unwrap();
+		keep(&mut conn, &essay("ext4-2026-11-04", b"not json", at)).await.unwrap();
+		assert!(holds(&mut conn, "zfs-2026-11-02").await.unwrap());
+		assert!(!holds(&mut conn, "zfs-2026-11-03").await.unwrap());
+		let mut titles = titles(&mut conn).await.unwrap();
+		titles.sort();
+		assert_eq!(
+			titles,
+			[
+				(String::from("btrfs-2026-11-03"), None),
+				(String::from("ext4-2026-11-04"), None),
+				(String::from("nixos-upgrade-2026-11-14"), Some(String::from("A machine upgrades itself"))),
+				(String::from("zfs-2026-11-02"), None),
+			],
+			"a title only where the cut list has one that is text"
+		);
 	}
 
 	#[tokio::test]

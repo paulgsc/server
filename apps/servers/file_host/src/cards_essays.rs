@@ -1,9 +1,11 @@
 //! Home keeps every cards essay and gives it to the render worker (CARDS7,
 //! #854, paulgsc/some-ui#2979; call C327).
 //!
-//! A session writes a cards essay, a silent video's cut list whose every card
-//! is stamped with the commits it was checked against, to `paulgsc/testing`
-//! as `cards/<key>.json`, and lists it in `cards/index.json`
+//! A session writes a cards essay, a video's cut list (spoken since the
+//! cheat-sheet series' v2: each scene said by home's speaker, its chapter's
+//! intro included, EXPLAIN6 #878) whose every card is stamped with the
+//! commits it was checked against, to `paulgsc/testing` as
+//! `cards/<key>.json`, and lists it in `cards/index.json`
 //! (paulgsc/some-ui `packages/video-render/CARDS-ROUTINE.md`). This worker
 //! reads that index on a timer and stores each essay home does not hold yet
 //! in `cards_essay` (`cards_essay_repo`), then writes it to
