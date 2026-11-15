@@ -151,7 +151,7 @@ pub struct EpisodeView {
 	/// Each step let go, video first.
 	pub receipts: Vec<ReceiptView>,
 	/// Its title, where the feed keeps one: a cards essay's, from its cut
-	/// list (EXPLAIN6, #878), at most `videos::TITLE_CHARS` characters;
+	/// list (EXPLAIN6, #878), as one line of at most `videos::TITLE_CHARS` characters;
 	/// `null` for every other feed's episode.
 	pub title: Option<String>,
 }

@@ -85,6 +85,14 @@ pub struct EpisodeVideo {
 /// is a line, and one longer than this is cut, never refused.
 pub const TITLE_CHARS: usize = 200;
 
+/// A cut list's title as the phone is given it: one line (each run of
+/// whitespace, newlines included, one space), at most [`TITLE_CHARS`]
+/// characters, and `None` when nothing is left.
+fn title_line(title: &str) -> Option<String> {
+	let line: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(TITLE_CHARS).collect();
+	(!line.is_empty()).then_some(line)
+}
+
 /// The episode `key` names, as (its week, its part, of how many), if it is
 /// one: for the call, a part the worker found the week has
 /// (`call_weeks::render::parts`); for every other feed, the key itself, 1
@@ -115,7 +123,7 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 			Feed::CardsEssay => cards_essay_repo::titles(&mut tx)
 				.await?
 				.into_iter()
-				.filter_map(|(key, title)| Some((key, title?.chars().take(TITLE_CHARS).collect())))
+				.filter_map(|(key, title)| Some((key, title_line(&title?)?)))
 				.collect(),
 			Feed::Call | Feed::PlayoffDelta | Feed::RustEssay => std::collections::BTreeMap::new(),
 		};
@@ -821,6 +829,14 @@ mod tests {
 		let LetGo::Gone(rest) = go(Step::Rest).await.unwrap() else { panic!("the rest goes") };
 		assert_eq!((rest.size, folder.exists()), (2, false));
 		assert_eq!(list(&pool, Feed::PlayoffDelta, "", &renders).await.unwrap()[0].receipts, [video, rest]);
+	}
+
+	#[test]
+	fn a_title_is_one_line_and_never_empty() {
+		assert_eq!(title_line("  Snapshots,\n\tnot   backups "), Some(String::from("Snapshots, not backups")));
+		assert_eq!(title_line(" \n "), None);
+		assert_eq!(title_line(""), None);
+		assert_eq!(title_line(&"é".repeat(TITLE_CHARS + 1)).map(|line| line.chars().count()), Some(TITLE_CHARS));
 	}
 
 	/// A cards essay is an episode like any (EXPLAIN6, #878): listed newest

@@ -103,9 +103,10 @@ pub async fn holds(conn: &mut SqliteConnection, key: &str) -> Result<bool, sqlx:
 
 /// Each essay's title, by key.
 ///
-/// Its cut list's top-level `title` when that is a string, read inside the
-/// database so a list never loads the bodies; `None` for an essay whose cut
-/// list has none (or one that is not text).
+/// Its cut list's top-level `title` when that is a string, extracted by
+/// `SQLite` so no body crosses into the server (`SQLite` still parses each one,
+/// so a call is O(essays held), as the feed's list already is); `None` for
+/// an essay whose cut list has none (or one that is not text).
 ///
 /// # Errors
 /// A storage failure.
