@@ -27,8 +27,10 @@ use tracing::instrument;
 
 fn feed(name: &str) -> Result<Feed, FileHostError> {
 	// Notes are on the call's and Playoff Delta's episodes only
-	// (`episode_note`'s CHECK): an essay's feed has none.
-	Feed::parse(name).filter(|feed| *feed != Feed::RustEssay).ok_or(FileHostError::NotFound)
+	// (`episode_note`'s CHECK): an essay's feed and a cards essay's have none.
+	Feed::parse(name)
+		.filter(|feed| matches!(feed, Feed::Call | Feed::PlayoffDelta))
+		.ok_or(FileHostError::NotFound)
 }
 
 /// `GET /feeds/:feed/notes`
@@ -294,6 +296,7 @@ mod tests {
 		assert_eq!(get(&state, None, "call").await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(put(&state, Some(&phone), "podcast", &note("n1", &["shallow"])).await.0, StatusCode::NOT_FOUND);
 		assert_eq!(get(&state, Some(&phone), "podcast").await.0, StatusCode::NOT_FOUND);
+		assert_eq!(get(&state, Some(&phone), "cards-essay").await.0, StatusCode::NOT_FOUND, "a cards essay has no notes");
 		let mut early = note("n3", &["shallow"]);
 		early["atMs"] = json!(-5);
 		let mut no_time = note("n4", &["shallow"]);

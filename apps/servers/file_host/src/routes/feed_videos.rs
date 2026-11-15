@@ -2,7 +2,7 @@
 //! call's and Playoff Delta's alike (FEED4: paulgsc/some-ui#2647).
 //!
 //! ```text
-//! GET    /feeds/:feed/videos                  → { episodes: [{ key, week, part, of, videoBytes, restBytes, link, receipts }] }: newest first
+//! GET    /feeds/:feed/videos                  → { episodes: [{ key, week, part, of, videoBytes, restBytes, link, receipts, title }] }: newest first
 //! GET    /feeds/:feed/videos/:key/video       → the episode's video, streamed, with ranges
 //! GET    /feeds/:feed/videos/:key/description → its `YouTube` chapter lines, `text/plain`, or 404
 //! PUT    /feeds/:feed/videos/:key/link        → { url }: the body is { link }, a `YouTube` video's link as pasted
@@ -10,8 +10,18 @@
 //! DELETE /feeds/:feed/videos/:key/rest        → { receipt }: lets the rest of its folder go, once the video has
 //! ```
 //!
-//! `:feed` is `call`, `playoff-delta` or `rust-essay` (`feeds::Feed`; an
-//! essay is the caller's own, keyed by its week); any other is `404`.
+//! `:feed` is `call`, `playoff-delta`, `rust-essay` or `cards-essay`
+//! (`feeds::Feed`; an essay is the caller's own, keyed by its week); any
+//! other is `404`.
+//!
+//! **A cards essay** (EXPLAIN6, #878; contract epoch 10) is listed newest
+//! day first, keyed `<slug>-<YYYY-MM-DD>`, with `title` from its cut list
+//! (`null` when it has none, and for every other feed's episode), and is
+//! done once `videoBytes` is set. Its video and description come through
+//! the routes above. It is never linked or let go: its `link` and `DELETE`
+//! routes are `404`, as for an episode home doesn't hold.
+//! `GET /cards-essays/:key/video` (`routes::cards_essays`) stays for the
+//! Renders board.
 //!
 //! **A call's week that is a series of parts** (paulgsc/some-ui#2918) is
 //! listed as each part, first to last, each an episode of its own: part 1

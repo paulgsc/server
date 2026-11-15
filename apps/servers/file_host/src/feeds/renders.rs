@@ -625,6 +625,8 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 		// Written by a routine that does not run yet (RR18): no day is
 		// promised.
 		Feed::RustEssay => None,
+		// Written when a session writes one: no day is promised.
+		Feed::CardsEssay => None,
 	}
 }
 
@@ -823,6 +825,8 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 				(voiced, let_go)
 			}
 			Feed::RustEssay => crate::rust_essays::held(db, subject, Feed::RustEssay.input()).await?,
+			// On its own shelf below (`Shelf::CardsEssay`), never in `feeds`.
+			Feed::CardsEssay => continue,
 		};
 		feeds.push((Shelf::Feed(*feed), seen(Shelf::Feed(*feed), &held, &let_go, renders, status).await));
 	}

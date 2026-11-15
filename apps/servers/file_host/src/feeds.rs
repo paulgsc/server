@@ -1,11 +1,18 @@
 //! The feeds home renders and the owner watches on the phone.
 //!
 //! FEED4, paulgsc/some-ui#2647: the weekly call (`call_weeks`) and Playoff
-//! Delta (`pd_fills`), and Rust Rounds' essays (`rust_essays`, RR16,
-//! paulgsc/some-ui#2691). Each keeps its episodes, links and receipts in its own
+//! Delta (`pd_fills`), Rust Rounds' essays (`rust_essays`, RR16,
+//! paulgsc/some-ui#2691), and cards essays (`cards_essays`, CARDS7 #854;
+//! EXPLAIN6 #878). Each keeps its episodes, links and receipts in its own
 //! tables, so each record is keyed to what it is of; what the phone does with
 //! an episode's video (list it, bring it, record its `YouTube` link, let it
 //! go) is one implementation over them all, [`videos`].
+//!
+//! **A cards essay is listed and brought, never linked or let go**
+//! ([`Feed::lets_go`]). The owner's ask (2026-11-14) was a place among the
+//! episodes; a link and a let go would each need a table of their own beside
+//! `cards_essay`, which is append-only and holds the essay alone. That is
+//! paulgsc/some-ui#2999's story, not this one.
 //!
 //! An episode is named by its key, one plain path segment by its table's own
 //! checks: the call's week by its first day (`2026-10-30`), or, for a week
@@ -13,10 +20,12 @@
 //! first by `<day>-p<k>` (`2026-11-06-p2`; `call_week_repo::video::split_key`),
 //! each its own episode with its own video, link and receipts; Playoff Delta's
 //! by `<season>-<team>-<NN>` (`2026-SF-08`), an essay by its week
-//! (`2026-w46`).
+//! (`2026-w46`), a cards essay by its slug and day
+//! (`nixos-upgrade-2026-11-14`).
 //!
-//! **Whose.** The call's and Playoff Delta's episodes are no one's: what was
-//! said by home's speaker about a public week. An essay's is its subject's,
+//! **Whose.** The call's, Playoff Delta's and the cards essays' episodes are
+//! no one's: what was said by home's speaker about a public week, or about
+//! public repositories at stamped commits. An essay's is its subject's,
 //! since its video plays the owner's own takes (docs/identity.md invariant
 //! 23's one named exception), so every method that reads or writes the
 //! feed's tables takes the caller's subject, and the essay feed answers only
@@ -45,6 +54,9 @@ pub enum Feed {
 	PlayoffDelta,
 	/// Rust Rounds' essays (RR16): the caller's own.
 	RustEssay,
+	/// Cards essays (CARDS7, EXPLAIN6): listed and brought, never linked or
+	/// let go ([`Self::lets_go`]).
+	CardsEssay,
 }
 
 impl Feed {
@@ -55,6 +67,7 @@ impl Feed {
 			Self::Call => "call",
 			Self::PlayoffDelta => "playoff-delta",
 			Self::RustEssay => "rust-essay",
+			Self::CardsEssay => "cards-essay",
 		}
 	}
 
@@ -65,6 +78,7 @@ impl Feed {
 			"call" => Some(Self::Call),
 			"playoff-delta" => Some(Self::PlayoffDelta),
 			"rust-essay" => Some(Self::RustEssay),
+			"cards-essay" => Some(Self::CardsEssay),
 			_ => None,
 		}
 	}
@@ -76,6 +90,7 @@ impl Feed {
 			Self::Call => crate::call_weeks::render::RENDERS_FOLDER,
 			Self::PlayoffDelta => crate::pd_fills::render::RENDERS_FOLDER,
 			Self::RustEssay => crate::rust_essays::RENDERS_FOLDER,
+			Self::CardsEssay => crate::cards_essays::RENDERS_FOLDER,
 		})
 	}
 
@@ -86,6 +101,7 @@ impl Feed {
 			Self::Call => crate::call_weeks::RENDER_FOLDER,
 			Self::PlayoffDelta => crate::pd_fills::render::EPISODES_FOLDER,
 			Self::RustEssay => crate::rust_essays::ESSAYS_FOLDER,
+			Self::CardsEssay => crate::cards_essays::ESSAYS_FOLDER,
 		})
 	}
 
@@ -96,15 +112,24 @@ impl Feed {
 			Self::Call => crate::call_weeks::render::VIDEO,
 			Self::PlayoffDelta => crate::pd_fills::render::VIDEO,
 			Self::RustEssay => crate::rust_essays::VIDEO,
+			Self::CardsEssay => crate::cards_essays::VIDEO,
 		}
 	}
 
-	/// What an episode's entry in [`Self::input`] is: a week's file, or a
-	/// fill's or an essay's folder.
+	/// Whether an episode's `YouTube` link is kept and its files let go from
+	/// the phone: every feed's but a cards essay's, which has no table for
+	/// either (the module doc). The routes answer `404` for one that doesn't.
+	#[must_use]
+	pub const fn lets_go(self) -> bool {
+		!matches!(self, Self::CardsEssay)
+	}
+
+	/// What an episode's entry in [`Self::input`] is: a week's or a cards
+	/// essay's file, or a fill's or an essay's folder.
 	#[must_use]
 	pub fn input_of(self, input: &Path, episode: &str) -> std::path::PathBuf {
 		match self {
-			Self::Call => input.join(String::from(episode) + ".json"),
+			Self::Call | Self::CardsEssay => input.join(String::from(episode) + ".json"),
 			Self::PlayoffDelta | Self::RustEssay => input.join(episode),
 		}
 	}
@@ -119,6 +144,8 @@ impl Feed {
 			Self::Call => call_week_repo::held(conn).await?.into_iter().map(|week| week.from).collect(),
 			Self::PlayoffDelta => pd_fill_repo::held(conn).await?.iter().rev().map(pd_fill_repo::HeldFill::key).collect(),
 			Self::RustEssay => essays_held(conn, subject).await?.into_iter().rev().collect(),
+			// Newest day first, as the table orders them oldest first.
+			Self::CardsEssay => cards_essay_repo::held(conn).await?.into_iter().rev().map(|essay| essay.key).collect(),
 		})
 	}
 
@@ -137,6 +164,7 @@ impl Feed {
 				None => false,
 			},
 			Self::RustEssay => essays_held(conn, subject).await?.iter().any(|week| week == key),
+			Self::CardsEssay => crate::cards_essays::pass::is_key(key) && cards_essay_repo::holds(conn, key).await?,
 		})
 	}
 
@@ -149,6 +177,7 @@ impl Feed {
 			Self::Call => call_week_repo::video::links(conn).await,
 			Self::PlayoffDelta => pd_fill_repo::video::links(conn).await,
 			Self::RustEssay => rust_round_repo::essay_video::links(conn, subject).await,
+			Self::CardsEssay => Ok(BTreeMap::new()),
 		}
 	}
 
@@ -164,6 +193,8 @@ impl Feed {
 				let held = self.holds(conn, subject, key).await?;
 				rust_round_repo::essay_video::record_link(conn, subject, key, held, youtube_id, now).await
 			}
+			// Nowhere to keep one: no episode takes a link.
+			Self::CardsEssay => Ok(Recorded::NoWeek),
 		}
 	}
 
@@ -176,6 +207,7 @@ impl Feed {
 			Self::Call => call_week_repo::video::receipts(conn).await,
 			Self::PlayoffDelta => pd_fill_repo::video::receipts(conn).await,
 			Self::RustEssay => rust_round_repo::essay_video::receipts(conn, subject).await,
+			Self::CardsEssay => Ok(Vec::new()),
 		}
 	}
 
@@ -188,6 +220,7 @@ impl Feed {
 			Self::Call => call_week_repo::video::receipt(conn, key, step).await,
 			Self::PlayoffDelta => pd_fill_repo::video::receipt(conn, key, step).await,
 			Self::RustEssay => rust_round_repo::essay_video::receipt(conn, subject, key, step).await,
+			Self::CardsEssay => Ok(None),
 		}
 	}
 
@@ -201,6 +234,8 @@ impl Feed {
 			Self::Call => call_week_repo::video::write_receipt(conn, receipt, of).await,
 			Self::PlayoffDelta => pd_fill_repo::video::write_receipt(conn, receipt).await,
 			Self::RustEssay => rust_round_repo::essay_video::write_receipt(conn, subject, receipt).await,
+			// [`videos::let_go`] never gets this far for it (`lets_go`).
+			Self::CardsEssay => Err(sqlx::Error::Protocol(String::from("a cards essay is never let go"))),
 		}
 	}
 }
