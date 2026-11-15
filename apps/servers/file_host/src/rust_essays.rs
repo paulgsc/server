@@ -559,7 +559,8 @@ async fn remove(dir: &Path) -> std::io::Result<()> {
 	}
 }
 
-fn storage(err: mailbox_repo::MailboxError) -> sqlx::Error {
+/// A mailbox read's failure as the `sqlx` error it is.
+pub(crate) fn storage(err: mailbox_repo::MailboxError) -> sqlx::Error {
 	match err {
 		mailbox_repo::MailboxError::Storage(err) => err,
 		mailbox_repo::MailboxError::Rewritten => sqlx::Error::Protocol(String::from("a mailbox file does not read back")),

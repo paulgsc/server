@@ -666,16 +666,21 @@ async fn the_read_promises_the_rust_essay_from_the_caller_s_open_round() {
 	for folder in [&renders, &status, &lane] {
 		std::fs::create_dir_all(folder).unwrap();
 	}
-	let hold = |subject: &'static str, seq: i64, id: &'static str, due: &'static str| {
+	// A week under `named`'s name whose body says `id`, due at `due` when it has one.
+	let hold_as = |subject: &'static str, seq: i64, named: &'static str, id: &'static str, due: Option<&'static str>| {
 		let db = db.clone();
 		async move {
-			let body = serde_json::json!({
-				"schema": "some-ui.rust-week/1", "id": id, "opens": "2026-11-02T00:00:00-08:00", "due": due,
+			let mut week = serde_json::json!({
+				"schema": "some-ui.rust-week/1", "id": id,
 				"tickets": [{ "id": "QM-311", "program": "fn main() {}\n" }],
-			})
-			.to_string();
+			});
+			if let Some(due) = due {
+				week["opens"] = serde_json::json!("2026-11-02T00:00:00-08:00");
+				week["due"] = serde_json::json!(due);
+			}
+			let body = week.to_string();
 			let sha256 = rust_round_repo::content_hash(body.as_bytes());
-			let name = rust_round_repo::week::mailbox_name(id);
+			let name = rust_round_repo::week::mailbox_name(named);
 			let item = mailbox_repo::ItemIn {
 				folder: "brief",
 				name: &name,
@@ -703,14 +708,23 @@ async fn the_read_promises_the_rust_essay_from_the_caller_s_open_round() {
 			.unwrap();
 	}
 	assert_eq!(read(&db, &folders, "me", NOW).await.unwrap().coming, [], "no round held: nothing promised");
-	hold("someone-else", 1, "2026-w45", "2026-11-08T23:59:00-08:00").await;
+	let due = Some("2026-11-08T23:59:00-08:00");
+	hold_as("someone-else", 1, "2026-w45", "2026-w45", due).await;
 	assert_eq!(read(&db, &folders, "me", NOW).await.unwrap().coming, [], "another subject's round is not the caller's");
-	hold("me", 2, "2026-w45", "2026-11-08T23:59:00-08:00").await;
+	hold_as("me", 2, "2026-w45", "2026-w46", due).await;
+	assert_eq!(
+		read(&db, &folders, "me", NOW).await.unwrap().coming,
+		[],
+		"a file that is not the week its name says is no round"
+	);
+	hold_as("me", 3, "2026-w44", "2026-w44", None).await;
+	assert_eq!(read(&db, &folders, "me", NOW).await.unwrap().coming, [], "a week with no window owes no essay");
+	hold_as("me", 4, "2026-w46", "2026-w46", Some("2026-11-15T23:59:00-08:00")).await;
 	assert_eq!(
 		read(&db, &folders, "me", NOW).await.unwrap().coming,
 		[Coming {
 			feed: String::from("rust-essay"),
-			on: String::from("2026-11-09")
+			on: String::from("2026-11-16")
 		}]
 	);
 }

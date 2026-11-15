@@ -81,7 +81,8 @@
 //!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
 //! an episode a week), a `stat` per episode, the newest two weeks of Rust
-//! Rounds (one bounded read), and a handful of small files, once per request. Nothing here adds a clock or a poll: the phone asks.
+//! Rounds (one bounded read), and a handful of small files, once per
+//! request. Nothing here adds a clock or a poll: the phone asks.
 //! It names no person and carries no words of an episode: a failed attempt is
 //! a code (who stopped it, and the recorder's exit), its log stays on home.
 
@@ -106,8 +107,9 @@ pub const ACTIVE_DAYS: i64 = 21;
 /// How many of the newest weeks of Rust Rounds the board reads for the
 /// essay's day.
 ///
-/// The week that closed and the one that opened after it, so a week put
-/// early never hides the essay still owed for the one before.
+/// The week that closed and the one that opened after it, so the next week
+/// arriving before Monday doesn't hide the essay still owed for the one
+/// before. A week put two or more ahead would hide it.
 pub const ROUND_WEEKS_READ: i64 = 2;
 
 /// The most of the bar shown before a render is done: an estimate never
@@ -678,10 +680,7 @@ fn essay_monday(window: &rust_round_repo::week::Window) -> Option<NaiveDate> {
 async fn rounds_of(db: &SqlitePool, subject: &str) -> Result<Vec<(String, NaiveDate)>, sqlx::Error> {
 	let held = mailbox_repo::newest_rust_weeks(&mut *db.acquire().await?, subject, ROUND_WEEKS_READ)
 		.await
-		.map_err(|err| match err {
-			mailbox_repo::MailboxError::Storage(err) => err,
-			mailbox_repo::MailboxError::Rewritten => sqlx::Error::Protocol(String::from("a mailbox file does not read back")),
-		})?;
+		.map_err(crate::rust_essays::storage)?;
 	Ok(
 		held
 			.into_iter()
