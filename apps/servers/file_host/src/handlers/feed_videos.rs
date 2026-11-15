@@ -465,8 +465,9 @@ mod tests {
 		assert_eq!((status, calls), (StatusCode::OK, json!({ "episodes": [] })), "each feed lists its own");
 		assert_eq!(send(&app, Method::GET, "/feeds/drama/videos", Some(&phone), None).await.0, StatusCode::NOT_FOUND);
 
-		// A cards essay is an episode too (EXPLAIN6, #878), with its title;
-		// it is never linked or let go, so those routes don't know it.
+		// A cards essay is an episode too (EXPLAIN6, #878), with its title,
+		// and is linked as every feed's (paulgsc/some-ui#2999); it is never let
+		// go, link or not, so the DELETE routes don't know it.
 		let (status, cards) = send(&app, Method::GET, "/feeds/cards-essay/videos", Some(&phone), None).await;
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
@@ -475,10 +476,18 @@ mod tests {
 		);
 		let essay = "/feeds/cards-essay/videos/zfs-2026-11-02";
 		let pasted = Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" }));
+		let (status, kept) = send(&app, Method::PUT, &(String::from(essay) + "/link"), Some(&phone), pasted).await;
+		assert_eq!((status, kept), (StatusCode::OK, json!({ "url": "https://youtu.be/dQw4w9WgXcQ" })));
+		let link = &send(&app, Method::GET, "/feeds/cards-essay/videos", Some(&phone), None).await.1["episodes"][0]["link"];
+		assert_eq!(link["url"], "https://youtu.be/dQw4w9WgXcQ", "GET carries it as every feed's link");
+		assert!(link["recordedAt"].is_string());
+		let unheld = Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" }));
 		assert_eq!(
-			send(&app, Method::PUT, &(String::from(essay) + "/link"), Some(&phone), pasted).await.0,
-			StatusCode::NOT_FOUND
+			send(&app, Method::PUT, "/feeds/cards-essay/videos/ext4-2026-11-03/link", Some(&phone), unheld).await.0,
+			StatusCode::NOT_FOUND,
+			"an essay home doesn't hold takes no link"
 		);
+		// Let go is a later story: refused even with a link recorded.
 		for step in ["/video", "/rest"] {
 			assert_eq!(send(&app, Method::DELETE, &(String::from(essay) + step), Some(&phone), None).await.0, StatusCode::NOT_FOUND);
 		}

@@ -78,6 +78,10 @@ const NOT_SUBJECT_SCOPED: &[(&str, &str)] = &[
 		"each cards essay home keeps, as paulgsc/testing served it — a cut list a session wrote about public repositories at stamped commits, nobody's record",
 	),
 	(
+		"cards_essay_link",
+		"each cards essay's public YouTube video id, as the owner recorded it; nobody's record",
+	),
+	(
 		"clip_frame",
 		"each clip frame home keeps: a screenshot of an app on sample data, by clip, side and file, with its SHA-256 — nobody's record",
 	),

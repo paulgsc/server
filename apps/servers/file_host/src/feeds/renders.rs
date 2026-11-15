@@ -34,7 +34,7 @@
 //!
 //! **A cards essay** (CARDS7, #854) is on the board too, as the
 //! `cards-essay` shelf, keyed by its key (`<slug>-<YYYY-MM-DD>`): no feed
-//! (no link, nothing let go yet: paulgsc/some-ui#2999), each essay home holds (`cards_essays`)
+//! (its link is `feeds::videos`'s, paulgsc/some-ui#2999; nothing let go yet), each essay home holds (`cards_essays`)
 //! waiting until its `cards.mp4` is made, failed with its log, as any
 //! episode, or done, and a done one played from
 //! `GET /cards-essays/:key/video` (`routes::cards_essays`).
