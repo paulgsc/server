@@ -1,6 +1,9 @@
 //! Home's record of the cards essays (CARDS7, #854, paulgsc/some-ui#2979):
-//! `cards_essay`, each essay once by its key, append-only. The rules are
-//! `20261114000100_create_cards_essay.up.sql`'s.
+//! `cards_essay`, each essay once by its key, append-only, and
+//! `cards_essay_link`, each essay's `YouTube` link (paulgsc/some-ui#2999),
+//! append-only too. The rules are
+//! `20261114000100_create_cards_essay.up.sql`'s and
+//! `20261115000200_create_cards_essay_link.up.sql`'s.
 
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
@@ -124,6 +127,63 @@ pub async fn titles(conn: &mut SqliteConnection) -> Result<Vec<(String, Option<S
 	Ok(rows.into_iter().map(|row| (row.key, row.title)).collect())
 }
 
+/// What [`record_link`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Linked {
+	/// The link is new for the essay, and kept.
+	Added,
+	/// The essay already holds this video's link: nothing is written.
+	Held,
+	/// Home holds no essay of that key.
+	NoEssay,
+}
+
+/// A link recorded for an essay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+	/// The essay's key.
+	pub key: String,
+	/// The video's 11-character id.
+	pub youtube_id: String,
+	/// ISO-8601 UTC, when home recorded it.
+	pub recorded_at: String,
+}
+
+/// Records `youtube_id` as the essay `key`'s link, once per video.
+///
+/// # Errors
+/// A storage failure, or an id the table's checks refuse.
+pub async fn record_link(conn: &mut SqliteConnection, key: &str, youtube_id: &str, now: &str) -> Result<Linked, sqlx::Error> {
+	if !holds(conn, key).await? {
+		return Ok(Linked::NoEssay);
+	}
+	let done = sqlx::query!(
+		"INSERT INTO cards_essay_link (essay_key, youtube_id, recorded_at) VALUES (?, ?, ?)
+		 ON CONFLICT (essay_key, youtube_id) DO NOTHING",
+		key,
+		youtube_id,
+		now,
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(if done.rows_affected() == 1 { Linked::Added } else { Linked::Held })
+}
+
+/// Every link recorded, by essay, oldest first within each: the last of an
+/// essay's is its link now.
+///
+/// # Errors
+/// A storage failure.
+pub async fn links(conn: &mut SqliteConnection) -> Result<Vec<Link>, sqlx::Error> {
+	sqlx::query_as!(
+		Link,
+		r#"SELECT essay_key AS "key!", youtube_id AS "youtube_id!", recorded_at AS "recorded_at!"
+		   FROM cards_essay_link ORDER BY essay_key, recorded_at, youtube_id"#
+	)
+	.fetch_all(&mut *conn)
+	.await
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -221,5 +281,35 @@ mod tests {
 		let delete = sqlx::query("DELETE FROM cards_essay").execute(&mut *conn).await;
 		assert!(delete.is_err(), "DELETE is refused");
 		assert_eq!(held(&mut conn).await.unwrap().len(), 1);
+	}
+
+	#[tokio::test]
+	async fn a_link_is_kept_once_per_video_only_for_an_essay_held_and_never_rewritten() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		keep(&mut conn, &essay("zfs-2026-11-02", b"{}", "2026-11-14T08:00:00.000Z")).await.unwrap();
+		let (first, second) = ("dQw4w9WgXcQ", "aaaaaaaaaaa");
+		assert_eq!(record_link(&mut conn, "zfs-2026-11-02", first, "2026-11-15T08:00:00.000Z").await.unwrap(), Linked::Added);
+		assert_eq!(record_link(&mut conn, "zfs-2026-11-02", first, "2026-11-15T09:00:00.000Z").await.unwrap(), Linked::Held);
+		assert_eq!(record_link(&mut conn, "zfs-2026-11-02", second, "2026-11-15T10:00:00.000Z").await.unwrap(), Linked::Added);
+		assert_eq!(record_link(&mut conn, "ext4-2026-11-03", first, "2026-11-15T10:00:00.000Z").await.unwrap(), Linked::NoEssay);
+		assert!(record_link(&mut conn, "zfs-2026-11-02", "not-an-id", "t").await.is_err(), "the table checks the id");
+		let links = links(&mut conn).await.unwrap();
+		assert_eq!(
+			links
+				.iter()
+				.map(|link| (link.key.as_str(), link.youtube_id.as_str(), link.recorded_at.as_str()))
+				.collect::<Vec<_>>(),
+			[
+				("zfs-2026-11-02", first, "2026-11-15T08:00:00.000Z"),
+				("zfs-2026-11-02", second, "2026-11-15T10:00:00.000Z")
+			],
+			"oldest first, a repeat kept as first recorded"
+		);
+		assert!(
+			sqlx::query("UPDATE cards_essay_link SET recorded_at = 'x'").execute(&mut *conn).await.is_err(),
+			"UPDATE is refused"
+		);
+		assert!(sqlx::query("DELETE FROM cards_essay_link").execute(&mut *conn).await.is_err(), "DELETE is refused");
 	}
 }

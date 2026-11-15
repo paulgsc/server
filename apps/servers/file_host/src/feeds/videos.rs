@@ -16,9 +16,10 @@
 //!   paulgsc/some-ui#2763).
 //! - [`let_go`]: one step of letting an episode go, with its receipt.
 //!
-//! A cards essay is listed, brought and described like any episode, with its
-//! cut list's title; it is never linked or let go (`Feed::lets_go`), so
-//! [`record_link`] and [`let_go`] answer it as no episode (EXPLAIN6, #878).
+//! A cards essay is listed, brought, described and linked like any episode,
+//! with its cut list's title (EXPLAIN6, #878; its link paulgsc/some-ui#2999);
+//! it is never let go (`Feed::lets_go`), so [`let_go`] answers it as no
+//! episode.
 //!
 //! **What a step deletes, and in what order.** The video's step removes the
 //! episode from the feed's input (`Feed::input`), so the render worker is
@@ -284,9 +285,6 @@ pub enum LinkRecorded {
 /// # Errors
 /// A storage failure.
 pub async fn record_link(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path, key: &str, pasted: &str, now: &str) -> Result<LinkRecorded, sqlx::Error> {
-	if !feed.lets_go() {
-		return Ok(LinkRecorded::NoEpisode);
-	}
 	let Some(id) = video::youtube_id(pasted) else {
 		return Ok(LinkRecorded::NotAVideo);
 	};
@@ -841,9 +839,10 @@ mod tests {
 
 	/// A cards essay is an episode like any (EXPLAIN6, #878): listed newest
 	/// day first with its cut list's title, done once its video is made,
-	/// brought and described; never linked or let go, so its files stay.
+	/// brought, described and linked (paulgsc/some-ui#2999); never let go, even
+	/// with its link, so its files stay.
 	#[tokio::test]
-	async fn a_cards_essay_is_listed_with_its_title_and_brought_but_never_let_go() {
+	async fn a_cards_essay_is_listed_with_its_title_brought_and_linked_but_never_let_go() {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let (renders, essays) = (dir.path().join("cards-essay"), dir.path().join("cards-essays"));
 		let long = "x".repeat(TITLE_CHARS + 5);
@@ -903,9 +902,25 @@ mod tests {
 			record_link(&pool, Feed::CardsEssay, "", &renders, "zfs-2026-11-02", "https://youtu.be/dQw4w9WgXcQ", NOW)
 				.await
 				.unwrap(),
-			LinkRecorded::NoEpisode,
-			"no link is kept"
+			LinkRecorded::Kept(String::from("dQw4w9WgXcQ")),
+			"its link is kept"
 		);
+		assert_eq!(
+			record_link(&pool, Feed::CardsEssay, "", &renders, "zfs-2026-11-02", "https://www.youtube.com/@me", NOW)
+				.await
+				.unwrap(),
+			LinkRecorded::NotAVideo
+		);
+		assert_eq!(
+			record_link(&pool, Feed::CardsEssay, "", &renders, "btrfs-2026-11-03", "https://youtu.be/dQw4w9WgXcQ", NOW)
+				.await
+				.unwrap(),
+			LinkRecorded::NoEpisode,
+			"not held"
+		);
+		let listed = list(&pool, Feed::CardsEssay, "anyone", &renders).await.unwrap();
+		assert_eq!(listed[2].link.as_ref().map(|link| link.youtube_id.as_str()), Some("dQw4w9WgXcQ"));
+		assert_eq!(listed[0].link, None);
 		let folders = Folders {
 			renders: &renders,
 			input: &essays,
@@ -913,7 +928,10 @@ mod tests {
 		for step in [Step::Video, Step::Rest] {
 			assert_eq!(let_go(&pool, Feed::CardsEssay, "", folders, "zfs-2026-11-02", step, NOW).await.unwrap(), LetGo::NoEpisode);
 		}
-		assert!(folder.join("cards.mp4").exists() && essays.join("zfs-2026-11-02.json").exists(), "nothing is let go");
+		assert!(
+			folder.join("cards.mp4").exists() && essays.join("zfs-2026-11-02.json").exists(),
+			"nothing is let go, link or not: let go is a later story"
+		);
 	}
 
 	/// An essay's video is its subject's: listed, brought, linked and let go

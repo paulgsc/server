@@ -17,9 +17,10 @@
 //! **A cards essay** (EXPLAIN6, #878; contract epoch 10) is listed newest
 //! day first, keyed `<slug>-<YYYY-MM-DD>`, with `title` from its cut list
 //! (`null` when it has none, and for every other feed's episode), and is
-//! done once `videoBytes` is set. Its video and description come through
-//! the routes above. It is never linked or let go: its `link` and `DELETE`
-//! routes are `404`, as for an episode home doesn't hold.
+//! done once `videoBytes` is set. Its video, description and link
+//! (paulgsc/some-ui#2999, call C388) come through the routes above, as every
+//! feed's. It is never let go: its `DELETE` routes are `404`, as for an
+//! episode home doesn't hold.
 //! `GET /cards-essays/:key/video` (`routes::cards_essays`) stays for the
 //! Renders board.
 //!

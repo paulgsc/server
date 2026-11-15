@@ -32,10 +32,12 @@
 //! **Where the owner watches it** (C338): Studio › Renders lists each essay
 //! (the `cards-essay` shelf, `feeds::renders`), and a paired phone plays a
 //! done one from `GET /cards-essays/:key/video` (`routes::cards_essays`).
-//! Nothing lets home's copy go yet: the owner ruled that a cards essay lives
-//! like every other episode, its copy let go once a confirmed `YouTube` link
-//! is recorded (`feeds::videos`), which is a later story
-//! (paulgsc/some-ui#2999).
+//! Its `YouTube` link is recorded as every feed's
+//! (`PUT /feeds/cards-essay/videos/:key/link`, `cards_essay_link`;
+//! paulgsc/some-ui#2999, C388). Nothing lets home's copy go yet: the owner
+//! ruled that a cards essay lives like every other episode, its copy let go
+//! once a confirmed link is recorded (`feeds::videos`), which is a later
+//! story.
 //!
 //! Cost: one request an hour, plus one per essay home lacks (a cut list is a
 //! few KB); one `stat` per essay each minute.

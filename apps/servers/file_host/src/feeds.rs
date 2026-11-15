@@ -8,11 +8,12 @@
 //! an episode's video (list it, bring it, record its `YouTube` link, let it
 //! go) is one implementation over them all, [`videos`].
 //!
-//! **A cards essay is listed and brought, never linked or let go**
+//! **A cards essay is listed, brought and linked, never let go**
 //! ([`Feed::lets_go`]). The owner's ask (2026-11-14) was a place among the
-//! episodes; a link and a let go would each need a table of their own beside
-//! `cards_essay`, which is append-only and holds the essay alone. That is
-//! paulgsc/some-ui#2999's story, not this one.
+//! episodes; its `YouTube` link (paulgsc/some-ui#2999, call C388) is kept in
+//! `cards_essay_link`, beside `cards_essay`, which is append-only and holds
+//! the essay alone. Letting home's copy go once the link is recorded needs a
+//! receipt table too, and is a later story.
 //!
 //! An episode is named by its key, one plain path segment by its table's own
 //! checks: the call's week by its first day (`2026-10-30`), or, for a week
@@ -54,8 +55,8 @@ pub enum Feed {
 	PlayoffDelta,
 	/// Rust Rounds' essays (RR16): the caller's own.
 	RustEssay,
-	/// Cards essays (CARDS7, EXPLAIN6): listed and brought, never linked or
-	/// let go ([`Self::lets_go`]).
+	/// Cards essays (CARDS7, EXPLAIN6): listed, brought and linked
+	/// (paulgsc/some-ui#2999), never let go ([`Self::lets_go`]).
 	CardsEssay,
 }
 
@@ -116,9 +117,9 @@ impl Feed {
 		}
 	}
 
-	/// Whether an episode's `YouTube` link is kept and its files let go from
-	/// the phone: every feed's but a cards essay's, which has no table for
-	/// either (the module doc). The routes answer `404` for one that doesn't.
+	/// Whether an episode's files are let go from the phone: every feed's but
+	/// a cards essay's, which has no receipt table yet (the module doc). Every
+	/// feed's link is kept. The routes answer `404` for one that doesn't.
 	#[must_use]
 	pub const fn lets_go(self) -> bool {
 		!matches!(self, Self::CardsEssay)
@@ -177,7 +178,22 @@ impl Feed {
 			Self::Call => call_week_repo::video::links(conn).await,
 			Self::PlayoffDelta => pd_fill_repo::video::links(conn).await,
 			Self::RustEssay => rust_round_repo::essay_video::links(conn, subject).await,
-			Self::CardsEssay => Ok(BTreeMap::new()),
+			// Oldest first within each essay, so the newest is the one left.
+			Self::CardsEssay => Ok(
+				cards_essay_repo::links(conn)
+					.await?
+					.into_iter()
+					.map(|link| {
+						(
+							link.key,
+							Link {
+								youtube_id: link.youtube_id,
+								recorded_at: link.recorded_at,
+							},
+						)
+					})
+					.collect(),
+			),
 		}
 	}
 
@@ -193,8 +209,11 @@ impl Feed {
 				let held = self.holds(conn, subject, key).await?;
 				rust_round_repo::essay_video::record_link(conn, subject, key, held, youtube_id, now).await
 			}
-			// Nowhere to keep one: no episode takes a link.
-			Self::CardsEssay => Ok(Recorded::NoWeek),
+			Self::CardsEssay => Ok(match cards_essay_repo::record_link(conn, key, youtube_id, now).await? {
+				cards_essay_repo::Linked::Added => Recorded::Added,
+				cards_essay_repo::Linked::Held => Recorded::Held,
+				cards_essay_repo::Linked::NoEssay => Recorded::NoWeek,
+			}),
 		}
 	}
 
