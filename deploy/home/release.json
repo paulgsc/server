@@ -1,11 +1,11 @@
 {
-  "serial": 14,
-  "server_commit": "a459e6caaa8ddfd689dc74be7bc92a8077a9840b",
+  "serial": 15,
+  "server_commit": "ff96246dc22b06b98c17b6ae25e004981db239d5",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:v0@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"},
     "dashboard-builder": {"image": "pgathondu/dashboard-builder:9f7548d5441d839bd0134d7db527e75748867bae@sha256:11ad799995080d7c038760bf5a490bd06d9248453cfeeb39d6fac5ae75647384"},
-    "file-host": {"image": "pgathondu/server:743b82218ce7b7538127f3266fc4903e9a1d9463@sha256:f23d14deb1339e6c52267a6de191ae65119a74048caa62ff9f5afacdac7c92e2"},
+    "file-host": {"image": "pgathondu/server:0092eb4059bf4c7a77839a2aa3c21d2d085bb400@sha256:d9923b9897278bd3250e0aa1541942cbb44b66c0e2722e5f560c9a6442fd5348"},
     "grafana": {"image": "grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2"},
     "kokoro": {"image": "pgathondu/kokoro:9f7548d5441d839bd0134d7db527e75748867bae@sha256:4090a4009b94da98e8ead3518dee8bcb2a40b5828db7db86b67a235f3a51845d"},
     "metabase": {"image": "metabase/metabase:v0.65.x@sha256:06b66bf50d5b46ad632a836aeb62149eaab768033f9d3dae72ad4b10e6427590"},
@@ -18,7 +18,7 @@
     "redis": {"image": "redis:8.10@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53"},
     "redis-exporter": {"image": "oliver006/redis_exporter:v1.97.0@sha256:f5f903fbe77571d455ede0453b084d6840bc62fc105efac001034421cab83b99"},
     "redisinsight": {"image": "redislabs/redisinsight:3.8@sha256:b5e19ee240abef6edb435871b90ff8a210995422e8e018ab61c0339d318a1f84"},
-    "render": {"image": "pgathondu/render:037c1640f7f8861b1ba6824f09d2a1a4e87248cb@sha256:7cde22a744a9e6990fc393681d04955a0dcd4d6212b39d910aef1c8a3b046c5d"},
+    "render": {"image": "pgathondu/render:85cb34aebe49efc5c443a3f3d217f92a8610539e@sha256:3ff9a607626e8dbab4340ca16e3e6ceff91c31d448958ea43d65a7b0735d372a"},
     "rust-runner": {"image": "pgathondu/rust-runner:9f7548d5441d839bd0134d7db527e75748867bae@sha256:d5def08e92a5e252388c5cd22f05939834c713b963305da9949d6e6b85524264"}
   }
 }
