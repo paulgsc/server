@@ -363,6 +363,17 @@ call_parts() {
   echo "$of"
 }
 
+# Removes the week of `from`'s count of parts while the week is given and
+# none of its parts has a video (paulgsc/server#879, #874).
+forget_parts() {
+  local from=$1 made
+  [ -e "$INPUT/$from.json" ] || return 0
+  for made in "$RENDERS/$from"/"$VIDEO" "$RENDERS/$from"-p*/"$VIDEO"; do
+    [ -e "$made" ] && return 0
+  done
+  rm -f "${RENDERS:?}/$from.parts"
+}
+
 # Whether the job still holds `key` (file_host takes an episode out of its
 # input once the owner lets it go; a part of a call's week let go while
 # another still has its video is marked <key>.let-go).
@@ -430,10 +441,14 @@ record() {
 }
 
 # Which revision of `key` the job was given: an essay's `revision` file
-# (file_host's `rust_essays`, C72), empty for every other job.
+# (file_host's `rust_essays`, C72); for the call, its week file's checksum,
+# since file_host gives a newer revision of a week with no video in its
+# place (paulgsc/server#879); empty for every other job.
 revision() {
-  [ "$1" = rust-essay ] || return 0
-  cat "$INPUT/$2/revision" 2> /dev/null
+  case $1 in
+    rust-essay) cat "$INPUT/$2/revision" 2> /dev/null ;;
+    call) cksum < "$INPUT/$(week_of "$2").json" 2> /dev/null ;;
+  esac
 }
 
 # Where `record` leaves `key`'s finished folder: the call's recorder names it
@@ -908,6 +923,13 @@ render_episode() {
     # It runs again over the new essay, its unchanged steps from the cache.
     if [ "$(revision "$job" "$key")" != "$rev" ] && [ "$ATTEMPT" != yielded ]; then
       rm -rf "$(finished "$job" "$key")"
+      # A week of the call re-stamped while it rendered: how many parts it
+      # is may have changed with it, so its count goes and the next attempt
+      # asks again. Only while the week is still given and no part of it
+      # has a video, as file_host gives a revision only then.
+      if [ "$job" = call ]; then
+        forget_parts "$(week_of "$key")"
+      fi
       say "the $job of $key was corrected while it rendered; it runs again over the newer revision" "$log"
       ATTEMPT=yielded
     fi

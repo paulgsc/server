@@ -130,6 +130,16 @@ pub async fn revise(conn: &mut SqliteConnection, week: &Week<'_>) -> Result<Revi
 	Ok(Revised::Taken(revision))
 }
 
+/// Whether `error` is the table refusing a revision of a week a part of
+/// which has a link or a receipt: the week is frozen, nothing went wrong.
+#[must_use]
+pub fn is_frozen(error: &sqlx::Error) -> bool {
+	error.as_database_error().is_some_and(|error| error.message().contains(FROZEN))
+}
+
+/// The words `call_week_revision_in_order` refuses a frozen week with.
+const FROZEN: &str = "a part of the week has a video, so the week is frozen";
+
 /// The week home holds of first day `from`, at its newest revision.
 async fn held_one(conn: &mut SqliteConnection, from: &str) -> Result<Option<HeldWeek>, sqlx::Error> {
 	Ok(held(conn).await?.into_iter().find(|week| week.from == from))
@@ -296,7 +306,7 @@ mod tests {
 
 		video::record_link(&mut conn, "2026-11-06-p2", "bbbbbbbbbbb", at).await.unwrap();
 		let frozen = revise(&mut conn, &week("2026-11-06", "2026-11-12", b"[1]", at)).await;
-		assert!(frozen.is_err(), "a part with a link freezes the week");
+		assert!(frozen.as_ref().is_err_and(is_frozen), "a part with a link freezes the week: {frozen:?}");
 		assert_eq!(body(&mut conn, "2026-11-06").await.unwrap().as_deref(), Some(&b"[]"[..]));
 	}
 

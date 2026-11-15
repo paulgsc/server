@@ -340,6 +340,13 @@ if [ -n "$part" ]; then
   [ "$part" -eq 1 ] || week=$week-p$part
 fi
 echo "$week" >> "$fake/runs"
+# A week re-stamped while it records (paulgsc/server#879): while
+# $FAKE/restamp-<week> holds a part count, the first run rewrites the week's
+# file and makes call-parts answer that count from then on.
+if [ -e "$fake/restamp-$week" ]; then
+  mv "$fake/restamp-$week" "$fake/parts-$week"
+  echo '{"template":5}' > "$week_file"
+fi
 echo "recording $week: no cache warning here"
 # A pid file is written beside and moved into place, so a case reading it
 # meanwhile sees the old pid or the new, never an empty file (#825).
@@ -435,7 +442,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
+    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" "$FAKE"/restamp-* \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
     "$FAKE"/parts-*
   echo "$ROOT" > "$SCRATCH/root"
@@ -1186,6 +1193,28 @@ check "a week call-parts refuses fails as its recorder's refusal does, with its 
   grep -qF "can't make a call:" "$ROOT/renders/call-worker/2026-11-06.failed.log"
 check "and keeps no count of parts, so the next attempt asks again" test ! -e "$ROOT/renders/call/2026-11-06.parts"
 check "and records nothing" test "$(runs_of 2026-11-06)" -eq 0
+
+# A week file_host re-stamped while its first part recorded
+# (paulgsc/server#879): what was made of the old file is never kept, the
+# week's count of parts goes with it, and the next attempt asks the new
+# file how many parts it is and records from it.
+fresh series-restamped 2026-11-06
+echo 3 > "$FAKE/restamp-2026-11-06"
+pass
+check "a render of a week re-stamped under it is run again" test "$(runs_of 2026-11-06)" -eq 2
+check "and the parts are asked of the re-stamp" \
+  test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3 -a "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 2
+check "and the kept part is the re-stamp's, with --part" \
+  test -e "$ROOT/renders/call/2026-11-06/call.mp4" -a -n "$(grep -x -- --part "$FAKE/args-call")"
+check "and that is said" grep -q "corrected while it rendered" "$SCRATCH/pass.out"
+
+# A series one of whose parts has its video keeps its count, whatever
+# happens to another part's attempt.
+fresh series-made 2026-11-06
+mkdir -p "$ROOT/renders/call/2026-11-06-p2" && echo 3 > "$ROOT/renders/call/2026-11-06.parts"
+echo made > "$ROOT/renders/call/2026-11-06-p2/call.mp4"
+INPUT=$ROOT/weeks RENDERS=$ROOT/renders/call VIDEO=call.mp4 forget_parts 2026-11-06
+check "a series with a part made keeps its count of parts" test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3
 
 fresh series-of-one 2026-10-30
 pass

@@ -17,10 +17,13 @@
 //!   served bytes differ from the newest revision home keeps is stored as
 //!   its next revision (`call_week_repo::revise`); the first stays in
 //!   `call_week` as it was. The worker's week file becomes the newest
-//!   revision, and the week's `.parts` is cleared, so its next first job asks
-//!   `render call-parts` again. That is safe only because no part has a video
-//!   (paulgsc/server#874): a series is never read as fewer parts once one of
-//!   its parts was made.
+//!   revision: the week's `.parts` is cleared first, then the file written,
+//!   so its next first job asks `render call-parts` of the revision. That is
+//!   safe only because no part has a video (paulgsc/server#874): a series is
+//!   never read as fewer parts once one of its parts was made. A render that
+//!   was under way when the file changed is never kept: the worker compares
+//!   the file's checksum before and after (`render-calls.sh`'s `revision`),
+//!   and runs again over the new file, its count of parts forgotten.
 //! - **Checked before kept.** The index must read as `some-ui.call-index/1`,
 //!   each week a `YYYY-MM-DD` pair, first day no later than last. A week's
 //!   file must read as `some-ui.call-week/1` for exactly the days the index
@@ -148,21 +151,32 @@ async fn fetched<F: Fetch>(fetch: &F, url: &str, pass: &mut Pass) -> Option<Vec<
 /// A storage failure, which ends the pass.
 pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folders: Folders<'_>, clock: &(dyn Fn() -> DateTime<Utc> + Sync)) -> Result<Pass, sqlx::Error> {
 	let mut pass = Pass::default();
-	let open = open_weeks(db, folders).await?;
-	take_new(db, fetch, clock, &open, &mut pass).await?;
-	export(db, folders, &open, &mut pass).await?;
+	let weeks = open_weeks(db, folders).await?;
+	take_new(db, fetch, clock, &weeks.open, &mut pass).await?;
+	export(db, folders, &weeks.unmade, &mut pass).await?;
 	Ok(pass)
 }
 
-/// The weeks home holds that may still take a revision: no part has a link
-/// recorded (a receipt needs one), no part's `call.mp4` is in `renders`, and
-/// the worker is attempting none of its parts (`.<key>.log` in `status`), so
-/// no video is being made of the revision it holds.
+/// The weeks home holds that no video was made of, and of those the ones
+/// that may take a revision this pass.
+#[derive(Debug, Default)]
+struct Weeks {
+	/// No part has a link recorded (a receipt needs one), and no part's
+	/// `call.mp4` is in `renders`: the worker's file of such a week is kept
+	/// at its newest revision.
+	unmade: HashSet<String>,
+	/// Of those, the ones the worker is attempting none of the parts of
+	/// (`.<key>.log` in `status`): only these are asked for again, so a
+	/// render under way is not thrown away for a revision.
+	open: HashSet<String>,
+}
+
+/// [`Weeks`], read from the record and the worker's folders.
 ///
 /// A folder that cannot be read closes every week, as a video that cannot
 /// be seen must not be taken for none; one that is not there yet has no
 /// video or attempt in it.
-async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<HashSet<String>, sqlx::Error> {
+async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<Weeks, sqlx::Error> {
 	let (held, links) = {
 		let mut conn = db.acquire().await?;
 		(call_week_repo::held(&mut conn).await?, call_week_repo::video::links(&mut conn).await?)
@@ -174,10 +188,10 @@ async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<HashSet<Str
 		}
 	}
 	if open.is_empty() {
-		return Ok(open);
+		return Ok(Weeks::default());
 	}
 	let Some(made) = names_in(folders.renders).await else {
-		return Ok(HashSet::new());
+		return Ok(Weeks::default());
 	};
 	for name in made {
 		if let Some((week, _)) = call_week_repo::video::split_key(&name) {
@@ -186,8 +200,9 @@ async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<HashSet<Str
 			}
 		}
 	}
+	let unmade = open.clone();
 	let Some(status) = names_in(folders.status).await else {
-		return Ok(HashSet::new());
+		return Ok(Weeks { unmade, open: HashSet::new() });
 	};
 	for name in status {
 		let attempt = name.strip_prefix('.').and_then(|rest| rest.strip_suffix(".log"));
@@ -195,7 +210,7 @@ async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<HashSet<Str
 			open.remove(week);
 		}
 	}
-	Ok(open)
+	Ok(Weeks { unmade, open })
 }
 
 /// The names in `folder`; none when it is not there, `None` when it cannot
@@ -219,10 +234,12 @@ async fn names_in(folder: &Path) -> Option<Vec<String>> {
 /// Writes each week home holds that `folder` has no file of, as
 /// `<from>.json`, its newest revision byte for byte, through a temporary
 /// name so the render worker never reads half a file. A week already written
-/// is left alone, unless it took a revision and is still open (`open`): its
-/// file is then compared with the newest revision and written again if it
-/// differs, and the week's `.parts` in `renders` is cleared after it, so the
-/// worker asks how many parts the revision is (paulgsc/server#879).
+/// is left alone, unless it took a revision and no video was made of it
+/// (`unmade`): its file is then compared with the newest revision, and if it
+/// differs the week's `.parts` in `renders` is cleared and only then the file
+/// written, so the worker asks how many parts the revision is
+/// (paulgsc/server#879). A clear that fails writes nothing, so the next pass
+/// tries both again.
 ///
 /// A week whose video the owner let go from My data (`feeds::videos::let_go`) is
 /// never written, and its file is removed if one is left, so the worker
@@ -230,7 +247,7 @@ async fn names_in(folder: &Path) -> Option<Vec<String>> {
 /// (paulgsc/some-ui#2918) is let go so only once every part's video is;
 /// until then each part let go is marked beside its file
 /// (`call_weeks::LET_GO`), and a mark that is missing is written again.
-async fn export(db: &SqlitePool, folders: Folders<'_>, open: &HashSet<String>, pass: &mut Pass) -> Result<(), sqlx::Error> {
+async fn export(db: &SqlitePool, folders: Folders<'_>, unmade: &HashSet<String>, pass: &mut Pass) -> Result<(), sqlx::Error> {
 	let folder = folders.weeks;
 	// Held for the whole pass, so a week let go while it runs is never
 	// written back (`feeds::FOLDERS`).
@@ -269,7 +286,7 @@ async fn export(db: &SqlitePool, folders: Folders<'_>, open: &HashSet<String>, p
 	let mut due = Vec::new();
 	for week in held.into_iter().filter(|week| !let_go.contains(&week.from)) {
 		let file = folder.join(String::from(&week.from) + ".json");
-		let revised = week.revision > 1 && open.contains(&week.from);
+		let revised = week.revision > 1 && unmade.contains(&week.from);
 		if !file.exists() {
 			due.push((week, revised));
 		} else if revised {
@@ -297,15 +314,17 @@ async fn export(db: &SqlitePool, folders: Folders<'_>, open: &HashSet<String>, p
 		let Some(body) = body else { continue };
 		let file = folder.join(String::from(&week.from) + ".json");
 		let partial = folder.join(String::from(".") + &week.from + ".json.partial");
-		let written = tokio::fs::write(&partial, &body).await.is_ok() && tokio::fs::rename(&partial, &file).await.is_ok();
-		// After the file, so a worker that asks between the two asks of the
-		// revision; no part has a video, so no series is read as fewer parts.
+		// The count first: a worker that counts the parts after this asks
+		// the file it then reads, and one that counted before has its render
+		// thrown away once the file changes under it. No part has a video,
+		// so no series is read as fewer parts.
 		let cleared = !revised
 			|| match tokio::fs::remove_file(folders.renders.join(String::from(&week.from) + super::render::PARTS)).await {
 				Err(error) => error.kind() == std::io::ErrorKind::NotFound,
 				Ok(()) => true,
 			};
-		if written && cleared {
+		let written = cleared && tokio::fs::write(&partial, &body).await.is_ok() && tokio::fs::rename(&partial, &file).await.is_ok();
+		if written {
 			pass.exported += 1;
 		} else {
 			pass.failures.push("export");
@@ -355,9 +374,13 @@ async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> Dat
 		};
 		let mut conn = db.acquire().await?;
 		if is_held {
-			match call_week_repo::revise(&mut conn, &week).await? {
-				Revised::Taken(_) => pass.revised += 1,
-				Revised::Same | Revised::NotHeld => pass.held += 1,
+			match call_week_repo::revise(&mut conn, &week).await {
+				Ok(Revised::Taken(_)) => pass.revised += 1,
+				Ok(Revised::Same | Revised::NotHeld) => pass.held += 1,
+				// A link recorded since the pass looked: the week froze, as
+				// the table says.
+				Err(error) if call_week_repo::is_frozen(&error) => pass.held += 1,
+				Err(error) => return Err(error),
 			}
 		} else {
 			match call_week_repo::keep(&mut conn, &week).await? {
@@ -670,10 +693,24 @@ mod tests {
 		assert_eq!((after.revised, after.exported), (0, 0));
 		assert_eq!(std::fs::read(&parts).unwrap(), b"3\n", "the revision's parts stand");
 
-		// A file the worker holds of an older revision is written again.
-		std::fs::write(dir.path().join("2026-11-06.json"), &v4).unwrap();
-		assert_eq!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().exported, 1);
-		assert_eq!(std::fs::read(dir.path().join("2026-11-06.json")).unwrap(), v5);
+		// A file the worker holds of an older revision is written again,
+		// even while an attempt runs: the worker throws that render away.
+		let week_file = dir.path().join("2026-11-06.json");
+		std::fs::write(&week_file, &v4).unwrap();
+		std::fs::write(dir.status.join(".2026-11-06.log"), b"recording").unwrap();
+		// A count of parts that can't be cleared writes nothing...
+		std::fs::remove_file(&parts).unwrap();
+		std::fs::create_dir_all(parts.join("held")).unwrap();
+		let stuck = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!((stuck.exported, stuck.failures.as_slice()), (0, &["export"][..]));
+		assert_eq!(std::fs::read(&week_file).unwrap(), v4, "the file waits for its count to go");
+		// ...and the next pass clears it and writes the file.
+		std::fs::remove_dir_all(&parts).unwrap();
+		std::fs::write(&parts, b"1\n").unwrap();
+		let next = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!((next.exported, next.failures.len()), (1, 0), "{:?}", next.failures);
+		assert_eq!(std::fs::read(&week_file).unwrap(), v5);
+		assert!(!parts.exists(), "the count went first");
 	}
 
 	/// Once any part of a week has a video, made or linked, or is being
