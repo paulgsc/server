@@ -622,11 +622,9 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 			let taken = DateTime::<Utc>::from_timestamp(newest_taken, 0)?.with_timezone(&HOME_ZONE).date_naive();
 			Some(on_or_after((taken + Duration::days(1)).max(today), Weekday::Tue))
 		}
-		// Written by a routine that does not run yet (RR18): no day is
-		// promised.
-		Feed::RustEssay => None,
-		// Written when a session writes one: no day is promised.
-		Feed::CardsEssay => None,
+		// An essay is written by a routine that does not run yet (RR18), a
+		// cards essay when a session writes one: no day is promised.
+		Feed::RustEssay | Feed::CardsEssay => None,
 	}
 }
 

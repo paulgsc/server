@@ -101,9 +101,11 @@ pub async fn holds(conn: &mut SqliteConnection, key: &str) -> Result<bool, sqlx:
 	)
 }
 
-/// Each essay's title, by key: its cut list's top-level `title` when that is
-/// a string, read inside the database so a list never loads the bodies.
-/// `None` for an essay whose cut list has none (or one that is not text).
+/// Each essay's title, by key.
+///
+/// Its cut list's top-level `title` when that is a string, read inside the
+/// database so a list never loads the bodies; `None` for an essay whose cut
+/// list has none (or one that is not text).
 ///
 /// # Errors
 /// A storage failure.

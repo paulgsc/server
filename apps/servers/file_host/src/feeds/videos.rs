@@ -831,7 +831,7 @@ mod tests {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let (renders, essays) = (dir.path().join("cards-essay"), dir.path().join("cards-essays"));
 		let long = "x".repeat(TITLE_CHARS + 5);
-		let titled = format!(r#"{{"title":"{long}"}}"#);
+		let titled = String::from(r#"{"title":""#) + &long + r#""}"#;
 		{
 			let mut conn = pool.acquire().await.unwrap();
 			for (key, body) in [
