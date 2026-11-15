@@ -319,6 +319,70 @@ fn playoff_delta_comes_on_the_tuesday_after_its_newest_fill() {
 	);
 }
 
+/// A week of Rust Rounds held, its essay's Monday (paulgsc/server#890).
+fn round(week: &str, monday: (i32, u32, u32)) -> (String, NaiveDate) {
+	(String::from(week), NaiveDate::from_ymd_opt(monday.0, monday.1, monday.2).unwrap())
+}
+
+#[test]
+fn a_week_s_essay_is_written_the_monday_after_its_due_at_home() {
+	let window = |due: &str| rust_round_repo::week::Window {
+		opens: String::from("2026-11-09T00:00:00-08:00"),
+		due: String::from(due),
+	};
+	let monday = NaiveDate::from_ymd_opt(2026, 11, 16);
+	assert_eq!(essay_monday(&window("2026-11-15T23:59:00-08:00")), monday);
+	// The same instant in UTC is still Sunday at home.
+	assert_eq!(essay_monday(&window("2026-11-16T07:59:00Z")), monday);
+	assert_eq!(essay_monday(&window("Sunday")), None, "a due that is no instant promises nothing");
+}
+
+#[test]
+fn the_rust_essay_comes_the_monday_after_its_round_even_before_any_essay() {
+	// NOW is Sunday Nov 8 at home: 2026-w45 closes tonight, its essay Monday.
+	let seen = FeedSeen {
+		rounds: vec![round("2026-w45", (2026, 11, 9))],
+		..FeedSeen::default()
+	};
+	assert_eq!(seen.newest_taken, None, "no essay was ever taken: the round alone promises it");
+	let read = board(&[(Feed::RustEssay, seen)], None, None, NOW);
+	assert_eq!(
+		read.coming,
+		[Coming {
+			feed: String::from("rust-essay"),
+			on: String::from("2026-11-09")
+		}]
+	);
+}
+
+#[test]
+fn the_rust_essay_taken_promises_the_next_round_s_monday_and_a_past_one_none() {
+	let mut seen = FeedSeen {
+		held: vec![(String::from("2026-w45"), NOW - 3_600)],
+		newest_taken: Some(NOW - 3_600),
+		rounds: vec![round("2026-w46", (2026, 11, 16)), round("2026-w45", (2026, 11, 9))],
+		..FeedSeen::default()
+	};
+	assert_eq!(board(&[(Feed::RustEssay, seen.clone())], None, None, NOW).coming[0].on, "2026-11-16");
+	// Let go is taken too.
+	seen.held.clear();
+	seen.let_go.insert(String::from("2026-w45"));
+	assert_eq!(board(&[(Feed::RustEssay, seen.clone())], None, None, NOW).coming[0].on, "2026-11-16");
+	// A Monday gone by with no newer round open: nothing is owed on a day.
+	seen.rounds = vec![round("2026-w44", (2026, 11, 2))];
+	assert_eq!(board(&[(Feed::RustEssay, seen)], None, None, NOW).coming, []);
+}
+
+#[test]
+fn a_cards_essay_is_expected_on_no_day() {
+	let seen = FeedSeen {
+		held: vec![(String::from("zfs-2026-11-02"), NOW - 3_600)],
+		newest_taken: Some(NOW - 3_600),
+		..FeedSeen::default()
+	};
+	assert_eq!(board(&[(Feed::CardsEssay, seen)], None, None, NOW).coming, []);
+}
+
 #[test]
 fn a_feed_quiet_for_weeks_expects_nothing() {
 	let read = board(&[(Feed::PlayoffDelta, pd_seen(NOW - (ACTIVE_DAYS + 1) * 86_400))], None, None, NOW);
@@ -579,7 +643,7 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	assert_eq!(shelf(&read.waiting), [(String::from("cards-essay"), String::from("rust-scratchpad-2026-11-08"))]);
 	assert_eq!(read.waiting[0].bytes, None, "a waiting essay has no video yet");
 	assert_eq!(read.waiting[0].template, None, "an essay names no template");
-	assert_eq!(read.coming, [], "an essay is expected on no day");
+	assert_eq!(read.coming, [], "a cards essay is expected on no day: a session writes one on request");
 	// A link where the video goes is not one the download serves: done, as
 	// before, with no size.
 	let video = renders.join("zfs-2026-11-02").join(crate::cards_essays::VIDEO);
@@ -590,6 +654,79 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	let read = super::read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(shelf(&read.done), [(String::from("cards-essay"), String::from("zfs-2026-11-02"))]);
 	assert_eq!(read.done[0].bytes, None, "a link's size is not the video's");
+}
+
+/// The read reads the weeks of Rust Rounds the caller holds for the essay's
+/// day: only theirs, only a week that reads as its name (paulgsc/server#890).
+#[tokio::test]
+async fn the_read_promises_the_rust_essay_from_the_caller_s_open_round() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let (renders, status, lane) = (dir.path().join("rust-essay"), dir.path().join("rust-essay-worker"), dir.path().join("call-worker"));
+	for folder in [&renders, &status, &lane] {
+		std::fs::create_dir_all(folder).unwrap();
+	}
+	// A week under `named`'s name whose body says `id`, due at `due` when it has one.
+	let hold_as = |subject: &'static str, seq: i64, named: &'static str, id: &'static str, due: Option<&'static str>| {
+		let db = db.clone();
+		async move {
+			let mut week = serde_json::json!({
+				"schema": "some-ui.rust-week/1", "id": id,
+				"tickets": [{ "id": "QM-311", "program": "fn main() {}\n" }],
+			});
+			if let Some(due) = due {
+				week["opens"] = serde_json::json!("2026-11-02T00:00:00-08:00");
+				week["due"] = serde_json::json!(due);
+			}
+			let body = week.to_string();
+			let sha256 = rust_round_repo::content_hash(body.as_bytes());
+			let name = rust_round_repo::week::mailbox_name(named);
+			let item = mailbox_repo::ItemIn {
+				folder: "brief",
+				name: &name,
+				seq,
+				sha256: &sha256,
+				body: body.as_bytes(),
+			};
+			mailbox_repo::keep_item(&mut db.acquire().await.unwrap(), subject, item, "2026-11-02T08:00:00.000Z")
+				.await
+				.unwrap();
+		}
+	};
+	let folders = Folders {
+		feeds: vec![(Feed::RustEssay, renders, status)],
+		clip_walks: None,
+		previews: None,
+		cards_essays: None,
+		lane,
+	};
+	for subject in ["me", "someone-else"] {
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?1)")
+			.bind(subject)
+			.execute(&db)
+			.await
+			.unwrap();
+	}
+	assert_eq!(read(&db, &folders, "me", NOW).await.unwrap().coming, [], "no round held: nothing promised");
+	let due = Some("2026-11-08T23:59:00-08:00");
+	hold_as("someone-else", 1, "2026-w45", "2026-w45", due).await;
+	assert_eq!(read(&db, &folders, "me", NOW).await.unwrap().coming, [], "another subject's round is not the caller's");
+	hold_as("me", 2, "2026-w45", "2026-w46", due).await;
+	assert_eq!(
+		read(&db, &folders, "me", NOW).await.unwrap().coming,
+		[],
+		"a file that is not the week its name says is no round"
+	);
+	hold_as("me", 3, "2026-w44", "2026-w44", None).await;
+	assert_eq!(read(&db, &folders, "me", NOW).await.unwrap().coming, [], "a week with no window owes no essay");
+	hold_as("me", 4, "2026-w46", "2026-w46", Some("2026-11-15T23:59:00-08:00")).await;
+	assert_eq!(
+		read(&db, &folders, "me", NOW).await.unwrap().coming,
+		[Coming {
+			feed: String::from("rust-essay"),
+			on: String::from("2026-11-16")
+		}]
+	);
 }
 
 #[tokio::test]
