@@ -462,7 +462,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn each_listed_week_home_lacks_is_fetched_and_kept_as_served() {
+	async fn each_listed_week_home_lacks_is_fetched_once_and_kept_as_served() {
 		let (pool, dir) = (pool().await, Dirs::new());
 		let fake = Fake::default();
 		fake.ok("index.json", &index(&[("2026-11-06", "2026-11-12"), ("2026-10-30", "2026-11-05")]));
