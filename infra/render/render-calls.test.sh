@@ -1231,6 +1231,18 @@ check "a series with a part made keeps the count it had" test "$(cat "$ROOT/rend
 check "and its other part records with it, nothing asked" \
   test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a ! -e "$FAKE/parts-runs"
 
+# A count kept before .parts-of was, of a week whose made part the owner
+# let go (its video gone from the drive, marked <key>.let-go): still made,
+# so the count is kept and nothing asked.
+fresh series-let-go-before 2026-11-06
+mkdir -p "$ROOT/renders/call" && echo 2 > "$ROOT/renders/call/2026-11-06.parts"
+touch "$ROOT/weeks/2026-11-06.let-go"
+echo 3 > "$FAKE/parts-2026-11-06"
+pass
+check "a series whose made part was let go keeps the count it had" test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 2
+check "and its other part records with it, nothing asked" \
+  test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a ! -e "$FAKE/parts-runs"
+
 # A week whose file changed after a part was made (file_host gives none so,
 # but a revision written in the instant a part was moved in could be): its
 # other parts fail, loudly, and the count stays.

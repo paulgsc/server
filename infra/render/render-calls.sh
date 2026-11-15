@@ -338,10 +338,11 @@ week_sum() {
   cksum 2> /dev/null < "$INPUT/$1.json"
 }
 
-# Whether any part of the week of `from` has its video.
+# Whether any part of the week of `from` has its video, or had it: a part
+# let go (file_host's <key>.let-go beside the week's file) was made.
 week_made() {
   local made
-  for made in "$RENDERS/$1/$VIDEO" "$RENDERS/$1"-p*/"$VIDEO"; do
+  for made in "$RENDERS/$1/$VIDEO" "$RENDERS/$1"-p*/"$VIDEO" "$INPUT/$1.let-go" "$INPUT/$1"-p*.let-go; do
     [ -e "$made" ] && return 0
   done
   return 1
