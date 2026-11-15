@@ -150,6 +150,10 @@ pub struct EpisodeView {
 	pub link: Option<LinkView>,
 	/// Each step let go, video first.
 	pub receipts: Vec<ReceiptView>,
+	/// Its title, where the feed keeps one: a cards essay's, from its cut
+	/// list (EXPLAIN6, #878), as one line of at most `videos::TITLE_CHARS` characters;
+	/// `null` for every other feed's episode.
+	pub title: Option<String>,
 }
 
 impl From<EpisodeVideo> for EpisodeView {
@@ -166,6 +170,7 @@ impl From<EpisodeVideo> for EpisodeView {
 			of: episode.of,
 			video_bytes: episode.video_bytes,
 			rest_bytes: episode.rest_bytes,
+			title: episode.title,
 		}
 	}
 }
@@ -382,6 +387,13 @@ mod tests {
 			taken_at: "2026-11-10T20:00:00.000Z",
 		};
 		pd_fill_repo::keep(&mut conn, &fill).await.unwrap();
+		let essay = cards_essay_repo::Essay {
+			key: "zfs-2026-11-02",
+			day: "2026-11-02",
+			body: br#"{"title":"Snapshots, not backups"}"#,
+			taken_at: "2026-11-14T08:00:00.000Z",
+		};
+		cards_essay_repo::keep(&mut conn, &essay).await.unwrap();
 		drop(conn);
 		TestState {
 			auth: AuthContext::for_tests(pool.clone(), 100),
@@ -447,11 +459,34 @@ mod tests {
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
 			listed,
-			json!({ "episodes": [{ "key": "2026-SF-09", "week": "2026-SF-09", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [] }] })
+			json!({ "episodes": [{ "key": "2026-SF-09", "week": "2026-SF-09", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": null }] })
 		);
 		let (status, calls) = send(&app, Method::GET, "/feeds/call/videos", Some(&phone), None).await;
 		assert_eq!((status, calls), (StatusCode::OK, json!({ "episodes": [] })), "each feed lists its own");
 		assert_eq!(send(&app, Method::GET, "/feeds/drama/videos", Some(&phone), None).await.0, StatusCode::NOT_FOUND);
+
+		// A cards essay is an episode too (EXPLAIN6, #878), with its title;
+		// it is never linked or let go, so those routes don't know it.
+		let (status, cards) = send(&app, Method::GET, "/feeds/cards-essay/videos", Some(&phone), None).await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(
+			cards,
+			json!({ "episodes": [{ "key": "zfs-2026-11-02", "week": "zfs-2026-11-02", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": "Snapshots, not backups" }] })
+		);
+		let essay = "/feeds/cards-essay/videos/zfs-2026-11-02";
+		let pasted = Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" }));
+		assert_eq!(
+			send(&app, Method::PUT, &(String::from(essay) + "/link"), Some(&phone), pasted).await.0,
+			StatusCode::NOT_FOUND
+		);
+		for step in ["/video", "/rest"] {
+			assert_eq!(send(&app, Method::DELETE, &(String::from(essay) + step), Some(&phone), None).await.0, StatusCode::NOT_FOUND);
+		}
+		assert_eq!(
+			send(&app, Method::GET, &(String::from(essay) + "/video"), Some(&phone), None).await.0,
+			StatusCode::NOT_FOUND,
+			"not made yet"
+		);
 
 		let link = "/feeds/playoff-delta/videos/2026-SF-09/link";
 		let (status, refused) = send(&app, Method::PUT, link, Some(&phone), Some(json!({ "link": "https://www.youtube.com/@me" }))).await;
