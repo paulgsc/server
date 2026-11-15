@@ -1,9 +1,33 @@
 //! One pass of the call's weeks: read `paulgsc/testing`'s `call/index.json`,
 //! then fetch and keep each week it lists that home does not hold.
 //!
-//! - **Only what is missing.** A pass is one request for the index, plus one
-//!   per listed week whose first day home holds no week of. A week home holds
-//!   is never fetched again.
+//! It also takes a newer revision of each week it holds while no part of
+//! that week has a video.
+//!
+//! - **Only what can change.** A pass is one request for the index, plus one
+//!   per listed week whose first day home holds no week of, plus one per
+//!   listed week home holds that is still open: no part of it has a video
+//!   (no link recorded, no `call.mp4` on the drive). A week with a video is
+//!   never fetched again. So the idle pass, every listed week with its
+//!   video, is still the one request an hour; a week waiting for its video
+//!   costs one more an hour until it has it, at most the index's listed
+//!   weeks (its `keep`).
+//! - **Appended, never rewritten** (paulgsc/server#879). An open week whose
+//!   served bytes differ from the newest revision home keeps is stored as
+//!   its next revision (`call_week_repo::revise`); the first stays in
+//!   `call_week` as it was. A week is open until a video is on the drive,
+//!   so the record can hold a revision newer than the one the worker
+//!   rendered (taken while part 1 waited or rendered): the record is what
+//!   was served, and the worker's `<from>.served` is what it rendered.
+//! - **The worker takes a revision in; this never changes a file it reads**
+//!   (C380). The worker's `<from>.json` is the week's first revision, written
+//!   once and never again. The newest revision of an open week is given
+//!   beside it as `<from>.next`, and the render worker alone takes it in, at
+//!   the start of a job of that week and only while no part of the week is
+//!   made (`render-calls.sh`'s `promote`): it then drops the week's count of
+//!   parts and its work itself. One actor, one job at a time, so no revision
+//!   changes under a count or a render, and a series is never read as fewer
+//!   parts once one of its parts was made (paulgsc/server#874).
 //! - **Checked before kept.** The index must read as `some-ui.call-index/1`,
 //!   each week a `YYYY-MM-DD` pair, first day no later than last. A week's
 //!   file must read as `some-ui.call-week/1` for exactly the days the index
@@ -15,12 +39,26 @@
 //! - **No network in tests.** Fetching is `game_feed`'s [`Fetch`] port.
 
 use crate::game_feed::pass::{fetch_capped, Fetch};
-use call_week_repo::{Kept, Week};
+use call_week_repo::{Kept, Revised, Week};
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::path::Path;
+
+/// The folders a pass reads and writes: the render worker's input, and
+/// where it keeps its videos.
+#[derive(Debug, Clone, Copy)]
+pub struct Folders<'a> {
+	/// Where each week home holds is written ([`super::RENDER_FOLDER`]).
+	pub weeks: &'a Path,
+	/// Where the worker keeps each part's video ([`super::render::RENDERS_FOLDER`]).
+	pub renders: &'a Path,
+}
+
+/// What a newer revision of a week is given to the worker as, beside its
+/// `<from>.json`: not `.json`, so the worker never takes it for a week.
+pub const NEXT: &str = ".next";
 
 /// Where the weeks are: `paulgsc/testing`'s `call/` folder on `main`,
 /// public, served without a token.
@@ -42,7 +80,9 @@ pub const MAX_BODY: usize = 1_048_576;
 pub struct Pass {
 	/// Weeks stored this pass.
 	pub added: usize,
-	/// Listed weeks home already held a week of that first day for.
+	/// Newer revisions of weeks home holds stored this pass.
+	pub revised: usize,
+	/// Listed weeks home already held, at the revision served or frozen.
 	pub held: usize,
 	/// Weeks written to the render worker's folder this pass.
 	pub exported: usize,
@@ -106,25 +146,84 @@ async fn fetched<F: Fetch>(fetch: &F, url: &str, pass: &mut Pass) -> Option<Vec<
 	fetch_capped(fetch, url, MAX_BODY).await.map_err(|kind| pass.failures.push(kind)).ok()
 }
 
-/// One pass: [`take_new`], then [`export`].
+/// One pass: [`open_weeks`], [`take_new`], then [`export`].
 ///
-/// It takes each week the repository lists that home lacks, then writes each
-/// week home holds that `folder` lacks, so the render worker sees every week,
-/// a restart included.
+/// It takes each week the repository lists that home lacks and each newer
+/// revision of an open week, then writes each week home holds that the
+/// worker's folder lacks or holds an older revision of, so the render worker
+/// sees every week at its newest revision, a restart included.
 ///
 /// # Errors
 /// A storage failure, which ends the pass.
-pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folder: &Path, clock: &(dyn Fn() -> DateTime<Utc> + Sync)) -> Result<Pass, sqlx::Error> {
+pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folders: Folders<'_>, clock: &(dyn Fn() -> DateTime<Utc> + Sync)) -> Result<Pass, sqlx::Error> {
 	let mut pass = Pass::default();
-	take_new(db, fetch, clock, &mut pass).await?;
-	export(db, folder, &mut pass).await?;
+	let open = open_weeks(db, folders).await?;
+	take_new(db, fetch, clock, &open, &mut pass).await?;
+	export(db, folders, &open, &mut pass).await?;
 	Ok(pass)
 }
 
+/// The weeks home holds that may take a revision: no part has a link
+/// recorded (a receipt needs one), and no part's `call.mp4` is in `renders`.
+/// Only these are asked for again, and only these are given a newer
+/// revision. Cost: one read of the record and of the folder a pass.
+///
+/// A folder or a file that cannot be read closes every week it may hold, as
+/// a video that cannot be seen must not be taken for none; one that is not
+/// there yet has no video in it.
+async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<HashSet<String>, sqlx::Error> {
+	let (held, links) = {
+		let mut conn = db.acquire().await?;
+		(call_week_repo::held(&mut conn).await?, call_week_repo::video::links(&mut conn).await?)
+	};
+	let mut open: HashSet<String> = held.into_iter().map(|week| week.from).collect();
+	for key in links.keys() {
+		if let Some((week, _)) = call_week_repo::video::split_key(key) {
+			open.remove(week);
+		}
+	}
+	if open.is_empty() {
+		return Ok(open);
+	}
+	let Some(made) = names_in(folders.renders).await else {
+		return Ok(HashSet::new());
+	};
+	for name in made {
+		if let Some((week, _)) = call_week_repo::video::split_key(&name) {
+			// A video that can't be looked at is taken for one.
+			if open.contains(week) && folders.renders.join(&name).join(super::render::VIDEO).try_exists().unwrap_or(true) {
+				open.remove(week);
+			}
+		}
+	}
+	Ok(open)
+}
+
+/// The names in `folder`; none when it is not there, `None` when it cannot
+/// be read.
+async fn names_in(folder: &Path) -> Option<Vec<String>> {
+	let mut entries = match tokio::fs::read_dir(folder).await {
+		Ok(entries) => entries,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+		Err(_) => return None,
+	};
+	let mut names = Vec::new();
+	loop {
+		match entries.next_entry().await {
+			Ok(Some(entry)) => names.push(entry.file_name().to_string_lossy().into_owned()),
+			Ok(None) => return Some(names),
+			Err(_) => return None,
+		}
+	}
+}
+
 /// Writes each week home holds that `folder` has no file of, as
-/// `<from>.json`, byte for byte, through a temporary name so the render
-/// worker never reads half a file. A week already written is left alone:
-/// home never rewrites a kept week, so neither does this.
+/// `<from>.json`, its first revision byte for byte, through a temporary
+/// name so the render worker never reads half a file. A week already written
+/// is left alone: home never rewrites a file the worker reads. A newer
+/// revision of an open week (`open`) is given beside it as `<from>.next`,
+/// written again whenever it is not the newest (paulgsc/server#879); the
+/// worker takes it in, or not ([`NEXT`], C380).
 ///
 /// A week whose video the owner let go from My data (`feeds::videos::let_go`) is
 /// never written, and its file is removed if one is left, so the worker
@@ -132,7 +231,8 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folder: &Path, clock
 /// (paulgsc/some-ui#2918) is let go so only once every part's video is;
 /// until then each part let go is marked beside its file
 /// (`call_weeks::LET_GO`), and a mark that is missing is written again.
-async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), sqlx::Error> {
+async fn export(db: &SqlitePool, folders: Folders<'_>, open: &HashSet<String>, pass: &mut Pass) -> Result<(), sqlx::Error> {
+	let folder = folders.weeks;
 	// Held for the whole pass, so a week let go while it runs is never
 	// written back (`feeds::FOLDERS`).
 	let _folders = crate::feeds::FOLDERS.lock().await;
@@ -145,9 +245,11 @@ async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), s
 		)
 	};
 	for from in &let_go {
-		match tokio::fs::remove_file(folder.join(String::from(from) + ".json")).await {
-			Err(error) if error.kind() != std::io::ErrorKind::NotFound => pass.failures.push("export"),
-			_ => {}
+		for name in [String::from(from) + ".json", String::from(from) + NEXT] {
+			match tokio::fs::remove_file(folder.join(name)).await {
+				Err(error) if error.kind() != std::io::ErrorKind::NotFound => pass.failures.push("export"),
+				_ => {}
+			}
 		}
 	}
 	for key in &parts_gone {
@@ -166,25 +268,43 @@ async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), s
 			pass.failures.push("export");
 		}
 	}
-	let missing: Vec<_> = held
-		.into_iter()
-		.filter(|week| !let_go.contains(&week.from) && !folder.join(String::from(&week.from) + ".json").exists())
-		.collect();
-	if missing.is_empty() {
+	// Each file to write: the week's first revision as its file, or its
+	// newest beside it.
+	let mut due = Vec::new();
+	for week in held.into_iter().filter(|week| !let_go.contains(&week.from)) {
+		let file = folder.join(String::from(&week.from) + ".json");
+		if !file.exists() {
+			due.push((week.from.clone(), ".json", false));
+		}
+		if week.revision > 1 && open.contains(&week.from) {
+			let newest = {
+				let mut conn = db.acquire().await?;
+				call_week_repo::body(&mut conn, &week.from).await?
+			};
+			if tokio::fs::read(folder.join(String::from(&week.from) + NEXT)).await.ok() != newest {
+				due.push((week.from, NEXT, true));
+			}
+		}
+	}
+	if due.is_empty() {
 		return Ok(());
 	}
 	if tokio::fs::create_dir_all(folder).await.is_err() {
 		pass.failures.push("export");
 		return Ok(());
 	}
-	for week in missing {
+	for (from, suffix, newest) in due {
 		let body = {
 			let mut conn = db.acquire().await?;
-			call_week_repo::body(&mut conn, &week.from).await?
+			if newest {
+				call_week_repo::body(&mut conn, &from).await?
+			} else {
+				call_week_repo::first_body(&mut conn, &from).await?
+			}
 		};
 		let Some(body) = body else { continue };
-		let file = folder.join(String::from(&week.from) + ".json");
-		let partial = folder.join(String::from(".") + &week.from + ".json.partial");
+		let file = folder.join(String::from(&from) + suffix);
+		let partial = folder.join(String::from(".") + &from + suffix + ".partial");
 		let written = tokio::fs::write(&partial, &body).await.is_ok() && tokio::fs::rename(&partial, &file).await.is_ok();
 		if written {
 			pass.exported += 1;
@@ -196,9 +316,10 @@ async fn export(db: &SqlitePool, folder: &Path, pass: &mut Pass) -> Result<(), s
 }
 
 /// Reads the index, then fetches and keeps each week it lists that home
-/// holds no week of, oldest first. A week that fails is left for the next
-/// pass; the others are still taken.
-async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> DateTime<Utc> + Sync), pass: &mut Pass) -> Result<(), sqlx::Error> {
+/// holds no week of, and each newer revision of a listed week that is
+/// `open`, oldest first. A week that fails is left for the next pass; the
+/// others are still taken.
+async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> DateTime<Utc> + Sync), open: &HashSet<String>, pass: &mut Pass) -> Result<(), sqlx::Error> {
 	let Some(body) = fetched(fetch, &(String::from(SOURCE) + "index.json"), pass).await else {
 		return Ok(());
 	};
@@ -213,7 +334,8 @@ async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> Dat
 	weeks.sort_by(|a, b| a.from.cmp(&b.from));
 	weeks.dedup_by(|a, b| a.from == b.from);
 	for listed in weeks {
-		if held.contains(&listed.from) {
+		let is_held = held.contains(&listed.from);
+		if is_held && !open.contains(&listed.from) {
 			pass.held += 1;
 			continue;
 		}
@@ -233,9 +355,20 @@ async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> Dat
 			taken_at: &taken_at,
 		};
 		let mut conn = db.acquire().await?;
-		match call_week_repo::keep(&mut conn, &week).await? {
-			Kept::Added => pass.added += 1,
-			Kept::Held => pass.held += 1,
+		if is_held {
+			match call_week_repo::revise(&mut conn, &week).await {
+				Ok(Revised::Taken(_)) => pass.revised += 1,
+				Ok(Revised::Same | Revised::NotHeld) => pass.held += 1,
+				// A link recorded since the pass looked: the week froze, as
+				// the table says.
+				Err(error) if call_week_repo::is_frozen(&error) => pass.held += 1,
+				Err(error) => return Err(error),
+			}
+		} else {
+			match call_week_repo::keep(&mut conn, &week).await? {
+				Kept::Added => pass.added += 1,
+				Kept::Held => pass.held += 1,
+			}
 		}
 	}
 	Ok(())
@@ -278,6 +411,33 @@ mod tests {
 		}
 	}
 
+	/// The worker's three folders, apart under one temporary root.
+	struct Dirs {
+		_root: tempfile::TempDir,
+		weeks: std::path::PathBuf,
+		renders: std::path::PathBuf,
+	}
+
+	impl Dirs {
+		fn new() -> Self {
+			let root = tempfile::tempdir().unwrap();
+			let (weeks, renders) = (root.path().join("weeks"), root.path().join("call"));
+			std::fs::create_dir_all(&weeks).unwrap();
+			Self { _root: root, weeks, renders }
+		}
+
+		fn path(&self) -> &Path {
+			&self.weeks
+		}
+
+		fn folders(&self) -> Folders<'_> {
+			Folders {
+				weeks: &self.weeks,
+				renders: &self.renders,
+			}
+		}
+	}
+
 	async fn pool() -> SqlitePool {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		crate::schema::MIGRATOR.run(&pool).await.unwrap();
@@ -301,27 +461,32 @@ mod tests {
 
 	#[tokio::test]
 	async fn each_listed_week_home_lacks_is_fetched_once_and_kept_as_served() {
-		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (pool, dir) = (pool().await, Dirs::new());
 		let fake = Fake::default();
 		fake.ok("index.json", &index(&[("2026-11-06", "2026-11-12"), ("2026-10-30", "2026-11-05")]));
 		let (older, newer) = (week("2026-10-30", "2026-11-05"), week("2026-11-06", "2026-11-12"));
 		fake.ok("2026-10-30.json", &older);
 		fake.ok("2026-11-06.json", &newer);
 
-		let first = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let first = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert_eq!((first.added, first.held, first.failures.len()), (2, 0, 0));
 		assert_eq!(fake.asked(), ["index.json", "2026-10-30.json", "2026-11-06.json"], "oldest first");
 
-		let again = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let again = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert_eq!((again.added, again.held), (0, 2));
-		assert_eq!(fake.asked(), ["index.json"], "a week home holds is never fetched again");
+		assert_eq!(
+			fake.asked(),
+			["index.json", "2026-10-30.json", "2026-11-06.json"],
+			"a week with no video yet is asked again, for a re-stamp"
+		);
+		assert_eq!(std::fs::read(dir.path().join("2026-10-30.json")).unwrap(), older, "kept as served");
 	}
 
 	#[tokio::test]
 	async fn what_does_not_check_out_is_counted_by_kind_and_left_for_the_next_pass() {
-		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (pool, dir) = (pool().await, Dirs::new());
 		let fake = Fake::default();
-		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["connect"]);
+		assert_eq!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().failures, ["connect"]);
 		fake.answer(
 			"index.json",
 			Ok(Answer {
@@ -329,12 +494,16 @@ mod tests {
 				body: b"slow down".to_vec(),
 			}),
 		);
-		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["refused"]);
+		assert_eq!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().failures, ["refused"]);
 		fake.ok("index.json", b"<html>busy</html>");
-		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["unreadable"]);
+		assert_eq!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().failures, ["unreadable"]);
 		for day in ["../secrets", "+2026-1-05", " 2026-1-05", "2026-02-30"] {
 			fake.ok("index.json", &index(&[("2026-10-30", "2026-11-05"), (day, "2026-11-05")]));
-			assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().failures, ["unreadable"], "{day:?} is not a day");
+			assert_eq!(
+				run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().failures,
+				["unreadable"],
+				"{day:?} is not a day"
+			);
 		}
 		fake.asked();
 
@@ -349,18 +518,18 @@ mod tests {
 		fake.ok("2026-10-30.json", &week("2026-10-30", "2026-11-04"));
 		fake.answer("2026-11-06.json", Err(NoAnswer("timeout")));
 		fake.ok("2026-11-13.json", &week("2026-11-13", "2026-11-19"));
-		let pass = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let pass = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert_eq!(pass.failures, ["too_big", "unreadable", "timeout"]);
 		assert_eq!(pass.added, 1, "the good week is still taken");
 
 		fake.ok("2026-11-06.json", &week("2026-11-06", "2026-11-12"));
 		fake.asked();
-		let next = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let next = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert_eq!(next.added, 1);
 		assert_eq!(
 			fake.asked(),
-			["index.json", "2026-10-23.json", "2026-10-30.json", "2026-11-06.json"],
-			"each failed week is asked again"
+			["index.json", "2026-10-23.json", "2026-10-30.json", "2026-11-06.json", "2026-11-13.json"],
+			"each failed week is asked again, and the one held with no video yet"
 		);
 	}
 
@@ -369,24 +538,24 @@ mod tests {
 	/// can't be read still writes what home holds.
 	#[tokio::test]
 	async fn every_week_held_is_written_for_the_render_worker_once() {
-		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (pool, dir) = (pool().await, Dirs::new());
 		let fake = Fake::default();
 		let older = week("2026-10-30", "2026-11-05");
 		fake.ok("index.json", &index(&[("2026-10-30", "2026-11-05")]));
 		fake.ok("2026-10-30.json", &older);
-		let first = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let first = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert_eq!((first.added, first.exported), (1, 1));
 		let file = dir.path().join("2026-10-30.json");
 		assert_eq!(std::fs::read(&file).unwrap(), older);
 
 		std::fs::write(&file, b"touched by hand").unwrap();
 		fake.answer("index.json", Err(NoAnswer("timeout")));
-		let again = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let again = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert_eq!((again.exported, again.failures.as_slice()), (0, &["timeout"][..]));
 		assert_eq!(std::fs::read(&file).unwrap(), b"touched by hand", "a written week is left alone");
 
 		std::fs::remove_file(&file).unwrap();
-		assert_eq!(run_once(&pool, &fake, dir.path(), &clock).await.unwrap().exported, 1, "a missing file is written again");
+		assert_eq!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().exported, 1, "a missing file is written again");
 		assert_eq!(std::fs::read(&file).unwrap(), older);
 		let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
 		assert_eq!(names, ["2026-10-30.json"], "no partial file is left");
@@ -406,7 +575,7 @@ mod tests {
 		};
 		call_week_repo::video::write_receipt(&mut conn, &receipt, 1).await.unwrap();
 		drop(conn);
-		let after = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let after = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert_eq!(after.exported, 0, "a week let go is not written again");
 		assert!(!file.exists(), "and a file left of it is removed");
 	}
@@ -416,11 +585,11 @@ mod tests {
 	/// marks leave once every part's video has.
 	#[tokio::test]
 	async fn a_part_let_go_is_marked_and_the_week_leaves_once_every_part_has() {
-		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let (pool, dir) = (pool().await, Dirs::new());
 		let fake = Fake::default();
 		fake.ok("index.json", &index(&[("2026-11-06", "2026-11-12")]));
 		fake.ok("2026-11-06.json", &week("2026-11-06", "2026-11-12"));
-		run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		let (file, mark) = (dir.path().join("2026-11-06.json"), dir.path().join("2026-11-06-p2.let-go"));
 		let go = |key: &'static str, id: &'static str| {
 			let pool = pool.clone();
@@ -438,17 +607,141 @@ mod tests {
 			}
 		};
 		go("2026-11-06-p2", "bbbbbbbbbbb").await;
-		run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert!(file.exists() && mark.exists(), "part 1 still renders; part 2 never again");
 		std::fs::remove_file(&mark).unwrap();
-		run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert!(mark.exists(), "a mark lost is written again");
 
 		go("2026-11-06", "aaaaaaaaaaa").await;
-		let after = run_once(&pool, &fake, dir.path(), &clock).await.unwrap();
+		let after = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
 		assert!(after.failures.is_empty(), "{:?}", after.failures);
 		let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name()).collect();
 		assert!(names.is_empty(), "the week and its marks are gone: {names:?}");
+	}
+
+	fn stamped(from: &str, to: &str, template: u32) -> Vec<u8> {
+		serde_json::json!({ "schema": WEEK_SCHEMA, "week": { "from": from, "to": to }, "template": template })
+			.to_string()
+			.into_bytes()
+	}
+
+	/// paulgsc/server#879: a week home took at template version 4 and that
+	/// the routine re-stamped to 5 is taken again while it has no video. The
+	/// first revision stays kept, and stays the worker's file; the re-stamp
+	/// is given beside it as `<from>.next`, which the worker takes in itself
+	/// (C380, `render-calls.test.sh`'s "a newer revision of a week with no
+	/// part made is taken in"). This never touches the worker's count.
+	#[tokio::test]
+	async fn a_restamp_of_a_week_with_no_video_is_taken_and_rendered_as_parts() {
+		let (pool, dir) = (pool().await, Dirs::new());
+		let fake = Fake::default();
+		let (v4, v5, v6) = (
+			stamped("2026-11-06", "2026-11-12", 4),
+			stamped("2026-11-06", "2026-11-12", 5),
+			stamped("2026-11-06", "2026-11-12", 6),
+		);
+		fake.ok("index.json", &index(&[("2026-11-06", "2026-11-12")]));
+		fake.ok("2026-11-06.json", &v4);
+		run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		// The worker found the v4 week one part and failed it (16.6 min).
+		std::fs::create_dir_all(&dir.renders).unwrap();
+		let parts = dir.renders.join("2026-11-06.parts");
+		std::fs::write(&parts, b"1\n").unwrap();
+		let (week_file, next) = (dir.path().join("2026-11-06.json"), dir.path().join("2026-11-06.next"));
+		fake.asked();
+
+		let same = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!((same.revised, same.held, same.exported), (0, 1, 0), "the bytes home has are no revision");
+		assert_eq!(fake.asked(), ["index.json", "2026-11-06.json"], "a week with no video is asked again");
+		assert!(!next.exists(), "no revision, nothing given beside the week");
+
+		fake.ok("2026-11-06.json", &v5);
+		let pass = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!((pass.revised, pass.exported, pass.failures.len()), (1, 1, 0), "{:?}", pass.failures);
+		assert_eq!(std::fs::read(&next).unwrap(), v5, "the re-stamp is given beside the week");
+		assert_eq!(std::fs::read(&week_file).unwrap(), v4, "and the file the worker reads is never rewritten");
+		assert_eq!(std::fs::read(&parts).unwrap(), b"1\n", "the count is the worker's");
+		let mut conn = pool.acquire().await.unwrap();
+		let first: Vec<u8> = sqlx::query_scalar("SELECT body FROM call_week").fetch_one(&mut *conn).await.unwrap();
+		assert_eq!(first, v4, "the first revision is kept as it was");
+		assert_eq!(call_week_repo::held(&mut conn).await.unwrap()[0].revision, 2);
+		drop(conn);
+		assert_eq!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().exported, 0, "given once");
+
+		// A newer re-stamp still with no video replaces what was given; a
+		// given file lost is given again; a week file lost is its first.
+		fake.ok("2026-11-06.json", &v6);
+		std::fs::remove_file(&week_file).unwrap();
+		let again = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!((again.revised, again.exported), (1, 2));
+		assert_eq!((std::fs::read(&next).unwrap(), std::fs::read(&week_file).unwrap()), (v6.clone(), v4.clone()));
+
+		// Once a part has its video, nothing more is given: the worker keeps
+		// the week at the revision the video was made from.
+		std::fs::remove_file(&next).unwrap();
+		std::fs::create_dir_all(dir.renders.join("2026-11-06")).unwrap();
+		std::fs::write(dir.renders.join("2026-11-06").join(super::super::render::VIDEO), b"video").unwrap();
+		let made = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!(made.exported, 0);
+		assert!(!next.exists(), "a week with a video is given no revision");
+	}
+
+	/// Once any part of a week has a video, made or linked, the week is
+	/// frozen: it is not asked again, and a re-stamp is not taken. So the
+	/// idle pass, every week with its video, stays the one request for the
+	/// index.
+	#[tokio::test]
+	async fn a_week_with_a_video_ignores_a_restamp_and_the_idle_pass_is_one_request() {
+		let (pool, dir) = (pool().await, Dirs::new());
+		let fake = Fake::default();
+		let listed = [("2026-10-30", "2026-11-05"), ("2026-11-06", "2026-11-12")];
+		fake.ok("index.json", &index(&listed));
+		for (from, to) in listed {
+			fake.ok(&(String::from(from) + ".json"), &stamped(from, to, 4));
+		}
+		run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		// 10-30: part 2's video is on the drive. 11-06: a part's link is
+		// recorded.
+		std::fs::create_dir_all(dir.renders.join("2026-10-30-p2")).unwrap();
+		std::fs::write(dir.renders.join("2026-10-30-p2").join(super::super::render::VIDEO), b"video").unwrap();
+		std::fs::write(dir.renders.join("2026-10-30.parts"), b"2\n").unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		call_week_repo::video::record_link(&mut conn, "2026-11-06", "aaaaaaaaaaa", "2026-11-14T12:00:00.000Z")
+			.await
+			.unwrap();
+		drop(conn);
+		for (from, to) in listed {
+			fake.ok(&(String::from(from) + ".json"), &stamped(from, to, 5));
+		}
+		fake.asked();
+
+		let pass = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!((pass.revised, pass.held, pass.exported), (0, 2, 0));
+		assert_eq!(fake.asked(), ["index.json"], "the idle pass is one request");
+		for (from, to) in listed {
+			assert_eq!(std::fs::read(dir.path().join(String::from(from) + ".json")).unwrap(), stamped(from, to, 4));
+			assert!(!dir.path().join(String::from(from) + NEXT).exists());
+		}
+		assert_eq!(
+			std::fs::read(dir.renders.join("2026-10-30.parts")).unwrap(),
+			b"2\n",
+			"a series with a video keeps its parts"
+		);
+
+		// A drive that can't be read is taken for one with videos.
+		std::fs::remove_dir_all(&dir.renders).unwrap();
+		std::fs::write(&dir.renders, b"not a folder").unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		sqlx::query("INSERT INTO call_week (week_from, week_to, sha256, size, body, taken_at) VALUES ('2026-11-13', '2026-11-19', ?, 2, '{}', 'x')")
+			.bind("0".repeat(64))
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		drop(conn);
+		fake.ok("index.json", &index(&[("2026-11-13", "2026-11-19")]));
+		run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!(fake.asked(), ["index.json"], "nothing is asked again");
 	}
 
 	#[test]

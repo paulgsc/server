@@ -438,7 +438,7 @@ fresh() {
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
-    "$FAKE"/parts-*
+    "$FAKE"/parts-* "$FAKE/parts-refuse"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1193,6 +1193,99 @@ check "a week call-parts refuses fails as its recorder's refusal does, with its 
   grep -qF "can't make a call:" "$ROOT/renders/call-worker/2026-11-06.failed.log"
 check "and keeps no count of parts, so the next attempt asks again" test ! -e "$ROOT/renders/call/2026-11-06.parts"
 check "and records nothing" test "$(runs_of 2026-11-06)" -eq 0
+
+# A newer revision file_host gave of a week no part of which is made
+# (paulgsc/server#879, C380): the week of 2026-11-06 on home, counted one
+# part at template version 4. The worker takes it in at the start of the
+# week's job, drops the count and the work, asks the parts of it, and
+# records the series from it; it records the revision it took.
+fresh series-revised 2026-11-06
+mkdir -p "$ROOT/renders/call" "$ROOT/renders/call-work/2026-11-06/steps"
+echo 1 > "$ROOT/renders/call/2026-11-06.parts"
+echo said > "$ROOT/renders/call-work/2026-11-06/steps/said"
+echo '{"template":5}' > "$ROOT/weeks/2026-11-06.next"
+echo 3 > "$FAKE/parts-2026-11-06"
+pass
+check "a newer revision of a week with no part made is taken in" \
+  cmp -s "$ROOT/weeks/2026-11-06.next" "$ROOT/renders/call/.taken/2026-11-06.json"
+check "and its parts asked of it" \
+  test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3 -a "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1
+check "and recorded from it, as a series" \
+  grep -qx -- "$ROOT/renders/call/.taken/2026-11-06.json" "$FAKE/args-call"
+check "and the revision taken recorded" \
+  test "$(cat "$ROOT/renders/call/2026-11-06.served")" = "$(sha256sum < "$ROOT/weeks/2026-11-06.next" | cut -d' ' -f1)"
+pass
+pass
+check "it is taken in once" test "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1 -a ! -e "$ROOT/renders/call-worker/2026-11-06.frozen.log"
+check "and the series is made from it" test -e "$ROOT/renders/call/2026-11-06-p3/call.mp4"
+
+# A newer revision of fewer parts: the parts it no longer has are named no
+# job, and a newer revision's old work goes with its count. A week no
+# longer given takes what the worker took in of it with it.
+fresh series-fewer 2026-11-06
+mkdir -p "$ROOT/renders/call" "$ROOT/renders/call-work/2026-11-06/steps"
+echo 3 > "$ROOT/renders/call/2026-11-06.parts"
+echo said > "$ROOT/renders/call-work/2026-11-06/steps/said"
+echo '{"template":5}' > "$ROOT/weeks/2026-11-06.next"
+echo 1 > "$FAKE/parts-2026-11-06"
+pass
+check "a revision of one part is recorded as one, from fresh work" \
+  test -e "$ROOT/renders/call/2026-11-06/call.mp4" -a "$(grep -c "reused step said" "$SCRATCH/pass.out")" -eq 0
+check "and the parts it no longer has are never tried" \
+  test "$(runs_of 2026-11-06-p2)" -eq 0 -a "$(runs_of 2026-11-06-p3)" -eq 0 -a ! -e "$ROOT/renders/call-worker/2026-11-06-p3.failed.log"
+
+# A week that took a revision in and lost its copy is never recorded from
+# another file: its next part fails, saying so.
+fresh series-copy-lost 2026-11-06
+mkdir -p "$ROOT/renders/call/2026-11-06"
+echo 2 > "$ROOT/renders/call/2026-11-06.parts"
+echo made > "$ROOT/renders/call/2026-11-06/call.mp4"
+echo 0000 > "$ROOT/renders/call/2026-11-06.served"
+pass
+check "a week whose revision taken in is lost records nothing from another file" \
+  test "$(runs_of 2026-11-06-p2)" -eq 0 -a ! -e "$ROOT/renders/call/2026-11-06-p2/call.mp4"
+check "and says so" grep -q "whose copy is gone" "$ROOT/renders/call-worker/2026-11-06-p2.failed.log"
+
+# A revision whose parts can't be asked: its first part fails, and the later
+# parts listed from the old count are never named a job.
+fresh series-uncounted 2026-11-06
+mkdir -p "$ROOT/renders/call"
+echo 3 > "$ROOT/renders/call/2026-11-06.parts"
+echo '{"template":9}' > "$ROOT/weeks/2026-11-06.next"
+touch "$FAKE/parts-refuse"
+pass
+check "a revision the parts can't be asked of fails its first part" test -e "$ROOT/renders/call-worker/2026-11-06.failed.log"
+check "and names no job for a part of the old count" \
+  test ! -e "$ROOT/renders/call-worker/2026-11-06-p2.failed.log" -a ! -e "$ROOT/renders/call-worker/2026-11-06-p3.failed.log"
+
+# A newer revision of a week a part of which is made, or was and was let go:
+# never taken in, said once, and the rest of the series recorded from the
+# file its made parts were.
+for made in video let-go; do
+  fresh "series-frozen-$made" 2026-11-06
+  mkdir -p "$ROOT/renders/call/2026-11-06"
+  echo 3 > "$ROOT/renders/call/2026-11-06.parts"
+  # Part 3 fails, so a second pass takes its job, and looks at the
+  # revision, again.
+  touch "$FAKE/fail-2026-11-06-p3"
+  if [ "$made" = video ]; then
+    echo made > "$ROOT/renders/call/2026-11-06/call.mp4"
+  else
+    touch "$ROOT/weeks/2026-11-06.let-go"
+  fi
+  echo '{"template":5}' > "$ROOT/weeks/2026-11-06.next"
+  echo 3 > "$FAKE/parts-2026-11-06"
+  pass
+  check "a newer revision of a week with a part $made is never taken in" \
+    test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3
+  pass
+  check "and that is said, once, though its waiting part is tried again" \
+    test "$(runs_of 2026-11-06-p3)" -eq 2 \
+    -a "$(grep -c "stays at the revision its parts were made from" "$ROOT/renders/call-worker/2026-11-06.frozen.log")" -eq 1 \
+    -a "$(grep -c "stays at the revision its parts were made from" "$SCRATCH/pass.out")" -eq 0
+  check "and its other part recorded from the file it was" \
+    test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a -n "$(grep -x -- "$ROOT/weeks/2026-11-06.json" "$FAKE/args-call")"
+done
 
 fresh series-of-one 2026-10-30
 pass
