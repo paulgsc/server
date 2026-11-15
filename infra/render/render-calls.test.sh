@@ -1205,13 +1205,31 @@ check "and its parts asked of it" \
   test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3 -a "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1
 check "and recorded from it, as a series" \
   grep -qx -- "$ROOT/renders/call/.taken/2026-11-06.json" "$FAKE/args-call"
-check "its old work gone" test "$(grep -c "reused step said" "$SCRATCH/pass.out")" -eq 0
 check "and the revision taken recorded" \
   test "$(cat "$ROOT/renders/call/2026-11-06.served")" = "$(sha256sum < "$ROOT/weeks/2026-11-06.next" | cut -d' ' -f1)"
 pass
 pass
 check "it is taken in once" test "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1 -a ! -e "$ROOT/renders/call-worker/2026-11-06.frozen.log"
 check "and the series is made from it" test -e "$ROOT/renders/call/2026-11-06-p3/call.mp4"
+
+# A newer revision of fewer parts: the parts it no longer has are named no
+# job, and a newer revision's old work goes with its count. A week no
+# longer given takes what the worker took in of it with it.
+fresh series-fewer 2026-11-06
+mkdir -p "$ROOT/renders/call" "$ROOT/renders/call-work/2026-11-06/steps"
+echo 3 > "$ROOT/renders/call/2026-11-06.parts"
+echo said > "$ROOT/renders/call-work/2026-11-06/steps/said"
+echo '{"template":5}' > "$ROOT/weeks/2026-11-06.next"
+echo 1 > "$FAKE/parts-2026-11-06"
+pass
+check "a revision of one part is recorded as one, from fresh work" \
+  test -e "$ROOT/renders/call/2026-11-06/call.mp4" -a "$(grep -c "reused step said" "$SCRATCH/pass.out")" -eq 0
+check "and the parts it no longer has are never tried" \
+  test "$(runs_of 2026-11-06-p2)" -eq 0 -a "$(runs_of 2026-11-06-p3)" -eq 0 -a ! -e "$ROOT/renders/call-worker/2026-11-06-p3.failed.log"
+rm "$ROOT/weeks/2026-11-06.json"
+pass
+check "a week no longer given loses what was taken in of it" \
+  test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a ! -e "$ROOT/renders/call/2026-11-06.served"
 
 # A newer revision of a week a part of which is made, or was and was let go:
 # never taken in, said once, and the rest of the series recorded from the

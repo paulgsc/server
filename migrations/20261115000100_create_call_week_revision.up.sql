@@ -6,8 +6,11 @@
 -- and was refused for good. So home takes a re-stamp as a new revision here,
 -- **only while no part of the week has a video**: the `call_weeks` pass asks
 -- for each held week with none, and appends what it serves when its bytes
--- differ from the newest revision home keeps. Once any part has a video, the
--- week is frozen at the revision it was rendered from, as before.
+-- differ from the newest revision home keeps. Once any part has a video, no
+-- revision is taken. The render worker takes a revision in only while no
+-- part is made, so a revision taken while part 1 waits or renders can be
+-- newer than the one its video is made of: this table keeps what was
+-- served, and the worker's `<from>.served` says which one it rendered.
 -- `call_week_repo` is the one module that writes this table.
 --
 -- **Nothing is rewritten** (paulgsc/some-ui CLAUDE.md, "Never lose the

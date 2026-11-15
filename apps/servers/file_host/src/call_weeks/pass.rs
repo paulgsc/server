@@ -15,7 +15,10 @@
 //! - **Appended, never rewritten** (paulgsc/server#879). An open week whose
 //!   served bytes differ from the newest revision home keeps is stored as
 //!   its next revision (`call_week_repo::revise`); the first stays in
-//!   `call_week` as it was.
+//!   `call_week` as it was. A week is open until a video is on the drive,
+//!   so the record can hold a revision newer than the one the worker
+//!   rendered (taken while part 1 waited or rendered): the record is what
+//!   was served, and the worker's `<from>.served` is what it rendered.
 //! - **The worker takes a revision in; this never changes a file it reads**
 //!   (C380). The worker's `<from>.json` is the week's first revision, written
 //!   once and never again. The newest revision of an open week is given

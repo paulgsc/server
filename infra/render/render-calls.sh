@@ -1061,7 +1061,6 @@ prune_week() {
   local from=$1 part key
   if [ ! -e "$INPUT/$from.json" ]; then
     rm -rf "${WORK:?}/$from"
-    rm -f "${RENDERS:?}/.taken/$from.json"
     return 0
   fi
   for part in "$WORK/$from"/part-*/; do
@@ -1112,6 +1111,12 @@ render_one() {
     echo "the newer revision of the week of $(week_of "$key") could not be taken in; it is tried again next pass" >&2
     return 0
   fi
+  # A part the week no longer has, once a revision of fewer parts was
+  # counted this pass: no job is named for it.
+  if [ "$job" = call ] && [ -r "$RENDERS/$(week_of "$key").parts" ] &&
+    [ "$(part_of "$key")" -gt "$(parts_known "$(week_of "$key")")" ]; then
+    return 0
+  fi
   failed_recently "$job" "$key" && return 0
   echo "rendering the $job of $key"
   mkdir -p "$WORK" && prune_work "$job" "$key"
@@ -1139,9 +1144,18 @@ render_one() {
 
 # One pass of `job`: each of its episodes with no video, oldest first.
 run_job() {
-  local job=$1 key
+  local job=$1 key taken
   use_job "$job"
   mkdir -p "$STATUS" && put last-pass "$(date +%s)"
+  # A week of the call no longer given takes the revision it took in, and
+  # its record of it, with it.
+  if [ "$job" = call ]; then
+    for taken in "$RENDERS/.taken"/*.json; do
+      [ -e "$taken" ] || continue
+      key=$(basename "$taken" .json)
+      [ -e "$INPUT/$key.json" ] || rm -f "$taken" "$RENDERS/$key.served"
+    done
+  fi
   for key in $(episodes "$job"); do
     render_one "$job" "$key"
   done
