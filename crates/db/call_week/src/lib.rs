@@ -193,6 +193,15 @@ pub async fn as_of(conn: &mut SqliteConnection) -> Result<Option<(i64, String)>,
 	Ok(row.newest.map(|newest| (row.count, newest)))
 }
 
+/// The bytes of the week starting `from` as home first took it (its first
+/// revision), or `None`.
+///
+/// # Errors
+/// A storage failure.
+pub async fn first_body(conn: &mut SqliteConnection, from: &str) -> Result<Option<Vec<u8>>, sqlx::Error> {
+	sqlx::query_scalar!("SELECT body FROM call_week WHERE week_from = ?", from).fetch_optional(&mut *conn).await
+}
+
 /// The bytes of the newest revision home holds of the week starting `from`,
 /// or `None`.
 ///
@@ -272,6 +281,7 @@ mod tests {
 		assert_eq!(revise(&mut conn, &week("2026-11-06", "2026-11-12", v5, later)).await.unwrap(), Revised::Taken(2));
 		assert_eq!(revise(&mut conn, &week("2026-11-06", "2026-11-12", v5, later)).await.unwrap(), Revised::Same);
 		assert_eq!(body(&mut conn, "2026-11-06").await.unwrap().as_deref(), Some(&v5[..]), "the newest is served");
+		assert_eq!(first_body(&mut conn, "2026-11-06").await.unwrap().as_deref(), Some(&v4[..]), "and the first kept");
 		let held = held(&mut conn).await.unwrap();
 		assert_eq!((held[0].sha256.as_str(), held[0].revision), (sha256_hex(v5).as_str(), 2));
 		assert_eq!(as_of(&mut conn).await.unwrap(), Some((2, later.to_owned())), "a revision moves the index");

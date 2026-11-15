@@ -172,9 +172,10 @@ pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<R
 
 /// How many parts the worker found the week of `week` is.
 ///
-/// Read from `<renders>/<week>.parts` (paulgsc/some-ui#2918), which it writes once,
-/// from the recorder's `render call-parts`, before it records the week's
-/// first part. A week it has not looked at yet, or one rendered before
+/// Read from `<renders>/<week>.parts` (paulgsc/some-ui#2918), which it writes
+/// from the recorder's `render call-parts` before it records the week's first
+/// part, and drops only when it takes in a newer revision of a week no part
+/// of which is made (paulgsc/server#879, C380). A week it has not looked at yet, or one rendered before
 /// parts, is one part, as every week was.
 pub async fn parts(renders: &Path, week: &str) -> u32 {
 	parts_read(renders, week).await.unwrap_or(1)

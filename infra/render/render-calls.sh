@@ -30,11 +30,7 @@
 # (no work starts outside the lane), and keeps the answer in
 # /renders/call/<from>.parts, which file_host reads too
 # (`call_weeks::render::parts`); a week with none is one part, as every
-# week rendered before parts is. The worker alone writes and drops it: beside
-# it, <from>.parts-of is the checksum of the week file it was asked of, and a
-# count of another file (file_host gives a re-stamp in place of a week no
-# part of which has a video, paulgsc/server#879) is asked again only while no
-# part is made (`call_parts`). Each part is then its own job, keyed
+# week rendered before parts is. Each part is then its own job, keyed
 # (week, part): part 1 by the week's day, as a week of one video always
 # was, and part k by <from>-p<k>, each recorded with `--part k`, kept in
 # /renders/call/<key>/, resumed from its own step cache, failed and retried
@@ -332,12 +328,6 @@ parts_known() {
   if [[ "$of" =~ ^[1-9][0-9]?$ ]]; then echo "$of"; else echo 1; fi
 }
 
-# The checksum of the week of `from`'s file as file_host gives it; empty
-# once it is no longer given.
-week_sum() {
-  cksum 2> /dev/null < "$INPUT/$1.json"
-}
-
 # Whether any part of the week of `from` has its video, or had it: a part
 # let go (file_host's <key>.let-go beside the week's file) was made.
 week_made() {
@@ -348,43 +338,65 @@ week_made() {
   return 1
 }
 
+# The week file the call of `from` is recorded from: the revision this
+# worker took in (`promote`), or the week as file_host first gave it.
+week_file() {
+  if [ -e "$RENDERS/.taken/$1.json" ]; then
+    echo "$RENDERS/.taken/$1.json"
+  else
+    echo "$INPUT/$1.json"
+  fi
+}
+
+# A newer revision of the week of `from` (paulgsc/server#879, C380). file_host
+# keeps the week's first revision as <from>.json and gives the newest as
+# <from>.next beside it, never rewriting a file it gave; this worker alone
+# takes it in, at the start of a job of that week, one job at a time, so no
+# revision ever changes under a count or a render. It takes it only while no
+# part of the week is made: it copies it to <renders>/.taken/<from>.json,
+# which the week is recorded from from then on, drops the week's count of
+# parts and its work, and records the revision's SHA-256 in
+# <renders>/<from>.served. Once a part is made, the week is frozen at the
+# revision it was made from (#874: a count is never dropped once a part is
+# made), and that is said once, in <status>/<from>.frozen.log.
+promote() {
+  local from=$1 next="$INPUT/$1.next" sha served=
+  [ -e "$next" ] || return 0
+  sha=$(sha256sum < "$next" | cut -d' ' -f1) || return 1
+  [ -r "$RENDERS/$from.served" ] && read -r served < "$RENDERS/$from.served"
+  [ "$sha" != "$served" ] || return 0
+  if week_made "$from"; then
+    if [ ! -e "$STATUS/$from.frozen.log" ]; then
+      mkdir -p "$STATUS" &&
+        echo "a newer revision of the week of $from was given after a part of it was made; the week stays at the revision its parts were made from" |
+        tee "$STATUS/$from.frozen.log"
+    fi
+    return 0
+  fi
+  mkdir -p "$RENDERS/.taken" &&
+    cp "$next" "$RENDERS/.taken/.$from.json" &&
+    [ "$(sha256sum < "$RENDERS/.taken/.$from.json" | cut -d' ' -f1)" = "$sha" ] &&
+    rm -f "${RENDERS:?}/$from.parts" &&
+    rm -rf "${WORK:?}/$from" &&
+    mv -f "$RENDERS/.taken/.$from.json" "$RENDERS/.taken/$from.json" &&
+    put_in "$RENDERS" "$from.served" "$sha" || return 1
+  # An attempt that failed was of the old revision: the new one is tried now.
+  rm -f "${STATUS:?}/$from.failed.log" "${STATUS:?}/$from"-p*.failed.log
+  echo "the week of $from takes the newer revision file_host gave; its parts are asked again"
+}
+
 # How many parts the week of `from` is: kept, or asked of the recorder's
 # `render call-parts` (its JSON, `{week, parts: [{part, of, ...}]}`) and
-# kept, so a week is asked once. Run inside the week's jobs, which the lane
-# admitted. Refused (a week that can't make a call) or unreadable, the job
-# fails, as a recorder that refuses the week does.
-#
-# The worker alone owns the count (paulgsc/server#879, C380). Beside it,
-# <from>.parts-of keeps the checksum of the week file it was asked of.
-# file_host gives a newer revision of a week in place of its file only while
-# no part has a video; so a count of another file (or one kept before
-# .parts-of was, as every count before #879 is) is asked again while no part
-# has a video. Once one has, a count is never dropped (#874: a series read as
-# fewer parts lets a whole week go with its first part). A count of another
-# file then fails the job, loudly, rather than render the rest of a series
-# from a file its made parts were not.
+# kept, so a week is asked once. Run inside the week's first job, which the
+# lane admitted. Refused (a week that can't make a call) or unreadable, the
+# job fails, as a recorder that refuses the week does.
 call_parts() {
-  local from=$1 said text parts ofs n=0 part of= sum counted=
-  sum=$(week_sum "$from")
+  local from=$1 said text parts ofs n=0 part of=
   if [ -r "$RENDERS/$from.parts" ]; then
-    [ -r "$RENDERS/$from.parts-of" ] && counted=$(cat "$RENDERS/$from.parts-of")
-    if [ "$counted" = "$sum" ]; then
-      parts_known "$from"
-      return 0
-    fi
-    if week_made "$from"; then
-      if [ -z "$counted" ]; then
-        # Counted before .parts-of was, and a part made since: kept as it is.
-        parts_known "$from"
-        return 0
-      fi
-      echo "the week of $from changed after a part of it was made; it is frozen at the parts made, and no other part is recorded from the changed file" >&2
-      return 1
-    fi
-    echo "the week of $from is not the file its parts were counted from; they are asked again" >&2
-    rm -f "${RENDERS:?}/$from.parts" "${RENDERS:?}/$from.parts-of"
+    parts_known "$from"
+    return 0
   fi
-  if ! said=$(cd "$RENDER_DIR" && "$TSX" src/cli.ts call-parts "$INPUT/$from.json"); then
+  if ! said=$(cd "$RENDER_DIR" && "$TSX" src/cli.ts call-parts "$(week_file "$from")"); then
     printf '%s\n' "$said" >&2
     echo "render call-parts refused the week of $from" >&2
     return 1
@@ -403,7 +415,7 @@ call_parts() {
     echo "render call-parts said no parts this worker reads for the week of $from" >&2
     return 1
   fi
-  mkdir -p "$RENDERS" && put_in "$RENDERS" "$from.parts" "$of" && put_in "$RENDERS" "$from.parts-of" "$sum" || return 1
+  mkdir -p "$RENDERS" && put_in "$RENDERS" "$from.parts" "$of" || return 1
   echo "the week of $from is $of part(s)" >&2
   echo "$of"
 }
@@ -438,10 +450,10 @@ record() {
       fi
       if [ "$of" -eq 1 ]; then
         (cd "$APP_DIR" && "$TSX" tests/record/call.ts "${COMMON[@]}" \
-          --week-file "$INPUT/$from.json" --out "$WORK")
+          --week-file "$(week_file "$from")" --out "$WORK")
       else
         (cd "$APP_DIR" && "$TSX" tests/record/call.ts "${COMMON[@]}" \
-          --week-file "$INPUT/$from.json" --part "$part" --out "$WORK")
+          --week-file "$(week_file "$from")" --part "$part" --out "$WORK")
       fi ;;
     playoff-delta)
       (cd "$APP_DIR" && "$TSX" tests/record/playoff-delta.ts "${COMMON[@]}" \
@@ -475,14 +487,10 @@ record() {
 }
 
 # Which revision of `key` the job was given: an essay's `revision` file
-# (file_host's `rust_essays`, C72); for the call, its week file's checksum,
-# since file_host gives a newer revision of a week with no video in its
-# place (paulgsc/server#879); empty for every other job.
+# (file_host's `rust_essays`, C72), empty for every other job.
 revision() {
-  case $1 in
-    rust-essay) cat "$INPUT/$2/revision" 2> /dev/null ;;
-    call) week_sum "$(week_of "$2")" ;;
-  esac
+  [ "$1" = rust-essay ] || return 0
+  cat "$INPUT/$2/revision" 2> /dev/null
 }
 
 # Where `record` leaves `key`'s finished folder: the call's recorder names it
@@ -955,12 +963,8 @@ render_episode() {
     # An essay corrected while it rendered (file_host gave a newer
     # revision, C72): what was made is of the old one, so it is never kept.
     # It runs again over the new essay, its unchanged steps from the cache.
-    # Compared after a yield too: what a yield leaves is its kept steps,
-    # never removed, and the next attempt runs over the newer revision (a
-    # week of the call re-stamped meanwhile has its parts asked again by
-    # `call_parts`). What a finished attempt made of the old one is not kept.
-    if [ "$(revision "$job" "$key")" != "$rev" ]; then
-      [ "$ATTEMPT" = yielded ] || rm -rf "$(finished "$job" "$key")"
+    if [ "$(revision "$job" "$key")" != "$rev" ] && [ "$ATTEMPT" != yielded ]; then
+      rm -rf "$(finished "$job" "$key")"
       say "the $job of $key was corrected while it rendered; it runs again over the newer revision" "$log"
       ATTEMPT=yielded
     fi
@@ -1057,6 +1061,7 @@ prune_week() {
   local from=$1 part key
   if [ ! -e "$INPUT/$from.json" ]; then
     rm -rf "${WORK:?}/$from"
+    rm -f "${RENDERS:?}/.taken/$from.json"
     return 0
   fi
   for part in "$WORK/$from"/part-*/; do
@@ -1101,6 +1106,12 @@ render_one() {
   # Let go (a part of a call's week marked so) or no longer given: no job is
   # named for it, so the lane never sees one it will not admit.
   holds "$job" "$key" || return 0
+  # A newer revision of a week of the call is taken in first, outside any
+  # render (`promote`); one that can't be is tried again next pass.
+  if [ "$job" = call ] && ! promote "$(week_of "$key")"; then
+    echo "the newer revision of the week of $(week_of "$key") could not be taken in; it is tried again next pass" >&2
+    return 0
+  fi
   failed_recently "$job" "$key" && return 0
   echo "rendering the $job of $key"
   mkdir -p "$WORK" && prune_work "$job" "$key"

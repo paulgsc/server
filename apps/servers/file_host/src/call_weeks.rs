@@ -24,7 +24,9 @@
 //! newer revision of it is appended only while no part of the week has a
 //! video (paulgsc/server#879; [`pass`]'s module doc has the rest). It also
 //! writes each week it holds to [`RENDER_FOLDER`] for home's render worker,
-//! which records and renders the call from it (`infra/compose/call-render.yml`).
+//! which records and renders the call from it (`infra/compose/call-render.yml`):
+//! its first revision, never rewritten, and a newer one beside it as
+//! `<from>.next`, which the worker alone takes in (C380).
 //!
 //! **What it says.** Each pass's start and whether it failed (CW2), and each
 //! minute what the render worker has made of the weeks held ([`render`],
@@ -151,7 +153,6 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 					let folders = pass::Folders {
 						weeks: std::path::Path::new(RENDER_FOLDER),
 						renders: std::path::Path::new(render::RENDERS_FOLDER),
-						status: std::path::Path::new(render::STATUS_FOLDER),
 					};
 					let result = pass::run_once(&db, &context.fetch, folders, &chrono::Utc::now).await;
 					crate::metrics::call_weeks::record_pass(&result);

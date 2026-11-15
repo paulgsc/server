@@ -12,8 +12,9 @@
 --
 -- **Nothing is rewritten** (paulgsc/some-ui CLAUDE.md, "Never lose the
 -- record"): `call_week`'s row is revision 1 and stays as it is; each later
--- revision is a row here. The newest of a week is the one home serves, to
--- the render worker and in the mailbox's `call` index.
+-- revision is a row here. The newest of a week is the one the mailbox's
+-- `call` index lists, and the one given to the render worker beside the
+-- week's first, which the worker takes in only while no part is made (C380).
 --
 -- Not subject-scoped, as `call_week` is not. No column names a person.
 --

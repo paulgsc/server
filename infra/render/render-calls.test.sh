@@ -340,13 +340,6 @@ if [ -n "$part" ]; then
   [ "$part" -eq 1 ] || week=$week-p$part
 fi
 echo "$week" >> "$fake/runs"
-# A week re-stamped while it records (paulgsc/server#879): while
-# $FAKE/restamp-<week> holds a part count, the first run rewrites the week's
-# file and makes call-parts answer that count from then on.
-if [ -e "$fake/restamp-$week" ]; then
-  mv "$fake/restamp-$week" "$fake/parts-$week"
-  echo '{"template":5}' > "$week_file"
-fi
 echo "recording $week: no cache warning here"
 # A pid file is written beside and moved into place, so a case reading it
 # meanwhile sees the old pid or the new, never an empty file (#825).
@@ -442,7 +435,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" "$FAKE"/restamp-* \
+    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
     "$FAKE"/parts-*
   echo "$ROOT" > "$SCRATCH/root"
@@ -1194,70 +1187,53 @@ check "a week call-parts refuses fails as its recorder's refusal does, with its 
 check "and keeps no count of parts, so the next attempt asks again" test ! -e "$ROOT/renders/call/2026-11-06.parts"
 check "and records nothing" test "$(runs_of 2026-11-06)" -eq 0
 
-# A week file_host re-stamped while its first part recorded
-# (paulgsc/server#879): what was made of the old file is never kept, and the
-# next attempt asks the new file how many parts it is and records from it.
-fresh series-restamped 2026-11-06
-echo 3 > "$FAKE/restamp-2026-11-06"
-pass
-check "a render of a week re-stamped under it is run again" test "$(runs_of 2026-11-06)" -eq 2
-check "and the parts are asked of the re-stamp" \
-  test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3 -a "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 2
-check "and kept beside the file they were counted from" \
-  test "$(cat "$ROOT/renders/call/2026-11-06.parts-of")" = "$(cksum < "$ROOT/weeks/2026-11-06.json")"
-check "and the kept part is the re-stamp's, with --part" \
-  test -e "$ROOT/renders/call/2026-11-06/call.mp4" -a -n "$(grep -x -- --part "$FAKE/args-call")"
-check "and that is said" grep -q "corrected while it rendered" "$SCRATCH/pass.out"
-
-# A count kept before .parts-of was (the week of 2026-11-06 on home, counted
-# 1 at template version 4), with no part made: asked again of the file
-# file_host gives now, and the series recorded from it.
-fresh series-counted-before 2026-11-06
-mkdir -p "$ROOT/renders/call" && echo 1 > "$ROOT/renders/call/2026-11-06.parts"
+# A newer revision file_host gave of a week no part of which is made
+# (paulgsc/server#879, C380): the week of 2026-11-06 on home, counted one
+# part at template version 4. The worker takes it in at the start of the
+# week's job, drops the count and the work, asks the parts of it, and
+# records the series from it; it records the revision it took.
+fresh series-revised 2026-11-06
+mkdir -p "$ROOT/renders/call" "$ROOT/renders/call-work/2026-11-06/steps"
+echo 1 > "$ROOT/renders/call/2026-11-06.parts"
+echo said > "$ROOT/renders/call-work/2026-11-06/steps/said"
+echo '{"template":5}' > "$ROOT/weeks/2026-11-06.next"
 echo 3 > "$FAKE/parts-2026-11-06"
 pass
-check "a count of another file is asked again while no part is made" \
+check "a newer revision of a week with no part made is taken in" \
+  cmp -s "$ROOT/weeks/2026-11-06.next" "$ROOT/renders/call/.taken/2026-11-06.json"
+check "and its parts asked of it" \
   test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 3 -a "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1
-check "and part 1 is recorded as a part of the series" grep -qx -- --part "$FAKE/args-call"
+check "and recorded from it, as a series" \
+  grep -qx -- "$ROOT/renders/call/.taken/2026-11-06.json" "$FAKE/args-call"
+check "its old work gone" test "$(grep -c "reused step said" "$SCRATCH/pass.out")" -eq 0
+check "and the revision taken recorded" \
+  test "$(cat "$ROOT/renders/call/2026-11-06.served")" = "$(sha256sum < "$ROOT/weeks/2026-11-06.next" | cut -d' ' -f1)"
+pass
+pass
+check "it is taken in once" test "$(grep -cx 2026-11-06 "$FAKE/parts-runs")" -eq 1 -a ! -e "$ROOT/renders/call-worker/2026-11-06.frozen.log"
+check "and the series is made from it" test -e "$ROOT/renders/call/2026-11-06-p3/call.mp4"
 
-# A count kept before .parts-of was, of a week a part of which is made:
-# kept as it is, and nothing asked.
-fresh series-made-before 2026-11-06
-mkdir -p "$ROOT/renders/call/2026-11-06" && echo 2 > "$ROOT/renders/call/2026-11-06.parts"
-echo made > "$ROOT/renders/call/2026-11-06/call.mp4"
-echo 3 > "$FAKE/parts-2026-11-06"
-pass
-check "a series with a part made keeps the count it had" test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 2
-check "and its other part records with it, nothing asked" \
-  test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a ! -e "$FAKE/parts-runs"
-
-# A count kept before .parts-of was, of a week whose made part the owner
-# let go (its video gone from the drive, marked <key>.let-go): still made,
-# so the count is kept and nothing asked.
-fresh series-let-go-before 2026-11-06
-mkdir -p "$ROOT/renders/call" && echo 2 > "$ROOT/renders/call/2026-11-06.parts"
-touch "$ROOT/weeks/2026-11-06.let-go"
-echo 3 > "$FAKE/parts-2026-11-06"
-pass
-check "a series whose made part was let go keeps the count it had" test "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 2
-check "and its other part records with it, nothing asked" \
-  test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a ! -e "$FAKE/parts-runs"
-
-# A week whose file changed after a part was made (file_host gives none so,
-# but a revision written in the instant a part was moved in could be): its
-# other parts fail, loudly, and the count stays.
-fresh series-changed-after 2026-11-06
-echo 2 > "$FAKE/parts-2026-11-06"
-touch "$FAKE/fail-2026-11-06-p2"
-pass
-pass
-rm -f "$FAKE/fail-2026-11-06-p2" "$ROOT/renders/call-worker/2026-11-06-p2.failed.log"
-echo '{"template":5}' > "$ROOT/weeks/2026-11-06.json"
-pass
-check "a part of a week changed after another was made fails" \
-  grep -q "changed after a part of it was made" "$ROOT/renders/call-worker/2026-11-06-p2.failed.log"
-check "and records nothing, its count kept" \
-  test ! -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 2
+# A newer revision of a week a part of which is made, or was and was let go:
+# never taken in, said once, and the rest of the series recorded from the
+# file its made parts were.
+for made in video let-go; do
+  fresh "series-frozen-$made" 2026-11-06
+  mkdir -p "$ROOT/renders/call/2026-11-06"
+  echo 2 > "$ROOT/renders/call/2026-11-06.parts"
+  if [ "$made" = video ]; then
+    echo made > "$ROOT/renders/call/2026-11-06/call.mp4"
+  else
+    touch "$ROOT/weeks/2026-11-06.let-go"
+  fi
+  echo '{"template":5}' > "$ROOT/weeks/2026-11-06.next"
+  echo 3 > "$FAKE/parts-2026-11-06"
+  pass
+  check "a newer revision of a week with a part $made is never taken in" \
+    test ! -e "$ROOT/renders/call/.taken/2026-11-06.json" -a "$(cat "$ROOT/renders/call/2026-11-06.parts")" = 2
+  check "and that is said" grep -q "stays at the revision its parts were made from" "$ROOT/renders/call-worker/2026-11-06.frozen.log"
+  check "and its other part recorded from the file it was" \
+    test -e "$ROOT/renders/call/2026-11-06-p2/call.mp4" -a -n "$(grep -x -- "$ROOT/weeks/2026-11-06.json" "$FAKE/args-call")"
+done
 
 fresh series-of-one 2026-10-30
 pass
