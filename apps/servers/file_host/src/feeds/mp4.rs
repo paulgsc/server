@@ -9,10 +9,12 @@
 //! video rendered before this read existed has a length too, and one whose
 //! video was let go has none.
 //!
-//! **Bounded.** At most [`MOST_BOXES`] boxes are looked at on each level,
-//! and nothing larger than a box header and `mvhd`'s first 32 bytes is ever
-//! read, so a file that is not an mp4, or a broken one, costs the same
-//! handful of reads and answers `None`.
+//! **Bounded per file.** At most [`MOST_BOXES`] boxes are looked at on
+//! each level, and nothing larger than a box header and `mvhd`'s first 32
+//! bytes is ever read, so a file that is not an mp4, or a broken one, costs
+//! the same handful of reads and answers `None`. A request that lists
+//! episodes reads each held video's once, as it already walks each
+//! episode's folder for its bytes: the same order, not a new one.
 
 use std::path::Path;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
@@ -114,6 +116,15 @@ pub(crate) mod tests {
 		bytes
 	}
 
+	/// A version 0 `mvhd`'s body saying `duration` in `timescale`.
+	fn mvhd_v0(timescale: u32, duration: u32) -> Vec<u8> {
+		let mut body = vec![0; 12];
+		body.extend_from_slice(&timescale.to_be_bytes());
+		body.extend_from_slice(&duration.to_be_bytes());
+		body.extend_from_slice(&[0; 80]);
+		body
+	}
+
 	/// An mp4's boxes as a recorder lays them out: `ftyp`, then `moov`
 	/// holding an `mvhd` of `version` saying `duration` in `timescale`, then
 	/// `mdat`; or `mdat` before `moov` when `moov_last`.
@@ -169,6 +180,50 @@ pub(crate) mod tests {
 		cut.truncate(cut.len() - 60);
 		assert_eq!(read(&cut).await, None, "a moov cut short");
 		assert_eq!(millis(Path::new("/nowhere/call.mp4")).await, None);
+		// A 64-bit size, and a box to the end of the file, read as any other.
+		let moov = || boxed(*b"moov", &boxed(*b"mvhd", &mvhd_v0(1_000, 5_000)));
+		let mut large = boxed(*b"ftyp", b"isom");
+		large.extend_from_slice(&1_u32.to_be_bytes());
+		large.extend_from_slice(b"mdat");
+		large.extend_from_slice(&(16_u64 + 100).to_be_bytes());
+		large.extend_from_slice(&[7; 100]);
+		large.extend(moov());
+		assert_eq!(read(&large).await, Some(5_000), "moov after a largesize mdat");
+		let mut to_end = boxed(*b"ftyp", b"isom");
+		to_end.extend(moov());
+		to_end.extend_from_slice(&0_u32.to_be_bytes());
+		to_end.extend_from_slice(b"mdat");
+		to_end.extend_from_slice(&[7; 50]);
+		assert_eq!(read(&to_end).await, Some(5_000), "a size-0 mdat after moov");
+		let mut before = boxed(*b"ftyp", b"isom");
+		before.extend_from_slice(&0_u32.to_be_bytes());
+		before.extend_from_slice(b"mdat");
+		before.extend(moov());
+		assert_eq!(read(&before).await, None, "a size-0 box swallows what follows it");
+		// Malformed sizes: under a header; a largesize under its own header;
+		// a box past the file's end.
+		let mut small = boxed(*b"ftyp", b"isom");
+		small.extend_from_slice(&3_u32.to_be_bytes());
+		small.extend_from_slice(b"free");
+		small.extend(moov());
+		assert_eq!(read(&small).await, None, "a size under a header");
+		let mut small_large = boxed(*b"ftyp", b"isom");
+		small_large.extend_from_slice(&1_u32.to_be_bytes());
+		small_large.extend_from_slice(b"free");
+		small_large.extend_from_slice(&8_u64.to_be_bytes());
+		small_large.extend(moov());
+		assert_eq!(read(&small_large).await, None, "a largesize under its own header");
+		let mut past = boxed(*b"ftyp", b"isom");
+		let mut long = moov();
+		long.splice(0..4, 1_000_u32.to_be_bytes());
+		past.extend(long);
+		assert_eq!(read(&past).await, None, "a moov past the file's end");
+		// mvhd need not be moov's first box.
+		let mut inner = boxed(*b"udta", &[0; 12]);
+		inner.extend(boxed(*b"mvhd", &mvhd_v0(1_000, 7_000)));
+		let mut later = boxed(*b"ftyp", b"isom");
+		later.extend(boxed(*b"moov", &inner));
+		assert_eq!(read(&later).await, Some(7_000), "an mvhd after another box in moov");
 		// More boxes than it looks at before moov.
 		let mut many = Vec::new();
 		for _ in 0..MOST_BOXES {

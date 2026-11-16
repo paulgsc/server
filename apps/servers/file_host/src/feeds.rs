@@ -321,8 +321,8 @@ pub struct HeldEpisode {
 	/// Its date, `YYYY-MM-DD`, by what its feed knows (server#906): the call's
 	/// week's first day; Playoff Delta's, the day home took its fill, by
 	/// home's clock (`renders::HOME_ZONE`); an essay's, the Monday of the ISO
-	/// week it is of; a cards essay's own day. `None` only for a stamp that
-	/// doesn't read, which the tables never hold.
+	/// week it is of; a cards essay's own day. `None` only for a stamp or an
+	/// essay's week that doesn't read, which the tables never hold.
 	pub date: Option<String>,
 }
 

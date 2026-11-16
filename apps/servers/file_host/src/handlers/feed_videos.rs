@@ -158,8 +158,8 @@ pub struct EpisodeView {
 	/// call's week's first day (every part has the week's); Playoff Delta's,
 	/// the day home took its fill, by home's clock, since its key names the
 	/// game's week by number alone; an essay's, the Monday of the ISO week it
-	/// is of; a cards essay's own day. `null` only for a stamp that doesn't
-	/// read.
+	/// is of; a cards essay's own day. `null` only for a stamp or an essay's
+	/// week that doesn't read.
 	pub date: Option<String>,
 	/// Its video's length in milliseconds, as the mp4's own header says it,
 	/// while home has the video; `null` once it is let go or when the file
