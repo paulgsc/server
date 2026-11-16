@@ -71,9 +71,10 @@ pub const MAILBOX_COPY: &str = "mailbox copy";
 pub const DRIVE_COPY: &str = "drive copy";
 /// The idea it answered, which keeps the answer's place.
 pub const IDEA: &str = "idea";
-/// What home made of what it heard in it ([`crate::verdict`], HEARD1): its
-/// problem codes and the numbers behind them, never a word. Kept for good,
-/// the owner's call (paulgsc/server#911): a take's problems outlive it.
+/// What home made of what it heard in it ([`crate::verdict`], HEARD1).
+///
+/// Its problem codes and the numbers behind them, never a word. Kept for
+/// good, the owner's call (paulgsc/server#911): a take's problems outlive it.
 pub const VERDICT: &str = "verdict";
 
 /// What a delete left behind: the receipt, as home keeps it.
