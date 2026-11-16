@@ -25,8 +25,8 @@
 //!
 //! **The one way a note is deleted but with the account** (docs/identity.md
 //! invariant 23): [`delete_note`] is the only caller of
-//! `voice_repo::delete::delete`, for a kind the owner switched on (none
-//! yet), and the only writer of `voice_note_deletion`.
+//! `voice_repo::delete::delete`, for a kind the owner switched on, and the
+//! only writer of `voice_note_deletion`.
 //!
 //! [`get_attention`] and [`post_attention`] are the reconciliation page's
 //! (paulgsc/server#912, HEARD3): the only reader of the takes that need
@@ -692,11 +692,13 @@ const KEPT_FOR_GOOD: &str = "this voice note is kept for good";
 /// `DELETE /voice-notes/:id`: deletes the caller's note `id` for good.
 ///
 /// Its audio and what home heard in it go with it, and the answer is its
-/// receipt (paulgsc/some-ui#2477, MD3). Only from a paired phone's My data,
-/// and only of a kind the owner switched on
-/// (`voice_repo::delete::SWITCHED_ON`: Studio takes and idea answers): every
-/// other note is kept
-/// and nothing is written.
+/// receipt (paulgsc/some-ui#2477, MD3). Only from a paired phone (My data,
+/// or the reconciliation page), and only of a kind the owner switched on
+/// (`voice_repo::delete::SWITCHED_ON`: Studio takes, idea answers, and a
+/// note of any kind home could not hear, its newest verdict `garbled`, `failed`
+/// or `nothing_said`, paulgsc/some-ui#3076): every other note is kept and
+/// nothing is written. A delete of a note home could not hear is the owner's
+/// act on its verdict too (`voice_repo::attention`, HEARD3).
 ///
 /// Idempotent: a repeat for a note already deleted answers with the same
 /// receipt, so a phone whose answer was lost learns it is gone.
@@ -1127,6 +1129,14 @@ mod tests {
 		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 	}
 
+	async fn remove(app: &Router, path: &str, auth: &(HeaderName, String)) -> (StatusCode, Value) {
+		let request = Request::builder().method(Method::DELETE).uri(path).header(&auth.0, &auth.1);
+		let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+		let status = response.status();
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
 	/// Home's ending of `model` on `subject`'s note `id`, judged `verdict`
 	/// (with `reasons`), at `at`: heard words for `heard` and `garbled`, else
 	/// silence.
@@ -1226,11 +1236,8 @@ mod tests {
 		assert_eq!(get(&app, ATTENTION, Some(&phone)).await.1["total"], json!(1));
 
 		// My data's delete takes the Studio take off the list, as an act.
-		let request = Request::builder().method(Method::DELETE).uri("/voice-notes/t1").header(&phone.0, &phone.1);
-		let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
-		assert_eq!(response.status(), StatusCode::OK);
-		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-		let receipt: Value = serde_json::from_slice(&bytes).unwrap();
+		let (status, receipt) = remove(&app, "/voice-notes/t1", &phone).await;
+		assert_eq!(status, StatusCode::OK);
 		assert_eq!(receipt["receipt"]["stayed"], json!(["verdict", "reconciliation"]));
 		assert_eq!(get(&app, ATTENTION, Some(&phone)).await.1, json!({ "takes": [], "total": 0 }));
 		assert_eq!(post(&app, "/voice-notes/t1/attention", Some(&phone), &keep).await.0, StatusCode::NOT_FOUND, "gone");
@@ -1243,9 +1250,27 @@ mod tests {
 		.unwrap();
 		assert_eq!(kept, (1, 1), "its verdict and the act stay");
 
-		// A take heard since asks for nothing.
+		// Any kind home could not hear may be deleted (paulgsc/some-ui#3076).
+		assert_eq!(
+			put(
+				&app,
+				"/voice-notes/n2?of=reflection&ref=session-7f2b&at=2026-10-26T20:10:00Z",
+				Some(&phone),
+				"audio/webm",
+				TAKE
+			)
+			.await
+			.0,
+			StatusCode::OK
+		);
+		judged(&pool, "n2", "m", "nothing_said", "", "2026-11-14T00:00:00Z").await;
+		let (status, gone) = remove(&app, "/voice-notes/n2", &phone).await;
+		assert_eq!((status, &gone["receipt"]["of"]), (StatusCode::OK, &json!("reflection")), "an unheard reflection goes");
+
+		// A take heard since asks for nothing, and a heard reflection is kept.
 		judged(&pool, "n1", "better", "heard", "", "2026-11-15T00:00:00Z").await;
 		assert_eq!(post(&app, "/voice-notes/n1/attention", Some(&phone), &keep).await.0, StatusCode::CONFLICT);
+		assert_eq!(remove(&app, "/voice-notes/n1", &phone).await.0, StatusCode::CONFLICT, "heard: kept for good");
 	}
 
 	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves

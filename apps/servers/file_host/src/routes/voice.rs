@@ -62,8 +62,10 @@
 //! DELETE /voice-notes/:id             → { receipt }: deletes the note for
 //!                                      good, from a paired phone's My
 //!                                      data, only of a kind the owner
-//!                                      switched on (none yet), else a 409
-//!                                      (paulgsc/some-ui#2477)
+//!                                      switched on (Studio takes, idea
+//!                                      answers, any note home could not
+//!                                      hear), else a 409
+//!                                      (paulgsc/some-ui#2477, #3076)
 //! GET /voice-notes/deleted            → { receipts, total }: the receipts
 //!                                      of the caller's notes deleted for
 //!                                      good, newest first, at most 100,
@@ -122,7 +124,8 @@
 //! its own code (`deleted_for_good`) so the phone lets its copy go; setting a
 //! note aside deletes nothing. The one `DELETE` is My
 //! data's, for a kind the owner switched on, with a receipt
-//! (`voice_repo::delete`): Studio takes and idea answers.
+//! (`voice_repo::delete`): Studio takes, idea answers, and a note of any
+//! kind home could not hear (paulgsc/some-ui#3076).
 //! See `handlers::voice` and `voice_repo`.
 
 use crate::auth::AuthContext;

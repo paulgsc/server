@@ -7,7 +7,16 @@
 //! deleted; what doing something produced (an answer, a spoken attempt)
 //! never is. So:
 //!
-//! - **Two kinds of note can be deleted:** a Studio take
+//! - **Any note home could not hear can be deleted** ([`Deletable::Unheard`],
+//!   the owner's call on paulgsc/some-ui#3076): one of any kind whose newest
+//!   verdict is `garbled`, `failed` or `nothing_said`. A recording home could
+//!   not hear holds no work home can read; what home made of it, its
+//!   verdicts and the owner's acts on it stay, and so does every record that
+//!   names it by id (a game bite's description, a week's paste, an episode
+//!   note), as for the kinds below. A Rust Rounds or interview take deleted
+//!   so withdraws its week's essay video, as `file_host`'s `rust_essays`
+//!   does for any deleted take.
+//! - **Otherwise two kinds of note can be deleted:** a Studio take
 //!   ([`Deletable::StudioTake`]): a `studio` note whose `ref` names a take
 //!   (`<project>:<shot>:<take>`) and that no idea's answer names; and an
 //!   idea's spoken answer ([`Deletable::IdeaAnswer`]): a `studio` note whose
@@ -54,10 +63,18 @@ pub enum Deletable {
 	/// An idea's spoken answer: a `studio` note an idea's answer names, or
 	/// whose `ref` says it answers one.
 	IdeaAnswer,
+	/// A note of any kind whose newest verdict ([`crate::verdict::newest`],
+	/// HEARD1) is `garbled`, `failed` or `nothing_said`: a take home could
+	/// not hear, which the owner reconciles (paulgsc/server#912, HEARD3).
+	/// The owner's words (paulgsc/some-ui#3076): "allow delete for any kind
+	/// home couldn't hear". A note whose newest verdict is `heard`, or that
+	/// has none, keeps its kind's rule.
+	Unheard,
 }
 
-/// The kinds the owner has switched on (paulgsc/some-ui#2473).
-pub const SWITCHED_ON: &[Deletable] = &[Deletable::StudioTake, Deletable::IdeaAnswer];
+/// The kinds the owner has switched on (paulgsc/some-ui#2473, and #3076 for
+/// [`Deletable::Unheard`]).
+pub const SWITCHED_ON: &[Deletable] = &[Deletable::StudioTake, Deletable::IdeaAnswer, Deletable::Unheard];
 
 /// What went with a deleted note, in fixed words.
 pub const RECORDING: &str = "recording";
@@ -74,6 +91,9 @@ pub const MAILBOX_COPY: &str = "mailbox copy";
 pub const DRIVE_COPY: &str = "drive copy";
 /// The idea it answered, which keeps the answer's place.
 pub const IDEA: &str = "idea";
+/// A game bite's description beside it (what it was said about and what
+/// the screen showed): only a game note home could not hear is deleted.
+pub const GAME_BITE: &str = "game bite";
 /// What home made of what it heard in it ([`crate::verdict`], HEARD1).
 ///
 /// Its problem codes and the numbers behind them, never a word. Kept for
@@ -274,6 +294,13 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 	)
 	.fetch_one(&mut *conn)
 	.await?;
+	let bite = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM game_bite WHERE subject_id = ?1 AND note_id = ?2) AS "bite!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
 	let on_drive = sqlx::query_scalar!(
 		r#"SELECT EXISTS (SELECT 1 FROM studio_take_on_drive WHERE subject_id = ?1 AND note_id = ?2) AS "on_drive!: bool""#,
 		subject,
@@ -301,6 +328,9 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 	}
 	if answers {
 		stayed.push(IDEA.to_owned());
+	}
+	if bite {
+		stayed.push(GAME_BITE.to_owned());
 	}
 	if judged {
 		stayed.push(VERDICT.to_owned());
@@ -336,11 +366,16 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 	)
 	.fetch_one(&mut *conn)
 	.await?;
-	let Some(kind) = deletable(&note.of_kind, &note.of_ref, answers) else {
-		return Ok(Deleted::Kept(Kept::ForGood));
-	};
-	if !on.contains(&kind) {
-		return Ok(Deleted::Kept(Kept::SwitchedOff));
+	let by_kind = deletable(&note.of_kind, &note.of_ref, answers);
+	if !by_kind.is_some_and(|kind| on.contains(&kind)) {
+		// Any kind home could not hear may go (the owner, paulgsc/some-ui#3076).
+		let unheard = on.contains(&Deletable::Unheard)
+			&& crate::verdict::newest(conn, subject, note_id)
+				.await?
+				.is_some_and(|newest| crate::attention::asks(newest.verdict.kind));
+		if !unheard {
+			return Ok(Deleted::Kept(if by_kind.is_some() { Kept::SwitchedOff } else { Kept::ForGood }));
+		}
 	}
 
 	// The owner's delete answers a verdict that asked them to act (HEARD3),
@@ -390,8 +425,8 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 #[cfg(test)]
 mod tests {
 	use super::{
-		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECONCILIATION, RECORDING, SET_ASIDE_MARK, SWITCHED_ON,
-		VERDICT, WORDS,
+		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, GAME_BITE, IDEA, MAILBOX_COPY, RECEIPTS, RECONCILIATION, RECORDING, SET_ASIDE_MARK,
+		SWITCHED_ON, VERDICT, WORDS,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -492,6 +527,71 @@ mod tests {
 		assert_eq!(rows(&pool, "voice_note_attention", A, "take").await, 1);
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(crate::attention::needing(&mut conn, A).await.unwrap(), (Vec::new(), 0), "gone from the list");
+	}
+
+	/// Home's ending of note `id` judged `verdict` (paulgsc/server#908).
+	async fn judged(pool: &SqlitePool, subject: &str, id: &str, verdict: &str) {
+		let spoke = verdict == "heard" || verdict == "garbled";
+		let transcript = if spoke {
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, 'm', 'e', 1, 'heard', 'en', 0.9, 1, 'w', 1, 'now')"
+		} else {
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+			 VALUES (?1, ?2, 'm', 'e', 1, 'silent', 1, 1, 'now')"
+		};
+		run(pool, transcript, subject, id).await;
+		sqlx::query(
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, ?2, 'm', 1, 'r', ?3, '', ?4, 'now')",
+		)
+		.bind(subject)
+		.bind(id)
+		.bind(verdict)
+		.bind(spoke.then_some(1))
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// The owner's call on paulgsc/some-ui#3076: a note of any kind home
+	/// could not hear may be deleted, its game bite staying beside its
+	/// verdict; one it heard, or has not judged, keeps its kind's rule, and
+	/// so does every note while that switch is off.
+	#[tokio::test]
+	async fn any_kind_home_could_not_hear_may_go_and_a_heard_one_is_kept() {
+		let pool = pool().await;
+		for (id, of) in [("silent", "reflection"), ("garbled", "game"), ("heard", "reflection"), ("unjudged", "reflection")] {
+			note(&pool, A, id, of).await;
+		}
+		judged(&pool, A, "silent", "nothing_said").await;
+		judged(&pool, A, "garbled", "garbled").await;
+		judged(&pool, A, "heard", "heard").await;
+		run(
+			&pool,
+			"INSERT INTO game_bite (subject_id, note_id, how, live_strip, watching, started_at, mode, catalog_version) VALUES (?1, ?2, 'said-first', '', 1, 'then', 'light', 1)",
+			A,
+			"garbled",
+		)
+		.await;
+
+		assert_eq!(gone(&pool, A, "silent", ON).await, Deleted::Kept(Kept::ForGood), "switched off, it keeps its kind's rule");
+		assert_eq!(gone(&pool, A, "heard", SWITCHED_ON).await, Deleted::Kept(Kept::ForGood), "heard: the work");
+		assert_eq!(gone(&pool, A, "unjudged", SWITCHED_ON).await, Deleted::Kept(Kept::ForGood), "not judged yet");
+		let Deleted::Gone(silent) = gone(&pool, A, "silent", SWITCHED_ON).await else {
+			panic!("a reflection home heard nothing said in goes");
+		};
+		assert_eq!(silent.of, "reflection");
+		assert_eq!(silent.went, [RECORDING]);
+		assert_eq!(silent.stayed, [VERDICT, RECONCILIATION]);
+		let Deleted::Gone(garbled) = gone(&pool, A, "garbled", SWITCHED_ON).await else {
+			panic!("a garbled game note goes");
+		};
+		assert_eq!(garbled.went, [RECORDING, WORDS]);
+		assert_eq!(garbled.stayed, [GAME_BITE, VERDICT, RECONCILIATION]);
+		assert_eq!(rows(&pool, "game_bite", A, "garbled").await, 1, "the bite's description stays");
+		for id in ["heard", "unjudged"] {
+			assert_eq!(rows(&pool, "voice_note_audio", A, id).await, 1, "{id}");
+		}
 	}
 
 	#[tokio::test]

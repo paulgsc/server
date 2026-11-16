@@ -1289,8 +1289,16 @@ nowhere is marked as such and belongs to review.
     `idea:<idea>:<question>` or that `idea_answer` names (the owner,
     2026-11-04, paulgsc/some-ui#2579, amending the 2026-11-02 rule that kept
     an answer as the work); the owner switched both on on 2026-11-04
-    (paulgsc/some-ui#2473). Every other kind is the work and is kept.
-    Deleting one
+    (paulgsc/some-ui#2473). A note of any kind home could not hear, its
+    newest verdict `garbled`, `failed` or `nothing_said` (invariant 23's
+    `voice_transcript_verdict`), may be deleted too: the owner, 2026-11-16,
+    paulgsc/some-ui#3076, "allow delete for any kind home couldn't hear"
+    (`Deletable::Unheard`). Every other kind is the work and is kept, and so
+    is a note home heard or has not judged yet. Deleting a note home could
+    not hear keeps every record that names it by id (a game bite's
+    description, which its receipt names, a week's paste, an episode note),
+    and a Rust Rounds or interview take deleted so withdraws its week's
+    essay video. Deleting one
     removes the note, its audio, every transcript of it and its words, its
     vectors in the meaning index (invariant 35), its set-aside mark and its
     moves along the conveyor (`studio_take_move`, below) in one
