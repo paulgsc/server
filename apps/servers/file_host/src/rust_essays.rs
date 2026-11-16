@@ -699,14 +699,27 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 	Ok(done)
 }
 
-/// A take `week`'s final record names that was deleted from My data, if any.
+/// A take `week`'s final record names that was deleted and that its essay
+/// may play, if any.
+///
+/// A take home could not hear (`voice_repo::verdict::as_the_routine_reads`
+/// may call it a silence, HEARD1) is never played: the essay answers it as
+/// a silence, and its takes are not given. So deleting one, as the owner's
+/// reconciliation of it may (paulgsc/server#912, HEARD3), withdraws
+/// nothing; only a deleted take the essay may play does.
 async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
 	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
 		return Ok(None);
 	};
 	for (_, take) in standing.answers.into_iter().chain(standing.reads) {
-		if voice_repo::delete::receipt(&mut conn, subject, &take).await.map_err(voice)?.is_some() {
+		if voice_repo::delete::receipt(&mut conn, subject, &take).await.map_err(voice)?.is_none() {
+			continue;
+		}
+		let judged = voice_repo::verdict::as_the_routine_reads(&mut conn, subject, &take, kind == Kind::Interview)
+			.await
+			.map_err(voice)?;
+		if !judged.is_some_and(voice_repo::verdict::Kind::may_be_silent) {
 			return Ok(Some(take));
 		}
 	}
@@ -1268,6 +1281,55 @@ mod tests {
 		assert!(!folders.essays.join("2026-w46").exists(), "its input is not recreated");
 		tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
 		assert!(!folders.essays.join("2026-w46").exists(), "and tidy leaves none");
+	}
+
+	/// HEARD3 (paulgsc/server#912, the coordinator's call): a take home could
+	/// not hear is a silence the essay never plays, so the owner deleting it
+	/// (paulgsc/some-ui#3076) withdraws nothing: a made video stays, and a
+	/// week not yet given still is, the silence standing.
+	#[tokio::test]
+	async fn deleting_a_take_home_could_not_hear_withdraws_nothing() {
+		for given_first in [true, false] {
+			let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+			let folders = folders(dir.path());
+			hold_week(&pool, 1, "2026-w46").await;
+			send(&pool, "2026-w46").await;
+			for statement in [
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'note-311', 'rust-round', '2026-w46:QM-311', 'then', 'audio/ogg', 4, 's', 'now')",
+				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'note-311', x'4f676753')",
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+				 VALUES (?1, 'note-311', 'm', 'e', 1, 'heard', 'en', 1.0, 900, 'mumble', 1, 'now')",
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+				 VALUES (?1, 'note-311', 'm', 1, 'heard-1', 'garbled', 'low_confidence', 900, 'now')",
+				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'note-311', 'm', 1, 'now')",
+				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'transcript', 'transcript-note-311-1.json', 'added', 'now')",
+			] {
+				sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+			}
+			hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
+			let now = "2026-11-24T08:00:00.000Z";
+			if given_first {
+				assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap().written, 1);
+				std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
+				std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
+			}
+			let mut conn = pool.acquire().await.unwrap();
+			let deleted = voice_repo::delete::delete(&mut conn, ME, "note-311", voice_repo::delete::SWITCHED_ON, now).await.unwrap();
+			assert!(matches!(deleted, voice_repo::delete::Deleted::Gone(_)), "an unheard take may go");
+			drop(conn);
+			let tidied = tidy(&pool, Kind::RustRounds, Some(ME), &folders, now).await.unwrap();
+			assert_eq!(tidied.withdrawn, 0, "given first: {given_first}");
+			let mut conn = pool.acquire().await.unwrap();
+			assert!(rust_round_repo::essay_video::withdrawn(&mut conn, Kind::RustRounds, ME).await.unwrap().is_empty());
+			drop(conn);
+			if given_first {
+				assert!(folders.renders.join("2026-w46").join(VIDEO).exists(), "its video stays");
+			} else {
+				let done = export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap();
+				assert_eq!((done.written, done.withdrawn, done.refused), (1, 0, 0), "the silence stands");
+			}
+		}
 	}
 
 	/// Invariant 23's exception, (c): a take deleted from My data takes the

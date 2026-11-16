@@ -1266,11 +1266,15 @@ nowhere is marked as such and belongs to review.
     with it (`rust_round_repo::essay_video::withdraw`, cause `take-deleted`,
     naming the note beside the note's own receipt), and the week is never
     rendered again, while its script stays in the mailbox; (d) My data says
-    the essay video holds the owner's voice (the phone's). Rust Rounds takes
-    are not a kind `DELETE /voice-notes/:id` can delete today, so (c) is a
-    guard: it holds the day the owner switches that kind on. *Enforced by*
+    the essay video holds the owner's voice (the phone's). Rust Rounds and
+    interview takes can be deleted only when home could not hear them
+    (paulgsc/some-ui#3076), and such a take is a silence the essay never
+    plays (HEARD1), so deleting one withdraws nothing (paulgsc/server#912):
+    (c) withdraws for a deleted take the routine's verdict does not call
+    unheard, and stays a guard for any other. *Enforced by*
     `rust_essays`' `a_kept_essay_copies_its_takes_only_until_its_video_is_made`,
     `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go`,
+    `deleting_a_take_home_could_not_hear_withdraws_nothing`,
     `an_essay_the_subject_no_longer_holds_leaves_the_drive`,
     `an_interview_essay_is_given_from_its_weeks_final_with_its_takes`
     and `an_interview_essay_whose_take_is_deleted_is_withdrawn`, and
@@ -1297,8 +1301,8 @@ nowhere is marked as such and belongs to review.
     is a note home heard or has not judged yet. Deleting a note home could
     not hear keeps every record that names it by id (a game bite's
     description, which its receipt names, a week's paste, an episode note),
-    and a Rust Rounds or interview take deleted so withdraws its week's
-    essay video. Deleting one
+    and a Rust Rounds or interview take deleted so withdraws no essay video:
+    the essay never played it ((c) of the essay videos, above). Deleting one
     removes the note, its audio, every transcript of it and its words, its
     vectors in the meaning index (invariant 35), its set-aside mark and its
     moves along the conveyor (`studio_take_move`, below) in one

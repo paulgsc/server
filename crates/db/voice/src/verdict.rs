@@ -384,7 +384,23 @@ pub async fn as_the_routine_reads(conn: &mut SqliteConnection, subject: &str, no
 	let Some(model) = filed else {
 		return Ok(None);
 	};
-	Ok(of_ending(conn, subject, note_id, &model).await?.map(|verdict| verdict.kind))
+	// The verdict of that model's last final attempt, read from the verdicts
+	// alone, so it outlives the note's transcripts: a take the owner deleted
+	// still reads as what home made of it (HEARD3), and an essay that called
+	// it a silence stands. A model judges at most its ending, which is its
+	// last attempt, or its last failure, so this is [`of_ending`]'s choice.
+	let kind = sqlx::query_scalar!(
+		r#"SELECT v.verdict AS "verdict!" FROM voice_transcript_verdict v
+		   WHERE v.subject_id = ?1 AND v.note_id = ?2 AND v.model = ?3
+		   ORDER BY v.attempt DESC, v.judged_at DESC, v.rule DESC
+		   LIMIT 1"#,
+		subject,
+		note_id,
+		model
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	kind.map(|kind| Kind::parse(&kind).ok_or(VoiceError::Unreadable)).transpose()
 }
 
 #[cfg(test)]
