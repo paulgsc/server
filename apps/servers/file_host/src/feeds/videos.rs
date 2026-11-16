@@ -80,6 +80,15 @@ pub struct EpisodeVideo {
 	/// Its title, where the feed keeps one: a cards essay's cut list's
 	/// (EXPLAIN6). `None` for every other feed's episode.
 	pub title: Option<String>,
+	/// Its date, `YYYY-MM-DD` (`feeds::HeldEpisode::date`): every part of a
+	/// call's week has the week's.
+	pub date: Option<String>,
+	/// Its video's length in milliseconds, as the mp4 says it
+	/// ([`super::mp4`]), while home has the video.
+	pub duration_ms: Option<u64>,
+	/// The whole week's length in milliseconds, every part's together, while
+	/// home has every part's video: a part's own for an episode of one.
+	pub week_duration_ms: Option<u64>,
 }
 
 /// The most characters of a title the phone is given: a cut list's title
@@ -132,19 +141,23 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 		(held, links, receipts, titles)
 	};
 	let mut listed = Vec::with_capacity(held.len());
-	for week in held {
+	for super::HeldEpisode { key: week, date } in held {
 		let keys = match feed {
 			Feed::Call => crate::call_weeks::render::part_keys(renders, &week).await,
 			Feed::PlayoffDelta | Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay => vec![week.clone()],
 		};
 		let of = u32::try_from(keys.len()).unwrap_or(u32::MAX);
+		let first = listed.len();
+		let mut week_millis = Some(0_u64);
 		for (part, key) in (1..).zip(keys) {
 			let folder = renders.join(&key);
-			let video_bytes = tokio::fs::metadata(folder.join(feed.video()))
-				.await
-				.ok()
-				.filter(std::fs::Metadata::is_file)
-				.map(|meta| meta.len());
+			let video = folder.join(feed.video());
+			let video_bytes = tokio::fs::metadata(&video).await.ok().filter(std::fs::Metadata::is_file).map(|meta| meta.len());
+			let millis = match video_bytes {
+				Some(_) => super::mp4::millis(&video).await,
+				None => None,
+			};
+			week_millis = week_millis.zip(millis).map(|(sum, millis)| sum.saturating_add(millis));
 			let rest_bytes = if tokio::fs::metadata(&folder).await.is_ok_and(|meta| meta.is_dir()) {
 				Some(bytes_under(&folder).await.saturating_sub(video_bytes.unwrap_or(0)))
 			} else {
@@ -155,13 +168,19 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 				title: titles.get(&key).cloned(),
 				link: links.get(&key).cloned(),
 				week: week.clone(),
+				date: date.clone(),
 				part,
 				of,
 				key,
 				video_bytes,
 				rest_bytes,
 				receipts: mine,
+				duration_ms: millis,
+				week_duration_ms: None,
 			});
+		}
+		for episode in listed.get_mut(first..).unwrap_or_default() {
+			episode.week_duration_ms = week_millis;
 		}
 	}
 	Ok(listed)
@@ -663,6 +682,34 @@ mod tests {
 			],
 			"newest week first, its parts in order; a week of one video as it always was"
 		);
+		assert!(listed.iter().all(|e| e.date.as_deref() == Some(e.week.as_str())), "every part has its week's first day");
+		assert!(
+			listed.iter().all(|e| (e.duration_ms, e.week_duration_ms) == (None, None)),
+			"a file that isn't an mp4 says no length, and none is guessed"
+		);
+		// Real movie headers: two parts' lengths, and the week's only once
+		// every part's video is there.
+		let mp4 = |millis| super::super::mp4::tests::mp4(0, 1_000, millis, false);
+		std::fs::write(renders.join("2026-11-06").join(Feed::Call.video()), mp4(61_400)).unwrap();
+		std::fs::write(renders.join("2026-11-06-p2").join(Feed::Call.video()), mp4(30_400)).unwrap();
+		std::fs::write(renders.join("2026-10-30").join(Feed::Call.video()), mp4(754_321)).unwrap();
+		let lengths = |listed: &[EpisodeVideo]| listed.iter().map(|e| (e.duration_ms, e.week_duration_ms)).collect::<Vec<_>>();
+		let listed = list(&pool, Feed::Call, "", &renders).await.unwrap();
+		assert_eq!(lengths(&listed), [(Some(61_400), None), (Some(30_400), None), (None, None), (Some(754_321), Some(754_321))]);
+		render(&renders, "2026-11-06-p3");
+		std::fs::write(renders.join("2026-11-06-p3").join(Feed::Call.video()), mp4(9_400)).unwrap();
+		let listed = list(&pool, Feed::Call, "", &renders).await.unwrap();
+		assert_eq!(
+			lengths(&listed),
+			[
+				(Some(61_400), Some(101_200)),
+				(Some(30_400), Some(101_200)),
+				(Some(9_400), Some(101_200)),
+				(Some(754_321), Some(754_321))
+			],
+			"the week's is every part's together, once each part's video is there"
+		);
+		std::fs::remove_dir_all(renders.join("2026-11-06-p3")).unwrap();
 		assert_eq!(
 			video_file(&pool, Feed::Call, "", &renders, "2026-11-06-p2").await.unwrap(),
 			Some(renders.join("2026-11-06-p2").join(Feed::Call.video()))
@@ -965,6 +1012,7 @@ mod tests {
 
 		let listed = list(&pool, feed, "me", &renders).await.unwrap();
 		assert_eq!(listed.iter().map(|e| (e.key.as_str(), e.video_bytes)).collect::<Vec<_>>(), [("2026-w46", Some(10))]);
+		assert_eq!(listed[0].date.as_deref(), Some("2026-11-09"), "the Monday of ISO week 46");
 		assert!(list(&pool, feed, "them", &renders).await.unwrap().is_empty(), "another subject's is not theirs");
 		assert_eq!(video_file(&pool, feed, "them", &renders, "2026-w46").await.unwrap(), None);
 		assert_eq!(
