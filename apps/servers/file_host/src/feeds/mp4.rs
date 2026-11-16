@@ -22,9 +22,10 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 /// maybe `free`) and `mvhd` first inside `moov`.
 pub const MOST_BOXES: usize = 16;
 
-/// The video at `path`'s length in milliseconds, as its movie header says
-/// it: `None` for a file that isn't there or isn't an mp4 whose header says
-/// a length (a fragmented one's is 0; an unknown one's all ones).
+/// The video at `path`'s length in milliseconds, as its movie header says.
+///
+/// `None` for a file that isn't there or isn't an mp4 whose header says a
+/// length (a fragmented one's is 0; an unknown one's all ones).
 pub async fn millis(path: &Path) -> Option<u64> {
 	let mut file = tokio::fs::File::open(path).await.ok()?;
 	let end = file.metadata().await.ok()?.len();
