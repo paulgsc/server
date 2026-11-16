@@ -250,18 +250,37 @@ fn read(row: Row) -> Result<Verdict, VoiceError> {
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
 pub async fn of_note(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<Verdict>, VoiceError> {
+	Ok(newest(conn, subject, note_id).await?.map(|newest| newest.verdict))
+}
+
+/// A note's verdict, as [`of_note`] chooses it, with the key it is kept
+/// under: what an act of the owner's on it answers (HEARD3,
+/// [`crate::attention`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Newest {
+	/// The attempt judged: the model and its attempt.
+	pub model: String,
+	pub attempt: i64,
+	pub verdict: Verdict,
+}
+
+/// [`of_note`]'s verdict, with its key.
+///
+/// # Errors
+/// Any `sqlx` failure, or a stored verdict this build does not know.
+pub async fn newest(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<Newest>, VoiceError> {
 	// The ending is `transcript::heard`'s choice, by its ORDER BY; then that
 	// attempt's verdict, if it has one. Only with no ending at all, the
 	// newest failure judged final.
-	let row = sqlx::query_as!(
-		Row,
+	let row = sqlx::query!(
 		r#"WITH ending AS (
 		     SELECT t.model, t.attempt FROM voice_transcript t
 		     WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome IN ('heard', 'silent')
 		     ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
 		     LIMIT 1)
-		   SELECT v.rule AS "rule!", v.verdict AS "verdict!", v.reasons AS "reasons!", v.avg_logprob, v.compression_ratio, v.no_speech_prob,
-		          v.unsure_share, v.language, v.language_p, v.expected_language, v.words_per_second, v.speech_ms, v.peak_dbfs, v.rms_dbfs
+		   SELECT v.model AS "model!", v.attempt AS "attempt!", v.rule AS "rule!", v.verdict AS "verdict!", v.reasons AS "reasons!",
+		          v.avg_logprob, v.compression_ratio, v.no_speech_prob, v.unsure_share, v.language, v.language_p, v.expected_language,
+		          v.words_per_second, v.speech_ms, v.peak_dbfs, v.rms_dbfs
 		   FROM voice_transcript_verdict v
 		   WHERE v.subject_id = ?1 AND v.note_id = ?2
 		     AND (EXISTS (SELECT 1 FROM ending e WHERE e.model = v.model AND e.attempt = v.attempt)
@@ -273,7 +292,30 @@ pub async fn of_note(conn: &mut SqliteConnection, subject: &str, note_id: &str) 
 	)
 	.fetch_optional(&mut *conn)
 	.await?;
-	row.map(read).transpose()
+	let Some(row) = row else {
+		return Ok(None);
+	};
+	let verdict = read(Row {
+		rule: row.rule,
+		verdict: row.verdict,
+		reasons: row.reasons,
+		avg_logprob: row.avg_logprob,
+		compression_ratio: row.compression_ratio,
+		no_speech_prob: row.no_speech_prob,
+		unsure_share: row.unsure_share,
+		language: row.language,
+		language_p: row.language_p,
+		expected_language: row.expected_language,
+		words_per_second: row.words_per_second,
+		speech_ms: row.speech_ms,
+		peak_dbfs: row.peak_dbfs,
+		rms_dbfs: row.rms_dbfs,
+	})?;
+	Ok(Some(Newest {
+		model: row.model,
+		attempt: row.attempt,
+		verdict,
+	}))
 }
 
 /// The verdict of what `model` made of `subject`'s note `note_id`.

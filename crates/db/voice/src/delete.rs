@@ -24,7 +24,10 @@
 //!   **What stays:** a copy of its words already filed for the Jobs mailbox
 //!   (the mailbox keeps a name's body for good), the record that Drive
 //!   holds it, the idea an answer belongs to (`idea_answer` still names the
-//!   note, and the idea's read says when it was deleted), and the receipt.
+//!   note, and the idea's read says when it was deleted), what home made of
+//!   it (its verdicts) and the owner's reconciliation of it
+//!   ([`crate::attention`]: a delete of a note whose newest verdict asked
+//!   the owner to act records a `deleted` act), and the receipt.
 //! - **The receipt** says what kind, when recorded and when it reached
 //!   home, how many bytes, when deleted, and what went and what stayed, in
 //!   fixed words. Never the words, the ref or the audio. It is never updated
@@ -76,6 +79,10 @@ pub const IDEA: &str = "idea";
 /// Its problem codes and the numbers behind them, never a word. Kept for
 /// good, the owner's call (paulgsc/server#911): a take's problems outlive it.
 pub const VERDICT: &str = "verdict";
+
+/// Every act of the owner's reconciling it ([`crate::attention`], HEARD3):
+/// which verdict each answered, and when. Kept for good, as the verdict is.
+pub const RECONCILIATION: &str = "reconciliation";
 
 /// What a delete left behind: the receipt, as home keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -336,7 +343,20 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 		return Ok(Deleted::Kept(Kept::SwitchedOff));
 	}
 
-	let (went, stayed) = remove(conn, subject, note_id, answers).await?;
+	// The owner's delete answers a verdict that asked them to act (HEARD3),
+	// recorded before what the verdict is read from goes.
+	crate::attention::act(conn, subject, note_id, crate::attention::Act::Deleted, now).await?;
+	let (went, mut stayed) = remove(conn, subject, note_id, answers).await?;
+	let reconciled = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM voice_note_attention WHERE subject_id = ?1 AND note_id = ?2) AS "reconciled!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	if reconciled {
+		stayed.push(RECONCILIATION.to_owned());
+	}
 	let receipt = Receipt {
 		id: note_id.to_owned(),
 		of: note.of_kind,
@@ -370,7 +390,8 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 #[cfg(test)]
 mod tests {
 	use super::{
-		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, VERDICT, WORDS,
+		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECONCILIATION, RECORDING, SET_ASIDE_MARK, SWITCHED_ON,
+		VERDICT, WORDS,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -437,6 +458,40 @@ mod tests {
 	async fn gone(pool: &SqlitePool, subject: &str, id: &str, on: &[Deletable]) -> Deleted {
 		let mut conn = pool.acquire().await.unwrap();
 		delete(&mut conn, subject, id, on, NOW).await.unwrap()
+	}
+
+	/// A take home could not hear, deleted from My data, is a `deleted` act
+	/// on its newest verdict (HEARD3): it leaves the attention list with the
+	/// note, and its verdict and every act stay, as the receipt says.
+	#[tokio::test]
+	async fn deleting_a_garbled_take_records_the_act_and_keeps_it() {
+		let pool = pool().await;
+		note(&pool, A, "take", "studio").await;
+		for statement in [
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, 'm', 'e', 1, 'heard', 'en', 0.9, 1, 'w', 1, 'now')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, ?2, 'm', 1, 'r', 'garbled', 'sparse', 1, 'now')",
+		] {
+			run(&pool, statement, A, "take").await;
+		}
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(crate::attention::needing(&mut conn, A).await.unwrap().1, 1);
+		drop(conn);
+		let Deleted::Gone(first) = gone(&pool, A, "take", ON).await else {
+			panic!("the take is gone");
+		};
+		assert_eq!(first.stayed, [VERDICT, RECONCILIATION]);
+		let acts: Vec<(String, String, i64, String)> = sqlx::query_as("SELECT act, model, attempt, rule FROM voice_note_attention WHERE subject_id = ?1 AND note_id = 'take'")
+			.bind(A)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(acts, [(String::from("deleted"), String::from("m"), 1, String::from("r"))]);
+		assert_eq!(gone(&pool, A, "take", ON).await, Deleted::Gone(first), "a repeat reads the receipt, and acts no more");
+		assert_eq!(rows(&pool, "voice_note_attention", A, "take").await, 1);
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(crate::attention::needing(&mut conn, A).await.unwrap(), (Vec::new(), 0), "gone from the list");
 	}
 
 	#[tokio::test]

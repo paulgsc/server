@@ -69,6 +69,20 @@
 //!                                      good, newest first, at most 100,
 //!                                      and how many in all, to a paired
 //!                                      phone's My data (paulgsc/server#667)
+//! GET /voice-notes/attention          → { takes: [{ id, of, ref,
+//!                                      recordedAt, heard, verdict }],
+//!                                      total }: every take home could not
+//!                                      hear (its newest verdict garbled,
+//!                                      failed or nothing_said) that no act
+//!                                      answers yet, newest first, at most
+//!                                      100, to a paired phone
+//!                                      (paulgsc/server#912, HEARD3)
+//! POST /voice-notes/:id/attention     → 201 { change: "recorded", act,
+//!                                      verdict }, or 200 "unchanged" for
+//!                                      a retry: body { act: "keep" |
+//!                                      "again" }, the owner's act on that
+//!                                      verdict, append-only; 409 when it
+//!                                      asks for none
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -97,7 +111,8 @@
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token. The audio read, the delete and the receipts read take a `Paired`
+//! token. The audio read, the delete, the receipts read and the attention
+//! read and act take a `Paired`
 //! phone, as `routes::rust_rounds` does, and so do the kept read and the
 //! take library, so a browser's cookie session is a `403` there too.
 //!
@@ -146,7 +161,9 @@ where
 		.get("/voice-notes/kept", handlers::get_kept)
 		.get("/voice-notes/takes", handlers::get_takes)
 		.delete("/voice-notes/:id", handlers::delete_note)
-		.get("/voice-notes/deleted", handlers::get_deleted);
+		.get("/voice-notes/deleted", handlers::get_deleted)
+		.get("/voice-notes/attention", handlers::get_attention)
+		.post("/voice-notes/:id/attention", handlers::post_attention);
 
 	Module::versioned("voice", table).with_cors(cors)
 }

@@ -28,6 +28,12 @@
 //! `voice_repo::delete::delete`, for a kind the owner switched on (none
 //! yet), and the only writer of `voice_note_deletion`.
 //!
+//! [`get_attention`] and [`post_attention`] are the reconciliation page's
+//! (paulgsc/server#912, HEARD3): the only reader of the takes that need
+//! attention (`voice_repo::attention::needing`), and, with [`delete_note`]
+//! (through `voice_repo::delete::delete`), the only callers of
+//! `voice_repo::attention::act`, the one writer of `voice_note_attention`.
+//!
 //! [`get_deleted`] is the only reader of the whole list of receipts
 //! (`voice_repo::delete::receipts`), for My data's list of what was deleted.
 //!
@@ -68,6 +74,7 @@ use sqlx::SqlitePool;
 use std::borrow::Cow;
 use tracing::instrument;
 use voice_repo::{
+	attention::{Act, Acted, Take as TakeNeedingAttention},
 	conveyor::{Advanced, AtStation, Said as MoveSaid, Station, TakeStation},
 	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
 	kept::{KindKept, NoteKept, WeekKept},
@@ -750,6 +757,102 @@ pub async fn get_deleted(paired: Paired, State(db): State<SqlitePool>) -> Result
 	Ok(Json(NotesDeleted { receipts, total }))
 }
 
+/// `GET /voice-notes/attention`
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Attention {
+	/// The takes that need attention, newest recorded first, at most
+	/// `voice_repo::attention::LISTED`.
+	pub takes: Vec<TakeNeedingAttention>,
+	/// How many takes need attention in all.
+	pub total: i64,
+}
+
+/// `GET /voice-notes/attention`: the caller's takes home could not hear and
+/// the owner has not reconciled yet (paulgsc/server#912, HEARD3), for the
+/// phone's reconciliation page.
+///
+/// Every note home holds, of any kind, whose newest verdict (HEARD1) is
+/// `garbled`, `failed` or `nothing_said` and that no act answers yet
+/// (`voice_repo::attention::needing`): its id, kind, `ref`, when it was
+/// recorded, what home heard in it (null when no attempt ended it) and that
+/// verdict, codes and signals. Not paged: the newest
+/// `voice_repo::attention::LISTED` and how many in all, read in one
+/// transaction so the two agree. Reads only, and no audio; the span skips
+/// every argument, so no word reaches a log line.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's (only a paired phone reads
+/// it), and 500 for a storage failure or a verdict that does not read back.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_attention_get", skip_all, fields(otel.kind = "server"))]
+pub async fn get_attention(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Attention>, FileHostError> {
+	let mut tx = db.begin().await?;
+	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str()).await.map_err(refusal)?;
+	tx.commit().await?;
+	Ok(Json(Attention { takes, total }))
+}
+
+/// `POST /voice-notes/:id/attention`'s body: the act.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttentionBody {
+	act: String,
+}
+
+/// `POST /voice-notes/:id/attention`
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reconciled {
+	/// `recorded`, or `unchanged` when this act already answers the verdict.
+	pub change: &'static str,
+	/// The act, as the phone sent it.
+	pub act: &'static str,
+	/// The verdict it answers.
+	pub verdict: voice_repo::verdict::Verdict,
+}
+
+/// What an act on a take that asks for none answers with.
+const NOTHING_ASKED: &str = "home heard this take, or has not judged it yet: there is nothing to reconcile";
+
+/// `POST /voice-notes/:id/attention`: the owner's act on their take `id`
+/// that home could not hear (paulgsc/server#912, HEARD3).
+///
+/// The body is `{"act": "keep" | "again"}`: the owner keeps the take as it
+/// is, or will record it again. The act answers the take's newest verdict
+/// and is appended to `voice_note_attention` with that verdict's key and
+/// when home recorded it (`voice_repo::attention::act`): `201` with
+/// `change: "recorded"`. Nothing is edited: a different act later is a new
+/// row. A retry, the same act on the same verdict, writes nothing and is a
+/// `200` with `change: "unchanged"`, so the phone may resend. Deleting the
+/// take is `DELETE /voice-notes/:id`, My data's, which records its own act.
+///
+/// `BEGIN IMMEDIATE`, so the read and the write see one snapshot.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's or an untrusted origin, 422
+/// naming `act` when the body is not one, 404 for a note the caller's
+/// subject does not hold, 409 for one whose newest verdict asks for nothing
+/// (heard, or not judged yet), and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_attention_post", skip_all, fields(otel.kind = "server"))]
+pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
+	let said = serde_json::from_slice::<AttentionBody>(&body).ok();
+	let (act, name) = match said.as_ref().map(|body| body.act.as_str()) {
+		Some("keep") => (Act::Kept, "keep"),
+		Some("again") => (Act::RecordAgain, "again"),
+		_ => return Err(FileHostError::unprocessable_entity([("act", "keep or again")])),
+	};
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let acted = voice_repo::attention::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await.map_err(refusal)?;
+	tx.commit().await?;
+	let (status, change, verdict) = match acted {
+		Acted::Recorded(verdict) => (StatusCode::CREATED, "recorded", verdict),
+		Acted::Unchanged(verdict) => (StatusCode::OK, "unchanged", verdict),
+		Acted::NothingAsked => return Err(FileHostError::Conflict(NOTHING_ASKED)),
+		Acted::NotHeld => return Err(FileHostError::NotFound),
+	};
+	Ok((status, Json(Reconciled { change, act: name, verdict })).into_response())
+}
+
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
@@ -877,7 +980,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 12);
+		assert_eq!(module().descriptors().count(), 14);
 		// A route named under `/voice-notes/` takes that name from the notes'
 		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
 		for route in module().descriptors() {
@@ -1022,6 +1125,127 @@ mod tests {
 		let status = response.status();
 		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
 		(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+	}
+
+	/// Home's ending of `model` on `subject`'s note `id`, judged `verdict`
+	/// (with `reasons`), at `at`: heard words for `heard` and `garbled`, else
+	/// silence.
+	async fn judged(pool: &SqlitePool, id: &str, model: &str, verdict: &str, reasons: &str, at: &str) {
+		let spoke = verdict == "heard" || verdict == "garbled";
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'e', 1, ?4, ?5, ?6, 1000, ?7, 1, ?8)",
+		)
+		.bind(A)
+		.bind(id)
+		.bind(model)
+		.bind(if spoke { "heard" } else { "silent" })
+		.bind(spoke.then_some("en"))
+		.bind(spoke.then_some(0.9))
+		.bind(spoke.then_some("mumble"))
+		.bind(at)
+		.execute(pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, ?2, ?3, 1, 'heard-1', ?4, ?5, ?6, ?7)",
+		)
+		.bind(A)
+		.bind(id)
+		.bind(model)
+		.bind(verdict)
+		.bind(reasons)
+		.bind(spoke.then_some(1000))
+		.bind(at)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// HEARD3 (paulgsc/server#912): a take home could not hear is listed with
+	/// its verdict until the owner acts on it; an act is a 201, a retry a 200
+	/// that writes nothing, a heard take a 409; and a take deleted from My
+	/// data leaves the list while its verdict and acts stay. A browser's
+	/// session is a 403, another subject's take a 404.
+	#[tokio::test]
+	async fn the_owner_reconciles_a_take_home_could_not_hear() {
+		const ATTENTION: &str = "/voice-notes/attention";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		for path in [NOTE, "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z"] {
+			assert_eq!(put(&app, path, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		}
+		judged(&pool, "n1", "m", "garbled", "low_confidence sparse", "2026-11-14T00:00:00Z").await;
+		judged(&pool, "t1", "m", "nothing_said", "", "2026-11-14T00:00:00Z").await;
+
+		assert_eq!(get(&app, ATTENTION, None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(get(&app, ATTENTION, Some(&browser)).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		let (status, listed) = get(&app, ATTENTION, Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(listed["total"], json!(2));
+		let takes = listed["takes"].as_array().unwrap();
+		assert_eq!(
+			takes.iter().map(|take| take["id"].clone()).collect::<Vec<_>>(),
+			[json!("t1"), json!("n1")],
+			"newest recorded first"
+		);
+		let n1 = takes.get(1).unwrap();
+		assert_eq!(
+			(&n1["of"], &n1["ref"], &n1["recordedAt"]),
+			(&json!("reflection"), &json!("session-7f2a"), &json!("2026-10-25T03:10:00.000Z"))
+		);
+		assert_eq!(n1["heard"]["text"], json!("mumble"));
+		assert_eq!(n1["verdict"]["kind"], json!("garbled"));
+		assert_eq!(n1["verdict"]["reasons"], json!(["low_confidence", "sparse"]));
+		assert_eq!(takes.first().unwrap()["verdict"]["kind"], json!("nothing_said"));
+		assert_eq!(get(&app, ATTENTION, Some(&other)).await.1, json!({ "takes": [], "total": 0 }));
+
+		let keep = json!({ "act": "keep" });
+		assert_eq!(post(&app, "/voice-notes/n1/attention", Some(&other), &keep).await.0, StatusCode::NOT_FOUND);
+		for bad in [json!({ "act": "delete" }), json!({}), json!({ "act": "keep", "more": 1 })] {
+			assert_eq!(
+				post(&app, "/voice-notes/n1/attention", Some(&phone), &bad).await.0,
+				StatusCode::UNPROCESSABLE_ENTITY,
+				"{bad}"
+			);
+		}
+		let (status, answer) = post(&app, "/voice-notes/n1/attention", Some(&phone), &keep).await;
+		assert_eq!((status, &answer["change"], &answer["act"]), (StatusCode::CREATED, &json!("recorded"), &json!("keep")));
+		assert_eq!(answer["verdict"]["kind"], json!("garbled"));
+		let (status, again) = post(&app, "/voice-notes/n1/attention", Some(&phone), &keep).await;
+		assert_eq!((status, &again["change"]), (StatusCode::OK, &json!("unchanged")), "a retry writes nothing");
+		let (status, _) = post(&app, "/voice-notes/n1/attention", Some(&phone), &json!({ "act": "again" })).await;
+		assert_eq!(status, StatusCode::CREATED, "a later act is a new row");
+		let acts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_attention").fetch_one(&pool).await.unwrap();
+		assert_eq!(acts, 2);
+		assert_eq!(get(&app, ATTENTION, Some(&phone)).await.1["total"], json!(1));
+
+		// My data's delete takes the Studio take off the list, as an act.
+		let request = Request::builder().method(Method::DELETE).uri("/voice-notes/t1").header(&phone.0, &phone.1);
+		let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+		assert_eq!(response.status(), StatusCode::OK);
+		let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		let receipt: Value = serde_json::from_slice(&bytes).unwrap();
+		assert_eq!(receipt["receipt"]["stayed"], json!(["verdict", "reconciliation"]));
+		assert_eq!(get(&app, ATTENTION, Some(&phone)).await.1, json!({ "takes": [], "total": 0 }));
+		assert_eq!(post(&app, "/voice-notes/t1/attention", Some(&phone), &keep).await.0, StatusCode::NOT_FOUND, "gone");
+		let kept: (i64, i64) = sqlx::query_as(
+			"SELECT (SELECT COUNT(*) FROM voice_transcript_verdict WHERE note_id = 't1'),
+			        (SELECT COUNT(*) FROM voice_note_attention WHERE note_id = 't1' AND act = 'deleted')",
+		)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert_eq!(kept, (1, 1), "its verdict and the act stay");
+
+		// A take heard since asks for nothing.
+		judged(&pool, "n1", "better", "heard", "", "2026-11-15T00:00:00Z").await;
+		assert_eq!(post(&app, "/voice-notes/n1/attention", Some(&phone), &keep).await.0, StatusCode::CONFLICT);
 	}
 
 	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves

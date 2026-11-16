@@ -211,7 +211,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -1300,7 +1300,10 @@ nowhere is marked as such and belongs to review.
     mailbox filer checks the note is still held in the transaction that
     files, so words deleted after it read them never leave home. What home
     made of it stays too (`voice_transcript_verdict`: codes, numbers and a
-    language, never a word; paulgsc/server#908, #911). It
+    language, never a word; paulgsc/server#908, #911), and so does the
+    owner's reconciliation of it (`voice_note_attention`, below): a delete
+    of a note whose newest verdict was not `heard` records a `deleted` act
+    there, in the same transaction. It
     writes a receipt to `voice_note_deletion`, append-only (its trigger
     aborts an `UPDATE`) and gone only with the account: the note's id and
     kind, when it was recorded, reached home and was deleted, its size, and
@@ -1551,7 +1554,18 @@ nowhere is marked as such and belongs to review.
     for the last failure the worker makes on a note only; it leaves with the
     account alone (sweep and trigger), and outlives its note: deleting a note
     for good keeps its verdicts, which hold no word (the owner's call,
-    paulgsc/server#911), and its receipt says `verdict` stayed. Every read that gives
+    paulgsc/server#911), and its receipt says `verdict` stayed. **The owner's
+    reconciliation of each note home could not hear is
+    `voice_note_attention`, append-only too** (paulgsc/server#912, HEARD3):
+    one row per act (`kept`, `record_again`, `deleted`) on a note whose
+    newest verdict is `garbled`, `failed` or `nothing_said`, naming that
+    verdict by its key, numbered per note, and when home recorded it; never
+    anything said. Written only by `POST /voice-notes/:id/attention` and
+    `DELETE /voice-notes/:id` (`voice_repo::attention::act`), never updated
+    (its trigger aborts an `UPDATE`), it outlives its note as the verdicts do
+    and leaves with the account alone (sweep and trigger). `GET
+    /voice-notes/attention` lists the notes held whose newest verdict no act
+    answers. Every read that gives
     a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
     the mailbox's transcript and pickup files) gives its verdict beside it,
     so no reader judges a transcript for itself. A reader
