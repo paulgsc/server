@@ -1270,12 +1270,13 @@ nowhere is marked as such and belongs to review.
     interview takes can be deleted only when home could not hear them
     (paulgsc/some-ui#3076). An essay may answer such a take's item as a
     silence, and then never plays it (HEARD1), or play it anyway; so (c)
-    withdraws a week for a deleted take unless every revision of its essay
-    home holds answers that item as a silence (paulgsc/server#912), and a
-    revision that does not read counts as playing it. *Enforced by*
+    withdraws a week for a deleted take unless the revision given to the
+    render and the newest both answer that item as a silence
+    (paulgsc/server#912), and a revision that does not read counts as
+    playing it. *Enforced by*
     `rust_essays`' `a_kept_essay_copies_its_takes_only_until_its_video_is_made`,
     `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go`,
-    `deleting_a_take_home_could_not_hear_withdraws_nothing`,
+    `deleting_a_take_withdraws_its_week_only_if_the_essay_plays_it`,
     `an_essay_the_subject_no_longer_holds_leaves_the_drive`,
     `an_interview_essay_is_given_from_its_weeks_final_with_its_takes`
     and `an_interview_essay_whose_take_is_deleted_is_withdrawn`, and

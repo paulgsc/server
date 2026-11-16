@@ -679,7 +679,7 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 			continue;
 		}
 		let Some(subject) = subject else { continue };
-		if let Some(note) = deleted_take(db, kind, subject, &week).await? {
+		if let Some(note) = deleted_take(db, kind, subject, &week, given_revision(&input).await).await? {
 			let size = i64::try_from(crate::call_weeks::render::bytes_under(&render).await).unwrap_or(i64::MAX);
 			let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 			rust_round_repo::essay_video::withdraw(&mut tx, kind, subject, &week, &note, size, now).await?;
@@ -705,11 +705,13 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 /// An essay may answer an item whose take home could not hear as a silence,
 /// and then plays nothing for it (HEARD1); it may also play it. So a
 /// deleted take withdraws the week unless every revision of the week's
-/// essay `subject` holds answers its item as a silence: deleting a take the
-/// essay never played, as the owner's reconciliation of an unheard one may
-/// (paulgsc/server#912, HEARD3), withdraws nothing. A revision that does not
-/// read counts as playing it.
-async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
+/// essay `subject` holds that could hold it answers its item as a silence:
+/// the revision `given` to the render, if one was, and the newest, which the
+/// next export would give. Deleting a take the essay never played, as the
+/// owner's reconciliation of an unheard one may (paulgsc/server#912,
+/// HEARD3), withdraws nothing. A revision that does not read counts as
+/// playing it.
+async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str, given: Option<u32>) -> Result<Option<String>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
 	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
 		return Ok(None);
@@ -723,11 +725,19 @@ async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str) ->
 	if deleted.is_empty() {
 		return Ok(None);
 	}
-	let revisions: Vec<_> = held_essays(&mut conn, kind, subject)
+	let held: Vec<_> = held_essays(&mut conn, kind, subject)
 		.await?
 		.into_iter()
-		.filter(|file| essay::parse_name_of(kind, &file.name).is_some_and(|(of, _)| of == week))
-		.map(|file| essay::read_of(kind, &file.body).ok())
+		.filter_map(|file| {
+			let (of, revision) = essay::parse_name_of(kind, &file.name)?;
+			(of == week).then(|| (revision, essay::read_of(kind, &file.body).ok()))
+		})
+		.collect();
+	let newest = held.iter().map(|(revision, _)| *revision).max();
+	let revisions: Vec<_> = held
+		.into_iter()
+		.filter(|(revision, _)| Some(*revision) == newest || Some(*revision) == given)
+		.map(|(_, essay)| essay)
 		.collect();
 	for (item, take, read) in deleted {
 		let silent = |essay: &Option<essay::Essay>| {
@@ -1304,10 +1314,11 @@ mod tests {
 	/// essay answers as a silence is never played, so the owner deleting it
 	/// (paulgsc/some-ui#3076) withdraws nothing: a made video stays, and a
 	/// week not yet given still is, the silence standing. One the essay plays
-	/// anyway withdraws its week, as any played take does.
+	/// anyway withdraws its week, as any played take does; one only an older
+	/// revision played, superseded before it was given, does not.
 	#[tokio::test]
-	async fn deleting_a_take_home_could_not_hear_withdraws_nothing() {
-		for (given_first, plays) in [(true, false), (false, false), (true, true)] {
+	async fn deleting_a_take_withdraws_its_week_only_if_the_essay_plays_it() {
+		for (given_first, plays, older_plays) in [(true, false, false), (false, false, false), (true, true, false), (true, false, true)] {
 			let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 			let folders = folders(dir.path());
 			hold_week(&pool, 1, "2026-w46").await;
@@ -1326,7 +1337,13 @@ mod tests {
 				sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
 			}
 			let answers = if plays { ["take", "silence"] } else { ["silence", "silence"] };
-			hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", answers)).await;
+			if older_plays {
+				hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["take", "silence"])).await;
+				let second = essay::mailbox_name("2026-w46").replace(".json", "-r2.json");
+				hold(&pool, 3, &second, &essay("2026-w46", answers)).await;
+			} else {
+				hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", answers)).await;
+			}
 			let now = "2026-11-24T08:00:00.000Z";
 			if given_first {
 				assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap().written, 1);

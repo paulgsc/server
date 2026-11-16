@@ -285,7 +285,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, note_id: &str) -
 		   WHERE v.subject_id = ?1 AND v.note_id = ?2
 		     AND (EXISTS (SELECT 1 FROM ending e WHERE e.model = v.model AND e.attempt = v.attempt)
 		          OR (NOT EXISTS (SELECT 1 FROM ending) AND v.verdict = 'failed'))
-		   ORDER BY v.judged_at DESC, v.rule DESC
+		   ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
 		   LIMIT 1"#,
 		subject,
 		note_id

@@ -104,8 +104,9 @@ async fn answer_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, ne
 /// `subject`'s takes that need attention, newest recorded first (the note's
 /// id breaking a tie), at most [`LISTED`] of them, and how many in all.
 ///
-/// One statement: for each note held with any verdict not heard (the
-/// verdicts' primary key leads with the note), its newest verdict, chosen as
+/// One statement: for each note held with a verdict not heard that no act
+/// answers (the verdicts' primary key leads with the note; every note listed
+/// is one, and a note reconciled since is not), its newest verdict, chosen as
 /// [`verdict::newest`] chooses it, kept when not heard and no act answers it,
 /// then counted and cut to [`LISTED`]. Only the listed takes' transcripts are
 /// read after. Run it in one transaction, so the list and the total agree.
@@ -131,13 +132,17 @@ pub async fn needing(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec<
 		                          SELECT 1 FROM voice_transcript t
 		                          WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent'))
 		                        AND v.verdict = 'failed'))
-		             ORDER BY v.judged_at DESC, v.rule DESC
+		             ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
 		             LIMIT 1) AS chosen_row
 		     FROM voice_note n
 		     WHERE n.subject_id = ?1
 		       AND EXISTS (
 		         SELECT 1 FROM voice_transcript_verdict w
-		         WHERE w.subject_id = n.subject_id AND w.note_id = n.note_id AND w.verdict <> 'heard'))
+		         WHERE w.subject_id = n.subject_id AND w.note_id = n.note_id AND w.verdict <> 'heard'
+		           AND NOT EXISTS (
+		             SELECT 1 FROM voice_note_attention a
+		             WHERE a.subject_id = w.subject_id AND a.note_id = w.note_id
+		               AND a.model = w.model AND a.attempt = w.attempt AND a.rule = w.rule)))
 		   SELECT c.note_id AS "note_id!", c.of_kind AS "of_kind!", c.of_ref AS "of_ref!", c.recorded_at AS "recorded_at!",
 		          v.rule AS "rule!", v.verdict AS "verdict!", v.reasons AS "reasons!", v.avg_logprob, v.compression_ratio,
 		          v.no_speech_prob, v.unsure_share, v.language, v.language_p, v.expected_language, v.words_per_second,
