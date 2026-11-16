@@ -310,7 +310,9 @@ pub async fn of_ending(conn: &mut SqliteConnection, subject: &str, note_id: &str
 /// The verdict of the transcript the routine reads, as an essay is checked
 /// against it, so home's check and the routine judge the same one.
 ///
-/// The routine reads the take's transcripts the mailbox holds, and judges by
+/// The routine reads the take's transcripts the mailbox took (handed over
+/// `added` or `unchanged`: one filed and not yet taken, or refused, the
+/// routine never saw), and judges by
 /// the winning one's verdict alone (paulgsc/some-ui#3073's `heardByNote`):
 /// with `verbatim_first` (an interview take) one whose model holds
 /// `+verbatim` before any other, then the highest number filed; a Rust
@@ -324,6 +326,11 @@ pub async fn as_the_routine_reads(conn: &mut SqliteConnection, subject: &str, no
 	let filed = sqlx::query_scalar!(
 		r#"SELECT filed.model AS "model!" FROM mailbox_transcript AS filed
 		   WHERE filed.subject_id = ?1 AND filed.note_id = ?2
+		     AND EXISTS (
+		       SELECT 1 FROM mailbox_handed AS handed
+		       WHERE handed.subject_id = filed.subject_id AND handed.folder = 'transcript'
+		         AND handed.name = 'transcript-' || filed.note_id || '-' || filed.n || '.json'
+		         AND handed.answer IN ('added', 'unchanged'))
 		   ORDER BY (?3 AND instr(filed.model, '+verbatim') > 0) DESC, filed.n DESC
 		   LIMIT 1"#,
 		subject,
@@ -383,6 +390,25 @@ mod tests {
 		.execute(pool)
 		.await
 		.unwrap();
+	}
+
+	/// `model`'s transcript filed as number `n`, and the mailbox's `answer`
+	/// to it.
+	async fn filed(pool: &SqlitePool, model: &str, n: i64, answer: &str) {
+		sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', ?2, ?3, 'now')")
+			.bind(A)
+			.bind(model)
+			.bind(n)
+			.execute(pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'transcript', ?2, ?3, 'now')")
+			.bind(A)
+			.bind(String::from("transcript-n-") + &n.to_string() + ".json")
+			.bind(answer)
+			.execute(pool)
+			.await
+			.unwrap();
 	}
 
 	fn signals() -> Signals {
@@ -492,24 +518,32 @@ mod tests {
 			attempt(&pool, model, 1, "heard", at).await;
 			let signals = Some(signals());
 			judge(&pool, model, 1, &verdict(kind, &[], signals), at).await;
-			sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', ?2, ?3, 'now')")
-				.bind(A)
-				.bind(model)
-				.bind(n)
-				.execute(&pool)
-				.await
-				.unwrap();
+			filed(&pool, model, n, "added").await;
 		}
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(as_the_routine_reads(&mut conn, A, "n", true).await.unwrap(), Some(Kind::Garbled), "the verbatim one first");
 		assert_eq!(as_the_routine_reads(&mut conn, A, "n", false).await.unwrap(), Some(Kind::Heard), "else the highest number");
 		drop(conn);
-		attempt(&pool, "unjudged", 1, "heard", "2026-11-16").await;
-		sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'unjudged', 3, 'now')")
+		// Filed and not yet taken, or refused, the routine never saw: no
+		// winner.
+		attempt(&pool, "refused", 1, "heard", "2026-11-16").await;
+		judge(&pool, "refused", 1, &verdict(Kind::Heard, &[], Some(signals())), "2026-11-16").await;
+		filed(&pool, "refused", 3, "conflict").await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(as_the_routine_reads(&mut conn, A, "n", false).await.unwrap(), Some(Kind::Heard), "n 2 still wins");
+		drop(conn);
+		attempt(&pool, "untaken", 1, "heard", "2026-11-16").await;
+		judge(&pool, "untaken", 1, &verdict(Kind::Garbled, &[], Some(signals())), "2026-11-16").await;
+		sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'untaken', 4, 'now')")
 			.bind(A)
 			.execute(&pool)
 			.await
 			.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(as_the_routine_reads(&mut conn, A, "n", false).await.unwrap(), Some(Kind::Heard), "not handed over yet");
+		drop(conn);
+		attempt(&pool, "unjudged", 1, "heard", "2026-11-16").await;
+		filed(&pool, "unjudged", 5, "unchanged").await;
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(
 			as_the_routine_reads(&mut conn, A, "n", false).await.unwrap(),

@@ -1169,12 +1169,14 @@ mod tests {
 			.execute(&pool)
 			.await
 			.unwrap();
-			// Filed for the routine, which judges by the file it reads.
-			sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'note-311', 'm', 1, 'now')")
-				.bind(ME)
-				.execute(&pool)
-				.await
-				.unwrap();
+			// Filed for the routine and taken by the mailbox: the routine judges
+			// by the file it reads.
+			for statement in [
+				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'note-311', 'm', 1, 'now')",
+				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'transcript', 'transcript-note-311-1.json', 'added', 'now')",
+			] {
+				sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+			}
 			hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
 			let done = export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap();
 			assert_eq!((done.written, done.refused, done.failed), (written, refused, 0), "{verdict}");
