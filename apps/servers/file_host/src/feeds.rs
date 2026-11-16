@@ -32,6 +32,7 @@
 //! feed's tables takes the caller's subject, and the essay feed answers only
 //! that subject's weeks.
 
+pub mod mp4;
 pub mod renders;
 pub mod videos;
 
@@ -142,19 +143,55 @@ impl Feed {
 		}
 	}
 
-	/// Every episode home holds, newest first: for the call, each week, whose
-	/// parts ([`videos::list`]) are read from the drive.
+	/// Every episode home holds, newest first, with its day: for the call,
+	/// each week, whose parts ([`videos::list`]) are read from the drive.
 	///
 	/// # Errors
 	/// A storage failure.
-	pub async fn held(self, conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, sqlx::Error> {
+	pub async fn held(self, conn: &mut SqliteConnection, subject: &str) -> Result<Vec<HeldEpisode>, sqlx::Error> {
 		Ok(match self {
-			Self::Call => call_week_repo::held(conn).await?.into_iter().map(|week| week.from).collect(),
-			Self::PlayoffDelta => pd_fill_repo::held(conn).await?.iter().rev().map(pd_fill_repo::HeldFill::key).collect(),
-			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject).await?.into_iter().rev().collect(),
-			Self::InterviewEssay => essays_held(conn, crate::rust_essays::Kind::Interview, subject).await?.into_iter().rev().collect(),
+			// Its first day.
+			Self::Call => call_week_repo::held(conn)
+				.await?
+				.into_iter()
+				.map(|week| HeldEpisode {
+					date: Some(week.from.clone()),
+					key: week.from,
+				})
+				.collect(),
+			// The day home took its fill, by home's clock: its key names the
+			// game's week by number, which home holds no date for.
+			Self::PlayoffDelta => pd_fill_repo::held(conn)
+				.await?
+				.iter()
+				.rev()
+				.map(|fill| HeldEpisode {
+					key: fill.key(),
+					date: day_taken(&fill.taken_at),
+				})
+				.collect(),
+			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject)
+				.await?
+				.into_iter()
+				.rev()
+				.map(HeldEpisode::of_iso_week)
+				.collect(),
+			Self::InterviewEssay => essays_held(conn, crate::rust_essays::Kind::Interview, subject)
+				.await?
+				.into_iter()
+				.rev()
+				.map(HeldEpisode::of_iso_week)
+				.collect(),
 			// Newest day first, as the table orders them oldest first.
-			Self::CardsEssay => cards_essay_repo::held(conn).await?.into_iter().rev().map(|essay| essay.key).collect(),
+			Self::CardsEssay => cards_essay_repo::held(conn)
+				.await?
+				.into_iter()
+				.rev()
+				.map(|essay| HeldEpisode {
+					key: essay.key,
+					date: Some(essay.day),
+				})
+				.collect(),
 		})
 	}
 
@@ -276,6 +313,41 @@ impl Feed {
 	}
 }
 
+/// An episode home holds, and its date.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldEpisode {
+	/// Its key: for the call, the week's (its first part's).
+	pub key: String,
+	/// Its date, `YYYY-MM-DD`, by what its feed knows (server#906): the call's
+	/// week's first day; Playoff Delta's, the day home took its fill, by
+	/// home's clock (`renders::HOME_ZONE`); an essay's, the Monday of the ISO
+	/// week it is of; a cards essay's own day. `None` only for a stamp or an
+	/// essay's week that doesn't read, which the tables never hold.
+	pub date: Option<String>,
+}
+
+impl HeldEpisode {
+	/// An essay's, keyed by the ISO week it is of (`2026-w46`).
+	fn of_iso_week(week: String) -> Self {
+		Self {
+			date: iso_monday(&week).map(|day| day.format("%Y-%m-%d").to_string()),
+			key: week,
+		}
+	}
+}
+
+/// The Monday of the ISO week `week` names (`2026-w46`), if it names one.
+fn iso_monday(week: &str) -> Option<chrono::NaiveDate> {
+	let (year, number) = week.split_once("-w")?;
+	chrono::NaiveDate::from_isoywd_opt(year.parse().ok()?, number.parse().ok()?, chrono::Weekday::Mon)
+}
+
+/// The day, by home's clock, of an ISO-8601 stamp.
+fn day_taken(taken_at: &str) -> Option<String> {
+	let at = chrono::DateTime::parse_from_rfc3339(taken_at).ok()?;
+	Some(at.with_timezone(&renders::HOME_ZONE).format("%Y-%m-%d").to_string())
+}
+
 /// The weeks `subject` holds an essay of `kind` of, oldest first, less those
 /// withdrawn for a deleted take (gone for good, with no video to list) and
 /// those another account holds an essay of too: the drive keys an essay's
@@ -290,4 +362,22 @@ async fn essays_held(conn: &mut SqliteConnection, kind: crate::rust_essays::Kind
 		}
 	}
 	Ok(held)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn an_episodes_day_is_what_its_feed_knows() {
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-w46")).date.as_deref(), Some("2026-11-09"));
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2027-w01")).date.as_deref(), Some("2027-01-04"));
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-w54")).date, None, "no such week");
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-11-09")).date, None);
+		// Home's clock: a fill taken late on a Tuesday evening at home is
+		// Tuesday's, though it is already Wednesday in UTC.
+		assert_eq!(day_taken("2026-11-11T05:30:00.000Z").as_deref(), Some("2026-11-10"));
+		assert_eq!(day_taken("2026-11-10T20:00:00.000Z").as_deref(), Some("2026-11-10"));
+		assert_eq!(day_taken("yesterday"), None);
+	}
 }
