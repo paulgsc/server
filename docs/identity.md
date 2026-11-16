@@ -1524,7 +1524,8 @@ nowhere is marked as such and belongs to review.
     Whisper's code; home hears each piece of speech the VAD found in its own
     language, so a Korean phrase inside an English take comes back in
     Hangul, and the note's language is the one heard for longest;
-    paulgsc/server#578, ST23), as new rows in
+    paulgsc/server#578, ST23; except a Rust Rounds answer and an interview
+    take, heard in English throughout, paulgsc/server#908), as new rows in
     `voice_transcript_word`, one per word, keyed by the note, the model and
     the word's place (paulgsc/some-ui#2085, GWB11, so burned-in captions can
     follow the voice word by word; approved by the owner, paulgsc/some-ui#2074

@@ -146,7 +146,8 @@ pub async fn run_once_telling<H: Hear>(
 		let attempt = {
 			let (hear, cancel) = (Arc::clone(hear), cancel.clone());
 			let deadline = started + per_note;
-			tokio::task::spawn_blocking(move || hear.hear(&audio, decode, deadline, &cancel)).await
+			let language = note.expected_language;
+			tokio::task::spawn_blocking(move || hear.hear(&audio, decode, language, deadline, &cancel)).await
 		};
 		let attempted = match attempt {
 			Ok(Ok(done)) => done,
@@ -329,7 +330,7 @@ mod tests {
 			"whisper.cpp test"
 		}
 
-		fn hear(&self, audio: &[u8], decode: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, audio: &[u8], decode: Decode, _: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 			self.heard.lock().unwrap().push(audio.to_vec());
 			self.decodes.lock().unwrap().push(decode);
 			let outcome = match audio {
@@ -677,7 +678,7 @@ mod tests {
 		fn engine(&self) -> &'static str {
 			"e"
 		}
-		fn hear(&self, _: &[u8], _: Decode, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, _: &[u8], _: Decode, _: Option<&str>, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
 			let pool = self.0.clone();
 			tokio::runtime::Handle::current().block_on(async move {
 				sqlx::query("DELETE FROM account").execute(&pool).await.unwrap();

@@ -162,9 +162,9 @@ impl<H: Hear> Hear for Held<H> {
 		self.inner.engine()
 	}
 
-	fn hear(&self, audio: &[u8], decode: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+	fn hear(&self, audio: &[u8], decode: Decode, language: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 		let _hold = self.interactive.hold();
-		self.inner.hear(audio, decode, deadline, cancel)
+		self.inner.hear(audio, decode, language, deadline, cancel)
 	}
 }
 
@@ -282,7 +282,7 @@ mod tests {
 			"engine"
 		}
 
-		fn hear(&self, _: &[u8], _: Decode, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, _: &[u8], _: Decode, _: Option<&str>, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
 			self.held.lock().unwrap().push(self.interactive.is_held());
 			Ok(Heard {
 				outcome: Outcome::Silent,
@@ -305,7 +305,7 @@ mod tests {
 		};
 		assert_eq!((engine.model(), engine.engine()), ("model", "engine"));
 		assert!(!interactive.is_held());
-		assert!(engine.hear(b"note", Decode::Plain, Instant::now(), &CancellationToken::new()).is_ok());
+		assert!(engine.hear(b"note", Decode::Plain, None, Instant::now(), &CancellationToken::new()).is_ok());
 		assert_eq!(*watch.held.lock().unwrap(), [true]);
 		assert!(!interactive.is_held(), "let go once heard");
 	}

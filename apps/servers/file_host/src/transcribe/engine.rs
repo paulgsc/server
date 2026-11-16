@@ -35,7 +35,13 @@
 //! phrase inside an English take comes back in Hangul, and no run's words are
 //! heard again in the language of the run before. Each
 //! word keeps the language it was heard in, and the note's language is the
-//! one heard for longest.
+//! one heard for longest. **Except a kind said in one language**
+//! (`voice_repo::verdict::expected_language`: a Rust Rounds answer, an
+//! interview take; paulgsc/server#908, HEARD1): its speech is heard as one run
+//! in that language, as a short cut misdetected would otherwise be heard as
+//! words of a language nobody spoke (w46's QM-312 opened in "Portuguese").
+//! Its cuts are still detected, and the language detected for longest is
+//! kept as a signal of its verdict ([`Measures::detected`]).
 //!
 //! **Each word keeps its time, and how sure Whisper was of it**
 //! (paulgsc/some-ui#2085, GWB11; paulgsc/server#577, ST22). Whisper
@@ -247,9 +253,14 @@ pub trait Hear: Send + Sync + 'static {
 	/// Hears `audio`, a note's bytes as the phone sent them, decoded as
 	/// `decode` says, by `deadline`. Blocking: call it off the async runtime.
 	///
+	/// With a `language` (the one the note's kind is said in,
+	/// `voice_repo::verdict::expected_language`), every piece of speech is
+	/// decoded in it, whatever is detected; the detection is still made, and
+	/// kept as a signal ([`Measures::detected`], HEARD1).
+	///
 	/// # Errors
 	/// [`Cancelled`] once `cancel` fires.
-	fn hear(&self, audio: &[u8], decoding: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled>;
+	fn hear(&self, audio: &[u8], decoding: Decode, language: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled>;
 }
 
 /// whisper.cpp with a loaded model, and the VAD model it finds speech with.
@@ -354,7 +365,7 @@ impl Whisper {
 		&self,
 		speech: &[f32],
 		cuts: &[Cut],
-		decoding: Decode,
+		(decoding, language): (Decode, Option<&str>),
 		deadline: Instant,
 		cancel: &CancellationToken,
 		segments: &mut Vec<Segment>,
@@ -394,6 +405,13 @@ impl Whisper {
 			Planned::Stopped(stopped) => return stopped,
 		};
 		*detected = Some(main_language(&runs));
+		// A kind said in one language is decoded in it alone (HEARD1): a short
+		// cut detected as another (w46's QM-312, heard as Portuguese) is not
+		// heard as words of a language nobody spoke.
+		let runs = match language {
+			Some(language) => held_to(&runs, language),
+			None => runs,
+		};
 		let mut text = String::new();
 		let mut heard = Vec::new();
 		let special = self.context.token_eot();
@@ -497,7 +515,7 @@ impl Hear for Whisper {
 		&self.engine
 	}
 
-	fn hear(&self, audio: &[u8], decoding: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+	fn hear(&self, audio: &[u8], decoding: Decode, language: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 		let pcm = match decode(audio, deadline, cancel)? {
 			Decoded::Pcm(pcm) => pcm,
 			Decoded::Unreadable => return Ok(Heard::without_audio(Outcome::Unreadable)),
@@ -523,7 +541,7 @@ impl Hear for Whisper {
 			return Ok(heard(Outcome::Deadline));
 		}
 		let (mut segments, mut detected) = (Vec::new(), None);
-		let outcome = self.transcribe(&speech, &cuts, decoding, deadline, cancel, &mut segments, &mut detected)?;
+		let outcome = self.transcribe(&speech, &cuts, (decoding, language), deadline, cancel, &mut segments, &mut detected)?;
 		let measures = matches!(outcome, Outcome::Heard { .. }).then(|| Measures::of(&speech, segments, detected));
 		Ok(Heard { measures, ..heard(outcome) })
 	}
@@ -726,6 +744,23 @@ fn plan_runs(speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &Cancellat
 	} else {
 		Planned::Runs(runs)
 	}
+}
+
+/// `runs` as one run heard in `language` (HEARD1): every cut of the speech,
+/// end to end, as [`plan_runs`] lays them, with the surest detection of
+/// `language` among them, or 0 where none detected it. `runs` is never
+/// empty.
+fn held_to(runs: &[Run], language: &str) -> Vec<Run> {
+	let (Some(first), Some(last)) = (runs.first(), runs.last()) else {
+		return Vec::new();
+	};
+	let p = runs.iter().filter(|run| run.language == language).map(|run| run.p).fold(0.0, f64::max);
+	vec![Run {
+		language: language.to_owned(),
+		p,
+		at: first.at,
+		len: last.at + last.len - first.at,
+	}]
 }
 
 /// The note's language: the one heard for longest, with the surest of its
@@ -1044,7 +1079,7 @@ mod tests {
 			let Ok(Heard {
 				outcome: Outcome::Heard { text, words, .. },
 				..
-			}) = whisper.hear(&audio, decoding, deadline, &CancellationToken::new())
+			}) = whisper.hear(&audio, decoding, None, deadline, &CancellationToken::new())
 			else {
 				panic!("not heard");
 			};
@@ -1298,6 +1333,10 @@ mod tests {
 		};
 		assert_eq!(runs, [run("en", 0.9, 0, 2_500), run("ko", 0.8, 2_500, 3_000), run("en", 0.95, 5_500, 2_700)]);
 		assert_eq!(main_language(&runs), (String::from("en"), 0.95));
+		// HEARD1: a kind said in English is heard as one English run over the
+		// whole speech, with the surest English detection.
+		assert_eq!(super::held_to(&runs, "en"), [run("en", 0.95, 0, 8_200)]);
+		assert_eq!(super::held_to(&runs, "pt"), [run("pt", 0.0, 0, 8_200)], "never detected: no probability");
 		let never = |_: &[f32]| None;
 		assert_eq!(
 			plan_runs(&speech, &cuts, later(), &CancellationToken::new(), never),
