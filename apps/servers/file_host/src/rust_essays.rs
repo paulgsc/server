@@ -450,7 +450,6 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 		// left for a person to read, and never rendered from.
 		return Ok(Given::Refused(vec![(String::from("week"), "has only a draft past its deadline, never a final")]));
 	}
-	let pairs = |list: &[(String, String)]| -> Vec<(&str, &str)> { list.iter().map(|(item, take)| (item.as_str(), take.as_str())).collect() };
 	let sent = standing.as_ref().map_or_else(essay::Final::default, |standing| essay::Final {
 		answers: pairs(&standing.answers),
 		reads: pairs(&standing.reads),
@@ -459,6 +458,11 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 		Ok(played) => Given::Final(played),
 		Err(problems) => Given::Refused(problems),
 	})
+}
+
+/// Each `(item, take)` of `list`, borrowed, as [`essay::Final`] holds them.
+fn pairs(list: &[(String, String)]) -> Vec<(&str, &str)> {
+	list.iter().map(|(item, take)| (item.as_str(), take.as_str())).collect()
 }
 
 /// What stands of a week's send, as an essay is checked against it.
