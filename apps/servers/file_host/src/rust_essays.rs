@@ -1,5 +1,20 @@
-//! Home renders each week's Rust Rounds essay (paulgsc/some-ui#2691, RR16,
-//! epic paulgsc/some-ui#2231).
+//! Home renders each week's essay, one export over the essay's kind
+//! ([`Kind`]; the module keeps its first kind's name, since paulgsc/some-ui's
+//! assurance ledger names this file and its tests as proofs, and a rename
+//! moves with the ledger, server#899): a Rust Rounds week's (paulgsc/some-ui#2691, RR16, epic
+//! paulgsc/some-ui#2231) and a week of mock interview's (paulgsc/some-ui#2937,
+//! IW6, epic paulgsc/some-ui#2931; server#899). What differs between kinds is
+//! named once, in [`Spec`] and in the few reads that match on the kind (its
+//! essays in the mailbox, its week's final, its takes); every rule below is
+//! one rule for every kind. A third kind (Game Week Bites' essay,
+//! paulgsc/some-ui#2074) is a [`Kind`] and a [`Spec`], not a copy.
+//!
+//! The rest of this says it for Rust Rounds; a week of mock interview's essay
+//! is the same with `interview-essay-<week>.json`, the interview week's final
+//! (`rust_round_repo::interview`, IW4, server#847), its questions in place of
+//! tickets (`takes/<question>.<ext>`) and its cards read beside them
+//! (`takes/read.<card>.<ext>`), the `interview-essay` render job and
+//! its own folders, metrics (`interview_essay*`) and alerts.
 //!
 //! After a week's deadline the routine writes its essay
 //! (`some-ui.rust-essay/1`) and puts it in the mailbox's `brief` folder as
@@ -43,6 +58,7 @@
 use crate::auth::owner::Owner;
 use crate::call_weeks::render::{tally, Held, Renders};
 use crate::AppState;
+pub use rust_round_repo::draft::Kind;
 use rust_round_repo::essay::{self, Played};
 use rust_round_repo::round::Problem;
 use sqlx::SqlitePool;
@@ -76,6 +92,61 @@ pub const ESSAY_FILE: &str = "essay.json";
 /// Which revision of the week's essay its folder holds (C72), beside it.
 pub const REVISION_FILE: &str = "revision";
 
+/// Where each interview essay home gives the render worker is written:
+/// `${STORAGE}/interview-essays` on the host, `/essays` in the worker's
+/// `interview-essay` job.
+pub const INTERVIEW_ESSAYS_FOLDER: &str = "/app/dbs/interview-essays";
+
+/// Where the worker keeps each interview essay's video.
+pub const INTERVIEW_RENDERS_FOLDER: &str = "/app/dbs/renders/interview-essay";
+
+/// Where the worker says how its interview essay passes went, and each
+/// interview essay refused is kept.
+pub const INTERVIEW_STATUS_FOLDER: &str = "/app/dbs/renders/interview-essay-worker";
+
+/// Where the worker keeps a waiting interview essay's work.
+pub const INTERVIEW_WORK_FOLDER: &str = "/app/dbs/renders/interview-essay-work";
+
+/// What a kind of essay is called and where its files go: everything about
+/// a kind that is a name, not a rule.
+#[derive(Debug)]
+pub struct Spec {
+	/// The worker's name in its log lines: `rust essays`.
+	pub name: &'static str,
+	/// What the render worker is given ([`ESSAYS_FOLDER`]).
+	pub essays: &'static str,
+	/// What it made ([`RENDERS_FOLDER`]).
+	pub renders: &'static str,
+	/// How it went, and each essay refused ([`STATUS_FOLDER`]).
+	pub status: &'static str,
+	/// A waiting essay's work ([`WORK_FOLDER`]).
+	pub work: &'static str,
+}
+
+/// What `kind` is called and where its files go.
+#[must_use]
+pub const fn spec(kind: Kind) -> &'static Spec {
+	match kind {
+		Kind::RustRounds => &Spec {
+			name: "rust essays",
+			essays: ESSAYS_FOLDER,
+			renders: RENDERS_FOLDER,
+			status: STATUS_FOLDER,
+			work: WORK_FOLDER,
+		},
+		Kind::Interview => &Spec {
+			name: "interview essays",
+			essays: INTERVIEW_ESSAYS_FOLDER,
+			renders: INTERVIEW_RENDERS_FOLDER,
+			status: INTERVIEW_STATUS_FOLDER,
+			work: INTERVIEW_WORK_FOLDER,
+		},
+	}
+}
+
+/// Every kind of essay home renders, each with its own worker.
+pub const KINDS: [Kind; 2] = [Kind::RustRounds, Kind::Interview];
+
 /// How often home looks for an essay to give: one comes a week, after its
 /// week's deadline.
 pub const INTERVAL: Duration = Duration::from_secs(600);
@@ -101,49 +172,57 @@ pub struct Exported {
 	pub failed: usize,
 }
 
-/// Start the worker.
+/// Start each kind's worker.
+pub fn start(state: &AppState) {
+	for kind in KINDS {
+		start_kind(state, kind);
+	}
+}
+
+/// Start `kind`'s worker.
 ///
 /// Its folders and the render worker's are made first, before the server
 /// answers its health check, by this server's uid, which the worker runs as
 /// too, so the worker never finds one missing or not its own.
-pub fn start(state: &AppState) {
-	for folder in [ESSAYS_FOLDER, RENDERS_FOLDER, WORK_FOLDER, STATUS_FOLDER] {
+fn start_kind(state: &AppState, kind: Kind) {
+	let spec = spec(kind);
+	for folder in [spec.essays, spec.renders, spec.work, spec.status] {
 		if std::fs::create_dir_all(folder).is_err() {
-			error!(error = "render folder", "rust essays worker cannot make the render worker's folders");
+			error!(error = "render folder", "{} worker cannot make the render worker's folders", spec.name);
 		}
 	}
 	let Some(configured) = state.mailbox.as_ref().map(|mailbox| mailbox.subject.clone()) else {
-		info!("no mailbox, so no Rust Rounds essay reaches home: the rust essays worker is off");
+		info!("no mailbox, so no essay reaches home: the {} worker is off", spec.name);
 		return;
 	};
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
 	tokio::spawn(async move {
-		info!(interval_secs = INTERVAL.as_secs(), "rust essays worker started");
-		crate::metrics::rust_essays::record_started();
+		info!(interval_secs = INTERVAL.as_secs(), "{} worker started", spec.name);
+		crate::metrics::rust_essays::record_started(kind);
 		let mut ticker = tokio::time::interval(TICK);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut last: Option<tokio::time::Instant> = None;
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
-					info!("rust essays worker cancelled");
+					info!("{} worker cancelled", spec.name);
 					return;
 				}
 				_ = ticker.tick() => {
-					match tidy_tick(&db, configured.as_deref()).await {
-						Ok(tidied) if tidied.failed > 0 => warn!(failed = tidied.failed, "rust essays: files that could not be removed are tried again next minute"),
+					match tidy_tick(&db, kind, configured.as_deref()).await {
+						Ok(tidied) if tidied.failed > 0 => warn!(failed = tidied.failed, "{}: files that could not be removed are tried again next minute", spec.name),
 						Ok(_) => {}
-						Err(_) => error!(error = "storage", "rust essays tidy failed"),
+						Err(_) => error!(error = "storage", "{} tidy failed", spec.name),
 					}
-					observe_renders().await;
+					observe_renders(kind).await;
 					if last.is_some_and(|last| last.elapsed() < INTERVAL) {
 						continue;
 					}
 					last = Some(tokio::time::Instant::now());
-					let result = pass(&db, configured.as_deref()).await;
-					crate::metrics::rust_essays::record_pass(&result);
-					log_pass(&result);
+					let result = pass(&db, kind, configured.as_deref()).await;
+					crate::metrics::rust_essays::record_pass(kind, &result);
+					log_pass(kind, &result);
 				}
 			}
 		}
@@ -166,23 +245,25 @@ pub struct Folders {
 }
 
 impl Folders {
+	/// `kind`'s folders, as this server sees them.
 	#[must_use]
-	pub fn server() -> Self {
+	pub fn server(kind: Kind) -> Self {
+		let spec = spec(kind);
 		Self {
-			essays: PathBuf::from(ESSAYS_FOLDER),
-			renders: PathBuf::from(RENDERS_FOLDER),
-			status: PathBuf::from(STATUS_FOLDER),
-			work: PathBuf::from(WORK_FOLDER),
+			essays: PathBuf::from(spec.essays),
+			renders: PathBuf::from(spec.renders),
+			status: PathBuf::from(spec.status),
+			work: PathBuf::from(spec.work),
 		}
 	}
 }
 
 /// One pass for the mailbox's subject; nothing when there is none.
-async fn pass(db: &SqlitePool, configured: Option<&str>) -> Result<Exported, sqlx::Error> {
+async fn pass(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Result<Exported, sqlx::Error> {
 	match crate::mailbox::pass_subject(db, configured).await? {
 		Owner::Subject(subject) => {
 			let now = crate::handlers::rust_rounds::now();
-			export(db, subject.as_str(), &Folders::server(), &now).await
+			export(db, kind, subject.as_str(), &Folders::server(kind), &now).await
 		}
 		Owner::NoAccount | Owner::Several => Ok(Exported::default()),
 	}
@@ -190,11 +271,11 @@ async fn pass(db: &SqlitePool, configured: Option<&str>) -> Result<Exported, sql
 
 /// Each minute: [`tidy`] for the mailbox's subject, or for none once no
 /// account stands (so an account deleted takes its essays' files with it).
-async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) -> Result<Tidied, sqlx::Error> {
+async fn tidy_tick(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Result<Tidied, sqlx::Error> {
 	let now = crate::handlers::rust_rounds::now();
 	match crate::mailbox::pass_subject(db, configured).await? {
-		Owner::Subject(subject) => tidy(db, Some(subject.as_str()), &Folders::server(), &now).await,
-		Owner::NoAccount => tidy(db, None, &Folders::server(), &now).await,
+		Owner::Subject(subject) => tidy(db, kind, Some(subject.as_str()), &Folders::server(kind), &now).await,
+		Owner::NoAccount => tidy(db, kind, None, &Folders::server(kind), &now).await,
 		// Whose is not known: nothing is removed on a guess.
 		Owner::Several => Ok(Tidied::default()),
 	}
@@ -225,7 +306,7 @@ async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) -> Result<Tidied, 
 ///
 /// # Errors
 /// A storage failure.
-pub async fn export(db: &SqlitePool, subject: &str, folders: &Folders, now: &str) -> Result<Exported, sqlx::Error> {
+pub async fn export(db: &SqlitePool, kind: Kind, subject: &str, folders: &Folders, now: &str) -> Result<Exported, sqlx::Error> {
 	// Held for the whole pass, so an essay let go while it runs is never
 	// written back (`feeds::FOLDERS`).
 	let _folders = crate::feeds::FOLDERS.lock().await;
@@ -233,13 +314,13 @@ pub async fn export(db: &SqlitePool, subject: &str, folders: &Folders, now: &str
 	let (held, let_go) = {
 		let mut conn = db.acquire().await?;
 		(
-			mailbox_repo::rust_essays(&mut conn, subject).await.map_err(storage)?,
-			rust_round_repo::essay_video::let_go(&mut conn, subject).await?,
+			held_essays(&mut conn, kind, subject).await?,
+			rust_round_repo::essay_video::let_go(&mut conn, kind, subject).await?,
 		)
 	};
-	for (week, revision, held) in newest(held) {
+	for (week, revision, held) in newest(kind, held) {
 		let input = folders.essays.join(&week);
-		if shared(db, &week).await? {
+		if shared(db, kind, &week).await? {
 			// The drive keys an essay by its week alone, so a week two
 			// accounts hold is never given: neither could reach the other's.
 			done.refused += 1;
@@ -255,7 +336,7 @@ pub async fn export(db: &SqlitePool, subject: &str, folders: &Folders, now: &str
 		if let_go.contains(&week) || folders.renders.join(&week).join(VIDEO).exists() || given_revision(&input).await.is_some_and(|given| given >= revision) {
 			continue;
 		}
-		match given(db, subject, &week, &held, now).await? {
+		match given(db, kind, subject, &week, &held, now).await? {
 			Given::Waiting => done.waiting += 1,
 			Given::Refused(problems) => {
 				done.refused += 1;
@@ -263,11 +344,11 @@ pub async fn export(db: &SqlitePool, subject: &str, folders: &Folders, now: &str
 					done.failed += 1;
 				}
 			}
-			Given::Final(played) => match takes(db, subject, &played).await? {
+			Given::Final(played) => match takes(db, kind, subject, &played).await? {
 				Takes::Waiting => done.waiting += 1,
 				Takes::Deleted(note) => {
 					let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-					rust_round_repo::essay_video::withdraw(&mut tx, subject, &week, &note, 0, now).await?;
+					rust_round_repo::essay_video::withdraw(&mut tx, kind, subject, &week, &note, 0, now).await?;
 					tx.commit().await?;
 					done.withdrawn += 1;
 				}
@@ -298,10 +379,10 @@ enum Given {
 
 /// Each week's newest revision, oldest week first; a name that is not an
 /// essay's is never read.
-fn newest(held: Vec<mailbox_repo::HeldEssay>) -> Vec<(String, u32, mailbox_repo::HeldEssay)> {
+fn newest(kind: Kind, held: Vec<mailbox_repo::HeldEssay>) -> Vec<(String, u32, mailbox_repo::HeldEssay)> {
 	let mut weeks: std::collections::BTreeMap<String, (u32, mailbox_repo::HeldEssay)> = std::collections::BTreeMap::new();
 	for file in held {
-		let Some((week, revision)) = essay::parse_name(&file.name) else { continue };
+		let Some((week, revision)) = essay::parse_name_of(kind, &file.name) else { continue };
 		if weeks.get(&week).is_none_or(|(held, _)| revision > *held) {
 			weeks.insert(week, (revision, file));
 		}
@@ -310,9 +391,36 @@ fn newest(held: Vec<mailbox_repo::HeldEssay>) -> Vec<(String, u32, mailbox_repo:
 }
 
 /// Whether more than one account holds an essay of `week`.
-async fn shared(db: &SqlitePool, week: &str) -> Result<bool, sqlx::Error> {
+async fn shared(db: &SqlitePool, kind: Kind, week: &str) -> Result<bool, sqlx::Error> {
 	let mut conn = db.acquire().await?;
-	Ok(mailbox_repo::rust_essay_holders(&mut conn, week).await.map_err(storage)? > 1)
+	Ok(holders(&mut conn, kind, week).await? > 1)
+}
+
+/// Every essay file of `kind` `subject` holds, each revision included.
+async fn held_essays(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str) -> Result<Vec<mailbox_repo::HeldEssay>, sqlx::Error> {
+	match kind {
+		Kind::RustRounds => mailbox_repo::rust_essays(conn, subject).await,
+		Kind::Interview => mailbox_repo::interview_essays(conn, subject).await,
+	}
+	.map_err(storage)
+}
+
+/// The weeks `subject` holds an essay of `kind` of.
+pub(crate) async fn essay_weeks(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str) -> Result<Vec<String>, sqlx::Error> {
+	match kind {
+		Kind::RustRounds => mailbox_repo::rust_essay_weeks(conn, subject).await,
+		Kind::Interview => mailbox_repo::interview_essay_weeks(conn, subject).await,
+	}
+	.map_err(storage)
+}
+
+/// How many accounts hold an essay of `kind` of `week`.
+pub(crate) async fn holders(conn: &mut sqlx::SqliteConnection, kind: Kind, week: &str) -> Result<i64, sqlx::Error> {
+	match kind {
+		Kind::RustRounds => mailbox_repo::rust_essay_holders(conn, week).await,
+		Kind::Interview => mailbox_repo::interview_essay_holders(conn, week).await,
+	}
+	.map_err(storage)
 }
 
 /// The revision of the essay given in `input`, if one was.
@@ -321,43 +429,89 @@ async fn given_revision(input: &Path) -> Option<u32> {
 	text.trim().parse().ok()
 }
 
-async fn given(db: &SqlitePool, subject: &str, week: &str, held: &mailbox_repo::HeldEssay, now: &str) -> Result<Given, sqlx::Error> {
-	let essay = match essay::read(&held.body) {
+async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &mailbox_repo::HeldEssay, now: &str) -> Result<Given, sqlx::Error> {
+	let essay = match essay::read_of(kind, &held.body) {
 		Ok(essay) if essay.week == week => essay,
 		Ok(_) => return Ok(Given::Refused(vec![(String::from("week.id"), "is not the week the essay's name gives")])),
 		Err(problems) => return Ok(Given::Refused(problems)),
 	};
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let Some(due) = due_of(&mut tx, subject, &essay.week).await? else {
+	let Some(due) = due_of(&mut tx, kind, subject, &essay.week).await? else {
 		return Ok(Given::Waiting);
 	};
 	if rust_round_repo::instant_order(now, &due) != Some(std::cmp::Ordering::Greater) {
 		return Ok(Given::Waiting);
 	}
-	rust_round_repo::sent::finalize(&mut tx, subject, &essay.week, &due, now).await?;
-	let standing = rust_round_repo::sent::standing(&mut tx, subject, &essay.week).await?;
+	rust_round_repo::draft::finalize(&mut tx, kind, subject, &essay.week, &due, now).await?;
+	let standing = standing(&mut tx, kind, subject, &essay.week).await?;
 	tx.commit().await?;
 	if standing.as_ref().is_some_and(|standing| standing.draft) {
 		// A draft finalize could not make final (sent after the deadline):
 		// left for a person to read, and never rendered from.
 		return Ok(Given::Refused(vec![(String::from("week"), "has only a draft past its deadline, never a final")]));
 	}
-	Ok(match essay::against(&essay, standing.as_ref().map(|standing| &standing.sent)) {
+	let pairs = |list: &[(String, String)]| -> Vec<(&str, &str)> { list.iter().map(|(item, take)| (item.as_str(), take.as_str())).collect() };
+	let sent = standing.as_ref().map_or_else(essay::Final::default, |standing| essay::Final {
+		answers: pairs(&standing.answers),
+		reads: pairs(&standing.reads),
+	});
+	Ok(match essay::against(&essay, &sent) {
 		Ok(played) => Given::Final(played),
 		Err(problems) => Given::Refused(problems),
 	})
 }
 
+/// What stands of a week's send, as an essay is checked against it.
+struct Standing {
+	/// Whether it is still a draft.
+	draft: bool,
+	/// Each item (a ticket, a question) answered, with its take's voice-note
+	/// id.
+	answers: Vec<(String, String)>,
+	/// Each card read, with its take's voice-note id: a week of mock
+	/// interview's teleprompter reads, none for Rust Rounds.
+	reads: Vec<(String, String)>,
+}
+
+/// What stands of `subject`'s send of `week`, of `kind`
+/// (`rust_round_repo::draft::standing`).
+async fn standing(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, week: &str) -> Result<Option<Standing>, sqlx::Error> {
+	Ok(match kind {
+		Kind::RustRounds => rust_round_repo::sent::standing(conn, subject, week).await?.map(|stored| Standing {
+			draft: stored.draft,
+			answers: stored.sent.answers.into_iter().map(|answer| (answer.ticket, answer.take)).collect(),
+			reads: Vec::new(),
+		}),
+		Kind::Interview => rust_round_repo::draft::standing::<rust_round_repo::interview::Sent>(conn, subject, week)
+			.await?
+			.map(|stored| Standing {
+				draft: stored.draft,
+				answers: stored.sent.answers.into_iter().map(|answer| (answer.question, answer.take)).collect(),
+				reads: stored.sent.reads.into_iter().map(|read| (read.card, read.take)).collect(),
+			}),
+	})
+}
+
 /// The deadline of the week `subject` holds as `week`, when it reads as one
 /// with a window.
-async fn due_of(conn: &mut sqlx::SqliteConnection, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
-	let file = mailbox_repo::rust_week(conn, subject, &rust_round_repo::week::mailbox_name(week)).await.map_err(storage)?;
-	Ok(
-		file
-			.and_then(|file| crate::handlers::rust_rounds::reads_as_named(week, &file.body))
-			.and_then(|week| week.window)
-			.map(|window| window.due),
-	)
+async fn due_of(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
+	let window = match kind {
+		Kind::RustRounds => {
+			let file = mailbox_repo::rust_week(conn, subject, &rust_round_repo::week::mailbox_name(week)).await.map_err(storage)?;
+			file
+				.and_then(|file| crate::handlers::rust_rounds::reads_as_named(week, &file.body))
+				.and_then(|week| week.window)
+		}
+		Kind::Interview => {
+			let file = mailbox_repo::rust_week(conn, subject, &rust_round_repo::interview::mailbox_name(week))
+				.await
+				.map_err(storage)?;
+			file
+				.and_then(|file| crate::handlers::interview_weeks::reads_as_named(week, &file.body))
+				.and_then(|week| week.window)
+		}
+	};
+	Ok(window.map(|window| window.due))
 }
 
 /// The takes an essay plays, as home holds them.
@@ -370,13 +524,17 @@ enum Takes {
 	Deleted(String),
 }
 
-async fn takes(db: &SqlitePool, subject: &str, played: &[Played]) -> Result<Takes, sqlx::Error> {
+async fn takes(db: &SqlitePool, kind: Kind, subject: &str, played: &[Played]) -> Result<Takes, sqlx::Error> {
+	let of = match kind {
+		Kind::RustRounds => voice_repo::Of::RustRound,
+		Kind::Interview => voice_repo::Of::Interview,
+	};
 	let mut conn = db.acquire().await?;
 	let mut files = Vec::with_capacity(played.len() * 2);
 	for take in played {
-		let head = voice_repo::audio_head(&mut conn, subject, &take.take, voice_repo::Of::RustRound).await.map_err(voice)?;
+		let head = voice_repo::audio_head(&mut conn, subject, &take.take, of).await.map_err(voice)?;
 		let body = match head {
-			Some(_) => voice_repo::audio_body(&mut conn, subject, &take.take, voice_repo::Of::RustRound).await.map_err(voice)?,
+			Some(_) => voice_repo::audio_body(&mut conn, subject, &take.take, of).await.map_err(voice)?,
 			None => None,
 		};
 		let (Some(head), Some(body)) = (head, body) else {
@@ -435,16 +593,16 @@ pub struct Tidied {
 ///
 /// # Errors
 /// A storage failure.
-pub async fn tidy(db: &SqlitePool, subject: Option<&str>, folders: &Folders, now: &str) -> Result<Tidied, sqlx::Error> {
+pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &Folders, now: &str) -> Result<Tidied, sqlx::Error> {
 	let _folders = crate::feeds::FOLDERS.lock().await;
 	let mut done = Tidied::default();
 	let (held, let_go, withdrawn) = match subject {
 		Some(subject) => {
 			let mut conn = db.acquire().await?;
 			(
-				mailbox_repo::rust_essay_weeks(&mut conn, subject).await.map_err(storage)?,
-				rust_round_repo::essay_video::let_go(&mut conn, subject).await?,
-				rust_round_repo::essay_video::withdrawn(&mut conn, subject)
+				essay_weeks(&mut conn, kind, subject).await?,
+				rust_round_repo::essay_video::let_go(&mut conn, kind, subject).await?,
+				rust_round_repo::essay_video::withdrawn(&mut conn, kind, subject)
 					.await?
 					.into_iter()
 					.map(|w| w.week)
@@ -486,10 +644,10 @@ pub async fn tidy(db: &SqlitePool, subject: Option<&str>, folders: &Folders, now
 			continue;
 		}
 		let Some(subject) = subject else { continue };
-		if let Some(note) = deleted_take(db, subject, &week).await? {
+		if let Some(note) = deleted_take(db, kind, subject, &week).await? {
 			let size = i64::try_from(crate::call_weeks::render::bytes_under(&render).await).unwrap_or(i64::MAX);
 			let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-			rust_round_repo::essay_video::withdraw(&mut tx, subject, &week, &note, size, now).await?;
+			rust_round_repo::essay_video::withdraw(&mut tx, kind, subject, &week, &note, size, now).await?;
 			tx.commit().await?;
 			done.withdrawn += 1;
 			for dir in [&input, &render, &work] {
@@ -507,14 +665,14 @@ pub async fn tidy(db: &SqlitePool, subject: Option<&str>, folders: &Folders, now
 }
 
 /// A take `week`'s final record names that was deleted from My data, if any.
-async fn deleted_take(db: &SqlitePool, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
+async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
-	let Some(standing) = rust_round_repo::sent::standing(&mut conn, subject, week).await? else {
+	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
 		return Ok(None);
 	};
-	for answer in standing.sent.answers {
-		if voice_repo::delete::receipt(&mut conn, subject, &answer.take).await.map_err(voice)?.is_some() {
-			return Ok(Some(answer.take));
+	for (_, take) in standing.answers.into_iter().chain(standing.reads) {
+		if voice_repo::delete::receipt(&mut conn, subject, &take).await.map_err(voice)?.is_some() {
+			return Ok(Some(take));
 		}
 	}
 	Ok(None)
@@ -605,11 +763,12 @@ async fn write_whole(partial: &Path, into: &Path, essay: &[u8], revision: u32, t
 	tokio::fs::rename(partial, into).await
 }
 
-/// What Rust Rounds essays' job takes of the drive
+/// What `kind`'s essays' job takes of the drive
 /// (`call_weeks::render::disk`), which the call's observation adds to its
 /// own, so the drive's numbers and `CallRenderCacheFull` count every job.
-pub async fn disk() -> crate::call_weeks::render::Disk {
-	crate::call_weeks::render::disk(Path::new(RENDERS_FOLDER), Path::new(WORK_FOLDER), Path::new(STATUS_FOLDER)).await
+pub async fn disk(kind: Kind) -> crate::call_weeks::render::Disk {
+	let spec = spec(kind);
+	crate::call_weeks::render::disk(Path::new(spec.renders), Path::new(spec.work), Path::new(spec.status)).await
 }
 
 /// What the worker has made of the essays given.
@@ -664,12 +823,12 @@ pub async fn observe(essays: &Path, renders: &Path, status: &Path) -> Seen {
 ///
 /// # Errors
 /// A storage failure.
-pub(crate) async fn held(db: &SqlitePool, subject: &str, essays: &Path) -> Result<(Vec<Held>, Vec<String>), sqlx::Error> {
+pub(crate) async fn held(db: &SqlitePool, kind: Kind, subject: &str, essays: &Path) -> Result<(Vec<Held>, Vec<String>), sqlx::Error> {
 	let (weeks, let_go) = {
 		let mut conn = db.acquire().await?;
 		(
-			mailbox_repo::rust_essay_weeks(&mut conn, subject).await.map_err(storage)?,
-			rust_round_repo::essay_video::let_go(&mut conn, subject).await?,
+			essay_weeks(&mut conn, kind, subject).await?,
+			rust_round_repo::essay_video::let_go(&mut conn, kind, subject).await?,
 		)
 	};
 	let mut held = Vec::new();
@@ -689,25 +848,21 @@ pub(crate) async fn held(db: &SqlitePool, subject: &str, essays: &Path) -> Resul
 	Ok((held, let_go))
 }
 
-async fn observe_renders() {
-	let seen = observe(Path::new(ESSAYS_FOLDER), Path::new(RENDERS_FOLDER), Path::new(STATUS_FOLDER)).await;
-	crate::metrics::rust_essays::record_renders(&seen);
+async fn observe_renders(kind: Kind) {
+	let spec = spec(kind);
+	let seen = observe(Path::new(spec.essays), Path::new(spec.renders), Path::new(spec.status)).await;
+	crate::metrics::rust_essays::record_renders(kind, &seen);
 }
 
 /// The pass's one log line, when it gave an essay or something went wrong.
 /// It counts; it never names a week's words.
-fn log_pass(result: &Result<Exported, sqlx::Error>) {
+fn log_pass(kind: Kind, result: &Result<Exported, sqlx::Error>) {
+	let name = spec(kind).name;
 	match result {
 		Ok(done) if done.written == 0 && done.refused == 0 && done.failed == 0 => {}
-		Ok(done) if done.refused == 0 && done.failed == 0 => info!(written = done.written, waiting = done.waiting, "rust essays pass"),
-		Ok(done) => warn!(
-			written = done.written,
-			waiting = done.waiting,
-			refused = done.refused,
-			failed = done.failed,
-			"rust essays pass"
-		),
-		Err(_) => error!(error = "storage", "rust essays pass failed"),
+		Ok(done) if done.refused == 0 && done.failed == 0 => info!(written = done.written, waiting = done.waiting, "{name} pass"),
+		Ok(done) => warn!(written = done.written, waiting = done.waiting, refused = done.refused, failed = done.failed, "{name} pass"),
+		Err(_) => error!(error = "storage", "{name} pass failed"),
 	}
 }
 
@@ -841,7 +996,7 @@ mod tests {
 		let body = essay("2026-w46", ["take", "silence"]);
 		hold(&pool, 1, &essay::mailbox_name("2026-w46"), &body).await;
 
-		let none = export(&pool, ME, &folders, AFTER).await.unwrap();
+		let none = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		assert_eq!(
 			none,
 			Exported {
@@ -853,7 +1008,7 @@ mod tests {
 
 		hold_week(&pool, 2, "2026-w46").await;
 		send(&pool, "2026-w46").await;
-		let early = export(&pool, ME, &folders, BEFORE).await.unwrap();
+		let early = export(&pool, Kind::RustRounds, ME, &folders, BEFORE).await.unwrap();
 		assert_eq!(
 			early,
 			Exported {
@@ -862,7 +1017,7 @@ mod tests {
 			},
 			"before the deadline the send is a draft"
 		);
-		let no_take = export(&pool, ME, &folders, AFTER).await.unwrap();
+		let no_take = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		assert_eq!(
 			no_take,
 			Exported {
@@ -876,7 +1031,7 @@ mod tests {
 		assert!(!standing.draft, "the pass made the week final, as any read after its deadline does");
 
 		hold_take(&pool).await;
-		let done = export(&pool, ME, &folders, AFTER).await.unwrap();
+		let done = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		assert_eq!(
 			done,
 			Exported {
@@ -897,7 +1052,7 @@ mod tests {
 		assert_eq!(names, ["QM-311.ogg", "QM-311.words.json"], "only what the recorder takes: no file for a silence");
 
 		std::fs::write(week.join(ESSAY_FILE), b"touched").unwrap();
-		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap(), Exported::default(), "given once");
+		assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap(), Exported::default(), "given once");
 		assert_eq!(std::fs::read(week.join(ESSAY_FILE)).unwrap(), b"touched");
 		let names: Vec<_> = std::fs::read_dir(&folders.essays).unwrap().map(|entry| entry.unwrap().file_name()).collect();
 		assert_eq!(names, ["2026-w46"], "no partial folder");
@@ -917,7 +1072,7 @@ mod tests {
 		hold(&pool, 5, &essay::mailbox_name("2026-w45"), &essay("2026-w44", ["silence", "silence"])).await;
 
 		let now = "2026-11-24T08:00:00.000Z";
-		let done = export(&pool, ME, &folders, now).await.unwrap();
+		let done = export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap();
 		assert_eq!((done.written, done.refused, done.failed), (1, 2, 0), "w47 sent nothing: all silence, given");
 		assert!(folders.essays.join("2026-w47").join(ESSAY_FILE).exists());
 		assert!(folders.essays.join("2026-w47").join("takes").is_dir(), "an empty takes folder for an essay of silences");
@@ -941,14 +1096,18 @@ mod tests {
 		let folders = folders(dir.path());
 		final_week(&pool).await;
 		hold_take(&pool).await;
-		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap().written, 1);
+		assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap().written, 1);
 		let takes = folders.essays.join("2026-w46").join("takes");
-		assert_eq!(tidy(&pool, Some(ME), &folders, AFTER).await.unwrap(), Tidied::default(), "waiting: the takes stay");
+		assert_eq!(
+			tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap(),
+			Tidied::default(),
+			"waiting: the takes stay"
+		);
 		assert!(takes.join("QM-311.ogg").exists());
 
 		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
-		let tidied = tidy(&pool, Some(ME), &folders, AFTER).await.unwrap();
+		let tidied = tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
 		assert_eq!(
 			tidied,
 			Tidied {
@@ -961,7 +1120,11 @@ mod tests {
 			folders.essays.join("2026-w46").join(ESSAY_FILE).exists(),
 			"the essay stays, so the worker still holds the week"
 		);
-		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap(), Exported::default(), "and it is never given again");
+		assert_eq!(
+			export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap(),
+			Exported::default(),
+			"and it is never given again"
+		);
 	}
 
 	/// EV5: a week the owner let go from My data, video then rest, is never
@@ -977,7 +1140,7 @@ mod tests {
 		let folders = folders(dir.path());
 		final_week(&pool).await;
 		hold_take(&pool).await;
-		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap().written, 1, "given once");
+		assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap().written, 1, "given once");
 		let rendered = folders.renders.join("2026-w46");
 		std::fs::create_dir_all(&rendered).unwrap();
 		std::fs::write(rendered.join(VIDEO), b"video").unwrap();
@@ -1000,11 +1163,11 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&folders.renders);
 		assert!(!folders.essays.join("2026-w46").exists() && !rendered.exists());
 
-		let again = export(&pool, ME, &folders, AFTER).await.unwrap();
+		let again = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		assert_eq!(again.written, 0, "a week let go is never given again");
 		assert_eq!(again, Exported::default());
 		assert!(!folders.essays.join("2026-w46").exists(), "its input is not recreated");
-		tidy(&pool, Some(ME), &folders, AFTER).await.unwrap();
+		tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
 		assert!(!folders.essays.join("2026-w46").exists(), "and tidy leaves none");
 	}
 
@@ -1017,12 +1180,12 @@ mod tests {
 		let folders = folders(dir.path());
 		final_week(&pool).await;
 		hold_take(&pool).await;
-		export(&pool, ME, &folders, AFTER).await.unwrap();
+		export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
 
 		delete_take(&pool).await;
-		let tidied = tidy(&pool, Some(ME), &folders, AFTER).await.unwrap();
+		let tidied = tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
 		assert_eq!(
 			tidied,
 			Tidied {
@@ -1035,7 +1198,7 @@ mod tests {
 			"its input and its video went"
 		);
 		let mut conn = pool.acquire().await.unwrap();
-		let withdrawn = rust_round_repo::essay_video::withdrawn(&mut conn, ME).await.unwrap();
+		let withdrawn = rust_round_repo::essay_video::withdrawn(&mut conn, Kind::RustRounds, ME).await.unwrap();
 		assert_eq!((withdrawn[0].week.as_str(), withdrawn[0].note.as_str(), withdrawn[0].size), ("2026-w46", TAKE, 5));
 		drop(conn);
 		// A removal that failed, or a process that stopped between the
@@ -1043,12 +1206,16 @@ mod tests {
 		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
 		std::fs::create_dir_all(folders.work.join("2026-w46")).unwrap();
-		assert_eq!(tidy(&pool, Some(ME), &folders, AFTER).await.unwrap().weeks_removed, 1);
+		assert_eq!(tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap().weeks_removed, 1);
 		assert!(
 			!folders.renders.join("2026-w46").exists() && !folders.work.join("2026-w46").exists(),
 			"a withdrawn week's files are removed until gone"
 		);
-		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap(), Exported::default(), "never given again");
+		assert_eq!(
+			export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap(),
+			Exported::default(),
+			"never given again"
+		);
 		assert!(!folders.essays.join("2026-w46").exists());
 
 		// Deleted before it was ever given: withdrawn at the pass, never given.
@@ -1058,7 +1225,7 @@ mod tests {
 		hold_take(&pool).await;
 		delete_take(&pool).await;
 		assert_eq!(
-			export(&pool, ME, &folders, AFTER).await.unwrap(),
+			export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap(),
 			Exported {
 				withdrawn: 1,
 				..Exported::default()
@@ -1076,7 +1243,7 @@ mod tests {
 		let folders = folders(dir.path());
 		final_week(&pool).await;
 		hold_take(&pool).await;
-		export(&pool, ME, &folders, AFTER).await.unwrap();
+		export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
 		std::fs::create_dir_all(folders.renders.join("2026-w40")).unwrap();
@@ -1085,12 +1252,12 @@ mod tests {
 		std::fs::create_dir_all(folders.work.join("2026-w46").join("cache")).unwrap();
 		std::fs::write(folders.work.join("2026-w46").join("cache").join("take.wav"), b"the owner's voice").unwrap();
 
-		let tidied = tidy(&pool, Some(ME), &folders, AFTER).await.unwrap();
+		let tidied = tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
 		assert_eq!((tidied.weeks_removed, tidied.takes_removed), (1, 1), "a render of a week with no essay goes");
 		assert!(!folders.renders.join("2026-w40").exists());
 
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(ME).execute(&pool).await.unwrap();
-		let tidied = tidy(&pool, None, &folders, AFTER).await.unwrap();
+		let tidied = tidy(&pool, Kind::RustRounds, None, &folders, AFTER).await.unwrap();
 		assert_eq!(tidied.weeks_removed, 1);
 		assert!(
 			!folders.essays.join("2026-w46").exists() && !folders.renders.join("2026-w46").exists(),
@@ -1110,13 +1277,17 @@ mod tests {
 		final_week(&pool).await;
 		hold_take(&pool).await;
 		hold(&pool, 3, "rust-essay-2026-w46-r02.json", "not an essay's name").await;
-		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap().written, 1);
+		assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap().written, 1);
 		let week = folders.essays.join("2026-w46");
 		assert_eq!(std::fs::read_to_string(week.join(REVISION_FILE)).unwrap(), "1\n", "a name not a revision's is never read");
 
 		let r2 = essay("2026-w46", ["take", "silence"]).replace("2026-11-09", "2026-11-10");
 		hold(&pool, 4, "rust-essay-2026-w46-r2.json", &r2).await;
-		assert_eq!(export(&pool, ME, &folders, AFTER).await.unwrap().written, 1, "no video yet: the correction is given");
+		assert_eq!(
+			export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap().written,
+			1,
+			"no video yet: the correction is given"
+		);
 		assert_eq!(std::fs::read_to_string(week.join(REVISION_FILE)).unwrap(), "2\n");
 		assert_eq!(std::fs::read(week.join(ESSAY_FILE)).unwrap(), r2.as_bytes());
 		assert!(week.join("takes").join("QM-311.ogg").exists());
@@ -1125,7 +1296,7 @@ mod tests {
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
 		hold(&pool, 5, "rust-essay-2026-w46-r3.json", &essay("2026-w46", ["take", "silence"])).await;
 		assert_eq!(
-			export(&pool, ME, &folders, AFTER).await.unwrap(),
+			export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap(),
 			Exported::default(),
 			"a video made is not made again (RR17)"
 		);
@@ -1154,7 +1325,7 @@ mod tests {
 			.execute(&pool)
 			.await
 			.unwrap();
-		let done = export(&pool, ME, &folders, AFTER).await.unwrap();
+		let done = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		assert_eq!((done.written, done.refused), (0, 1));
 		assert!(!folders.essays.join("2026-w46").exists());
 		assert!(std::fs::read_to_string(folders.status.join("2026-w46.refused.log")).unwrap().contains("another account"));
@@ -1165,5 +1336,163 @@ mod tests {
 				"{subject} can't reach it"
 			);
 		}
+	}
+
+	/// A week of mock interview held, sent (one question answered, one card
+	/// read) and past its deadline, with its essay and its two takes.
+	async fn interview_week(pool: &SqlitePool, kinds: [&str; 2]) -> String {
+		let week = json!({
+			"schema": "some-ui.interview-week/1", "id": "2026-w46", "opens": "2026-11-09T00:00:00.000-08:00", "due": DUE,
+			"questions": [{ "id": "about-you" }, { "id": "a-conflict" }],
+			"cards": [{ "id": "intro" }],
+		});
+		hold(pool, 1, &rust_round_repo::interview::mailbox_name("2026-w46"), &week.to_string()).await;
+		let body = json!({
+			"schema": "some-ui.interview-essay/1",
+			"week": { "id": "2026-w46" },
+			"questions": [
+				{ "id": "about-you", "answer": { "kind": kinds[0] } },
+				{ "id": "a-conflict", "answer": { "kind": kinds[1] } },
+			],
+			"reads": [{ "id": "intro", "answer": { "kind": "take" } }],
+		})
+		.to_string();
+		hold(pool, 2, "interview-essay-2026-w46.json", &body).await;
+		let sent = rust_round_repo::interview::Sent {
+			week: String::from("2026-w46"),
+			at: String::from("2026-11-15T19:30:00.000Z"),
+			answers: vec![rust_round_repo::interview::Answer {
+				question: String::from("about-you"),
+				take: String::from("note-iw"),
+				recorded_at: String::from("2026-11-15T19:00:00.000Z"),
+			}],
+			reads: vec![rust_round_repo::interview::Read {
+				card: String::from("intro"),
+				take: String::from("note-read"),
+				recorded_at: String::from("2026-11-15T19:00:00.000Z"),
+			}],
+			passed: vec![String::from("a-conflict")],
+			passed_reads: Vec::new(),
+		};
+		rust_round_repo::draft::put_draft(&mut pool.acquire().await.unwrap(), ME, &sent, BEFORE).await.unwrap();
+		for (note, of_ref) in [("note-iw", "2026-w46:about-you"), ("note-read", "2026-w46:read:intro")] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'interview', ?3, 'then', 'audio/webm', 4, 's', 'now')",
+			)
+			.bind(ME)
+			.bind(note)
+			.bind(of_ref)
+			.execute(pool)
+			.await
+			.unwrap();
+			sqlx::query("INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, ?2, x'1a45dfa3')")
+				.bind(ME)
+				.bind(note)
+				.execute(pool)
+				.await
+				.unwrap();
+		}
+		body
+	}
+
+	/// The interview kind is the same export: it waits for the week's
+	/// deadline, is checked against the interview week's final, and is given
+	/// with the take of each question and each card read it plays; the
+	/// Rust Rounds kind never reads it.
+	#[tokio::test]
+	async fn an_interview_essay_is_given_from_its_weeks_final_with_its_takes() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		let body = interview_week(&pool, ["take", "silence"]).await;
+		assert_eq!(export(&pool, Kind::Interview, ME, &folders, BEFORE).await.unwrap().waiting, 1, "not before its deadline");
+		assert_eq!(
+			export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap(),
+			Exported::default(),
+			"not a Rust Rounds essay"
+		);
+		let done = export(&pool, Kind::Interview, ME, &folders, AFTER).await.unwrap();
+		assert_eq!(
+			done,
+			Exported {
+				written: 1,
+				..Exported::default()
+			}
+		);
+		let given = folders.essays.join("2026-w46");
+		assert_eq!(std::fs::read_to_string(given.join(ESSAY_FILE)).unwrap(), body);
+		let mut takes: Vec<_> = std::fs::read_dir(given.join("takes"))
+			.unwrap()
+			.map(|e| e.unwrap().file_name().into_string().unwrap())
+			.collect();
+		takes.sort();
+		assert_eq!(takes, ["about-you.webm", "read.intro.webm"], "the question's take and the card's read, named apart");
+		assert!(rust_round_repo::draft::is_final(&mut pool.acquire().await.unwrap(), Kind::Interview, ME, "2026-w46")
+			.await
+			.unwrap());
+		assert_eq!(export(&pool, Kind::Interview, ME, &folders, AFTER).await.unwrap(), Exported::default(), "given once");
+		let (held, _) = held(&pool, Kind::Interview, ME, &folders.essays).await.unwrap();
+		assert_eq!(held.iter().map(|held| held.key.as_str()).collect::<Vec<_>>(), ["2026-w46"]);
+		assert!(held_essays(&mut pool.acquire().await.unwrap(), Kind::RustRounds, ME).await.unwrap().is_empty());
+	}
+
+	#[tokio::test]
+	async fn an_interview_essay_that_contradicts_its_weeks_final_is_refused() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		interview_week(&pool, ["take", "take"]).await;
+		let done = export(&pool, Kind::Interview, ME, &folders, AFTER).await.unwrap();
+		assert_eq!(done.refused, 1);
+		let refusal = std::fs::read_to_string(folders.status.join("2026-w46.refused.log")).unwrap();
+		assert_eq!(refusal, "questions[1].answer.kind: is a take, and the week's final record sent none for this question\n");
+		assert!(!folders.essays.join("2026-w46").exists());
+	}
+
+	/// A question's take or a card's read deleted from My data withdraws the
+	/// week's essay, as a Rust Rounds take does.
+	#[tokio::test]
+	async fn an_interview_essay_whose_take_is_deleted_is_withdrawn() {
+		for note in ["note-iw", "note-read"] {
+			withdrawn_for(note).await;
+		}
+	}
+
+	async fn withdrawn_for(note: &str) {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		interview_week(&pool, ["take", "silence"]).await;
+		assert_eq!(export(&pool, Kind::Interview, ME, &folders, AFTER).await.unwrap().written, 1);
+		for statement in [
+			"DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = ?2",
+			"DELETE FROM voice_note WHERE subject_id = ?1 AND note_id = ?2",
+			"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed)
+			 VALUES (?1, ?2, 'interview', 'then', 4, 'then', 'now', '[]', '[]')",
+		] {
+			sqlx::query(statement).bind(ME).bind(note).execute(&pool).await.unwrap();
+		}
+		let tidied = tidy(&pool, Kind::Interview, Some(ME), &folders, AFTER).await.unwrap();
+		assert_eq!(tidied.withdrawn, 1, "{note}");
+		assert!(!folders.essays.join("2026-w46").exists());
+		let mut conn = pool.acquire().await.unwrap();
+		let withdrawn = rust_round_repo::essay_video::withdrawn(&mut conn, Kind::Interview, ME).await.unwrap();
+		assert_eq!(withdrawn.iter().map(|w| (w.week.as_str(), w.note.as_str())).collect::<Vec<_>>(), [("2026-w46", note)]);
+		assert!(rust_round_repo::essay_video::let_go(&mut conn, Kind::RustRounds, ME).await.unwrap().is_empty());
+	}
+
+	#[test]
+	fn each_kind_has_its_own_folders() {
+		let folders: Vec<&str> = KINDS
+			.iter()
+			.flat_map(|kind| {
+				let spec = spec(*kind);
+				[spec.essays, spec.renders, spec.status, spec.work]
+			})
+			.collect();
+		let mut unique = folders.clone();
+		unique.sort_unstable();
+		unique.dedup();
+		assert_eq!(unique.len(), folders.len());
+		assert_eq!(spec(Kind::RustRounds).essays, "/app/dbs/rust-essays", "the Rust Rounds kind's are unchanged");
+		assert_eq!(spec(Kind::RustRounds).renders, "/app/dbs/renders/rust-essay");
 	}
 }

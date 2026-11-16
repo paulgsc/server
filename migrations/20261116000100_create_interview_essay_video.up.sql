@@ -1,0 +1,102 @@
+-- Each week of mock interview's essay video, once it is on YouTube, and each
+-- step of letting it go (IW6, paulgsc/some-ui#2937, under epic #2931;
+-- server#899), by the rules of a Rust Rounds essay's word for word
+-- (`20261110000200_create_rust_essay_video.up.sql`, whose comment says what
+-- each column holds): home renders each essay into
+-- `renders/interview-essay/<week>/`, the owner watches it, records its link,
+-- and lets home's copy go from My data, video first, then the rest. The
+-- essay stays in the mailbox (`brief`), so a week let go is never rendered
+-- again but can always be read.
+--
+-- SUBJECT-SCOPED: an interview essay video plays the owner's own takes, so
+-- it holds the owner's recording, under docs/identity.md invariant 23's
+-- essay render exception, which covers interview takes by the same rules
+-- (owner, paulgsc/some-ui#2931, 2026-11-13). Both tables leave with the
+-- account, and nothing here holds audio, a transcript or a take's id but the
+-- deletion receipt's `note_id`.
+--
+-- The logic is one, over the kind (`rust_round_repo::essay_video`); only the
+-- table each statement names differs, since `sqlx`'s checked queries take
+-- their SQL as a literal.
+--
+-- A week with a `video` receipt is never given to the render worker again.
+--
+-- BOTH TABLES ARE APPEND-ONLY: no row is updated, and none is deleted while
+-- the subject's account stands.
+CREATE TABLE interview_essay_video_link (
+    subject_id  TEXT NOT NULL,
+    week_id     TEXT NOT NULL,
+    youtube_id  TEXT NOT NULL CHECK (length(youtube_id) = 11 AND youtube_id NOT GLOB '*[^A-Za-z0-9_-]*'),
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (subject_id, week_id, youtube_id)
+);
+
+CREATE TABLE interview_essay_video_deletion (
+    subject_id TEXT    NOT NULL,
+    week_id    TEXT    NOT NULL,
+    step       TEXT    NOT NULL CHECK (step IN ('video', 'rest')),
+    cause      TEXT    NOT NULL CHECK (cause IN ('let-go', 'take-deleted')),
+    youtube_id TEXT,
+    note_id    TEXT,
+    size       INTEGER NOT NULL CHECK (size >= 0),
+    deleted_at TEXT    NOT NULL,
+    PRIMARY KEY (subject_id, week_id, step),
+    CHECK ((cause = 'let-go' AND youtube_id IS NOT NULL AND note_id IS NULL) OR (cause = 'take-deleted' AND note_id IS NOT NULL))
+);
+
+CREATE TRIGGER interview_essay_video_deletion_rest_after_video
+BEFORE INSERT ON interview_essay_video_deletion
+WHEN NEW.step = 'rest'
+ AND NOT EXISTS (
+    SELECT 1 FROM interview_essay_video_deletion
+    WHERE subject_id = NEW.subject_id AND week_id = NEW.week_id AND step = 'video'
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'interview_essay_video_deletion: the rest of an essay goes only after its video');
+END;
+
+CREATE TRIGGER interview_essay_video_deletion_let_go_needs_its_link
+BEFORE INSERT ON interview_essay_video_deletion
+WHEN NEW.cause = 'let-go'
+ AND NOT EXISTS (
+    SELECT 1 FROM interview_essay_video_link
+    WHERE subject_id = NEW.subject_id AND week_id = NEW.week_id AND youtube_id = NEW.youtube_id
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'interview_essay_video_deletion: an essay is let go only once its link is recorded');
+END;
+
+CREATE TRIGGER interview_essay_video_link_is_append_only
+BEFORE UPDATE ON interview_essay_video_link
+BEGIN
+    SELECT RAISE(ABORT, 'interview_essay_video_link is append-only: a recorded link is never rewritten');
+END;
+
+CREATE TRIGGER interview_essay_video_link_is_kept
+BEFORE DELETE ON interview_essay_video_link
+WHEN EXISTS (SELECT 1 FROM account WHERE subject_id = OLD.subject_id)
+BEGIN
+    SELECT RAISE(ABORT, 'interview_essay_video_link is append-only: a link goes only with its account');
+END;
+
+CREATE TRIGGER interview_essay_video_deletion_is_append_only
+BEFORE UPDATE ON interview_essay_video_deletion
+BEGIN
+    SELECT RAISE(ABORT, 'interview_essay_video_deletion is append-only: a receipt is never rewritten');
+END;
+
+CREATE TRIGGER interview_essay_video_deletion_is_kept
+BEFORE DELETE ON interview_essay_video_deletion
+WHEN EXISTS (SELECT 1 FROM account WHERE subject_id = OLD.subject_id)
+BEGIN
+    SELECT RAISE(ABORT, 'interview_essay_video_deletion is append-only: a receipt goes only with its account');
+END;
+
+-- Account deletion on every binary that can run against this schema
+-- (docs/identity.md invariant 12).
+CREATE TRIGGER interview_essay_video_leaves_with_account
+AFTER DELETE ON account
+BEGIN
+    DELETE FROM interview_essay_video_link WHERE subject_id = OLD.subject_id;
+    DELETE FROM interview_essay_video_deletion WHERE subject_id = OLD.subject_id;
+END;

@@ -38,10 +38,11 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 ///
 /// RELEASE R3, #790; docs/release.md, "Constraints". The folders are
 /// `call-weeks`, `playoff-delta-episodes`, `preview-requests`,
-/// `rust-essays` and `cards-essays`, which `file_host` writes and the render
-/// worker (paulgsc/some-ui) reads. `cards-essays` (#854) came without a
-/// raise: it is a new folder, so no layout an older render reads changed,
-/// and server's own `render-calls.sh` names each file to `record:cards`. A
+/// `rust-essays`, `cards-essays` and `interview-essays`, which `file_host`
+/// writes and the render worker (paulgsc/some-ui) reads. `cards-essays`
+/// (#854) and `interview-essays` (#899) came without a raise: each is a new
+/// folder, so no layout an older render reads changed, and server's own
+/// `render-calls.sh` names each file to its recorder. A
 /// call's part let go (`<key>.let-go`, paulgsc/some-ui#2918) came without
 /// one too: only `render-calls.sh` reads it, never the image.
 /// `file_host`'s image provides `render-folders=<this>` and render's requires the layout it reads, so a

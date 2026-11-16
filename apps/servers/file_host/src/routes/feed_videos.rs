@@ -10,7 +10,7 @@
 //! DELETE /feeds/:feed/videos/:key/rest        → { receipt }: lets the rest of its folder go, once the video has
 //! ```
 //!
-//! `:feed` is `call`, `playoff-delta`, `rust-essay` or `cards-essay`
+//! `:feed` is `call`, `playoff-delta`, `rust-essay`, `interview-essay` or `cards-essay`
 //! (`feeds::Feed`; an essay is the caller's own, keyed by its week); any
 //! other is `404`.
 //!

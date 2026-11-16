@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Home's render worker (GWB10, paulgsc/some-ui#2084), with six jobs, one
+# Home's render worker (GWB10, paulgsc/some-ui#2084), with seven jobs, one
 # loop: the weekly call's (paulgsc/some-ui#2635, ST36), Playoff Delta's
 # (FEED4, paulgsc/some-ui#2647), a template's preview (SFEED12,
 # paulgsc/some-ui#2757), a Rust Rounds essay's (RR16, paulgsc/some-ui#2691),
-# a clip's walk (paulgsc/some-ui#2670's clips, C125) and a cards essay's
-# (CARDS7, #854, paulgsc/some-ui#2979, C327).
+# a clip's walk (paulgsc/some-ui#2670's clips, C125), a cards essay's
+# (CARDS7, #854, paulgsc/some-ui#2979, C327) and a week of mock interview's
+# essay (IW6, paulgsc/some-ui#2937, #899).
 # infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
@@ -19,9 +20,10 @@
 # | call          | /weeks/<from>.json (call_weeks)        | /renders/call/<part key>/   | call.mp4    |
 # | playoff-delta | /episodes/<key>/{fill,season}.json     | /renders/playoff-delta/<key>/ | episode.mp4 |
 # | preview       | /previews/<id>.json (previews)         | /renders/preview/<id>/      | preview.mp4 |
-# | rust-essay    | /essays/<week>/essay.json (rust_essays) | /renders/rust-essay/<week>/ | essay.mp4   |
+# | rust-essay    | /essays/<week>/essay.json (essays)     | /renders/rust-essay/<week>/ | essay.mp4   |
 # | clip-walk     | /clip-walks/<clip>-<side>/{sample.json,app} (clips) | /renders/clip-walk/<clip>-<side>/ | walk.json |
 # | cards-essay   | /cards-essays/<key>.json (cards_essays) | /renders/cards-essay/<key>/ | cards.mp4   |
+# | interview-essay | /interview-essays/<week>/essay.json (essays) | /renders/interview-essay/<week>/ | essay.mp4 |
 #
 # A week of the call is one video or a series of parts (template version 5,
 # paulgsc/some-ui#2918): each part a video of at most ten minutes, cut at a
@@ -55,6 +57,12 @@
 # worker reads no record and no draft. The tutor's lines are said by home's
 # speaker as every job's; each answer scene is the owner's take, played
 # whole by the recorder.
+# A week of mock interview's essay is the same, by the same file_host
+# export over its kind (`rust_essays`): keyed by its week, given once the
+# interview week is final and only when it plays exactly the answers the
+# final names, each take <question>.<webm|ogg|m4a> in its takes/ folder and
+# each card read read.<card>.<ext> beside them. The same recorder records
+# both kinds (`record:essay` reads the essay's schema).
 # A clip's walk is keyed <clip>-<side> (ledger-wake-after): file_host gives
 # it the walk's sample and app (`clips`), and the motion replays the app's
 # scripted walk over that sample (`motion walk`), its snips and walk.json
@@ -205,7 +213,7 @@ MOTION_TSX=$MOTION_DIR/node_modules/.bin/tsx
 COMMON=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 
-JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay)
+JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay)
 
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
@@ -246,6 +254,9 @@ use_job() {
     cards-essay)
       INPUT=$ROOT/cards-essays RENDERS=$ROOT/renders/cards-essay STATUS=$ROOT/renders/cards-essay-worker
       WORK=$ROOT/renders/cards-essay-work VIDEO=cards.mp4 ;;
+    interview-essay)
+      INPUT=$ROOT/interview-essays RENDERS=$ROOT/renders/interview-essay STATUS=$ROOT/renders/interview-essay-worker
+      WORK=$ROOT/renders/interview-essay-work VIDEO=essay.mp4 ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -285,7 +296,7 @@ episodes() {
         key=$(basename "$entry" .json)
         [[ "$key" =~ $PREVIEW_ID ]] && echo "$key"
       done ;;
-    rust-essay)
+    rust-essay | interview-essay)
       for entry in "$INPUT"/*/; do
         [ -d "$entry" ] || continue
         key=$(basename "$entry")
@@ -440,7 +451,7 @@ holds() {
     call) [ -e "$INPUT/$(week_of "$2").json" ] && [ ! -e "$INPUT/$2.let-go" ] ;;
     playoff-delta) [ -d "$INPUT/$2" ] ;;
     preview) [ -e "$INPUT/$2.json" ] ;;
-    rust-essay) [ -e "$INPUT/$2/essay.json" ] ;;
+    rust-essay | interview-essay) [ -e "$INPUT/$2/essay.json" ] ;;
     clip-walk) [ -e "$INPUT/$2/sample.json" ] ;;
     cards-essay) [ -e "$INPUT/$2.json" ] ;;
   esac
@@ -481,6 +492,12 @@ record() {
       # --out. Each take it plays is <ticket>.<webm|ogg|m4a> in --takes.
       (cd "$APP_DIR" && "$TSX" tests/record/essay.ts "${COMMON[@]}" \
         --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" --out "$WORK") ;;
+    interview-essay)
+      # The Rust Rounds essay's recorder, which reads the essay's kind from
+      # its schema; its own --out, so its work and renders are its own. Each
+      # take it plays is <question>.<ext> or read.<card>.<ext> in --takes.
+      (cd "$APP_DIR" && "$TSX" tests/record/essay.ts "${COMMON[@]}" \
+        --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" --out "$WORK") ;;
     clip-walk)
       # The app is file_host's word, read here as one plain name or refused.
       local app=
@@ -505,7 +522,7 @@ record() {
 # Which revision of `key` the job was given: an essay's `revision` file
 # (file_host's `rust_essays`, C72), empty for every other job.
 revision() {
-  [ "$1" = rust-essay ] || return 0
+  [ "$1" = rust-essay ] || [ "$1" = interview-essay ] || return 0
   cat "$INPUT/$2/revision" 2> /dev/null
 }
 
@@ -526,6 +543,7 @@ finished() {
     rust-essay) echo "$WORK/$2" ;;
     clip-walk) echo "$WORK/$2" ;;
     cards-essay) echo "$WORK/$2" ;;
+    interview-essay) echo "$WORK/$2" ;;
   esac
 }
 
@@ -637,7 +655,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] && [[ "$LEFT_RESTARTS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay) return 0 ;;
+    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay) return 0 ;;
     *) return 1 ;;
   esac
 }

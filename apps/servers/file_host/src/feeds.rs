@@ -1,7 +1,7 @@
 //! The feeds home renders and the owner watches on the phone.
 //!
 //! FEED4, paulgsc/some-ui#2647: the weekly call (`call_weeks`) and Playoff
-//! Delta (`pd_fills`), Rust Rounds' essays (`rust_essays`, RR16,
+//! Delta (`pd_fills`), Rust Rounds' and mock interview's essays (`rust_essays`, RR16,
 //! paulgsc/some-ui#2691), and cards essays (`cards_essays`, CARDS7 #854;
 //! EXPLAIN6 #878). Each keeps its episodes, links and receipts in its own
 //! tables, so each record is keyed to what it is of; what the phone does with
@@ -55,6 +55,9 @@ pub enum Feed {
 	PlayoffDelta,
 	/// Rust Rounds' essays (RR16): the caller's own.
 	RustEssay,
+	/// A week of mock interview's essays (IW6, server#899): the caller's own,
+	/// by Rust Rounds essays' rules over its own tables.
+	InterviewEssay,
 	/// Cards essays (CARDS7, EXPLAIN6): listed, brought and linked
 	/// (paulgsc/some-ui#2999), never let go ([`Self::lets_go`]).
 	CardsEssay,
@@ -68,6 +71,7 @@ impl Feed {
 			Self::Call => "call",
 			Self::PlayoffDelta => "playoff-delta",
 			Self::RustEssay => "rust-essay",
+			Self::InterviewEssay => "interview-essay",
 			Self::CardsEssay => "cards-essay",
 		}
 	}
@@ -79,6 +83,7 @@ impl Feed {
 			"call" => Some(Self::Call),
 			"playoff-delta" => Some(Self::PlayoffDelta),
 			"rust-essay" => Some(Self::RustEssay),
+			"interview-essay" => Some(Self::InterviewEssay),
 			"cards-essay" => Some(Self::CardsEssay),
 			_ => None,
 		}
@@ -91,6 +96,7 @@ impl Feed {
 			Self::Call => crate::call_weeks::render::RENDERS_FOLDER,
 			Self::PlayoffDelta => crate::pd_fills::render::RENDERS_FOLDER,
 			Self::RustEssay => crate::rust_essays::RENDERS_FOLDER,
+			Self::InterviewEssay => crate::rust_essays::INTERVIEW_RENDERS_FOLDER,
 			Self::CardsEssay => crate::cards_essays::RENDERS_FOLDER,
 		})
 	}
@@ -102,6 +108,7 @@ impl Feed {
 			Self::Call => crate::call_weeks::RENDER_FOLDER,
 			Self::PlayoffDelta => crate::pd_fills::render::EPISODES_FOLDER,
 			Self::RustEssay => crate::rust_essays::ESSAYS_FOLDER,
+			Self::InterviewEssay => crate::rust_essays::INTERVIEW_ESSAYS_FOLDER,
 			Self::CardsEssay => crate::cards_essays::ESSAYS_FOLDER,
 		})
 	}
@@ -112,7 +119,7 @@ impl Feed {
 		match self {
 			Self::Call => crate::call_weeks::render::VIDEO,
 			Self::PlayoffDelta => crate::pd_fills::render::VIDEO,
-			Self::RustEssay => crate::rust_essays::VIDEO,
+			Self::RustEssay | Self::InterviewEssay => crate::rust_essays::VIDEO,
 			Self::CardsEssay => crate::cards_essays::VIDEO,
 		}
 	}
@@ -131,7 +138,7 @@ impl Feed {
 	pub fn input_of(self, input: &Path, episode: &str) -> std::path::PathBuf {
 		match self {
 			Self::Call | Self::CardsEssay => input.join(String::from(episode) + ".json"),
-			Self::PlayoffDelta | Self::RustEssay => input.join(episode),
+			Self::PlayoffDelta | Self::RustEssay | Self::InterviewEssay => input.join(episode),
 		}
 	}
 
@@ -144,7 +151,8 @@ impl Feed {
 		Ok(match self {
 			Self::Call => call_week_repo::held(conn).await?.into_iter().map(|week| week.from).collect(),
 			Self::PlayoffDelta => pd_fill_repo::held(conn).await?.iter().rev().map(pd_fill_repo::HeldFill::key).collect(),
-			Self::RustEssay => essays_held(conn, subject).await?.into_iter().rev().collect(),
+			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject).await?.into_iter().rev().collect(),
+			Self::InterviewEssay => essays_held(conn, crate::rust_essays::Kind::Interview, subject).await?.into_iter().rev().collect(),
 			// Newest day first, as the table orders them oldest first.
 			Self::CardsEssay => cards_essay_repo::held(conn).await?.into_iter().rev().map(|essay| essay.key).collect(),
 		})
@@ -164,7 +172,8 @@ impl Feed {
 				Some((season, team, week)) => pd_fill_repo::bodies(conn, &season, &team, week).await?.is_some(),
 				None => false,
 			},
-			Self::RustEssay => essays_held(conn, subject).await?.iter().any(|week| week == key),
+			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject).await?.iter().any(|week| week == key),
+			Self::InterviewEssay => essays_held(conn, crate::rust_essays::Kind::Interview, subject).await?.iter().any(|week| week == key),
 			Self::CardsEssay => crate::cards_essays::pass::is_key(key) && cards_essay_repo::holds(conn, key).await?,
 		})
 	}
@@ -177,7 +186,8 @@ impl Feed {
 		match self {
 			Self::Call => call_week_repo::video::links(conn).await,
 			Self::PlayoffDelta => pd_fill_repo::video::links(conn).await,
-			Self::RustEssay => rust_round_repo::essay_video::links(conn, subject).await,
+			Self::RustEssay => rust_round_repo::essay_video::links(conn, crate::rust_essays::Kind::RustRounds, subject).await,
+			Self::InterviewEssay => rust_round_repo::essay_video::links(conn, crate::rust_essays::Kind::Interview, subject).await,
 			// Oldest first within each essay, so the newest is the one left.
 			Self::CardsEssay => Ok(
 				cards_essay_repo::links(conn)
@@ -207,7 +217,11 @@ impl Feed {
 			Self::PlayoffDelta => pd_fill_repo::video::record_link(conn, key, youtube_id, now).await,
 			Self::RustEssay => {
 				let held = self.holds(conn, subject, key).await?;
-				rust_round_repo::essay_video::record_link(conn, subject, key, held, youtube_id, now).await
+				rust_round_repo::essay_video::record_link(conn, crate::rust_essays::Kind::RustRounds, subject, key, held, youtube_id, now).await
+			}
+			Self::InterviewEssay => {
+				let held = self.holds(conn, subject, key).await?;
+				rust_round_repo::essay_video::record_link(conn, crate::rust_essays::Kind::Interview, subject, key, held, youtube_id, now).await
 			}
 			Self::CardsEssay => Ok(match cards_essay_repo::record_link(conn, key, youtube_id, now).await? {
 				cards_essay_repo::Linked::Added => Recorded::Added,
@@ -225,7 +239,8 @@ impl Feed {
 		match self {
 			Self::Call => call_week_repo::video::receipts(conn).await,
 			Self::PlayoffDelta => pd_fill_repo::video::receipts(conn).await,
-			Self::RustEssay => rust_round_repo::essay_video::receipts(conn, subject).await,
+			Self::RustEssay => rust_round_repo::essay_video::receipts(conn, crate::rust_essays::Kind::RustRounds, subject).await,
+			Self::InterviewEssay => rust_round_repo::essay_video::receipts(conn, crate::rust_essays::Kind::Interview, subject).await,
 			Self::CardsEssay => Ok(Vec::new()),
 		}
 	}
@@ -238,7 +253,8 @@ impl Feed {
 		match self {
 			Self::Call => call_week_repo::video::receipt(conn, key, step).await,
 			Self::PlayoffDelta => pd_fill_repo::video::receipt(conn, key, step).await,
-			Self::RustEssay => rust_round_repo::essay_video::receipt(conn, subject, key, step).await,
+			Self::RustEssay => rust_round_repo::essay_video::receipt(conn, crate::rust_essays::Kind::RustRounds, subject, key, step).await,
+			Self::InterviewEssay => rust_round_repo::essay_video::receipt(conn, crate::rust_essays::Kind::Interview, subject, key, step).await,
 			Self::CardsEssay => Ok(None),
 		}
 	}
@@ -252,27 +268,24 @@ impl Feed {
 		match self {
 			Self::Call => call_week_repo::video::write_receipt(conn, receipt, of).await,
 			Self::PlayoffDelta => pd_fill_repo::video::write_receipt(conn, receipt).await,
-			Self::RustEssay => rust_round_repo::essay_video::write_receipt(conn, subject, receipt).await,
+			Self::RustEssay => rust_round_repo::essay_video::write_receipt(conn, crate::rust_essays::Kind::RustRounds, subject, receipt).await,
+			Self::InterviewEssay => rust_round_repo::essay_video::write_receipt(conn, crate::rust_essays::Kind::Interview, subject, receipt).await,
 			// [`videos::let_go`] never gets this far for it (`lets_go`).
 			Self::CardsEssay => Err(sqlx::Error::Protocol(String::from("a cards essay is never let go"))),
 		}
 	}
 }
 
-/// The weeks `subject` holds an essay of, oldest first, less those withdrawn
-/// for a deleted take (gone for good, with no video to list) and those
-/// another account holds an essay of too: the drive keys an essay's files by
-/// its week alone, so a shared week is none of theirs to reach
+/// The weeks `subject` holds an essay of `kind` of, oldest first, less those
+/// withdrawn for a deleted take (gone for good, with no video to list) and
+/// those another account holds an essay of too: the drive keys an essay's
+/// files by its week alone, so a shared week is none of theirs to reach
 /// (`rust_essays::export` never gives one).
-async fn essays_held(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, sqlx::Error> {
-	let storage = |err| match err {
-		mailbox_repo::MailboxError::Storage(err) => err,
-		mailbox_repo::MailboxError::Rewritten => sqlx::Error::Protocol(String::from("a mailbox file does not read back")),
-	};
-	let withdrawn: Vec<String> = rust_round_repo::essay_video::withdrawn(conn, subject).await?.into_iter().map(|w| w.week).collect();
+async fn essays_held(conn: &mut SqliteConnection, kind: crate::rust_essays::Kind, subject: &str) -> Result<Vec<String>, sqlx::Error> {
+	let withdrawn: Vec<String> = rust_round_repo::essay_video::withdrawn(conn, kind, subject).await?.into_iter().map(|w| w.week).collect();
 	let mut held = Vec::new();
-	for week in mailbox_repo::rust_essay_weeks(conn, subject).await.map_err(storage)? {
-		if !withdrawn.contains(&week) && mailbox_repo::rust_essay_holders(conn, &week).await.map_err(storage)? == 1 {
+	for week in crate::rust_essays::essay_weeks(conn, kind, subject).await? {
+		if !withdrawn.contains(&week) && crate::rust_essays::holders(conn, kind, &week).await? == 1 {
 			held.push(week);
 		}
 	}

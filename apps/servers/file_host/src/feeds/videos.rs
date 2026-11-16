@@ -105,7 +105,7 @@ async fn part_of(feed: Feed, renders: &Path, key: &str) -> Option<(String, u32, 
 			let of = crate::call_weeks::render::parts(renders, week).await;
 			(part <= of).then(|| (week.to_owned(), part, of))
 		}
-		Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => Some((key.to_owned(), 1, 1)),
+		Feed::PlayoffDelta | Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay => Some((key.to_owned(), 1, 1)),
 	}
 }
 
@@ -126,7 +126,7 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 				.into_iter()
 				.filter_map(|(key, title)| Some((key, title_line(&title?)?)))
 				.collect(),
-			Feed::Call | Feed::PlayoffDelta | Feed::RustEssay => std::collections::BTreeMap::new(),
+			Feed::Call | Feed::PlayoffDelta | Feed::RustEssay | Feed::InterviewEssay => std::collections::BTreeMap::new(),
 		};
 		tx.commit().await?;
 		(held, links, receipts, titles)
@@ -135,7 +135,7 @@ pub async fn list(db: &SqlitePool, feed: Feed, subject: &str, renders: &Path) ->
 	for week in held {
 		let keys = match feed {
 			Feed::Call => crate::call_weeks::render::part_keys(renders, &week).await,
-			Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => vec![week.clone()],
+			Feed::PlayoffDelta | Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay => vec![week.clone()],
 		};
 		let of = u32::try_from(keys.len()).unwrap_or(u32::MAX);
 		for (part, key) in (1..).zip(keys) {
@@ -357,7 +357,7 @@ pub async fn let_go(db: &SqlitePool, feed: Feed, subject: &str, folders: Folders
 			}
 			(week.to_owned(), of)
 		}
-		Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => (key.to_owned(), 1),
+		Feed::PlayoffDelta | Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay => (key.to_owned(), 1),
 	};
 	let gone = Gone { week: &week, of };
 	let _folders = super::FOLDERS.lock().await;
@@ -417,7 +417,7 @@ struct Gone<'a> {
 async fn whole(feed: Feed, conn: &mut sqlx::SqliteConnection, week: &str) -> Result<bool, sqlx::Error> {
 	Ok(match feed {
 		Feed::Call => call_week_repo::video::weeks_let_go(conn).await?.iter().any(|gone| gone == week),
-		Feed::PlayoffDelta | Feed::RustEssay | Feed::CardsEssay => true,
+		Feed::PlayoffDelta | Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay => true,
 	})
 }
 
@@ -439,7 +439,7 @@ async fn finish(feed: Feed, folders: Folders<'_>, key: &str, step: Step, gone: G
 					}
 				}
 				Feed::Call => mark_let_go(folders.input, key).await?,
-				Feed::PlayoffDelta | Feed::RustEssay => remove_dir(&input).await?,
+				Feed::PlayoffDelta | Feed::RustEssay | Feed::InterviewEssay => remove_dir(&input).await?,
 				// Never let go (`let_go` refuses it first); its input is a file.
 				Feed::CardsEssay => remove_file(&input).await?,
 			}
@@ -938,6 +938,11 @@ mod tests {
 	/// only by them, and its input goes with its video, as every feed's.
 	#[tokio::test]
 	async fn an_essay_is_its_subjects_alone_and_goes_video_first_as_every_feeds() {
+		essay_feed(Feed::RustEssay, "rust-essay-2026-w46.json").await;
+		essay_feed(Feed::InterviewEssay, "interview-essay-2026-w46.json").await;
+	}
+
+	async fn essay_feed(feed: Feed, name: &str) {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let (renders, essays) = (dir.path().join("rust-essay"), dir.path().join("essays"));
 		for subject in ["me", "them"] {
@@ -947,52 +952,44 @@ mod tests {
 				.await
 				.unwrap();
 		}
-		sqlx::query(
-			"INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES ('me', 'brief', 'rust-essay-2026-w46.json', 1, 's', 2, x'7b7d', 'now')",
-		)
-		.execute(&pool)
-		.await
-		.unwrap();
+		sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES ('me', 'brief', ?1, 1, 's', 2, x'7b7d', 'now')")
+			.bind(name)
+			.execute(&pool)
+			.await
+			.unwrap();
 		let folder = renders.join("2026-w46");
 		std::fs::create_dir_all(&folder).unwrap();
-		std::fs::write(folder.join(Feed::RustEssay.video()), [0_u8; 10]).unwrap();
+		std::fs::write(folder.join(feed.video()), [0_u8; 10]).unwrap();
 		std::fs::write(folder.join("cut-list.json"), [0_u8; 2]).unwrap();
 		std::fs::create_dir_all(essays.join("2026-w46")).unwrap();
 
-		let listed = list(&pool, Feed::RustEssay, "me", &renders).await.unwrap();
+		let listed = list(&pool, feed, "me", &renders).await.unwrap();
 		assert_eq!(listed.iter().map(|e| (e.key.as_str(), e.video_bytes)).collect::<Vec<_>>(), [("2026-w46", Some(10))]);
-		assert!(list(&pool, Feed::RustEssay, "them", &renders).await.unwrap().is_empty(), "another subject's is not theirs");
-		assert_eq!(video_file(&pool, Feed::RustEssay, "them", &renders, "2026-w46").await.unwrap(), None);
+		assert!(list(&pool, feed, "them", &renders).await.unwrap().is_empty(), "another subject's is not theirs");
+		assert_eq!(video_file(&pool, feed, "them", &renders, "2026-w46").await.unwrap(), None);
 		assert_eq!(
-			record_link(&pool, Feed::RustEssay, "them", &renders, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW)
-				.await
-				.unwrap(),
+			record_link(&pool, feed, "them", &renders, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
 			LinkRecorded::NoEpisode
 		);
 		let folders = Folders {
 			renders: &renders,
 			input: &essays,
 		};
+		assert_eq!(let_go(&pool, feed, "them", folders, "2026-w46", Step::Video, NOW).await.unwrap(), LetGo::NoEpisode);
 		assert_eq!(
-			let_go(&pool, Feed::RustEssay, "them", folders, "2026-w46", Step::Video, NOW).await.unwrap(),
-			LetGo::NoEpisode
-		);
-		assert_eq!(
-			record_link(&pool, Feed::RustEssay, "me", &renders, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW)
-				.await
-				.unwrap(),
+			record_link(&pool, feed, "me", &renders, "2026-w46", "https://youtu.be/dQw4w9WgXcQ", NOW).await.unwrap(),
 			LinkRecorded::Kept("dQw4w9WgXcQ".to_owned())
 		);
-		let LetGo::Gone(video) = let_go(&pool, Feed::RustEssay, "me", folders, "2026-w46", Step::Video, NOW).await.unwrap() else {
+		let LetGo::Gone(video) = let_go(&pool, feed, "me", folders, "2026-w46", Step::Video, NOW).await.unwrap() else {
 			panic!("the video goes")
 		};
 		assert_eq!(video.size, 10);
 		assert!(!essays.join("2026-w46").exists(), "the worker is not given it again");
-		let LetGo::Gone(rest) = let_go(&pool, Feed::RustEssay, "me", folders, "2026-w46", Step::Rest, NOW).await.unwrap() else {
+		let LetGo::Gone(rest) = let_go(&pool, feed, "me", folders, "2026-w46", Step::Rest, NOW).await.unwrap() else {
 			panic!("the rest goes")
 		};
 		assert_eq!((rest.size, folder.exists()), (2, false));
-		assert_eq!(list(&pool, Feed::RustEssay, "me", &renders).await.unwrap()[0].receipts, [video, rest]);
+		assert_eq!(list(&pool, feed, "me", &renders).await.unwrap()[0].receipts, [video, rest]);
 	}
 
 	/// A week withdrawn because a take its essay plays was deleted from My
@@ -1020,7 +1017,11 @@ mod tests {
 		assert_eq!(listed(pool.clone(), renders.clone()).await, ["2026-w46", "2026-w45"]);
 
 		let mut tx = pool.begin().await.unwrap();
-		assert!(rust_round_repo::essay_video::withdraw(&mut tx, "me", "2026-w46", "note-311", 0, NOW).await.unwrap());
+		assert!(
+			rust_round_repo::essay_video::withdraw(&mut tx, rust_round_repo::draft::Kind::RustRounds, "me", "2026-w46", "note-311", 0, NOW)
+				.await
+				.unwrap()
+		);
 		tx.commit().await.unwrap();
 		assert_eq!(listed(pool.clone(), renders.clone()).await, ["2026-w45"], "withdrawn: not listed, so never waiting");
 		let folders = Folders {

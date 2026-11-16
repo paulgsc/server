@@ -216,6 +216,7 @@ above the button that deletes (invariant 22):
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
+| A week of mock interview's essay videos: the same, for its essay (IW6; invariant 23) | `interview_essay_video_link`, `interview_essay_video_deletion` |
 | How each recording ended | `app_event` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
@@ -1230,17 +1231,25 @@ nowhere is marked as such and belongs to review.
     heard by the transcriber like every note, has its transcript filed for
     the mailbox like a Rust Rounds note's (invariant 19), and its audio is
     read back as a Rust Rounds note's is (below). The essay-render exception
-    below covers `rust-round` takes only; an interview essay's render is not
-    yet one (paulgsc/some-ui#2937, IW6, extends it). `voice_note` and `voice_note_audio` are the only place home
+    below covers `interview` takes too, under the same four rules (owner,
+    paulgsc/some-ui#2931, 2026-11-13; IW6, paulgsc/some-ui#2937, #899).
+    `voice_note` and `voice_note_audio` are the only place home
     holds a recording (the catalogue's `activities.audio` is an activity's
     disclosure copy, text), and the Jobs mailbox never carries one
     (invariant 19), **with one named exception: a Rust Rounds essay's
     render** (owner, 2026-11-10, via the Nov 10 coordinator run; recorded on
     paulgsc/some-ui#2691, RR16). Each week's essay video plays the owner's
-    takes whole, so home's render of it holds them, under four rules:
+    takes whole, so home's render of it holds them, under four rules. **A
+    week of mock interview's essay render is the same exception, under the
+    same four rules** (owner, paulgsc/some-ui#2931, 2026-11-13): one export
+    over the essay's kind (`rust_essays`), so each rule below holds for both, an
+    interview essay's in its own tables (`interview_essay_video_link`,
+    `interview_essay_video_deletion`) and folders (`interview-essays/`,
+    `renders/interview-essay/`), its takes its questions' answers and its
+    teleprompter cards' reads, each exactly as the week's final names them.
     (a) it is the mailbox subject's only (`rust_essays`), and leaves with
     the account: its rows (`rust_essay_video_link`,
-    `rust_essay_video_deletion`) go with the account, and the worker removes
+    `rust_essay_video_deletion`, and the interview kind's) go with the account, and the worker removes
     every essay folder whose essay the subject no longer holds within a
     minute, its unfinished render work and any export that stopped half way included; a week more than one
     account holds an essay of is given to none and reached by none, since
@@ -1256,9 +1265,11 @@ nowhere is marked as such and belongs to review.
     are not a kind `DELETE /voice-notes/:id` can delete today, so (c) is a
     guard: it holds the day the owner switches that kind on. *Enforced by*
     `rust_essays`' `a_kept_essay_copies_its_takes_only_until_its_video_is_made`,
-    `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go` and
-    `an_essay_the_subject_no_longer_holds_leaves_the_drive`, and
-    `rust_round_repo::essay_video`'s tests. A note
+    `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go`,
+    `an_essay_the_subject_no_longer_holds_leaves_the_drive`,
+    `an_interview_essay_is_given_from_its_weeks_final_with_its_questions_takes`
+    and `an_interview_essay_whose_take_is_deleted_is_withdrawn`, and
+    `rust_round_repo::essay_video`'s tests, which run for both kinds. A note
     is never updated (each table's trigger aborts an `UPDATE`) or replaced
     (other bytes or another description under a held id is a `409`), and
     never deleted but with the account, after it is transcribed as before
@@ -1340,7 +1351,7 @@ nowhere is marked as such and belongs to review.
     are each a `404`, so no audio leaves home but to its own subject's paired
     phone, and a kind added later stays home until it is listed. It reads only, its span skips every
     argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
-    one other caller, `rust_essays`, which copies a final week's `rust-round`
+    one other caller, `rust_essays`, which copies a final week's `rust-round` or `interview`
     takes into its essay's render input on home's own drive (the exception
     above), never off home; a `304` is decided from the head, so it reads no audio.
     The routes that

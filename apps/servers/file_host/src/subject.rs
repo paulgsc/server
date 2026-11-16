@@ -81,6 +81,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	("intervention_log", "what the waker decided and when"),
 	(
+		"interview_essay_video_deletion",
+		"each step of a week of mock interview's essay video let go (paulgsc/some-ui#2937, IW6): the week, video or rest, whether the owner let it go or a take it played was deleted (that take's voice-note id), its YouTube id, the bytes that went and when. See docs/identity.md invariant 23",
+	),
+	(
+		"interview_essay_video_link",
+		"each YouTube link the owner recorded for a week of mock interview's essay video (paulgsc/some-ui#2937, IW6): the week, the video's id and when. The video plays the owner's own takes. See docs/identity.md invariant 23",
+	),
+	(
 		"interview_week_draft",
 		"the owner's current draft of each week of mock interview not yet final (paulgsc/some-ui#2935, IW4): which questions they answered and which teleprompter cards they read, each with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home; replaced by each later send before the week's deadline, and gone once the week is final. See docs/identity.md invariant 28",
 	),
