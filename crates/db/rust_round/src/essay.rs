@@ -177,8 +177,9 @@ pub enum Answered {
 	Silence,
 }
 
-/// What home reads of an essay: its kind, its week and each item's answer,
-/// in order. An item is a ticket of a Rust Rounds week, a question of a
+/// What home reads of an essay: its kind, its week and each item's answer.
+///
+/// In order. An item is a ticket of a Rust Rounds week, a question of a
 /// week of mock interview; `reads` are a week of mock interview's cards read,
 /// none for a Rust Rounds essay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,16 +234,13 @@ pub fn read_of(kind: Kind, body: &[u8]) -> Result<Essay, Vec<Problem>> {
 			Vec::new()
 		}
 	};
-	let reads = match &words.more {
-		Some(more) => match essay.get(more.field) {
-			None => Vec::new(),
-			Some(Value::Array(held)) => items(held, more, &mut problems),
-			Some(_) => {
-				problems.push((String::from(more.field), words.more_why));
-				Vec::new()
-			}
-		},
-		None => Vec::new(),
+	let reads = match words.more.as_ref().map(|more| (more, essay.get(more.field))) {
+		Some((more, Some(Value::Array(held)))) => items(held, more, &mut problems),
+		Some((more, Some(_))) => {
+			problems.push((String::from(more.field), words.more_why));
+			Vec::new()
+		}
+		Some((_, None)) | None => Vec::new(),
 	};
 	match week {
 		Some(week) if problems.is_empty() => Ok(Essay {
@@ -292,10 +290,11 @@ pub struct Played {
 	pub take: String,
 }
 
-/// What the owner sent of a week by its deadline, as an essay is checked
-/// against it: its final's answers (each ticket or question with its take)
-/// and, for a week of mock interview, its cards read (each card with its
-/// take). Both empty when nothing was sent.
+/// What the owner sent of a week by its deadline, as an essay is checked.
+///
+/// Its final's answers (each ticket or question with its take) and, for a
+/// week of mock interview, its cards read (each card with its take). Both
+/// empty when nothing was sent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Final<'a> {
 	pub answers: Vec<(&'a str, &'a str)>,

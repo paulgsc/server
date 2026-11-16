@@ -1157,8 +1157,9 @@ pub async fn rust_essay_holders(conn: &mut SqliteConnection, week: &str) -> Resu
 	Ok(holders)
 }
 
-/// Every essay file of a week of mock interview `subject` holds (IW6,
-/// paulgsc/some-ui#2937), by [`rust_essays`]' rules: each revision of a week
+/// Every essay file of a week of mock interview `subject` holds.
+///
+/// IW6, paulgsc/some-ui#2937, by [`rust_essays`]' rules: each revision of a week
 /// included (RR16, paulgsc/some-ui#2691; C72: a correction is a new name,
 /// `-r<N>`, never a replacement), by name.
 ///

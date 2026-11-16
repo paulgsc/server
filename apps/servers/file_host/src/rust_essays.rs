@@ -1,7 +1,12 @@
-//! Home renders each week's essay, one export over the essay's kind
-//! ([`Kind`]; the module keeps its first kind's name, since paulgsc/some-ui's
-//! assurance ledger names this file and its tests as proofs, and a rename
-//! moves with the ledger, server#899): a Rust Rounds week's (paulgsc/some-ui#2691, RR16, epic
+//! Home renders each week's essay: one export over the essay's kind.
+//!
+//! **Why this module is named `rust_essays`** though it is every kind's
+//! ([`Kind`]): it keeps its first kind's name because paulgsc/some-ui's
+//! assurance ledger names this file and its tests as proofs, so a rename
+//! moves together with the ledger (server#899). Game Week's essay is a third
+//! kind here, not a new module.
+//!
+//! The kinds: a Rust Rounds week's (paulgsc/some-ui#2691, RR16, epic
 //! paulgsc/some-ui#2231) and a week of mock interview's (paulgsc/some-ui#2937,
 //! IW6, epic paulgsc/some-ui#2931; server#899). What differs between kinds is
 //! named once, in [`Spec`] and in the few reads that match on the kind (its
