@@ -10,40 +10,57 @@
 
 use crate::rust_essays::{Exported, Kind, Seen};
 
-/// A kind's gauges' names.
-struct Names {
-	pass_failing: &'static str,
-	waiting_for_deadline: &'static str,
-	refused: &'static str,
-	given: &'static str,
-	waiting: &'static str,
-	failed: &'static str,
-	oldest_waiting: &'static str,
-	worker_last_pass: &'static str,
+// Each kind's gauges, by name: written out whole, so the metric contract
+// check (`scripts/check_metric_contract.py`) sees every name emitted.
+const RUST_PASS_FAILING: &str = "rust_essays_pass_failing";
+const INTERVIEW_PASS_FAILING: &str = "interview_essays_pass_failing";
+const RUST_WAITING_FOR_DEADLINE: &str = "rust_essays_waiting_for_deadline";
+const INTERVIEW_WAITING_FOR_DEADLINE: &str = "interview_essays_waiting_for_deadline";
+const RUST_REFUSED: &str = "rust_essays_refused";
+const INTERVIEW_REFUSED: &str = "interview_essays_refused";
+const RUST_GIVEN: &str = "rust_essay_render_given";
+const INTERVIEW_GIVEN: &str = "interview_essay_render_given";
+const RUST_WAITING: &str = "rust_essay_render_waiting";
+const INTERVIEW_WAITING: &str = "interview_essay_render_waiting";
+const RUST_FAILED: &str = "rust_essay_render_failed";
+const INTERVIEW_FAILED: &str = "interview_essay_render_failed";
+const RUST_OLDEST_WAITING: &str = "rust_essay_render_oldest_waiting_taken_timestamp_seconds";
+const INTERVIEW_OLDEST_WAITING: &str = "interview_essay_render_oldest_waiting_taken_timestamp_seconds";
+const RUST_WORKER_LAST_PASS: &str = "rust_essay_render_worker_last_pass_timestamp_seconds";
+const INTERVIEW_WORKER_LAST_PASS: &str = "interview_essay_render_worker_last_pass_timestamp_seconds";
+
+/// One of a kind's gauges.
+#[derive(Clone, Copy)]
+enum Gauge {
+	PassFailing,
+	WaitingForDeadline,
+	Refused,
+	Given,
+	Waiting,
+	Failed,
+	OldestWaiting,
+	WorkerLastPass,
 }
 
-const fn names(kind: Kind) -> &'static Names {
-	match kind {
-		Kind::RustRounds => &Names {
-			pass_failing: "rust_essays_pass_failing",
-			waiting_for_deadline: "rust_essays_waiting_for_deadline",
-			refused: "rust_essays_refused",
-			given: "rust_essay_render_given",
-			waiting: "rust_essay_render_waiting",
-			failed: "rust_essay_render_failed",
-			oldest_waiting: "rust_essay_render_oldest_waiting_taken_timestamp_seconds",
-			worker_last_pass: "rust_essay_render_worker_last_pass_timestamp_seconds",
-		},
-		Kind::Interview => &Names {
-			pass_failing: "interview_essays_pass_failing",
-			waiting_for_deadline: "interview_essays_waiting_for_deadline",
-			refused: "interview_essays_refused",
-			given: "interview_essay_render_given",
-			waiting: "interview_essay_render_waiting",
-			failed: "interview_essay_render_failed",
-			oldest_waiting: "interview_essay_render_oldest_waiting_taken_timestamp_seconds",
-			worker_last_pass: "interview_essay_render_worker_last_pass_timestamp_seconds",
-		},
+/// `kind`'s `gauge`.
+fn gauge(kind: Kind, gauge: Gauge) -> metrics::Gauge {
+	match (kind, gauge) {
+		(Kind::RustRounds, Gauge::PassFailing) => metrics::gauge!(RUST_PASS_FAILING),
+		(Kind::Interview, Gauge::PassFailing) => metrics::gauge!(INTERVIEW_PASS_FAILING),
+		(Kind::RustRounds, Gauge::WaitingForDeadline) => metrics::gauge!(RUST_WAITING_FOR_DEADLINE),
+		(Kind::Interview, Gauge::WaitingForDeadline) => metrics::gauge!(INTERVIEW_WAITING_FOR_DEADLINE),
+		(Kind::RustRounds, Gauge::Refused) => metrics::gauge!(RUST_REFUSED),
+		(Kind::Interview, Gauge::Refused) => metrics::gauge!(INTERVIEW_REFUSED),
+		(Kind::RustRounds, Gauge::Given) => metrics::gauge!(RUST_GIVEN),
+		(Kind::Interview, Gauge::Given) => metrics::gauge!(INTERVIEW_GIVEN),
+		(Kind::RustRounds, Gauge::Waiting) => metrics::gauge!(RUST_WAITING),
+		(Kind::Interview, Gauge::Waiting) => metrics::gauge!(INTERVIEW_WAITING),
+		(Kind::RustRounds, Gauge::Failed) => metrics::gauge!(RUST_FAILED),
+		(Kind::Interview, Gauge::Failed) => metrics::gauge!(INTERVIEW_FAILED),
+		(Kind::RustRounds, Gauge::OldestWaiting) => metrics::gauge!(RUST_OLDEST_WAITING),
+		(Kind::Interview, Gauge::OldestWaiting) => metrics::gauge!(INTERVIEW_OLDEST_WAITING),
+		(Kind::RustRounds, Gauge::WorkerLastPass) => metrics::gauge!(RUST_WORKER_LAST_PASS),
+		(Kind::Interview, Gauge::WorkerLastPass) => metrics::gauge!(INTERVIEW_WORKER_LAST_PASS),
 	}
 }
 
@@ -58,27 +75,25 @@ fn count(value: usize) -> f64 {
 
 /// The worker started: its pass reads as not failing until one does.
 pub fn record_started(kind: Kind) {
-	metrics::gauge!(names(kind).pass_failing).set(0.0);
+	gauge(kind, Gauge::PassFailing).set(0.0);
 }
 
 /// Whether the pass failed: storage, or an essay it could not write.
 pub fn record_pass(kind: Kind, result: &Result<Exported, sqlx::Error>) {
-	let names = names(kind);
 	let failing = !result.as_ref().is_ok_and(|done| done.failed == 0);
-	metrics::gauge!(names.pass_failing).set(if failing { 1.0 } else { 0.0 });
+	gauge(kind, Gauge::PassFailing).set(if failing { 1.0 } else { 0.0 });
 	if let Ok(done) = result {
-		metrics::gauge!(names.waiting_for_deadline).set(count(done.waiting));
+		gauge(kind, Gauge::WaitingForDeadline).set(count(done.waiting));
 	}
 }
 
 /// What the render worker has made of the essays given. A time that is not
 /// there reads 0.
 pub fn record_renders(kind: Kind, seen: &Seen) {
-	let names = names(kind);
-	metrics::gauge!(names.refused).set(count(seen.refused));
-	metrics::gauge!(names.given).set(count(seen.renders.held));
-	metrics::gauge!(names.waiting).set(count(seen.renders.waiting));
-	metrics::gauge!(names.failed).set(count(seen.renders.failed));
-	metrics::gauge!(names.oldest_waiting).set(seen.renders.oldest_waiting_taken.map_or(0.0, as_f64));
-	metrics::gauge!(names.worker_last_pass).set(seen.renders.worker_last_pass.map_or(0.0, as_f64));
+	gauge(kind, Gauge::Refused).set(count(seen.refused));
+	gauge(kind, Gauge::Given).set(count(seen.renders.held));
+	gauge(kind, Gauge::Waiting).set(count(seen.renders.waiting));
+	gauge(kind, Gauge::Failed).set(count(seen.renders.failed));
+	gauge(kind, Gauge::OldestWaiting).set(seen.renders.oldest_waiting_taken.map_or(0.0, as_f64));
+	gauge(kind, Gauge::WorkerLastPass).set(seen.renders.worker_last_pass.map_or(0.0, as_f64));
 }
