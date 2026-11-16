@@ -2003,6 +2003,99 @@ mod tests {
 		assert_eq!(fake.puts.lock().unwrap().len(), 2, "a conflict is final: not filed or handed again");
 	}
 
+	/// HEARD1 (paulgsc/server#908): a Rust Rounds take every attempt failed on,
+	/// or one home found silent,
+	/// is filed with no text, no words and no language beside its `failed`
+	/// verdict, so the week's routine stops waiting for it; a reflection's is
+	/// not, nor a failure a model then outlived by hearing the note.
+	#[tokio::test]
+	async fn a_rust_rounds_take_home_could_not_hear_or_found_silent_is_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		for (note, of, of_ref) in [
+			("qm311", "rust-round", "2026-w46:QM-311"),
+			("thought", "reflection", "session-1"),
+			("qm312", "rust-round", "2026-w46:QM-312"),
+		] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, ?3, ?4, '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.bind(of)
+			.bind(of_ref)
+			.execute(&pool)
+			.await
+			.unwrap();
+			for attempt in 1..=3 {
+				sqlx::query(
+					"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+					 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 'whisper.cpp', ?3, 'deadline', 600000, '2026-11-14T20:3' || ?3 || ':00.000Z')",
+				)
+				.bind(OWNER)
+				.bind(note)
+				.bind(attempt)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+				 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 3, 'heard-1', 'failed', 'deadline', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		// A better model heard QM-312 after all: its failure is not filed.
+		heard(&pool, "qm312", "ggml-medium.bin", "an immutable borrow").await;
+		// QM-313 was silent: filed as nothing said, so the week stops waiting.
+		for statement in [
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'qm313', 'rust-round', '2026-w46:QM-313', '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'silent', 4000, 10, '2026-11-14T20:40:00.000Z')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
+		] {
+			sqlx::query(statement).bind(OWNER).execute(&pool).await.unwrap();
+		}
+
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!(outcome.filed, 3, "QM-311's failure, QM-312's hearing and QM-313's silence");
+		let puts = fake.puts.lock().unwrap().clone();
+		assert!(puts.contains(&String::from("/v1/transcript/items/transcript-qm311-1.json")), "{puts:?}");
+		assert!(!puts.iter().any(|put| put.contains("thought")), "a reflection's failure stays home: {puts:?}");
+		let at = puts.iter().position(|put| put.contains("qm311")).unwrap();
+		let body: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[at]).unwrap();
+		assert_eq!(
+			body,
+			serde_json::json!({
+				"schema": "some-ui.voice-transcript/1",
+				"note": "qm311",
+				"of": "rust-round",
+				"ref": "2026-w46:QM-311",
+				"at": "2026-11-12T10:00:00.000Z",
+				"text": "",
+				"language": null,
+				"model": "ggml-small-q5_1.bin",
+				"heardAt": "2026-11-14T20:33:00.000Z",
+				"words": [],
+				"verdict": { "kind": "failed", "reasons": ["deadline"], "rule": "heard-1", "signals": null },
+			})
+		);
+		let at = puts.iter().position(|put| put.contains("qm313")).unwrap();
+		let silent: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[at]).unwrap();
+		assert_eq!(
+			(&silent["text"], &silent["language"], &silent["words"]),
+			(&serde_json::json!(""), &serde_json::Value::Null, &serde_json::json!([]))
+		);
+		assert_eq!(silent["verdict"]["kind"], "nothing_said");
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 0, "filed once");
+	}
+
 	/// A note id may hold a `:` (`voice_repo::is_name`), and the mailbox's
 	/// transcript names allow one: its transcript is handed, not refused.
 	#[tokio::test]

@@ -327,7 +327,7 @@ tests:
         alertname: TranscriptGarbled
         exp_alerts:
           - exp_labels:
-              objective: HEARD1
+              objective: VH4
               says: "Home could not hear a voice note it transcribed in the last hour (garbled or failed): GET /voice-notes/:id/heard and the mailbox transcript carry its verdict, reasons and signals."
       - eval_time: 80m
         alertname: TranscriptGarbled
@@ -345,7 +345,7 @@ tests:
         alertname: TranscriptGarbled
         exp_alerts:
           - exp_labels:
-              objective: HEARD1
+              objective: VH4
               says: "Home could not hear a voice note it transcribed in the last hour (garbled or failed): GET /voice-notes/:id/heard and the mailbox transcript carry its verdict, reasons and signals."
 
   - name: takes only heard or silent are not TranscriptGarbled

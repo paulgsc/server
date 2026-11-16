@@ -159,7 +159,7 @@ groups:
         # garbled take is an increase; resolved an hour after the last.
         expr: sum(increase(transcribe_verdicts_total{verdict=~"garbled|failed"}[1h])) > 0
         labels:
-          objective: HEARD1
+          objective: VH4
           says: "Home could not hear a voice note it transcribed in the last hour (garbled or failed): GET /voice-notes/:id/heard and the mailbox transcript carry its verdict, reasons and signals."
 
       - alert: GameFeedStale

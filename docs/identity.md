@@ -840,7 +840,7 @@ nowhere is marked as such and belongs to review.
       Its take is named by id only; what home heard in it goes as its
       transcript. A note sent again files nothing.
       The poller files each `voice_transcript` row that heard something
-      (never a failure or a silence) of a note said for `reflection`, `jobs`,
+      (a silence and a failure only as below) of a note said for `reflection`, `jobs`,
       `scene`, `studio`, `rust-round` (a Rust Rounds tutor reads what was
       said on each card; paulgsc/some-ui#2237) or `interview` (the interview
       week's routine reads each answer and read; paulgsc/some-ui#2932), the
@@ -849,7 +849,12 @@ nowhere is marked as such and belongs to review.
       grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
       and never of a note but a Jobs note the owner set aside before it was
       filed (`voice_note_set_aside`, invariant 23, read again in the
-      transaction that files it), as `transcript-<note>-<n>.json` in
+      transaction that files it). Each carries home's verdict on it
+      (`voice_transcript_verdict`, paulgsc/server#908); and a `rust-round`
+      or `interview` take home found silent, or every attempt failed on
+      while no model has heard it, is filed too, with no text, no words and
+      no language beside its `nothing_said` or `failed` verdict, so the
+      week's routine stops waiting for it. All as `transcript-<note>-<n>.json` in
       `some-ui.voice-transcript/1`: the note's id, what it was said for and
       which one, when it was recorded, the text, its language and model, and
       when home heard it. That is text; nothing in it points at audio, and the

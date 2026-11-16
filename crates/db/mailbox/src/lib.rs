@@ -646,15 +646,24 @@ pub struct Heard {
 	pub of_ref: String,
 	/// When the phone recorded it.
 	pub recorded_at: String,
+	/// What was heard; empty for a take home could not hear
+	/// ([`unfiled_transcripts`]' unheard ones).
 	pub text: String,
-	pub language: String,
+	/// None for a take home could not hear.
+	pub language: Option<String>,
 	pub heard_at: String,
 }
 
 /// `subject`'s transcripts that heard something and are not filed yet.
 ///
 /// Oldest heard first, at most `limit`. A note heard as nothing at all, or
-/// not heard, is never one: the routine reads that from the absence. Only
+/// not heard, is never one: the routine reads that from the absence. The
+/// exception is a Rust Rounds or interview take (paulgsc/server#908,
+/// HEARD1), which the week's routine and its essay must not wait on: one
+/// home found silent is filed as it ended, and one every attempt failed on
+/// as its last attempt (judged `failed`) while no model has ended the note,
+/// so a failure is never filed after a hearing; each with no text and no
+/// language, its verdict saying which. Only
 /// a note said for a kind a routine reads is one (`reflection`, `jobs`,
 /// `scene`, `studio`, `rust-round`, which a Rust Rounds tutor reads:
 /// paulgsc/some-ui#2237, RR6, and `interview`, which the interview week's
@@ -677,14 +686,25 @@ pub struct Heard {
 pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<Heard>, MailboxError> {
 	let heard = sqlx::query_as!(
 		Heard,
-		r#"SELECT heard.note_id, heard.model, note.of_kind, note.of_ref, note.recorded_at,
-		          heard.text AS "text!", heard.language AS "language!", heard.heard_at
+		r#"SELECT heard.note_id AS "note_id!", heard.model AS "model!", note.of_kind AS "of_kind!", note.of_ref AS "of_ref!",
+		          note.recorded_at AS "recorded_at!", COALESCE(heard.text, '') AS "text!: String", heard.language AS "language?: String",
+		          heard.heard_at AS "heard_at!"
 		   FROM voice_transcript AS heard
 		   JOIN voice_note AS note ON note.subject_id = heard.subject_id AND note.note_id = heard.note_id
 		   WHERE heard.subject_id = ?1
-		     AND heard.outcome = 'heard'
-		     AND trim(heard.text) <> ''
-		     AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round', 'interview')
+		     AND ((heard.outcome = 'heard'
+		           AND trim(heard.text) <> ''
+		           AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round', 'interview'))
+		          OR (note.of_kind IN ('rust-round', 'interview') AND heard.outcome = 'silent')
+		          OR (note.of_kind IN ('rust-round', 'interview')
+		              AND EXISTS (
+		                SELECT 1 FROM voice_transcript_verdict AS judged
+		                WHERE judged.subject_id = heard.subject_id AND judged.note_id = heard.note_id
+		                  AND judged.model = heard.model AND judged.attempt = heard.attempt AND judged.verdict = 'failed')
+		              AND NOT EXISTS (
+		                SELECT 1 FROM voice_transcript AS ended
+		                WHERE ended.subject_id = heard.subject_id AND ended.note_id = heard.note_id
+		                  AND ended.outcome IN ('heard', 'silent'))))
 		     AND (note.of_kind = 'jobs' OR NOT EXISTS (
 		       SELECT 1 FROM voice_note_set_aside AS aside
 		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
@@ -2152,7 +2172,7 @@ mod tests {
 			"oldest heard first; never a failure, a silence or nothing but blanks, nor another subject's"
 		);
 		let all = unfiled_transcripts(&mut pool.acquire().await.unwrap(), A, 10).await.unwrap();
-		assert_eq!((all[0].text.as_str(), all[0].language.as_str(), all[0].of_kind.as_str()), ("하나", "ko", "jobs"));
+		assert_eq!((all[0].text.as_str(), all[0].language.as_deref().unwrap(), all[0].of_kind.as_str()), ("하나", "ko", "jobs"));
 		file_next(&pool, A, "n1", "small").await.unwrap();
 		assert_eq!(unfiled(&pool, A).await, [(String::from("n2"), String::from("small"))], "a filed one waits no more");
 	}

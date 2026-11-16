@@ -299,9 +299,10 @@ pub struct Played {
 pub struct Final<'a> {
 	pub answers: Vec<(&'a str, &'a str)>,
 	pub reads: Vec<(&'a str, &'a str)>,
-	/// The takes among them home could not hear: its verdict on each is
-	/// garbled or failed (paulgsc/server#908, HEARD1). An essay may treat
-	/// one as unanswered, a silence, or play it.
+	/// The takes among them an essay may call a silence: home's verdict on
+	/// the transcript the routine reads of each is garbled, failed or
+	/// nothing said (paulgsc/server#908, HEARD1). An essay may treat one as
+	/// unanswered, a silence, or play it.
 	pub unheard: Vec<&'a str>,
 }
 

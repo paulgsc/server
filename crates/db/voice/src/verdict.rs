@@ -62,6 +62,13 @@ impl Kind {
 	pub const fn unheard(self) -> bool {
 		matches!(self, Self::Garbled | Self::Failed)
 	}
+
+	/// Whether an essay may call the take a silence: home could not hear it,
+	/// or heard nothing said in it.
+	#[must_use]
+	pub const fn may_be_silent(self) -> bool {
+		!matches!(self, Self::Heard)
+	}
 }
 
 /// What a heard transcript was judged on: the transcriber's own signals.
@@ -267,9 +274,12 @@ pub async fn of_note(conn: &mut SqliteConnection, subject: &str, note_id: &str) 
 	row.map(read).transpose()
 }
 
-/// The verdict of the transcript `model` ended `subject`'s note `note_id`
-/// with, by the newest rule: what a transcript filed under that model
-/// carries. None when it was kept before verdicts were.
+/// The verdict of what `model` made of `subject`'s note `note_id`.
+///
+/// That of the transcript it ended the note with, or of its last failure on
+/// the note when it ended it with none, by the newest rule: what a
+/// transcript filed under that model carries. None when it was kept before
+/// verdicts were.
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
@@ -281,8 +291,8 @@ pub async fn of_ending(conn: &mut SqliteConnection, subject: &str, note_id: &str
 		   FROM voice_transcript t
 		   JOIN voice_transcript_verdict v
 		     ON v.subject_id = t.subject_id AND v.note_id = t.note_id AND v.model = t.model AND v.attempt = t.attempt
-		   WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.model = ?3 AND t.outcome IN ('heard', 'silent')
-		   ORDER BY v.judged_at DESC, v.rule DESC
+		   WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.model = ?3
+		   ORDER BY t.outcome IN ('heard', 'silent') DESC, t.attempt DESC, v.judged_at DESC, v.rule DESC
 		   LIMIT 1"#,
 		subject,
 		note_id,
@@ -291,6 +301,39 @@ pub async fn of_ending(conn: &mut SqliteConnection, subject: &str, note_id: &str
 	.fetch_optional(&mut *conn)
 	.await?;
 	row.map(read).transpose()
+}
+
+/// What a week's routine made of `subject`'s take `note_id` (HEARD1).
+///
+/// The verdict of the transcript the routine reads, as an essay is checked
+/// against it, so home's check and the routine judge the same one.
+///
+/// The routine reads the take's transcripts the mailbox holds, and judges by
+/// the winning one's verdict alone (paulgsc/some-ui#3073's `heardByNote`):
+/// with `verbatim_first` (an interview take) one whose model holds
+/// `+verbatim` before any other, then the highest number filed; a Rust
+/// Rounds take by the highest number alone. None when nothing was filed (the
+/// routine waits) or the winner carries no verdict (the routine reads it as
+/// heard).
+///
+/// # Errors
+/// Any `sqlx` failure, or a stored verdict this build does not know.
+pub async fn as_the_routine_reads(conn: &mut SqliteConnection, subject: &str, note_id: &str, verbatim_first: bool) -> Result<Option<Kind>, VoiceError> {
+	let filed = sqlx::query_scalar!(
+		r#"SELECT filed.model AS "model!" FROM mailbox_transcript AS filed
+		   WHERE filed.subject_id = ?1 AND filed.note_id = ?2
+		   ORDER BY (?3 AND instr(filed.model, '+verbatim') > 0) DESC, filed.n DESC
+		   LIMIT 1"#,
+		subject,
+		note_id,
+		verbatim_first
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	let Some(model) = filed else {
+		return Ok(None);
+	};
+	Ok(of_ending(conn, subject, note_id, &model).await?.map(|verdict| verdict.kind))
 }
 
 #[cfg(test)]
@@ -426,6 +469,54 @@ mod tests {
 		assert_eq!(of_ending(&mut conn, A, "n", "old").await.unwrap(), None);
 		let appended = sqlx::query("UPDATE voice_transcript_verdict SET verdict = 'heard'").execute(&mut *conn).await;
 		assert!(appended.is_err(), "append-only");
+	}
+
+	/// HEARD1's essay check judges the transcript the routine reads: an
+	/// interview take's verbatim one first, then the highest number filed; a
+	/// Rust Rounds take's highest number; nothing before anything is filed.
+	#[tokio::test]
+	async fn an_essay_judges_the_transcript_the_routine_reads() {
+		use super::as_the_routine_reads;
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(as_the_routine_reads(&mut conn, A, "n", true).await.unwrap(), None, "nothing heard");
+		drop(conn);
+		attempt(&pool, "old", 1, "silent", "2026-11-01").await;
+		judge(&pool, "old", 1, &verdict(Kind::NothingSaid, &[], None), "2026-11-01").await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(as_the_routine_reads(&mut conn, A, "n", false).await.unwrap(), None, "not filed: the routine waits");
+		drop(conn);
+		for (model, n, kind, at) in [("m+verbatim-1", 1, Kind::Garbled, "2026-11-14"), ("plain", 2, Kind::Heard, "2026-11-15")] {
+			attempt(&pool, model, 1, "heard", at).await;
+			let signals = Some(signals());
+			judge(&pool, model, 1, &verdict(kind, &[], signals), at).await;
+			sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', ?2, ?3, 'now')")
+				.bind(A)
+				.bind(model)
+				.bind(n)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(as_the_routine_reads(&mut conn, A, "n", true).await.unwrap(), Some(Kind::Garbled), "the verbatim one first");
+		assert_eq!(as_the_routine_reads(&mut conn, A, "n", false).await.unwrap(), Some(Kind::Heard), "else the highest number");
+		drop(conn);
+		attempt(&pool, "unjudged", 1, "heard", "2026-11-16").await;
+		sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'n', 'unjudged', 3, 'now')")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			as_the_routine_reads(&mut conn, A, "n", false).await.unwrap(),
+			None,
+			"a winner with no verdict reads as heard"
+		);
+		assert_eq!(as_the_routine_reads(&mut conn, A, "n", true).await.unwrap(), Some(Kind::Garbled), "verbatim still first");
+		assert!(Kind::NothingSaid.may_be_silent() && Kind::Garbled.may_be_silent() && Kind::Failed.may_be_silent());
+		assert!(!Kind::Heard.may_be_silent());
 	}
 
 	/// A failure is the note's verdict only while nothing ended it.
