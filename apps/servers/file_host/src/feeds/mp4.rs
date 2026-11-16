@@ -37,12 +37,6 @@ pub async fn millis(path: &Path) -> Option<u64> {
 	header_millis(head.get(..len)?)
 }
 
-/// Seconds, rounded to the nearest, of `millis`.
-#[must_use]
-pub fn seconds(millis: u64) -> u64 {
-	millis.saturating_add(500) / 1_000
-}
-
 /// The body's start and the box's end of the first box of `kind` among the
 /// boxes from `start` to `end`, looking at no more than [`MOST_BOXES`].
 async fn find(file: &mut tokio::fs::File, start: u64, end: u64, kind: [u8; 4]) -> Option<(u64, u64)> {
@@ -161,9 +155,6 @@ pub(crate) mod tests {
 		assert_eq!(read(&mp4(0, 1_000, 754_321, false)).await, Some(754_321), "moov first (faststart)");
 		assert_eq!(read(&mp4(0, 90_000, 90_000 * 61, true)).await, Some(61_000), "moov after mdat");
 		assert_eq!(read(&mp4(1, 600, 600 * 3_600, false)).await, Some(3_600_000), "a version 1 header");
-		assert_eq!(seconds(754_321), 754);
-		assert_eq!(seconds(61_500), 62);
-		assert_eq!(seconds(400), 0);
 	}
 
 	#[tokio::test]

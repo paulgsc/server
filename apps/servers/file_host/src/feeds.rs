@@ -155,7 +155,7 @@ impl Feed {
 				.await?
 				.into_iter()
 				.map(|week| HeldEpisode {
-					day: Some(week.from.clone()),
+					date: Some(week.from.clone()),
 					key: week.from,
 				})
 				.collect(),
@@ -167,7 +167,7 @@ impl Feed {
 				.rev()
 				.map(|fill| HeldEpisode {
 					key: fill.key(),
-					day: day_taken(&fill.taken_at),
+					date: day_taken(&fill.taken_at),
 				})
 				.collect(),
 			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject)
@@ -189,7 +189,7 @@ impl Feed {
 				.rev()
 				.map(|essay| HeldEpisode {
 					key: essay.key,
-					day: Some(essay.day),
+					date: Some(essay.day),
 				})
 				.collect(),
 		})
@@ -313,24 +313,24 @@ impl Feed {
 	}
 }
 
-/// An episode home holds, and its day.
+/// An episode home holds, and its date.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldEpisode {
 	/// Its key: for the call, the week's (its first part's).
 	pub key: String,
-	/// Its day, `YYYY-MM-DD`, by what its feed knows (server#906): the call's
+	/// Its date, `YYYY-MM-DD`, by what its feed knows (server#906): the call's
 	/// week's first day; Playoff Delta's, the day home took its fill, by
 	/// home's clock (`renders::HOME_ZONE`); an essay's, the Monday of the ISO
 	/// week it is of; a cards essay's own day. `None` only for a stamp that
 	/// doesn't read, which the tables never hold.
-	pub day: Option<String>,
+	pub date: Option<String>,
 }
 
 impl HeldEpisode {
 	/// An essay's, keyed by the ISO week it is of (`2026-w46`).
 	fn of_iso_week(week: String) -> Self {
 		Self {
-			day: iso_monday(&week).map(|day| day.format("%Y-%m-%d").to_string()),
+			date: iso_monday(&week).map(|day| day.format("%Y-%m-%d").to_string()),
 			key: week,
 		}
 	}
@@ -370,10 +370,10 @@ mod tests {
 
 	#[test]
 	fn an_episodes_day_is_what_its_feed_knows() {
-		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-w46")).day.as_deref(), Some("2026-11-09"));
-		assert_eq!(HeldEpisode::of_iso_week(String::from("2027-w01")).day.as_deref(), Some("2027-01-04"));
-		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-w54")).day, None, "no such week");
-		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-11-09")).day, None);
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-w46")).date.as_deref(), Some("2026-11-09"));
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2027-w01")).date.as_deref(), Some("2027-01-04"));
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-w54")).date, None, "no such week");
+		assert_eq!(HeldEpisode::of_iso_week(String::from("2026-11-09")).date, None);
 		// Home's clock: a fill taken late on a Tuesday evening at home is
 		// Tuesday's, though it is already Wednesday in UTC.
 		assert_eq!(day_taken("2026-11-11T05:30:00.000Z").as_deref(), Some("2026-11-10"));
