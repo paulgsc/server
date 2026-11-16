@@ -8,9 +8,13 @@
 -- (`voice_transcript`, 20261025000200), in the same transaction, and names
 -- it by (subject_id, note_id, model, attempt). A later rule judging the same
 -- attempt again adds a row under its own `rule`; no row is updated (the
--- trigger below aborts an `UPDATE`) or deleted but with the account, or with
--- its note when the owner deletes that note for good (`voice_repo::delete`).
--- A transcript kept before this table existed has none, and reads say so.
+-- trigger below aborts an `UPDATE`) or deleted but with the account. It
+-- outlives its note: when the owner deletes a note for good
+-- (`voice_repo::delete`), its transcripts go and its verdicts stay, holding
+-- no word, only codes, numbers and a language, so a take's problems are
+-- kept (the owner's call, paulgsc/server#911); its receipt says `verdict`
+-- stayed. A transcript kept before this table existed has none, and reads
+-- say so.
 --
 -- Only final attempts are judged: one that ended the note (`heard`, `silent`)
 -- and the last failure the worker makes on it (`transcribe::pass::ATTEMPTS`).

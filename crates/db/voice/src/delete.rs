@@ -71,6 +71,10 @@ pub const MAILBOX_COPY: &str = "mailbox copy";
 pub const DRIVE_COPY: &str = "drive copy";
 /// The idea it answered, which keeps the answer's place.
 pub const IDEA: &str = "idea";
+/// What home made of what it heard in it ([`crate::verdict`], HEARD1): its
+/// problem codes and the numbers behind them, never a word. Kept for good,
+/// the owner's call (paulgsc/server#911): a take's problems outlive it.
+pub const VERDICT: &str = "verdict";
 
 /// What a delete left behind: the receipt, as home keeps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -224,9 +228,6 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 	sqlx::query!("DELETE FROM voice_transcript_word WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
 		.await?;
-	sqlx::query!("DELETE FROM voice_transcript_verdict WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
-		.execute(&mut *conn)
-		.await?;
 	sqlx::query!("DELETE FROM voice_transcript WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
 		.await?;
@@ -253,6 +254,13 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 		           AND name >= 'pickup-' || ?2 || '-' AND name < 'pickup-' || ?2 || '.'
 		           AND CASE WHEN json_valid(CAST(body AS TEXT)) THEN json_extract(CAST(body AS TEXT), '$.note') END = ?2
 		       ) AS "filed!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	let judged = sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM voice_transcript_verdict WHERE subject_id = ?1 AND note_id = ?2) AS "judged!: bool""#,
 		subject,
 		note_id
 	)
@@ -285,6 +293,9 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 	}
 	if answers {
 		stayed.push(IDEA.to_owned());
+	}
+	if judged {
+		stayed.push(VERDICT.to_owned());
 	}
 	Ok((went, stayed))
 }
@@ -358,7 +369,7 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 #[cfg(test)]
 mod tests {
 	use super::{
-		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, WORDS,
+		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, IDEA, MAILBOX_COPY, RECEIPTS, RECORDING, SET_ASIDE_MARK, SWITCHED_ON, VERDICT, WORDS,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -522,20 +533,21 @@ mod tests {
 		assert_eq!(first.of, "studio");
 		assert_eq!((first.recorded_at.as_str(), first.size, first.deleted_at.as_str()), ("2026-11-01T10:00:00.000Z", 120, NOW));
 		assert_eq!(first.went, [RECORDING, WORDS, SET_ASIDE_MARK, CONVEYOR_HISTORY]);
-		assert_eq!(first.stayed, [MAILBOX_COPY, DRIVE_COPY]);
+		assert_eq!(first.stayed, [MAILBOX_COPY, DRIVE_COPY, VERDICT]);
 		for table in [
 			"voice_note",
 			"voice_note_audio",
 			"voice_transcript",
 			"voice_transcript_word",
-			"voice_transcript_verdict",
 			"voice_note_set_aside",
 			"voice_note_meaning",
 			"studio_take_move",
 		] {
 			assert_eq!(rows(&pool, table, A, "take").await, 0, "{table}");
 		}
-		for table in ["mailbox_transcript", "studio_take_on_drive"] {
+		// What home made of it stays, numbers and codes only (HEARD1, the
+		// owner's call on #911): it leaves with the account alone.
+		for table in ["mailbox_transcript", "studio_take_on_drive", "voice_transcript_verdict"] {
 			assert_eq!(rows(&pool, table, A, "take").await, 1, "{table}");
 		}
 		assert_eq!(gone(&pool, A, "take", ON).await, Deleted::Gone(first.clone()), "a repeat reads the receipt");
@@ -642,17 +654,11 @@ mod tests {
 			panic!("the answer is gone");
 		};
 		assert_eq!(answer.went, [RECORDING, WORDS, SET_ASIDE_MARK]);
-		assert_eq!(answer.stayed, [MAILBOX_COPY, DRIVE_COPY, IDEA]);
-		for table in [
-			"voice_note",
-			"voice_note_audio",
-			"voice_transcript",
-			"voice_transcript_word",
-			"voice_transcript_verdict",
-			"voice_note_set_aside",
-		] {
+		assert_eq!(answer.stayed, [MAILBOX_COPY, DRIVE_COPY, IDEA, VERDICT]);
+		for table in ["voice_note", "voice_note_audio", "voice_transcript", "voice_transcript_word", "voice_note_set_aside"] {
 			assert_eq!(rows(&pool, table, A, "answer").await, 0, "{table}");
 		}
+		assert_eq!(rows(&pool, "voice_transcript_verdict", A, "answer").await, 1, "its verdict stays");
 		assert_eq!(rows(&pool, "idea_answer", A, "answer").await, 1, "the idea keeps its answer's place");
 		let Deleted::Gone(spoken) = gone(&pool, A, "spoken", SWITCHED_ON).await else {
 			panic!("the spoken answer is gone");

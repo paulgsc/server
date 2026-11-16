@@ -1298,7 +1298,9 @@ nowhere is marked as such and belongs to review.
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
-    files, so words deleted after it read them never leave home. It
+    files, so words deleted after it read them never leave home. What home
+    made of it stays too (`voice_transcript_verdict`: codes, numbers and a
+    language, never a word; paulgsc/server#908, #911). It
     writes a receipt to `voice_note_deletion`, append-only (its trigger
     aborts an `UPDATE`) and gone only with the account: the note's id and
     kind, when it was recorded, reached home and was deleted, its size, and
@@ -1546,8 +1548,10 @@ nowhere is marked as such and belongs to review.
     the language detected and the one the note's kind is said in, words per
     second, and the speech's length and loudness), never anything said. It
     is written with its attempt, in the same transaction, for an ending and
-    for the last failure the worker makes on a note only; it leaves with its
-    note and with the account (sweep and trigger), and every read that gives
+    for the last failure the worker makes on a note only; it leaves with the
+    account alone (sweep and trigger), and outlives its note: deleting a note
+    for good keeps its verdicts, which hold no word (the owner's call,
+    paulgsc/server#911), and its receipt says `verdict` stayed. Every read that gives
     a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
     the mailbox's transcript and pickup files) gives its verdict beside it,
     so no reader judges a transcript for itself. A reader
