@@ -897,7 +897,7 @@ pub struct AudioHead {
 ///
 /// Reads only. With [`audio_body`], its callers are `file_host`'s
 /// `handlers::voice` (`GET /api/v1/voice-notes/:id/audio`), which serves the
-/// kinds in [`PLAYED_BACK`] only, to a paired phone, and `rust_essays`, which copies a final week's `rust-round` takes into its
+/// kinds in [`PLAYED_BACK`] only, to a paired phone, and `rust_essays`, which copies a final week's `rust-round` or `interview` takes into its
 /// essay's render input on home's drive (docs/identity.md invariant 23's one
 /// named exception).
 ///

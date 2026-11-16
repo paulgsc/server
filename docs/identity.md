@@ -1267,7 +1267,7 @@ nowhere is marked as such and belongs to review.
     `rust_essays`' `a_kept_essay_copies_its_takes_only_until_its_video_is_made`,
     `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go`,
     `an_essay_the_subject_no_longer_holds_leaves_the_drive`,
-    `an_interview_essay_is_given_from_its_weeks_final_with_its_questions_takes`
+    `an_interview_essay_is_given_from_its_weeks_final_with_its_takes`
     and `an_interview_essay_whose_take_is_deleted_is_withdrawn`, and
     `rust_round_repo::essay_video`'s tests, which run for both kinds. A note
     is never updated (each table's trigger aborts an `UPDATE`) or replaced

@@ -35,7 +35,8 @@
 //! [`get_audio`] is the only route that calls `voice_repo::audio_head` and
 //! `voice_repo::audio_body`, for the kinds `voice_repo::PLAYED_BACK` lists,
 //! and its span skips every argument (`rust_essays` is their one other
-//! caller, on home's own drive).
+//! caller, copying an essay's `rust-round` or `interview` takes on home's own
+//! drive).
 //!
 //! [`get_takes`] is the only reader of the take library
 //! (`voice_repo::takes`): what each Studio take is and the words home heard

@@ -1,4 +1,4 @@
--- Reverses 20261110000200_create_interview_essay_video.up.sql.
+-- Reverses 20261116000100_create_interview_essay_video.up.sql.
 --
 -- **It refuses rather than discards:** a link or a receipt is kept for
 -- good, so once either table holds a row this fails on the CHECK below and
