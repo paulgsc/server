@@ -236,6 +236,7 @@ fn each_episode_is_in_one_place() {
 			part: None,
 			expires_at: None,
 			bytes: None,
+			seconds: None,
 		}]
 	);
 	assert_eq!(read.failed.len(), 1);
@@ -538,6 +539,16 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	assert!((now.estimate.unwrap().share - 0.5).abs() < 1e-9);
 	assert_eq!(read.done.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["2026-10-30"]);
 	assert_eq!(read.done[0].bytes, Some(5), "a done call's video says its size");
+	assert_eq!(read.done[0].seconds, None, "a file that isn't an mp4 says no length");
+	let mp4 = crate::feeds::mp4::tests::mp4(0, 1_000, 61_400, true);
+	std::fs::write(renders.join("2026-10-30").join("call.mp4"), &mp4).unwrap();
+	let made = read_now().await;
+	assert_eq!((made.done[0].bytes, made.done[0].seconds), (Some(u64::try_from(mp4.len()).unwrap()), Some(61)));
+	assert_eq!(
+		serde_json::to_value(&made.done[0]).unwrap()["seconds"],
+		serde_json::json!(61),
+		"the phone reads it as `seconds`"
+	);
 	// A feed's download follows a link to a plain file (`feeds::videos`), so
 	// its size is the file the link reaches.
 	let video = renders.join("2026-10-30").join("call.mp4");

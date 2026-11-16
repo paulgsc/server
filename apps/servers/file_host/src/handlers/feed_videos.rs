@@ -154,6 +154,21 @@ pub struct EpisodeView {
 	/// list (EXPLAIN6, #878), as one line of at most `videos::TITLE_CHARS` characters;
 	/// `null` for every other feed's episode.
 	pub title: Option<String>,
+	/// Its day, `YYYY-MM-DD` (server#906), by what its feed knows: the
+	/// call's week's first day (every part has the week's); Playoff Delta's,
+	/// the day home took its fill, by home's clock, since its key names the
+	/// game's week by number alone; an essay's, the Monday of the ISO week it
+	/// is of; a cards essay's own day. `null` only for a stamp that doesn't
+	/// read.
+	pub day: Option<String>,
+	/// Its video's length in whole seconds, as the mp4's own header says it,
+	/// while home has the video; `null` once it is let go or when the file
+	/// says none. Never guessed.
+	pub seconds: Option<u64>,
+	/// The length of all of `week`, every part together, in whole seconds,
+	/// while home has every part's video: the same as `seconds` for an
+	/// episode of one part; otherwise `null`.
+	pub week_seconds: Option<u64>,
 }
 
 impl From<EpisodeVideo> for EpisodeView {
@@ -171,6 +186,9 @@ impl From<EpisodeVideo> for EpisodeView {
 			video_bytes: episode.video_bytes,
 			rest_bytes: episode.rest_bytes,
 			title: episode.title,
+			day: episode.day,
+			seconds: episode.seconds,
+			week_seconds: episode.week_seconds,
 		}
 	}
 }
@@ -459,7 +477,7 @@ mod tests {
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
 			listed,
-			json!({ "episodes": [{ "key": "2026-SF-09", "week": "2026-SF-09", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": null }] })
+			json!({ "episodes": [{ "key": "2026-SF-09", "week": "2026-SF-09", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": null, "day": "2026-11-10", "seconds": null, "weekSeconds": null }] })
 		);
 		let (status, calls) = send(&app, Method::GET, "/feeds/call/videos", Some(&phone), None).await;
 		assert_eq!((status, calls), (StatusCode::OK, json!({ "episodes": [] })), "each feed lists its own");
@@ -472,7 +490,7 @@ mod tests {
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
 			cards,
-			json!({ "episodes": [{ "key": "zfs-2026-11-02", "week": "zfs-2026-11-02", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": "Snapshots, not backups" }] })
+			json!({ "episodes": [{ "key": "zfs-2026-11-02", "week": "zfs-2026-11-02", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": "Snapshots, not backups", "day": "2026-11-02", "seconds": null, "weekSeconds": null }] })
 		);
 		let essay = "/feeds/cards-essay/videos/zfs-2026-11-02";
 		let pasted = Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" }));

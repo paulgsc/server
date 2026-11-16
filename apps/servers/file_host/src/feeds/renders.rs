@@ -66,6 +66,11 @@
 //! headers, so this is the total it counts against, and how it tells a whole
 //! cached copy from a part.
 //!
+//! **A done row's length** (`seconds`): wherever `bytes` is said, the
+//! video's length as its mp4's movie header says it (`feeds::mp4`), so the
+//! phone shows each video's length beside its size; none for a file that
+//! says none.
+//!
 //! **How far a render is** (C138): the worker keeps the recorder's own
 //! count in `renders/call-worker/job.progress` as it goes (its station,
 //! `recording` or `assembling`, the scenes recorded, how many there are once
@@ -372,6 +377,9 @@ pub struct FeedSeen {
 	/// ([`Shelf::is_video`]) and that its shelf's download would serve
 	/// ([`Shelf::follows_links`]): a plain file, or for a feed's a link to one.
 	pub sizes: BTreeMap<String, u64>,
+	/// Of those, each one's length in whole seconds, where its mp4 says one
+	/// (`feeds::mp4`).
+	pub lengths: BTreeMap<String, u64>,
 	/// Of those with none, each whose last attempt failed: when, and how.
 	pub failed: BTreeMap<String, (i64, Failure)>,
 	/// Each episode the owner let go.
@@ -519,6 +527,11 @@ pub struct Episode {
 	/// video: the total the phone's ranged fetch counts against.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub bytes: Option<u64>,
+	/// A done row's video length in whole seconds, as the mp4's own header
+	/// says it (`feeds::mp4`, server#906), wherever `bytes` is said and the
+	/// file says one.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub seconds: Option<u64>,
 }
 
 /// Which part of a call's week an episode is, of how many.
@@ -768,6 +781,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					expires_at: template.is_some().then(|| made.saturating_add(preview_life())),
 					template,
 					bytes: seen.sizes.get(key).copied(),
+					seconds: seen.lengths.get(key).copied(),
 				});
 			} else if let Some((at, failure)) = seen.failed.get(key).filter(|_| !current) {
 				failed.push(Failed {
@@ -788,6 +802,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					template: template_of(Some(*feed), key),
 					expires_at: None,
 					bytes: None,
+					seconds: None,
 				});
 			}
 		}
@@ -1007,6 +1022,7 @@ fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64
 		}
 		seen.videos.remove(key);
 		seen.sizes.remove(key);
+		seen.lengths.remove(key);
 		seen.failed.insert(key.clone(), (*at, Failure { by: FailedBy::Home, exit: None }));
 		seen.reasons.insert(key.clone(), "overdue");
 		seen.ended.insert(key.clone());
@@ -1021,6 +1037,7 @@ fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64
 	for key in expired {
 		seen.videos.remove(&key);
 		seen.sizes.remove(&key);
+		seen.lengths.remove(&key);
 		seen.held.retain(|(held, _)| *held != key);
 	}
 }
@@ -1059,6 +1076,9 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 			seen.videos.insert(episode.key.clone(), made);
 			if let Some(size) = size.filter(|_| feed.is_video()) {
 				seen.sizes.insert(episode.key.clone(), size);
+				if let Some(millis) = super::mp4::millis(&renders.join(&episode.key).join(feed.video())).await {
+					seen.lengths.insert(episode.key.clone(), super::mp4::seconds(millis));
+				}
 			}
 			continue;
 		}
