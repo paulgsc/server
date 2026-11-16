@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use tracing::instrument;
 
 /// `PUT /ideas/:id`
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IdeaWritten {
 	/// `added` (a new revision) or `unchanged` — `idea_repo::Change`.
 	pub change: &'static str,
@@ -97,7 +97,8 @@ fn refusal(err: IdeaError) -> FileHostError {
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "ideas_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_ideas(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Ideas>, FileHostError> {
-	let mut conn = db.acquire().await?;
+	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
+	let mut conn = db.begin().await?;
 	idea_repo::ideas(&mut conn, subject.as_str()).await.map(Json).map_err(refusal)
 }
 
@@ -109,7 +110,8 @@ pub async fn get_ideas(subject: SubjectId, State(db): State<SqlitePool>) -> Resu
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "idea_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_idea(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<Idea>, FileHostError> {
-	let mut conn = db.acquire().await?;
+	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
+	let mut conn = db.begin().await?;
 	idea_repo::idea(&mut conn, subject.as_str(), &id)
 		.await
 		.map_err(refusal)?
@@ -367,8 +369,8 @@ mod tests {
 			"id": id, "createdAt": "2026-11-01T09:00:00.000Z", "revision": 1, "sentAt": "2026-11-01T09:10:00.000Z",
 			"title": "Why the mic clips", "topic": "Studio", "format": "short", "keywords": ["how it works", "voice"], "questions": 1,
 			"answers": [
-				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": null },
-				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null }
+				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": null, "verdict": null },
+				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null, "verdict": null }
 			],
 			"furnishing": false, "setAside": false
 		})

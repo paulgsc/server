@@ -449,6 +449,10 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 	}
 	rust_round_repo::draft::finalize(&mut tx, kind, subject, &essay.week, &due, now).await?;
 	let standing = standing(&mut tx, kind, subject, &essay.week).await?;
+	let unheard = match &standing {
+		Some(standing) => unheard(&mut tx, kind, subject, standing).await?,
+		None => Vec::new(),
+	};
 	tx.commit().await?;
 	if standing.as_ref().is_some_and(|standing| standing.draft) {
 		// A draft finalize could not make final (sent after the deadline):
@@ -458,11 +462,33 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 	let sent = standing.as_ref().map_or_else(essay::Final::default, |standing| essay::Final {
 		answers: pairs(&standing.answers),
 		reads: pairs(&standing.reads),
+		unheard: unheard.iter().map(String::as_str).collect(),
 	});
 	Ok(match essay::against(&essay, &sent) {
 		Ok(played) => Given::Final(played),
 		Err(problems) => Given::Refused(problems),
 	})
+}
+
+/// The takes of `standing` an essay may call a silence (paulgsc/server#908,
+/// HEARD1): home judged the transcript the routine reads of each garbled,
+/// failed or nothing said (`voice_repo::verdict::as_the_routine_reads`), so
+/// the routine treats it as unanswered. A few indexed reads per take the
+/// week names.
+async fn unheard(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, standing: &Standing) -> Result<Vec<String>, sqlx::Error> {
+	let mut unheard = Vec::new();
+	for (_, take) in standing.answers.iter().chain(&standing.reads) {
+		let judged = voice_repo::verdict::as_the_routine_reads(conn, subject, take, kind == Kind::Interview)
+			.await
+			.map_err(|err| match err {
+				voice_repo::VoiceError::Storage(err) => err,
+				other => sqlx::Error::Protocol(other.to_string()),
+			})?;
+		if judged.is_some_and(voice_repo::verdict::Kind::may_be_silent) {
+			unheard.push(take.clone());
+		}
+	}
+	Ok(unheard)
 }
 
 /// Each `(item, take)` of `list`, borrowed, as [`essay::Final`] holds them.
@@ -1095,6 +1121,70 @@ mod tests {
 		);
 		let seen = observe(&folders.essays, &folders.renders, &folders.status).await;
 		assert_eq!((seen.refused, seen.renders.held, seen.renders.waiting), (2, 1, 1));
+	}
+
+	/// HEARD1: a take home judged garbled, failed or nothing said may be a
+	/// silence in the essay, as the routines treat it as unanswered; a take it
+	/// heard may not. Judged by the transcript the routine reads.
+	#[tokio::test]
+	async fn a_take_home_could_not_hear_may_be_a_silence() {
+		let now = "2026-11-24T08:00:00.000Z";
+		for (verdict, written, refused) in [("heard", 0, 1), ("garbled", 1, 0), ("failed", 1, 0), ("nothing_said", 1, 0)] {
+			let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+			let folders = folders(dir.path());
+			hold_week(&pool, 1, "2026-w46").await;
+			send(&pool, "2026-w46").await;
+			for statement in [
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'note-311', 'rust-round', '2026-w46:QM-311', 'then', 'audio/ogg', 4, 's', 'now')",
+				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'note-311', x'4f676753')",
+			] {
+				sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+			}
+			let (outcome, language, text, speech) = match verdict {
+				"heard" | "garbled" => ("heard", Some("en"), Some("every field"), Some(900)),
+				"nothing_said" => ("silent", None, None, None),
+				_ => ("deadline", None, None, None),
+			};
+			sqlx::query(
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+				 VALUES (?1, 'note-311', 'm', 'e', 1, ?2, ?3, ?4, ?5, ?6, 1, 'now')",
+			)
+			.bind(ME)
+			.bind(outcome)
+			.bind(language)
+			.bind(language.map(|_| 1.0))
+			.bind(if outcome == "deadline" { None } else { Some(900) })
+			.bind(text)
+			.execute(&pool)
+			.await
+			.unwrap();
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+				 VALUES (?1, 'note-311', 'm', 1, 'heard-1', ?2, '', ?3, 'now')",
+			)
+			.bind(ME)
+			.bind(verdict)
+			.bind(speech)
+			.execute(&pool)
+			.await
+			.unwrap();
+			// Filed for the routine and taken by the mailbox: the routine judges
+			// by the file it reads.
+			for statement in [
+				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'note-311', 'm', 1, 'now')",
+				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'transcript', 'transcript-note-311-1.json', 'added', 'now')",
+			] {
+				sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+			}
+			hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
+			let done = export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap();
+			assert_eq!((done.written, done.refused, done.failed), (written, refused, 0), "{verdict}");
+			if written == 1 {
+				let takes: Vec<_> = std::fs::read_dir(folders.essays.join("2026-w46").join("takes")).unwrap().collect();
+				assert!(takes.is_empty(), "{verdict}: a silence plays nothing");
+			}
+		}
 	}
 
 	/// Invariant 23's exception, (b): the takes are in the render's input

@@ -22,6 +22,7 @@ pub fn record_started() {
 		metrics::counter!("transcribe_attempts_total", "outcome" => kind).increment(0);
 	}
 	metrics::gauge!("transcribe_pass_failing").set(0.0);
+	record_verdicts_started();
 }
 
 /// Mark the start of a pass.
@@ -40,4 +41,18 @@ pub fn record_pass(succeeded: bool) {
 pub fn record_attempt(kind: &'static str, took: Duration) {
 	metrics::counter!("transcribe_attempts_total", "outcome" => kind).increment(1);
 	metrics::histogram!("transcribe_attempt_seconds", "outcome" => kind).record(took.as_secs_f64());
+}
+
+/// Every verdict kind at 0 at start, so `TranscriptGarbled` reads an
+/// increase from the first garbled take, not from its second.
+pub fn record_verdicts_started() {
+	for kind in voice_repo::verdict::Kind::ALL {
+		metrics::counter!("transcribe_verdicts_total", "verdict" => kind.as_str()).increment(0);
+	}
+}
+
+/// One final verdict kept (HEARD1): its kind only, never a note or a
+/// subject. `garbled` and `failed` raise `TranscriptGarbled`.
+pub fn record_verdict(kind: voice_repo::verdict::Kind) {
+	metrics::counter!("transcribe_verdicts_total", "verdict" => kind.as_str()).increment(1);
 }

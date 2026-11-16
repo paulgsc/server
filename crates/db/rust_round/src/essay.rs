@@ -299,6 +299,11 @@ pub struct Played {
 pub struct Final<'a> {
 	pub answers: Vec<(&'a str, &'a str)>,
 	pub reads: Vec<(&'a str, &'a str)>,
+	/// The takes among them an essay may call a silence: home's verdict on
+	/// the transcript the routine reads of each is garbled, failed or
+	/// nothing said (paulgsc/server#908, HEARD1). An essay may treat one as
+	/// unanswered, a silence, or play it.
+	pub unheard: Vec<&'a str>,
 }
 
 /// Check `essay` against what the owner sent of its week by the deadline.
@@ -308,7 +313,9 @@ pub struct Final<'a> {
 /// An essay may play only the takes the final names, and must play each one:
 /// an item the final answers is a `take`, every other item a `silence`, and
 /// every item the final answers is one of the essay's; and likewise each
-/// card the final read.
+/// card the final read. An item whose take home could not hear
+/// ([`Final::unheard`]) may be a silence too: the routines treat it as
+/// unanswered (HEARD2), and the essay then plays nothing for it.
 ///
 /// # Errors
 /// Each [`Problem`], naming the item by its place in the essay or, for one
@@ -317,9 +324,9 @@ pub fn against(essay: &Essay, sent: &Final<'_>) -> Result<Vec<Played>, Vec<Probl
 	let words = words(essay.kind);
 	let mut problems = Vec::new();
 	let mut played = Vec::new();
-	check(&essay.tickets, &sent.answers, &words.items, &mut played, &mut problems);
+	check(&essay.tickets, &sent.answers, &sent.unheard, &words.items, &mut played, &mut problems);
 	if let Some(more) = &words.more {
-		check(&essay.reads, &sent.reads, more, &mut played, &mut problems);
+		check(&essay.reads, &sent.reads, &sent.unheard, more, &mut played, &mut problems);
 	}
 	if problems.is_empty() {
 		Ok(played)
@@ -330,7 +337,7 @@ pub fn against(essay: &Essay, sent: &Final<'_>) -> Result<Vec<Played>, Vec<Probl
 
 /// [`against`] for one list: the essay's `items` against what the final sent
 /// of them.
-fn check(items: &[(String, Answered)], sent: &[(&str, &str)], list: &List, played: &mut Vec<Played>, problems: &mut Vec<Problem>) {
+fn check(items: &[(String, Answered)], sent: &[(&str, &str)], unheard: &[&str], list: &List, played: &mut Vec<Played>, problems: &mut Vec<Problem>) {
 	for (index, (ticket, answered)) in items.iter().enumerate() {
 		let at = String::from(list.field) + "[" + &index.to_string() + "].answer.kind";
 		let take = sent.iter().find(|(answered, _)| answered == ticket);
@@ -340,6 +347,7 @@ fn check(items: &[(String, Answered)], sent: &[(&str, &str)], list: &List, playe
 				take: (*take).to_owned(),
 			}),
 			(Answered::Take, None) => problems.push((at, list.take_none)),
+			(Answered::Silence, Some((_, take))) if unheard.contains(take) => {}
 			(Answered::Silence, Some(_)) => problems.push((at, list.silence_sent)),
 			(Answered::Silence, None) => {}
 		}
@@ -357,6 +365,7 @@ pub fn rust_final(sent: Option<&crate::sent::Sent>) -> Final<'_> {
 	Final {
 		answers: sent.map_or_else(Vec::new, |sent| sent.answers.iter().map(|answer| (answer.ticket.as_str(), answer.take.as_str())).collect()),
 		reads: Vec::new(),
+		unheard: Vec::new(),
 	}
 }
 
@@ -369,12 +378,13 @@ pub fn interview_final(sent: Option<&crate::interview::Sent>) -> Final<'_> {
 			sent.answers.iter().map(|answer| (answer.question.as_str(), answer.take.as_str())).collect()
 		}),
 		reads: sent.map_or_else(Vec::new, |sent| sent.reads.iter().map(|read| (read.card.as_str(), read.take.as_str())).collect()),
+		unheard: Vec::new(),
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{against, interview_final, mailbox_name, parse_name, parse_name_of, read, read_of, rust_final, Answered, Essay, Played};
+	use super::{against, interview_final, mailbox_name, parse_name, parse_name_of, read, read_of, rust_final, Answered, Essay, Final, Played};
 	use crate::draft::Kind;
 	use crate::sent::{Answer, Sent};
 	use serde_json::json;
@@ -468,6 +478,30 @@ mod tests {
 			["tickets[QM-313]"],
 			"a ticket answered and left out"
 		);
+	}
+
+	/// HEARD1: a take home found garbled or failed may be a silence, and
+	/// may still be played; a take home heard is a take, as before.
+	#[test]
+	fn a_take_home_could_not_hear_may_be_a_silence() {
+		let essay = read(&body(&essay())).unwrap();
+		let week = sent(&[("QM-311", "n1"), ("QM-312", "n2")]);
+		let unheard = |takes: &[&'static str]| Final {
+			unheard: takes.to_vec(),
+			..rust_final(Some(&week))
+		};
+		assert_eq!(
+			against(&essay, &unheard(&["n2"])).unwrap(),
+			[Played {
+				ticket: String::from("QM-311"),
+				take: String::from("n1"),
+			}],
+			"QM-312's garbled take, treated as unanswered"
+		);
+		assert!(against(&essay, &unheard(&["n1"])).is_err(), "QM-312 was heard: a silence for it is still refused");
+		let mut both = essay;
+		both.tickets[1].1 = Answered::Take;
+		assert_eq!(against(&both, &unheard(&["n2"])).unwrap().len(), 2, "an unheard take may still be played");
 	}
 
 	fn interview_essay() -> serde_json::Value {
@@ -574,5 +608,28 @@ mod tests {
 		assert_eq!(fields(Some(&read_more)), ["reads[outro]"], "a card read and left out");
 		assert_eq!(fields(Some(&interview_sent(&[("about-you", "n1"), ("a-conflict", "n2")]))), ["questions[1].answer.kind"]);
 		assert_eq!(fields(Some(&interview_sent(&[("about-you", "n1"), ("why-us", "n3")]))), ["questions[why-us]"]);
+	}
+
+	/// HEARD1, for a week of mock interview: an unheard answer or read may be
+	/// a silence.
+	#[test]
+	fn an_interview_answer_or_read_home_could_not_hear_may_be_a_silence() {
+		let mut essay = read_of(Kind::Interview, &body(&interview_essay())).unwrap();
+		essay.reads[0].1 = Answered::Silence;
+		let week = interview_sent(&[("about-you", "n1"), ("a-conflict", "n2")]);
+		let sent = Final {
+			unheard: vec!["n2", "note-read"],
+			..interview_final(Some(&week))
+		};
+		assert_eq!(
+			against(&essay, &sent).unwrap(),
+			[Played {
+				ticket: String::from("about-you"),
+				take: String::from("n1"),
+			}]
+		);
+		let heard = interview_final(Some(&week));
+		let fields: Vec<_> = against(&essay, &heard).unwrap_err().into_iter().map(|(field, _)| field).collect();
+		assert_eq!(fields, ["questions[1].answer.kind", "reads[0].answer.kind"], "heard takes stay takes");
 	}
 }

@@ -137,8 +137,8 @@ async fn a_send_is_a_revision_and_the_same_bundle_again_is_unchanged() {
 			"id": "i1", "createdAt": "2026-11-01T09:00:00.000Z", "revision": 1, "sentAt": "2026-11-01T09:10:00.000Z",
 			"title": "Why the mic clips", "topic": "Studio", "format": "short", "keywords": ["voice"], "questions": 1,
 			"answers": [
-				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": null },
-				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null }
+				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": null, "verdict": null },
+				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null, "verdict": null }
 			],
 			"furnishing": false, "setAside": false
 		})
@@ -408,8 +408,8 @@ async fn a_read_carries_what_home_heard_in_each_note() {
 	assert_eq!(
 		serde_json::to_value(&held.ideas[0].answers).unwrap(),
 		json!([
-			{ "question": "what", "note": "n1", "typed": null, "heard": { "text": "the mic clips", "language": "en", "model": "ggml-small", "heardAt": "2026-11-01T09:20:00.000Z" }, "setAside": false, "deletedAt": null },
-			{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null }
+			{ "question": "what", "note": "n1", "typed": null, "heard": { "text": "the mic clips", "language": "en", "model": "ggml-small", "heardAt": "2026-11-01T09:20:00.000Z" }, "setAside": false, "deletedAt": null, "verdict": null },
+			{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null, "verdict": null }
 		])
 	);
 	assert!(idea(&mut pool.acquire().await.unwrap(), B, "i1").await.unwrap().is_none(), "B reads none of A's");
@@ -436,7 +436,7 @@ async fn a_note_set_aside_is_not_held_and_its_words_leave_the_idea() {
 	for held in [idea(&mut conn, A, "i1").await.unwrap().unwrap(), ideas(&mut conn, A).await.unwrap().ideas.remove(0)] {
 		assert_eq!(
 			serde_json::to_value(&held.answers[0]).unwrap(),
-			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": true, "deletedAt": null }),
+			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": true, "deletedAt": null, "verdict": null }),
 			"set aside, and its words left out"
 		);
 		assert!(!held.answers[1].set_aside, "a typed answer is never set aside");
@@ -471,7 +471,7 @@ async fn an_answer_whose_recording_was_deleted_keeps_its_place() {
 	for held in [idea(&mut conn, A, "i1").await.unwrap().unwrap(), ideas(&mut conn, A).await.unwrap().ideas.remove(0)] {
 		assert_eq!(
 			serde_json::to_value(&held.answers[0]).unwrap(),
-			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": NOW }),
+			json!({ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": NOW, "verdict": null }),
 		);
 		assert_eq!(held.answers[1].deleted_at, None, "a typed answer has no recording");
 	}

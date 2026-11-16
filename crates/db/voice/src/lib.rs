@@ -98,6 +98,7 @@ pub mod on_drive;
 pub mod set_aside;
 pub mod takes;
 pub mod transcript;
+pub mod verdict;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rust_round_repo::{

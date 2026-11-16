@@ -312,6 +312,54 @@ tests:
         alertname: TranscriberFailing
         exp_alerts: []
 
+  - name: a garbled take is TranscriptGarbled for the hour after (HEARD1)
+    interval: 1m
+    input_series:
+      - series: 'transcribe_verdicts_total{job="file_host",verdict="garbled"}'
+        values: '0x10 1x80'
+      - series: 'transcribe_verdicts_total{job="file_host",verdict="heard"}'
+        values: '0+1x90'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: TranscriptGarbled
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: TranscriptGarbled
+        exp_alerts:
+          - exp_labels:
+              objective: VH4
+              says: "Home could not hear a voice note it transcribed in the last hour (garbled or failed): GET /voice-notes/:id/heard and the mailbox transcript carry its verdict, reasons and signals."
+      - eval_time: 80m
+        alertname: TranscriptGarbled
+        exp_alerts: []
+
+  - name: a take that failed for good is TranscriptGarbled too; heard and silent ones are not
+    interval: 1m
+    input_series:
+      - series: 'transcribe_verdicts_total{job="file_host",verdict="failed"}'
+        values: '0x5 1x20'
+      - series: 'transcribe_verdicts_total{job="file_host",verdict="nothing_said"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TranscriptGarbled
+        exp_alerts:
+          - exp_labels:
+              objective: VH4
+              says: "Home could not hear a voice note it transcribed in the last hour (garbled or failed): GET /voice-notes/:id/heard and the mailbox transcript carry its verdict, reasons and signals."
+
+  - name: takes only heard or silent are not TranscriptGarbled
+    interval: 1m
+    input_series:
+      - series: 'transcribe_verdicts_total{job="file_host",verdict="heard"}'
+        values: '0+1x60'
+      - series: 'transcribe_verdicts_total{job="file_host",verdict="garbled"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: TranscriptGarbled
+        exp_alerts: []
+
   # The game feed wakes every 5 s, so its series are sampled that often.
   - name: a game feed whose every wake fails alerts after three wakes (#644)
     interval: 5s

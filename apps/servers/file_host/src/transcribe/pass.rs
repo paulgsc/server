@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use voice_repo::meaning::{self, Embed, Indexed};
 use voice_repo::transcript::{self, Attempt, Kept, Keys, Outcome};
+use voice_repo::verdict::{Judged, Verdict};
 use voice_repo::VoiceError;
 
 /// The most attempts one model makes on one note.
@@ -145,7 +146,8 @@ pub async fn run_once_telling<H: Hear>(
 		let attempt = {
 			let (hear, cancel) = (Arc::clone(hear), cancel.clone());
 			let deadline = started + per_note;
-			tokio::task::spawn_blocking(move || hear.hear(&audio, decode, deadline, &cancel)).await
+			let language = note.expected_language;
+			tokio::task::spawn_blocking(move || hear.hear(&audio, decode, language, deadline, &cancel)).await
 		};
 		let attempted = match attempt {
 			Ok(Ok(done)) => done,
@@ -157,6 +159,7 @@ pub async fn run_once_telling<H: Hear>(
 			Err(_) => Heard {
 				outcome: Outcome::Failed,
 				duration_ms: None,
+				measures: None,
 			},
 		};
 		let took = started.elapsed();
@@ -180,6 +183,10 @@ pub async fn run_once_telling<H: Hear>(
 			}
 		}
 		let kind = attempted.outcome.kind();
+		// Judged as it is kept, from what the engine said of it: the last
+		// failure the worker will make on this note is final (HEARD1).
+		let measures = attempted.measures;
+		let expected = note.expected_language;
 		let attempt = Attempt {
 			model,
 			engine: hear.engine(),
@@ -187,9 +194,13 @@ pub async fn run_once_telling<H: Hear>(
 			duration_ms: attempted.duration_ms,
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
-		let (kept, indexed) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &now()).await?;
+		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n >= ATTEMPTS);
+		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(kind, took);
+			if let Some(verdict) = &verdict {
+				crate::metrics::transcribe::record_verdict(verdict.kind);
+			}
 			pass.kept.push(kind);
 			if kind == "heard" {
 				heard();
@@ -209,7 +220,8 @@ pub async fn run_once_telling<H: Hear>(
 /// `keep_attempt` checks the note is still held in the transaction that
 /// writes, and the hold keeps a deletion from landing between the two. A
 /// take heard gets its vector in the same transaction, when there is a
-/// `meaning` model.
+/// `meaning` model, and a final attempt its verdict (HEARD1).
+#[allow(clippy::too_many_arguments)] // the attempt, whose it is, and what goes with it
 async fn keep(
 	db: &SqlitePool,
 	deletion: &DeletionLock,
@@ -217,17 +229,31 @@ async fn keep(
 	subject: &str,
 	note_id: &str,
 	attempt: &Attempt<'_>,
+	judge: &(dyn Fn(i64) -> Option<Verdict> + Sync),
 	now: &str,
-) -> Result<(Kept, Indexed), VoiceError> {
+) -> Result<(Kept, Indexed, Option<Verdict>), VoiceError> {
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let kept = transcript::keep_attempt(&mut tx, subject, note_id, attempt, now).await?;
+	let verdict = match kept {
+		Kept::Added(n) => judge(n),
+		Kept::Ended | Kept::NoNote => None,
+	};
+	if let (Kept::Added(n), Some(verdict)) = (kept, &verdict) {
+		let judged = Judged {
+			subject,
+			note_id,
+			model: attempt.model,
+			attempt: n,
+		};
+		voice_repo::verdict::keep(&mut tx, judged, verdict, now).await?;
+	}
 	let indexed = match (&kept, &attempt.outcome, meaning) {
 		(Kept::Added(_), Outcome::Heard { .. }, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
 		_ => Indexed::NoWords,
 	};
 	tx.commit().await?;
-	Ok((kept, indexed))
+	Ok((kept, indexed, verdict))
 }
 
 /// Gives up to [`BATCH`] takes heard before `embed`'s index existed their
@@ -304,7 +330,7 @@ mod tests {
 			"whisper.cpp test"
 		}
 
-		fn hear(&self, audio: &[u8], decode: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, audio: &[u8], decode: Decode, _: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 			self.heard.lock().unwrap().push(audio.to_vec());
 			self.decodes.lock().unwrap().push(decode);
 			let outcome = match audio {
@@ -331,6 +357,7 @@ mod tests {
 			Ok(Heard {
 				outcome,
 				duration_ms: Some(28_400),
+				measures: None,
 			})
 		}
 	}
@@ -574,6 +601,19 @@ mod tests {
 			.map(|(subject, id, n, kind, text)| (subject.to_owned(), id.to_owned(), n, kind.to_owned(), text.map(str::to_owned)))
 			.collect();
 		assert_eq!(written, expected);
+
+		// HEARD1: each final attempt is judged in the transaction that keeps
+		// it, and a failure only once the worker gives up on the note.
+		let judged: Vec<(String, String, i64, String, String)> =
+			sqlx::query_as("SELECT subject_id, note_id, attempt, verdict, reasons FROM voice_transcript_verdict ORDER BY subject_id, note_id, attempt")
+				.fetch_all(&pool)
+				.await
+				.unwrap();
+		let judged: Vec<_> = judged.iter().map(|(s, n, a, v, r)| (s.as_str(), n.as_str(), *a, v.as_str(), r.as_str())).collect();
+		assert_eq!(
+			judged,
+			[(A, "broken", 3, "failed", "unreadable"), (A, "spoken", 1, "heard", ""), (B, "quiet", 1, "nothing_said", "")]
+		);
 	}
 
 	/// The engine is handed the per-note deadline, and running past it is
@@ -638,7 +678,7 @@ mod tests {
 		fn engine(&self) -> &'static str {
 			"e"
 		}
-		fn hear(&self, _: &[u8], _: Decode, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, _: &[u8], _: Decode, _: Option<&str>, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
 			let pool = self.0.clone();
 			tokio::runtime::Handle::current().block_on(async move {
 				sqlx::query("DELETE FROM account").execute(&pool).await.unwrap();
@@ -646,6 +686,7 @@ mod tests {
 			Ok(Heard {
 				outcome: Outcome::Silent,
 				duration_ms: Some(1),
+				measures: None,
 			})
 		}
 	}

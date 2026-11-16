@@ -211,7 +211,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -840,7 +840,7 @@ nowhere is marked as such and belongs to review.
       Its take is named by id only; what home heard in it goes as its
       transcript. A note sent again files nothing.
       The poller files each `voice_transcript` row that heard something
-      (never a failure or a silence) of a note said for `reflection`, `jobs`,
+      (a silence and a failure only as below) of a note said for `reflection`, `jobs`,
       `scene`, `studio`, `rust-round` (a Rust Rounds tutor reads what was
       said on each card; paulgsc/some-ui#2237) or `interview` (the interview
       week's routine reads each answer and read; paulgsc/some-ui#2932), the
@@ -849,7 +849,12 @@ nowhere is marked as such and belongs to review.
       grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
       and never of a note but a Jobs note the owner set aside before it was
       filed (`voice_note_set_aside`, invariant 23, read again in the
-      transaction that files it), as `transcript-<note>-<n>.json` in
+      transaction that files it). Each carries home's verdict on it
+      (`voice_transcript_verdict`, paulgsc/server#908); and a `rust-round`
+      or `interview` take home found silent, or every attempt failed on
+      while no model has heard it, is filed too, with no text, no words and
+      no language beside its `nothing_said` or `failed` verdict, so the
+      week's routine stops waiting for it. All as `transcript-<note>-<n>.json` in
       `some-ui.voice-transcript/1`: the note's id, what it was said for and
       which one, when it was recorded, the text, its language and model, and
       when home heard it. That is text; nothing in it points at audio, and the
@@ -1293,7 +1298,9 @@ nowhere is marked as such and belongs to review.
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
-    files, so words deleted after it read them never leave home. It
+    files, so words deleted after it read them never leave home. What home
+    made of it stays too (`voice_transcript_verdict`: codes, numbers and a
+    language, never a word; paulgsc/server#908, #911). It
     writes a receipt to `voice_note_deletion`, append-only (its trigger
     aborts an `UPDATE`) and gone only with the account: the note's id and
     kind, when it was recorded, reached home and was deleted, its size, and
@@ -1524,14 +1531,30 @@ nowhere is marked as such and belongs to review.
     Whisper's code; home hears each piece of speech the VAD found in its own
     language, so a Korean phrase inside an English take comes back in
     Hangul, and the note's language is the one heard for longest;
-    paulgsc/server#578, ST23), as new rows in
+    paulgsc/server#578, ST23; except a Rust Rounds answer and an interview
+    take, heard in English throughout, paulgsc/server#908), as new rows in
     `voice_transcript_word`, one per word, keyed by the note, the model and
     the word's place (paulgsc/some-ui#2085, GWB11, so burned-in captions can
     follow the voice word by word; approved by the owner, paulgsc/some-ui#2074
     "Decided" 5 and 8). The words are written with their transcript, in the
     same transaction, and never on their own: a transcript heard before they
     were kept has none and is never given any. They leave with the account
-    by both the sweep and their own trigger (invariant 12). A reader
+    by both the sweep and their own trigger (invariant 12). **What home
+    made of each final attempt is `voice_transcript_verdict`, append-only
+    too** (paulgsc/server#908, HEARD1): `heard`, `garbled`, `nothing_said`
+    or `failed`, why (fixed words), the rule that judged it, and the
+    transcriber's own signals it was judged on (the segments' log-prob,
+    compression ratio and no-speech probability, the share of unsure words,
+    the language detected and the one the note's kind is said in, words per
+    second, and the speech's length and loudness), never anything said. It
+    is written with its attempt, in the same transaction, for an ending and
+    for the last failure the worker makes on a note only; it leaves with the
+    account alone (sweep and trigger), and outlives its note: deleting a note
+    for good keeps its verdicts, which hold no word (the owner's call,
+    paulgsc/server#911), and its receipt says `verdict` stayed. Every read that gives
+    a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
+    the mailbox's transcript and pickup files) gives its verdict beside it,
+    so no reader judges a transcript for itself. A reader
     (`voice_repo::transcript::words`) takes the words of the newest transcript
     that heard something, so they always match the text it takes. No
     transcript or word is updated (each table's trigger aborts an `UPDATE`),

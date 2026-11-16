@@ -33,6 +33,13 @@
 //!   transaction that keeps its hearing, and the takes heard before the
 //!   index existed a bounded batch a pass (`pass`).
 //!
+//! **Every final attempt is judged** (`verdict`, paulgsc/server#908,
+//! HEARD1): heard, garbled, nothing said or failed, from the transcriber's
+//! own signals, kept beside the attempt in `voice_transcript_verdict` and
+//! counted on `transcribe_verdicts_total`, whose `TranscriptGarbled` alert
+//! reaches the owner when a take is garbled or fails. Every read of a
+//! transcript carries it, so no reader judges a transcript for itself.
+//!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
 //! 500 MB while loaded, for as long as the server runs, and hears a minute
 //! of speech in about a minute on two threads. Off unless
@@ -42,6 +49,7 @@
 pub mod engine;
 pub mod pass;
 pub mod verbatim;
+pub mod verdict;
 
 use crate::auth::DeletionLock;
 use crate::call_weeks::lane::Held;
@@ -154,9 +162,9 @@ impl<H: Hear> Hear for Held<H> {
 		self.inner.engine()
 	}
 
-	fn hear(&self, audio: &[u8], decode: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
+	fn hear(&self, audio: &[u8], decode: Decode, language: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
 		let _hold = self.interactive.hold();
-		self.inner.hear(audio, decode, deadline, cancel)
+		self.inner.hear(audio, decode, language, deadline, cancel)
 	}
 }
 
@@ -274,11 +282,12 @@ mod tests {
 			"engine"
 		}
 
-		fn hear(&self, _: &[u8], _: Decode, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
+		fn hear(&self, _: &[u8], _: Decode, _: Option<&str>, _: Instant, _: &CancellationToken) -> Result<Heard, Cancelled> {
 			self.held.lock().unwrap().push(self.interactive.is_held());
 			Ok(Heard {
 				outcome: Outcome::Silent,
 				duration_ms: None,
+				measures: None,
 			})
 		}
 	}
@@ -296,7 +305,7 @@ mod tests {
 		};
 		assert_eq!((engine.model(), engine.engine()), ("model", "engine"));
 		assert!(!interactive.is_held());
-		assert!(engine.hear(b"note", Decode::Plain, Instant::now(), &CancellationToken::new()).is_ok());
+		assert!(engine.hear(b"note", Decode::Plain, None, Instant::now(), &CancellationToken::new()).is_ok());
 		assert_eq!(*watch.held.lock().unwrap(), [true]);
 		assert!(!interactive.is_held(), "let go once heard");
 	}

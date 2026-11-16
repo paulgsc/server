@@ -699,12 +699,16 @@ async fn file_pickups(db: &SqlitePool, subject: &str, deletion: &DeletionLock, n
 /// none) and its ready move, by number and when the owner made it. Never
 /// the move's comment and never audio: "labels go, the per-move comment
 /// stays home" (the owner, call C296, 2026-11-13).
-fn pickup_body(take: &voice_repo::conveyor::TakeStation, of_ref: &str, heard: &str, ready_at: &str) -> Vec<u8> {
+///
+/// With what home made of what it heard (HEARD1,
+/// `voice_repo::verdict::Verdict`), null when it has no verdict.
+fn pickup_body(take: &voice_repo::conveyor::TakeStation, of_ref: &str, heard: &str, verdict: Option<&voice_repo::verdict::Verdict>, ready_at: &str) -> Vec<u8> {
 	serde_json::json!({
 		"schema": PICKUP_SCHEMA,
 		"note": take.id,
 		"ref": of_ref,
 		"heard": heard,
+		"verdict": verdict,
 		"labels": take.labels,
 		"readyAt": ready_at,
 		"seq": take.seq,
@@ -730,8 +734,10 @@ struct FiledWord<'a> {
 }
 
 /// A transcript as the mailbox takes it: text, its words with their times
-/// and how sure the model was of each, and nothing that points at audio.
-fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word]) -> Vec<u8> {
+/// and how sure the model was of each, what home made of it (HEARD1,
+/// `voice_repo::verdict::Verdict`, null for a transcript kept before
+/// verdicts were), and nothing that points at audio.
+fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word], verdict: Option<&voice_repo::verdict::Verdict>) -> Vec<u8> {
 	let words: Vec<FiledWord<'_>> = words
 		.iter()
 		.map(|word| FiledWord {
@@ -753,6 +759,7 @@ fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word]) -> Vec
 		"model": heard.model,
 		"heardAt": heard.heard_at,
 		"words": words,
+		"verdict": verdict,
 	})
 	.to_string()
 	.into_bytes()
@@ -1149,7 +1156,13 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
 		.await
 		.map_err(mailbox_repo::MailboxError::Storage)?;
-	let body = transcript_body(heard, &words);
+	let verdict = voice_repo::verdict::of_ending(&mut tx, subject, &heard.note_id, &heard.model)
+		.await
+		.map_err(|err| match err {
+			voice_repo::VoiceError::Storage(err) => mailbox_repo::MailboxError::Storage(err),
+			other => mailbox_repo::MailboxError::Storage(sqlx::Error::Protocol(other.to_string())),
+		})?;
+	let body = transcript_body(heard, &words, verdict.as_ref());
 	let sha256 = hex::encode(Sha256::digest(&body));
 	let n = mailbox_repo::next_transcript_number(&mut tx, subject, &heard.note_id).await?;
 	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
@@ -1181,7 +1194,8 @@ async fn file_pickup(db: &SqlitePool, deletion: &DeletionLock, subject: &str, re
 		voice_repo::transcript::Hearing::Heard(heard) if !heard.text.trim_matches(mailbox_repo::BLANK).is_empty() => heard.text,
 		_ => return Ok(None),
 	};
-	let body = pickup_body(&take, &ready.of_ref, &heard, &ready_at);
+	let verdict = voice_repo::verdict::of_note(&mut tx, subject, &ready.note_id).await.map_err(voice_storage)?;
+	let body = pickup_body(&take, &ready.of_ref, &heard, verdict.as_ref(), &ready_at);
 	let sha256 = hex::encode(Sha256::digest(&body));
 	let change = mailbox_repo::file_outgoing(&mut tx, subject, mailbox_repo::PICKUP, &name, &sha256, &body, now)
 		.await
@@ -1934,6 +1948,17 @@ mod tests {
 	async fn a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name() {
 		let (pool, fake) = (pool().await, Fake::default());
 		heard(&pool, "n1", "ggml-small-q5_1.bin", "다음 장면은 시장에서").await;
+		// What home made of it goes with it (HEARD1).
+		sqlx::query(
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, avg_logprob, compression_ratio,
+			   no_speech_prob, unsure_share, language, language_p, expected_language, words_per_second, speech_ms, peak_dbfs, rms_dbfs, judged_at)
+			 VALUES (?1, 'n1', 'ggml-small-q5_1.bin', 1, 'heard-1', 'garbled', 'low_confidence sparse', -0.5, 1.25, 0.125, 0.5, 'ko', 0.875,
+			   NULL, 0.75, 12000, -6.5, -30.5, 'now')",
+		)
+		.bind(OWNER)
+		.execute(&pool)
+		.await
+		.unwrap();
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-n1-1.json"]);
@@ -1955,6 +1980,16 @@ mod tests {
 					{ "text": "장면은", "startMs": 500, "endMs": 900, "p": 0.6 },
 					{ "text": "시장에서", "startMs": 1000, "endMs": 1400 },
 				],
+				"verdict": {
+					"kind": "garbled",
+					"reasons": ["low_confidence", "sparse"],
+					"rule": "heard-1",
+					"signals": {
+						"avgLogprob": -0.5, "compressionRatio": 1.25, "noSpeechProb": 0.125, "unsureShare": 0.5,
+						"language": "ko", "languageP": 0.875, "expectedLanguage": null,
+						"wordsPerSecond": 0.75, "speechMs": 12000, "peakDbfs": -6.5, "rmsDbfs": -30.5
+					}
+				},
 			}),
 			"text only, in the mailbox's shape, each word with its time and how sure the model was: nothing that points at audio"
 		);
@@ -1966,6 +2001,209 @@ mod tests {
 		assert_eq!(outgoing_transcripts(&pool).await, ["transcript-n1-1.json", "transcript-n1-2.json"]);
 		pass(&pool, &fake).await.unwrap();
 		assert_eq!(fake.puts.lock().unwrap().len(), 2, "a conflict is final: not filed or handed again");
+	}
+
+	/// HEARD1 (paulgsc/server#908): a Rust Rounds take every attempt failed on,
+	/// or one home found silent,
+	/// is filed with no text, no words and no language beside its `failed`
+	/// verdict, so the week's routine stops waiting for it; a reflection's is
+	/// not, nor a failure a model then outlived by hearing the note.
+	#[tokio::test]
+	async fn a_rust_rounds_take_home_could_not_hear_or_found_silent_is_filed() {
+		let (pool, fake) = (pool().await, Fake::default());
+		for (note, of, of_ref) in [
+			("qm311", "rust-round", "2026-w46:QM-311"),
+			("thought", "reflection", "session-1"),
+			("qm312", "rust-round", "2026-w46:QM-312"),
+		] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, ?3, ?4, '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.bind(of)
+			.bind(of_ref)
+			.execute(&pool)
+			.await
+			.unwrap();
+			for attempt in 1..=3 {
+				sqlx::query(
+					"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+					 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 'whisper.cpp', ?3, 'deadline', 600000, '2026-11-14T20:3' || ?3 || ':00.000Z')",
+				)
+				.bind(OWNER)
+				.bind(note)
+				.bind(attempt)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+				 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 3, 'heard-1', 'failed', 'deadline', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		// A better model heard QM-312 after all: its failure is not filed.
+		heard(&pool, "qm312", "ggml-medium.bin", "an immutable borrow").await;
+		// QM-313 was silent: filed as nothing said, so the week stops waiting.
+		for statement in [
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'qm313', 'rust-round', '2026-w46:QM-313', '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'silent', 4000, 10, '2026-11-14T20:40:00.000Z')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
+		] {
+			sqlx::query(statement).bind(OWNER).execute(&pool).await.unwrap();
+		}
+
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!(outcome.filed, 3, "QM-311's failure, QM-312's hearing and QM-313's silence");
+		let puts = fake.puts.lock().unwrap().clone();
+		assert!(puts.contains(&String::from("/v1/transcript/items/transcript-qm311-1.json")), "{puts:?}");
+		assert!(!puts.iter().any(|put| put.contains("thought")), "a reflection's failure stays home: {puts:?}");
+		let at = puts.iter().position(|put| put.contains("qm311")).unwrap();
+		let body: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[at]).unwrap();
+		assert_eq!(
+			body,
+			serde_json::json!({
+				"schema": "some-ui.voice-transcript/1",
+				"note": "qm311",
+				"of": "rust-round",
+				"ref": "2026-w46:QM-311",
+				"at": "2026-11-12T10:00:00.000Z",
+				"text": "",
+				"language": null,
+				"model": "ggml-small-q5_1.bin",
+				"heardAt": "2026-11-14T20:33:00.000Z",
+				"words": [],
+				"verdict": { "kind": "failed", "reasons": ["deadline"], "rule": "heard-1", "signals": null },
+			})
+		);
+		let at = puts.iter().position(|put| put.contains("qm313")).unwrap();
+		let silent: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[at]).unwrap();
+		assert_eq!(
+			(&silent["text"], &silent["language"], &silent["words"]),
+			(&serde_json::json!(""), &serde_json::Value::Null, &serde_json::json!([]))
+		);
+		assert_eq!(silent["verdict"]["kind"], "nothing_said");
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 0, "filed once");
+	}
+
+	/// HEARD1, the interview arm: an interview take home found silent, and
+	/// one every attempt failed on, are filed under their verbatim model's
+	/// key with no text beside their verdict, as a Rust Rounds take's are.
+	#[tokio::test]
+	async fn an_interview_take_home_could_not_hear_or_found_silent_is_filed() {
+		const VERBATIM: &str = "ggml-small-q5_1.bin+verbatim-1";
+		let (pool, fake) = (pool().await, Fake::default());
+		for (note, outcome, attempts, verdict, reason) in [("quiet", "silent", 1, "nothing_said", ""), ("lost", "deadline", 3, "failed", "deadline")] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'interview', '2026-w47:about-you', '2026-11-20T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+			for attempt in 1..=attempts {
+				sqlx::query(
+					"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+					 VALUES (?1, ?2, ?3, 'whisper.cpp', ?4, ?5, CASE WHEN ?5 = 'silent' THEN 4000 END, 10, '2026-11-20T10:0' || ?4 || ':00.000Z')",
+				)
+				.bind(OWNER)
+				.bind(note)
+				.bind(VERBATIM)
+				.bind(attempt)
+				.bind(outcome)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+				 VALUES (?1, ?2, ?3, ?4, 'heard-1', ?5, ?6, 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.bind(VERBATIM)
+			.bind(attempts)
+			.bind(verdict)
+			.bind(reason)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 2);
+		let puts = fake.puts.lock().unwrap().clone();
+		let bodies = fake.put_bodies.lock().unwrap().clone();
+		for (note, verdict) in [("quiet", "nothing_said"), ("lost", "failed")] {
+			let at = puts.iter().position(|put| put.contains(note)).unwrap();
+			let body: serde_json::Value = serde_json::from_str(&bodies[at]).unwrap();
+			assert_eq!(
+				(&body["of"], &body["model"], &body["text"]),
+				(&serde_json::json!("interview"), &serde_json::json!(VERBATIM), &serde_json::json!(""))
+			);
+			assert_eq!((&body["language"], &body["words"]), (&serde_json::Value::Null, &serde_json::json!([])));
+			assert_eq!(body["verdict"]["kind"], verdict, "{note}");
+		}
+	}
+
+	/// HEARD1: a Rust Rounds take one model heard words in and another found
+	/// silent is filed as heard only, so its silence is never numbered above,
+	/// and buries, the words; and a silence kept before verdicts were is
+	/// never backfilled.
+	#[tokio::test]
+	async fn a_silence_never_buries_words_heard() {
+		let (pool, fake) = (pool().await, Fake::default());
+		// QM-314 was heard by one model and found silent by another, and
+		// QM-315 was found silent before verdicts were: neither silence is
+		// filed, so none is numbered above, and buries, words heard.
+		for note in ["qm314", "qm315"] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'rust-round', '2026-w46:' || upper(?2), '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		heard(&pool, "qm314", "ggml-medium.bin", "a borrow checker").await;
+		for (note, judged) in [("qm314", true), ("qm315", false)] {
+			sqlx::query(
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+				 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'silent', 4000, 10, '2026-11-14T21:00:00.000Z')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+			if judged {
+				sqlx::query(
+					"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+					 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
+				)
+				.bind(OWNER)
+				.bind(note)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+		}
+
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 1, "QM-314's words, and nothing else");
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-qm314-1.json"]);
 	}
 
 	/// A note id may hold a `:` (`voice_repo::is_name`), and the mailbox's
@@ -2117,6 +2355,7 @@ mod tests {
 			"note": "t1",
 			"ref": "ep05:s1:t1",
 			"heard": "the opener, said once",
+			"verdict": null,
 			"labels": ["hook", "intro"],
 			"readyAt": "2026-11-13T09:02:00.000Z",
 			"seq": 2,
