@@ -224,6 +224,9 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 	sqlx::query!("DELETE FROM voice_transcript_word WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
 		.await?;
+	sqlx::query!("DELETE FROM voice_transcript_verdict WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.execute(&mut *conn)
+		.await?;
 	sqlx::query!("DELETE FROM voice_transcript WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
 		.await?;
@@ -400,6 +403,7 @@ mod tests {
 			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
 			 VALUES (?1, ?2, 'm', 'e', 1, 'heard', 'ko', 0.9, 1, 'w', 1, 'now')",
 			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, ?2, 'm', 0, 'w', 0, 1)",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at) VALUES (?1, ?2, 'm', 1, 'r', 'heard', '', 1, 'now')",
 			"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, ?2, 'then', 'now')",
 			"INSERT INTO voice_note_meaning (subject_id, note_id, model, vector) VALUES (?1, ?2, 'm', zeroblob(1024))",
 			"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, ?2, 'm', 1, 'now')",
@@ -478,7 +482,13 @@ mod tests {
 			assert_eq!(rows(&pool, "voice_note", A, id).await, 1, "{id}");
 			assert_eq!(rows(&pool, "voice_note_audio", A, id).await, 1, "{id}");
 		}
-		for table in ["voice_transcript", "voice_transcript_word", "voice_note_set_aside", "voice_note_meaning"] {
+		for table in [
+			"voice_transcript",
+			"voice_transcript_word",
+			"voice_transcript_verdict",
+			"voice_note_set_aside",
+			"voice_note_meaning",
+		] {
 			assert_eq!(rows(&pool, table, A, "take").await, 1, "{table}");
 		}
 		let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_deletion").fetch_one(&pool).await.unwrap();
@@ -518,6 +528,7 @@ mod tests {
 			"voice_note_audio",
 			"voice_transcript",
 			"voice_transcript_word",
+			"voice_transcript_verdict",
 			"voice_note_set_aside",
 			"voice_note_meaning",
 			"studio_take_move",
@@ -632,7 +643,14 @@ mod tests {
 		};
 		assert_eq!(answer.went, [RECORDING, WORDS, SET_ASIDE_MARK]);
 		assert_eq!(answer.stayed, [MAILBOX_COPY, DRIVE_COPY, IDEA]);
-		for table in ["voice_note", "voice_note_audio", "voice_transcript", "voice_transcript_word", "voice_note_set_aside"] {
+		for table in [
+			"voice_note",
+			"voice_note_audio",
+			"voice_transcript",
+			"voice_transcript_word",
+			"voice_transcript_verdict",
+			"voice_note_set_aside",
+		] {
 			assert_eq!(rows(&pool, table, A, "answer").await, 0, "{table}");
 		}
 		assert_eq!(rows(&pool, "idea_answer", A, "answer").await, 1, "the idea keeps its answer's place");

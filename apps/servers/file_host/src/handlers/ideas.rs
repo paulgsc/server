@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use tracing::instrument;
 
 /// `PUT /ideas/:id`
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IdeaWritten {
 	/// `added` (a new revision) or `unchanged` — `idea_repo::Change`.
 	pub change: &'static str,
@@ -367,8 +367,8 @@ mod tests {
 			"id": id, "createdAt": "2026-11-01T09:00:00.000Z", "revision": 1, "sentAt": "2026-11-01T09:10:00.000Z",
 			"title": "Why the mic clips", "topic": "Studio", "format": "short", "keywords": ["how it works", "voice"], "questions": 1,
 			"answers": [
-				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": null },
-				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null }
+				{ "question": "what", "note": "n1", "typed": null, "heard": null, "setAside": false, "deletedAt": null, "verdict": null },
+				{ "question": "takeaway", "note": null, "typed": "Keep it a hand away.", "heard": null, "setAside": false, "deletedAt": null, "verdict": null }
 			],
 			"furnishing": false, "setAside": false
 		})

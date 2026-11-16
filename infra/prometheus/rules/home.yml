@@ -149,6 +149,19 @@ groups:
           objective: VH1
           says: "The voice-note transcriber has failed every pass on home's storage for 3 minutes; the TRANSCRIBE dashboard's FAILING panel shows it."
 
+      - alert: TranscriptGarbled
+        # HEARD1 (paulgsc/server#908): home judged a take it transcribed
+        # garbled (its own signals say the words are not what was said) or
+        # failed (every attempt failed), so the owner hears it from home,
+        # not from a routine that reads the take later. Final verdicts only:
+        # a failure the worker will retry raises nothing. The counter starts
+        # every kind at 0 (metrics::transcribe::record_started), so the first
+        # garbled take is an increase; resolved an hour after the last.
+        expr: sum(increase(transcribe_verdicts_total{verdict=~"garbled|failed"}[1h])) > 0
+        labels:
+          objective: HEARD1
+          says: "Home could not hear a voice note it transcribed in the last hour (garbled or failed): GET /voice-notes/:id/heard and the mailbox transcript carry its verdict, reasons and signals."
+
       - alert: GameFeedStale
         # GA4: the feed wakes every 5 s whether or not a game is due, so two
         # minutes without a wake is a task that stopped, not a quiet week.

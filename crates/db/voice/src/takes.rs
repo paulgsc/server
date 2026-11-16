@@ -112,7 +112,7 @@ pub enum By {
 }
 
 /// One take, as the library lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Take {
 	/// The phone's id for the take, the one a scene names it by.
@@ -131,6 +131,9 @@ pub struct Take {
 	pub set_aside_at: Option<String>,
 	/// What home heard in it; null while home has not heard it yet.
 	pub heard: Option<Transcript>,
+	/// What home made of what it heard (HEARD1,
+	/// [`crate::verdict::of_note`]); null while home has not judged it.
+	pub verdict: Option<crate::verdict::Verdict>,
 	/// Where the take is on the conveyor ([`crate::conveyor`]); null for an
 	/// idea's answer or a take let go of, which are not on it.
 	pub station: Option<Station>,
@@ -143,7 +146,7 @@ pub struct Take {
 }
 
 /// The library's answer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Library {
 	/// The takes chosen, newest recorded first, at most [`NEWEST`].
@@ -167,6 +170,17 @@ pub struct Library {
 /// stored vector of the wrong size, which this crate never writes, and
 /// [`VoiceError::Storage`] for any `sqlx` failure.
 pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<&Search>) -> Result<Library, VoiceError> {
+	let mut library = chosen(conn, subject, search).await?;
+	// Each take answered carries its verdict (HEARD1): one read by the
+	// transcripts' key each, of at most [`NEWEST`].
+	for take in &mut library.takes {
+		take.verdict = crate::verdict::of_note(conn, subject, &take.id).await?;
+	}
+	Ok(library)
+}
+
+/// [`library`]'s takes, without their verdicts.
+async fn chosen(conn: &mut SqliteConnection, subject: &str, search: Option<&Search>) -> Result<Library, VoiceError> {
 	let studio = Of::Studio.as_str();
 	// `transcript::heard`'s ORDER BY, kept equal by
 	// `the_words_are_the_ones_the_takes_own_read_answers`.
@@ -227,6 +241,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, search: Option<
 				size: row.size,
 				set_aside_at: row.set_aside_at,
 				heard,
+				verdict: None,
 				station,
 				station_at,
 				station_seq,

@@ -173,6 +173,8 @@ voice_repo = { workspace = true }
 rust_round_repo = { workspace = true }
 rust_rounds_wire = { workspace = true }
 whisper-rs = { workspace = true }
+# zlib, for a transcribed segment's compression ratio (HEARD1).
+flate2 = { workspace = true }
 # The take library's meaning index (`meaning`): the embedding model's
 # tokenizer and its matrix.
 tokenizers = { workspace = true }

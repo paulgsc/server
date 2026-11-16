@@ -699,12 +699,16 @@ async fn file_pickups(db: &SqlitePool, subject: &str, deletion: &DeletionLock, n
 /// none) and its ready move, by number and when the owner made it. Never
 /// the move's comment and never audio: "labels go, the per-move comment
 /// stays home" (the owner, call C296, 2026-11-13).
-fn pickup_body(take: &voice_repo::conveyor::TakeStation, of_ref: &str, heard: &str, ready_at: &str) -> Vec<u8> {
+///
+/// With what home made of what it heard (HEARD1,
+/// `voice_repo::verdict::Verdict`), null when it has no verdict.
+fn pickup_body(take: &voice_repo::conveyor::TakeStation, of_ref: &str, heard: &str, verdict: Option<&voice_repo::verdict::Verdict>, ready_at: &str) -> Vec<u8> {
 	serde_json::json!({
 		"schema": PICKUP_SCHEMA,
 		"note": take.id,
 		"ref": of_ref,
 		"heard": heard,
+		"verdict": verdict,
 		"labels": take.labels,
 		"readyAt": ready_at,
 		"seq": take.seq,
@@ -730,8 +734,10 @@ struct FiledWord<'a> {
 }
 
 /// A transcript as the mailbox takes it: text, its words with their times
-/// and how sure the model was of each, and nothing that points at audio.
-fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word]) -> Vec<u8> {
+/// and how sure the model was of each, what home made of it (HEARD1,
+/// `voice_repo::verdict::Verdict`, null for a transcript kept before
+/// verdicts were), and nothing that points at audio.
+fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word], verdict: Option<&voice_repo::verdict::Verdict>) -> Vec<u8> {
 	let words: Vec<FiledWord<'_>> = words
 		.iter()
 		.map(|word| FiledWord {
@@ -753,6 +759,7 @@ fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word]) -> Vec
 		"model": heard.model,
 		"heardAt": heard.heard_at,
 		"words": words,
+		"verdict": verdict,
 	})
 	.to_string()
 	.into_bytes()
@@ -1149,7 +1156,13 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)
 		.await
 		.map_err(mailbox_repo::MailboxError::Storage)?;
-	let body = transcript_body(heard, &words);
+	let verdict = voice_repo::verdict::of_ending(&mut tx, subject, &heard.note_id, &heard.model)
+		.await
+		.map_err(|err| match err {
+			voice_repo::VoiceError::Storage(err) => mailbox_repo::MailboxError::Storage(err),
+			other => mailbox_repo::MailboxError::Storage(sqlx::Error::Protocol(other.to_string())),
+		})?;
+	let body = transcript_body(heard, &words, verdict.as_ref());
 	let sha256 = hex::encode(Sha256::digest(&body));
 	let n = mailbox_repo::next_transcript_number(&mut tx, subject, &heard.note_id).await?;
 	let change = mailbox_repo::file_transcript(&mut tx, subject, (&heard.note_id, &heard.model, n), (&sha256, &body), now).await?;
@@ -1181,7 +1194,8 @@ async fn file_pickup(db: &SqlitePool, deletion: &DeletionLock, subject: &str, re
 		voice_repo::transcript::Hearing::Heard(heard) if !heard.text.trim_matches(mailbox_repo::BLANK).is_empty() => heard.text,
 		_ => return Ok(None),
 	};
-	let body = pickup_body(&take, &ready.of_ref, &heard, &ready_at);
+	let verdict = voice_repo::verdict::of_note(&mut tx, subject, &ready.note_id).await.map_err(voice_storage)?;
+	let body = pickup_body(&take, &ready.of_ref, &heard, verdict.as_ref(), &ready_at);
 	let sha256 = hex::encode(Sha256::digest(&body));
 	let change = mailbox_repo::file_outgoing(&mut tx, subject, mailbox_repo::PICKUP, &name, &sha256, &body, now)
 		.await
@@ -1934,6 +1948,17 @@ mod tests {
 	async fn a_transcript_is_filed_and_handed_once_as_text_and_a_better_models_under_a_new_name() {
 		let (pool, fake) = (pool().await, Fake::default());
 		heard(&pool, "n1", "ggml-small-q5_1.bin", "다음 장면은 시장에서").await;
+		// What home made of it goes with it (HEARD1).
+		sqlx::query(
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, avg_logprob, compression_ratio,
+			   no_speech_prob, unsure_share, language, language_p, expected_language, words_per_second, speech_ms, peak_dbfs, rms_dbfs, judged_at)
+			 VALUES (?1, 'n1', 'ggml-small-q5_1.bin', 1, 'heard-1', 'garbled', 'low_confidence sparse', -0.5, 1.25, 0.125, 0.5, 'ko', 0.875,
+			   NULL, 0.75, 12000, -6.5, -30.5, 'now')",
+		)
+		.bind(OWNER)
+		.execute(&pool)
+		.await
+		.unwrap();
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert_eq!((outcome.filed, outcome.handed), (1, vec!["added"]));
 		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-n1-1.json"]);
@@ -1955,6 +1980,16 @@ mod tests {
 					{ "text": "장면은", "startMs": 500, "endMs": 900, "p": 0.6 },
 					{ "text": "시장에서", "startMs": 1000, "endMs": 1400 },
 				],
+				"verdict": {
+					"kind": "garbled",
+					"reasons": ["low_confidence", "sparse"],
+					"rule": "heard-1",
+					"signals": {
+						"avgLogprob": -0.5, "compressionRatio": 1.25, "noSpeechProb": 0.125, "unsureShare": 0.5,
+						"language": "ko", "languageP": 0.875, "expectedLanguage": null,
+						"wordsPerSecond": 0.75, "speechMs": 12000, "peakDbfs": -6.5, "rmsDbfs": -30.5
+					}
+				},
 			}),
 			"text only, in the mailbox's shape, each word with its time and how sure the model was: nothing that points at audio"
 		);
@@ -2117,6 +2152,7 @@ mod tests {
 			"note": "t1",
 			"ref": "ep05:s1:t1",
 			"heard": "the opener, said once",
+			"verdict": null,
 			"labels": ["hook", "intro"],
 			"readyAt": "2026-11-13T09:02:00.000Z",
 			"seq": 2,

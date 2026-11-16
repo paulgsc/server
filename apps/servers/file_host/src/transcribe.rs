@@ -33,6 +33,13 @@
 //!   transaction that keeps its hearing, and the takes heard before the
 //!   index existed a bounded batch a pass (`pass`).
 //!
+//! **Every final attempt is judged** (`verdict`, paulgsc/server#908,
+//! HEARD1): heard, garbled, nothing said or failed, from the transcriber's
+//! own signals, kept beside the attempt in `voice_transcript_verdict` and
+//! counted on `transcribe_verdicts_total`, whose `TranscriptGarbled` alert
+//! reaches the owner when a take is garbled or fails. Every read of a
+//! transcript carries it, so no reader judges a transcript for itself.
+//!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
 //! 500 MB while loaded, for as long as the server runs, and hears a minute
 //! of speech in about a minute on two threads. Off unless
@@ -42,6 +49,7 @@
 pub mod engine;
 pub mod pass;
 pub mod verbatim;
+pub mod verdict;
 
 use crate::auth::DeletionLock;
 use crate::call_weeks::lane::Held;
@@ -279,6 +287,7 @@ mod tests {
 			Ok(Heard {
 				outcome: Outcome::Silent,
 				duration_ms: None,
+				measures: None,
 			})
 		}
 	}

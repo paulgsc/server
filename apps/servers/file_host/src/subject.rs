@@ -220,6 +220,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each word home heard in the owner's voice notes (paulgsc/some-ui GWB11), per transcript that heard something: the word as heard, its place, and when it began and ended in the note; see docs/identity.md invariant 23",
 	),
 	(
+		"voice_transcript_verdict",
+		"what home made of each of the owner's voice notes it heard (paulgsc/server#908, HEARD1): heard, garbled, nothing said or failed, why, under which rule, and the transcriber's own signals it was judged on (how sure the model was, how repetitive and how silent the speech, the languages detected and expected, words per second, the speech's length and loudness); never what was said; see docs/identity.md invariant 23",
+	),
+	(
 		"studio_take_on_drive",
 		"each of the owner's Studio takes home holds that the build-journal session found in Drive's takes folder too (paulgsc/some-ui#2401): the take's id, when the session looked and the mailbox list that said so; no audio and nothing of Drive's; see docs/identity.md invariant 23",
 	),

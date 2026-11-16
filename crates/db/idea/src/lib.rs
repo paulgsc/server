@@ -141,7 +141,7 @@ pub const NOTES_NOT_HELD: &str = "a named voice note is not one of this subject'
 pub const UNREADABLE: &str = "a stored idea does not read back";
 
 /// One answer as home serves it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnswerView {
 	pub question: String,
@@ -152,6 +152,10 @@ pub struct AnswerView {
 	/// What home heard in the note; none while it has not, for a note set
 	/// aside, and for a typed answer.
 	pub heard: Option<Transcript>,
+	/// What home made of it (HEARD1, `voice_repo::verdict::of_note`); none
+	/// where `heard` is none for a reason other than every attempt failing,
+	/// and for a transcript kept before verdicts were.
+	pub verdict: Option<voice_repo::verdict::Verdict>,
 	/// Whether the owner set the answer's note aside after the idea was sent;
 	/// false for a typed answer.
 	pub set_aside: bool,
@@ -161,7 +165,7 @@ pub struct AnswerView {
 }
 
 /// An idea as home serves it: its latest revision and its marks.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Idea {
 	pub id: String,
@@ -187,7 +191,7 @@ pub struct Idea {
 }
 
 /// The ideas home lists.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Ideas {
 	/// Newest begun first, set-aside ideas left out, at most [`IDEAS_LISTED`].
 	pub ideas: Vec<Idea>,
@@ -330,6 +334,15 @@ async fn heard(conn: &mut SqliteConnection, subject: &str, note: &str, set_aside
 	})
 }
 
+/// What home made of the subject's note (HEARD1): none for a note set
+/// aside, as its words are.
+async fn verdict(conn: &mut SqliteConnection, subject: &str, note: &str, set_aside: bool) -> Result<Option<voice_repo::verdict::Verdict>, IdeaError> {
+	if set_aside {
+		return Ok(None);
+	}
+	Ok(voice_repo::verdict::of_note(conn, subject, note).await?)
+}
+
 /// The idea as it stands at `row`; `set_aside` is the idea's own mark, which
 /// the caller has read (or knows, as [`ideas`] does, which lists none).
 async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: RevisionRow, set_aside: bool) -> Result<Idea, IdeaError> {
@@ -342,6 +355,7 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 				AnswerView {
 					question: answer.question,
 					heard: heard(conn, subject, &note, aside).await?,
+					verdict: verdict(conn, subject, &note, aside).await?,
 					deleted_at: deleted_at(conn, subject, &note).await?,
 					note: Some(note),
 					typed: None,
@@ -353,6 +367,7 @@ async fn view(conn: &mut SqliteConnection, subject: &str, id: &str, row: Revisio
 				note: None,
 				typed: Some(typed),
 				heard: None,
+				verdict: None,
 				set_aside: false,
 				deleted_at: None,
 			},

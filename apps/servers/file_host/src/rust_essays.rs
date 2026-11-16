@@ -449,6 +449,10 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 	}
 	rust_round_repo::draft::finalize(&mut tx, kind, subject, &essay.week, &due, now).await?;
 	let standing = standing(&mut tx, kind, subject, &essay.week).await?;
+	let unheard = match &standing {
+		Some(standing) => unheard(&mut tx, subject, standing).await?,
+		None => Vec::new(),
+	};
 	tx.commit().await?;
 	if standing.as_ref().is_some_and(|standing| standing.draft) {
 		// A draft finalize could not make final (sent after the deadline):
@@ -458,11 +462,29 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 	let sent = standing.as_ref().map_or_else(essay::Final::default, |standing| essay::Final {
 		answers: pairs(&standing.answers),
 		reads: pairs(&standing.reads),
+		unheard: unheard.iter().map(String::as_str).collect(),
 	});
 	Ok(match essay::against(&essay, &sent) {
 		Ok(played) => Given::Final(played),
 		Err(problems) => Given::Refused(problems),
 	})
+}
+
+/// The takes of `standing` home could not hear (paulgsc/server#908, HEARD1):
+/// its verdict on each is garbled or failed, so an essay may treat it as
+/// unanswered. One indexed read per take the week names.
+async fn unheard(conn: &mut sqlx::SqliteConnection, subject: &str, standing: &Standing) -> Result<Vec<String>, sqlx::Error> {
+	let mut unheard = Vec::new();
+	for (_, take) in standing.answers.iter().chain(&standing.reads) {
+		let verdict = voice_repo::verdict::of_note(conn, subject, take).await.map_err(|err| match err {
+			voice_repo::VoiceError::Storage(err) => err,
+			other => sqlx::Error::Protocol(other.to_string()),
+		})?;
+		if verdict.is_some_and(|verdict| verdict.kind.unheard()) {
+			unheard.push(take.clone());
+		}
+	}
+	Ok(unheard)
 }
 
 /// Each `(item, take)` of `list`, borrowed, as [`essay::Final`] holds them.
@@ -1095,6 +1117,37 @@ mod tests {
 		);
 		let seen = observe(&folders.essays, &folders.renders, &folders.status).await;
 		assert_eq!((seen.refused, seen.renders.held, seen.renders.waiting), (2, 1, 1));
+	}
+
+	/// HEARD1: a take home judged garbled may be a silence in the essay, as
+	/// the routines treat it as unanswered; a take it heard may not.
+	#[tokio::test]
+	async fn a_garbled_take_may_be_a_silence() {
+		let now = "2026-11-24T08:00:00.000Z";
+		for (garbled, written, refused) in [(false, 0, 1), (true, 1, 0)] {
+			let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+			let folders = folders(dir.path());
+			hold_week(&pool, 1, "2026-w46").await;
+			send(&pool, "2026-w46").await;
+			hold_take(&pool).await;
+			if garbled {
+				sqlx::query(
+					"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+					 VALUES (?1, 'note-311', 'm', 1, 'heard-1', 'garbled', 'low_confidence', 900, 'now')",
+				)
+				.bind(ME)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+			hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
+			let done = export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap();
+			assert_eq!((done.written, done.refused, done.failed), (written, refused, 0), "garbled {garbled}");
+			if garbled {
+				let takes: Vec<_> = std::fs::read_dir(folders.essays.join("2026-w46").join("takes")).unwrap().collect();
+				assert!(takes.is_empty(), "a silence plays nothing");
+			}
+		}
 	}
 
 	/// Invariant 23's exception, (b): the takes are in the render's input

@@ -106,17 +106,109 @@ const PROMPT_TOKENS: usize = 223;
 /// What fetches the models, as `TRANSCRIBE_ENABLED`'s help says it.
 const FETCH: &str = "nix develop .#whisper -c whisper fetch";
 
-/// How a note was heard, and how long its audio is when it decoded.
+/// How a note was heard, how long its audio is when it decoded, and what
+/// the transcriber's own signals said of its speech when it found some.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Heard {
 	pub outcome: Outcome,
 	pub duration_ms: Option<i64>,
+	/// What `super::verdict` judges a heard note on (HEARD1); none when no
+	/// speech was found, or the audio did not decode.
+	pub measures: Option<Measures>,
 }
 
 impl Heard {
 	const fn without_audio(outcome: Outcome) -> Self {
-		Self { outcome, duration_ms: None }
+		Self {
+			outcome,
+			duration_ms: None,
+			measures: None,
+		}
 	}
+}
+
+/// What the transcriber said of a note's speech beside its words
+/// (paulgsc/server#908, HEARD1): its own signals, never what was said.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Measures {
+	/// Each segment Whisper decoded, in the order heard.
+	pub segments: Vec<Segment>,
+	/// How long the speech the VAD found is.
+	pub speech_ms: i64,
+	/// That speech's loudest sample and its RMS, in dB below full scale
+	/// (`f64::NEG_INFINITY` for digital silence).
+	pub peak_dbfs: f64,
+	pub rms_dbfs: f64,
+	/// The language detected for longest, and its probability: the note's,
+	/// as [`main_language`] gives it, whatever each run was decoded in.
+	pub detected: Option<(String, f64)>,
+}
+
+/// One segment Whisper decoded, as its signals read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segment {
+	/// How long it is, as whisper.cpp timed it.
+	pub ms: i64,
+	/// The mean of its text tokens' log-probabilities: Whisper's
+	/// `avg_logprob`.
+	pub avg_logprob: f64,
+	/// Its text's length over that text's zlib length: Whisper's
+	/// `compression_ratio`. 0 for no text.
+	pub compression_ratio: f64,
+	/// whisper.cpp's probability that it held no speech.
+	pub no_speech_prob: f64,
+}
+
+impl Measures {
+	/// The measures of `speech`, with what Whisper said of each segment.
+	fn of(speech: &[f32], segments: Vec<Segment>, detected: Option<(String, f64)>) -> Self {
+		let (peak_dbfs, rms_dbfs) = loudness(speech);
+		Self {
+			segments,
+			speech_ms: i64::try_from(speech.len() * 1000 / SAMPLE_RATE).unwrap_or(i64::MAX),
+			peak_dbfs,
+			rms_dbfs,
+			detected,
+		}
+	}
+}
+
+/// `samples`' loudest sample and RMS, in dB below full scale: quiet audio is
+/// what a garbled take most often is, so a verdict keeps how loud it was.
+fn loudness(samples: &[f32]) -> (f64, f64) {
+	let peak = samples.iter().map(|sample| f64::from(sample.abs())).fold(0.0, f64::max);
+	let energy: f64 = samples.iter().map(|sample| f64::from(*sample) * f64::from(*sample)).sum();
+	#[allow(clippy::cast_precision_loss)] // ten minutes of samples, far below 2^52
+	let rms = if samples.is_empty() { 0.0 } else { (energy / samples.len() as f64).sqrt() };
+	let dbfs = |amplitude: f64| if amplitude > 0.0 { 20.0 * amplitude.log10() } else { f64::NEG_INFINITY };
+	(dbfs(peak), dbfs(rms))
+}
+
+/// `text`'s length over its zlib-compressed length, as Whisper measures how
+/// repetitive a segment is: a decoding loop compresses well.
+fn compression_ratio(text: &str) -> f64 {
+	use std::io::Write as _;
+	if text.is_empty() {
+		return 0.0;
+	}
+	let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+	let compressed = encoder.write_all(text.as_bytes()).and_then(|()| encoder.finish());
+	#[allow(clippy::cast_precision_loss)] // a segment's bytes
+	compressed.map_or(0.0, |compressed| text.len() as f64 / compressed.len().max(1) as f64)
+}
+
+/// The mean log-probability of `tokens`' text tokens: Whisper's
+/// `avg_logprob` for a segment. 0 for a segment of special tokens only.
+fn avg_logprob(tokens: &[Token]) -> f64 {
+	let said: Vec<f64> = tokens
+		.iter()
+		.filter(|token| !token.special)
+		.map(|token| f64::from(token.plog))
+		.filter(|plog| plog.is_finite())
+		.collect();
+	#[allow(clippy::cast_precision_loss)] // a segment's tokens
+	let mean = if said.is_empty() { 0.0 } else { said.iter().sum::<f64>() / said.len() as f64 };
+	mean
 }
 
 /// How a note's speech is decoded.
@@ -254,7 +346,20 @@ impl Whisper {
 
 	/// What Whisper hears in `speech`, cut from the note at `cuts`, by
 	/// `deadline`.
-	fn transcribe(&self, speech: &[f32], cuts: &[Cut], decoding: Decode, deadline: Instant, cancel: &CancellationToken) -> Result<Outcome, Cancelled> {
+	///
+	/// Each segment's signals go to `segments`, and the language detected
+	/// for longest to `detected`, as they are heard (HEARD1).
+	#[allow(clippy::too_many_arguments)] // the speech, how to hear it, and where its signals go
+	fn transcribe(
+		&self,
+		speech: &[f32],
+		cuts: &[Cut],
+		decoding: Decode,
+		deadline: Instant,
+		cancel: &CancellationToken,
+		segments: &mut Vec<Segment>,
+		detected: &mut Option<(String, f64)>,
+	) -> Result<Outcome, Cancelled> {
 		let failed = |cancel: &CancellationToken| stopped(deadline, cancel).unwrap_or(Ok(Outcome::Failed));
 		let Ok(threads) = i32::try_from(self.threads) else {
 			return Ok(Outcome::Failed);
@@ -288,6 +393,7 @@ impl Whisper {
 			Planned::Undetected => return failed(cancel),
 			Planned::Stopped(stopped) => return stopped,
 		};
+		*detected = Some(main_language(&runs));
 		let mut text = String::new();
 		let mut heard = Vec::new();
 		let special = self.context.token_eot();
@@ -347,6 +453,12 @@ impl Whisper {
 				let Some(tokens) = tokens_of(&segment, special) else {
 					return Ok(Outcome::Failed);
 				};
+				segments.push(Segment {
+					ms: segment.end_timestamp().saturating_sub(segment.start_timestamp()).saturating_mul(10),
+					avg_logprob: avg_logprob(&tokens),
+					compression_ratio: compression_ratio(said),
+					no_speech_prob: f64::from(segment.no_speech_probability()),
+				});
 				// Timed from the run's first sample, so moved by the run's place in
 				// the speech, then to the note. A heard note always has cuts: one
 				// with no speech is silent before Whisper runs (`hear`), so no word
@@ -393,7 +505,11 @@ impl Hear for Whisper {
 			Decoded::Deadline => return Ok(Heard::without_audio(Outcome::Deadline)),
 		};
 		let duration_ms = i64::try_from(pcm.len() * 1000 / SAMPLE_RATE).ok();
-		let heard = |outcome| Heard { outcome, duration_ms };
+		let heard = |outcome| Heard {
+			outcome,
+			duration_ms,
+			measures: None,
+		};
 		let Some((speech, cuts)) = self.speech(&pcm) else {
 			return Ok(heard(Outcome::Failed));
 		};
@@ -406,7 +522,10 @@ impl Hear for Whisper {
 		if Instant::now() >= deadline {
 			return Ok(heard(Outcome::Deadline));
 		}
-		self.transcribe(&speech, &cuts, decoding, deadline, cancel).map(heard)
+		let (mut segments, mut detected) = (Vec::new(), None);
+		let outcome = self.transcribe(&speech, &cuts, decoding, deadline, cancel, &mut segments, &mut detected)?;
+		let measures = matches!(outcome, Outcome::Heard { .. }).then(|| Measures::of(&speech, segments, detected));
+		Ok(Heard { measures, ..heard(outcome) })
 	}
 }
 
@@ -424,6 +543,7 @@ fn tokens_of(segment: &whisper_rs::WhisperSegment<'_>, special: whisper_rs::Whis
 			// special token's id is at or past end-of-text.
 			special: token.token_id() >= special,
 			p: data.p,
+			plog: data.plog,
 			start_cs: data.t0,
 			end_cs: data.t1,
 		});
@@ -444,6 +564,8 @@ struct Token {
 	special: bool,
 	/// Whisper's probability for this token, 0 to 1.
 	p: f32,
+	/// Its log-probability, as whisper.cpp gives it.
+	plog: f32,
 	start_cs: i64,
 	end_cs: i64,
 }
@@ -1056,6 +1178,7 @@ mod tests {
 			bytes: text.as_bytes().to_vec(),
 			special: false,
 			p: 0.9,
+			plog: 0.9_f32.ln(),
 			start_cs,
 			end_cs,
 		}
@@ -1075,6 +1198,26 @@ mod tests {
 			end_ms,
 			p: f64::from(0.9_f32),
 		}
+	}
+
+	/// A segment's signals read as Whisper's own do (HEARD1): its text
+	/// tokens' mean log-probability, a loop's text compressing far better
+	/// than speech's, and how loud the speech was.
+	#[test]
+	fn a_segments_signals_read_as_whispers() {
+		let tokens = [special("[_BEG_]", 0), Token { plog: -2.0, ..token(" a", 0, 1) }, Token { plog: -1.0, ..token(" b", 1, 2) }];
+		assert!((super::avg_logprob(&tokens) - -1.5).abs() < 1e-9, "special tokens are not text");
+		assert!(super::avg_logprob(&[special("[_BEG_]", 0)]).abs() < f64::EPSILON);
+		let looped = super::compression_ratio(&"the same words again ".repeat(12));
+		let said = super::compression_ratio("an immutable borrow holds a reference that doesn't move");
+		assert!(
+			looped > super::super::verdict::COMPRESSION_CEILING && said < super::super::verdict::COMPRESSION_CEILING,
+			"{looped} {said}"
+		);
+		assert!(super::compression_ratio("").abs() < f64::EPSILON);
+		let (peak, rms) = super::loudness(&[0.5, -0.5, 0.5, -0.5]);
+		assert!((peak - -6.0206).abs() < 1e-3 && (rms - -6.0206).abs() < 1e-3, "{peak} {rms}");
+		assert_eq!(super::loudness(&[0.0; 4]), (f64::NEG_INFINITY, f64::NEG_INFINITY));
 	}
 
 	/// What a segment of tokens looks like out of whisper.cpp: its special

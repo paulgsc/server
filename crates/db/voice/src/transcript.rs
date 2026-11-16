@@ -149,6 +149,9 @@ pub struct Waiting {
 	/// It is the [`VERBATIM`] kind: heard with the prompt, kept under
 	/// [`Keys::verbatim`].
 	pub verbatim: bool,
+	/// The language its kind is said in, when it has one
+	/// ([`crate::verdict::expected_language`], HEARD1).
+	pub expected_language: Option<&'static str>,
 }
 
 /// The notes their key in `keys` has not ended (heard, or found silent) and
@@ -170,7 +173,7 @@ pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64,
 	// The key is decided per note before either lookup, a value the
 	// `(subject_id, note_id, model)` index reads as it reads a bound one.
 	let rows = sqlx::query!(
-		r#"SELECT n.subject_id AS "subject_id!", n.note_id AS "note_id!", n.of_kind = ?5 AS "verbatim!: bool" FROM voice_note n
+		r#"SELECT n.subject_id AS "subject_id!", n.note_id AS "note_id!", n.of_kind = ?5 AS "verbatim!: bool", n.of_kind AS "of_kind!" FROM voice_note n
 		 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
 		                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
 		                     AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
@@ -197,6 +200,7 @@ pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64,
 				subject: row.subject_id,
 				note_id: row.note_id,
 				verbatim: row.verbatim,
+				expected_language: crate::verdict::expected_language(&row.of_kind),
 			})
 			.collect(),
 	)
@@ -550,7 +554,7 @@ mod tests {
 		.await
 		.unwrap()
 		.into_iter()
-		.map(|Waiting { subject, note_id, verbatim }| (subject, note_id, verbatim))
+		.map(|Waiting { subject, note_id, verbatim, .. }| (subject, note_id, verbatim))
 		.collect()
 	}
 

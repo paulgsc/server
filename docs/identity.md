@@ -211,7 +211,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -1531,7 +1531,20 @@ nowhere is marked as such and belongs to review.
     "Decided" 5 and 8). The words are written with their transcript, in the
     same transaction, and never on their own: a transcript heard before they
     were kept has none and is never given any. They leave with the account
-    by both the sweep and their own trigger (invariant 12). A reader
+    by both the sweep and their own trigger (invariant 12). **What home
+    made of each final attempt is `voice_transcript_verdict`, append-only
+    too** (paulgsc/server#908, HEARD1): `heard`, `garbled`, `nothing_said`
+    or `failed`, why (fixed words), the rule that judged it, and the
+    transcriber's own signals it was judged on (the segments' log-prob,
+    compression ratio and no-speech probability, the share of unsure words,
+    the language detected and the one the note's kind is said in, words per
+    second, and the speech's length and loudness), never anything said. It
+    is written with its attempt, in the same transaction, for an ending and
+    for the last failure the worker makes on a note only; it leaves with its
+    note and with the account (sweep and trigger), and every read that gives
+    a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
+    the mailbox's transcript and pickup files) gives its verdict beside it,
+    so no reader judges a transcript for itself. A reader
     (`voice_repo::transcript::words`) takes the words of the newest transcript
     that heard something, so they always match the text it takes. No
     transcript or word is updated (each table's trigger aborts an `UPDATE`),

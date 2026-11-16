@@ -244,10 +244,15 @@ pub async fn get_on_drive(subject: SubjectId, State(db): State<SqlitePool>, Quer
 }
 
 /// `GET /voice-notes/:id/heard`
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NoteHeard {
 	/// Null while home holds the note and has not heard it yet.
 	pub heard: Option<Transcript>,
+	/// What home made of it (paulgsc/server#908, HEARD1): the verdict of the
+	/// transcript in `heard`, or `failed` when every attempt failed (and
+	/// `heard` stays null); null while home may yet hear it, and for a
+	/// transcript kept before verdicts were.
+	pub verdict: Option<voice_repo::verdict::Verdict>,
 }
 
 /// `GET /voice-notes/:id/heard`
@@ -276,7 +281,8 @@ pub async fn get_heard(subject: SubjectId, State(db): State<SqlitePool>, Path(id
 		Hearing::Waiting => None,
 		Hearing::Heard(transcript) => Some(transcript),
 	};
-	Ok(Json(NoteHeard { heard }))
+	let verdict = voice_repo::verdict::of_note(&mut conn, subject.as_str(), &id).await.map_err(refusal)?;
+	Ok(Json(NoteHeard { heard, verdict }))
 }
 
 /// `GET /voice-notes/:id/audio`
@@ -1208,23 +1214,28 @@ mod tests {
 		assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
 		assert_eq!(get(&app, "/voice-notes/on-drive/heard", Some(&phone)).await.0, StatusCode::NOT_FOUND);
 
-		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, json!({ "heard": null })));
+		assert_eq!(
+			get(&app, "/voice-notes/n1/heard", Some(&phone)).await,
+			(StatusCode::OK, json!({ "heard": null, "verdict": null }))
+		);
 		hear(&pool, A, "n1", SMALL, Outcome::Deadline, "2026-10-25T16:00:00.000Z").await;
 		assert_eq!(
 			get(&app, "/voice-notes/n1/heard", Some(&phone)).await.1,
-			json!({ "heard": null }),
+			json!({ "heard": null, "verdict": null }),
 			"a failed attempt heard nothing"
 		);
 
 		hear(&pool, A, "n1", SMALL, said("a small idea", "en"), "2026-10-25T16:05:00.000Z").await;
 		let small = json!({
-			"heard": { "text": "a small idea", "language": "en", "model": SMALL, "heardAt": "2026-10-25T16:05:00.000Z" }
+			"heard": { "text": "a small idea", "language": "en", "model": SMALL, "heardAt": "2026-10-25T16:05:00.000Z" },
+			"verdict": null
 		});
 		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, small));
 
 		hear(&pool, A, "n1", MEDIUM, said("a smaller idea", "en"), "2026-10-26T09:00:00.000Z").await;
 		let medium = json!({
-			"heard": { "text": "a smaller idea", "language": "en", "model": MEDIUM, "heardAt": "2026-10-26T09:00:00.000Z" }
+			"heard": { "text": "a smaller idea", "language": "en", "model": MEDIUM, "heardAt": "2026-10-26T09:00:00.000Z" },
+			"verdict": null
 		});
 		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await.1, medium, "the newest transcript is read");
 		hear(&pool, A, "n1", "ggml-large.bin", Outcome::Silent, "2026-10-27T09:00:00.000Z").await;
@@ -1239,7 +1250,7 @@ mod tests {
 		hear(&pool, B, "n1", SMALL, Outcome::Silent, "2026-10-25T17:00:00.000Z").await;
 		assert_eq!(
 			get(&app, "/voice-notes/n1/heard", Some(&other)).await.1,
-			json!({ "heard": { "text": "", "language": null, "model": SMALL, "heardAt": "2026-10-25T17:00:00.000Z" } })
+			json!({ "heard": { "text": "", "language": null, "model": SMALL, "heardAt": "2026-10-25T17:00:00.000Z" }, "verdict": null })
 		);
 	}
 
@@ -1297,7 +1308,8 @@ mod tests {
 		// What home heard in the note before it was let go.
 		hear(&pool, A, "n1", "ggml-small-q5_1.bin", said("an idea let go", "en"), "2026-11-01T09:00:00.000Z").await;
 		let heard = json!({
-			"heard": { "text": "an idea let go", "language": "en", "model": "ggml-small-q5_1.bin", "heardAt": "2026-11-01T09:00:00.000Z" }
+			"heard": { "text": "an idea let go", "language": "en", "model": "ggml-small-q5_1.bin", "heardAt": "2026-11-01T09:00:00.000Z" },
+			"verdict": null
 		});
 		assert_eq!(get(&app, "/voice-notes/n1/heard", Some(&phone)).await, (StatusCode::OK, heard.clone()));
 
@@ -1463,10 +1475,10 @@ mod tests {
 			json!({
 				"takes": [
 					{ "id": "t2", "ref": "library:t2", "recordedAt": "2026-11-04T18:21:00.000Z", "storedAt": all["takes"][0]["storedAt"],
-						"size": TAKE.len(), "setAsideAt": null, "heard": null, "station": "in-the-oven", "stationAt": null, "stationSeq": 0 },
+						"size": TAKE.len(), "setAsideAt": null, "heard": null, "verdict": null, "station": "in-the-oven", "stationAt": null, "stationSeq": 0 },
 					{ "id": "t1", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
 						"size": TAKE.len(), "setAsideAt": null,
-						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" },
+						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" }, "verdict": null,
 						"station": "in-the-oven", "stationAt": null, "stationSeq": 0 }
 				],
 				"total": 2, "matched": null, "by": "newest"
@@ -1549,7 +1561,19 @@ mod tests {
 		keys.sort();
 		assert_eq!(
 			keys,
-			["heard", "id", "recordedAt", "ref", "setAsideAt", "size", "station", "stationAt", "stationSeq", "storedAt"],
+			[
+				"heard",
+				"id",
+				"recordedAt",
+				"ref",
+				"setAsideAt",
+				"size",
+				"station",
+				"stationAt",
+				"stationSeq",
+				"storedAt",
+				"verdict"
+			],
 			"no vector"
 		);
 		let (_, listed) = get(&app, "/voice-notes/takes", Some(&phone)).await;
