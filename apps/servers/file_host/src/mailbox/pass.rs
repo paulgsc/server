@@ -2096,6 +2096,67 @@ mod tests {
 		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 0, "filed once");
 	}
 
+	/// HEARD1, the interview arm: an interview take home found silent, and
+	/// one every attempt failed on, are filed under their verbatim model's
+	/// key with no text beside their verdict, as a Rust Rounds take's are.
+	#[tokio::test]
+	async fn an_interview_take_home_could_not_hear_or_found_silent_is_filed() {
+		const VERBATIM: &str = "ggml-small-q5_1.bin+verbatim-1";
+		let (pool, fake) = (pool().await, Fake::default());
+		for (note, outcome, attempts, verdict, reason) in [("quiet", "silent", 1, "nothing_said", ""), ("lost", "deadline", 3, "failed", "deadline")] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'interview', '2026-w47:about-you', '2026-11-20T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+			for attempt in 1..=attempts {
+				sqlx::query(
+					"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+					 VALUES (?1, ?2, ?3, 'whisper.cpp', ?4, ?5, CASE WHEN ?5 = 'silent' THEN 4000 END, 10, '2026-11-20T10:0' || ?4 || ':00.000Z')",
+				)
+				.bind(OWNER)
+				.bind(note)
+				.bind(VERBATIM)
+				.bind(attempt)
+				.bind(outcome)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+				 VALUES (?1, ?2, ?3, ?4, 'heard-1', ?5, ?6, 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.bind(VERBATIM)
+			.bind(attempts)
+			.bind(verdict)
+			.bind(reason)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 2);
+		let puts = fake.puts.lock().unwrap().clone();
+		let bodies = fake.put_bodies.lock().unwrap().clone();
+		for (note, verdict) in [("quiet", "nothing_said"), ("lost", "failed")] {
+			let at = puts.iter().position(|put| put.contains(note)).unwrap();
+			let body: serde_json::Value = serde_json::from_str(&bodies[at]).unwrap();
+			assert_eq!(
+				(&body["of"], &body["model"], &body["text"]),
+				(&serde_json::json!("interview"), &serde_json::json!(VERBATIM), &serde_json::json!(""))
+			);
+			assert_eq!((&body["language"], &body["words"]), (&serde_json::Value::Null, &serde_json::json!([])));
+			assert_eq!(body["verdict"]["kind"], verdict, "{note}");
+		}
+	}
+
 	/// HEARD1: a Rust Rounds take one model heard words in and another found
 	/// silent is filed as heard only, so its silence is never numbered above,
 	/// and buries, the words; and a silence kept before verdicts were is

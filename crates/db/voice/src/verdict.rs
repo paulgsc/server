@@ -85,8 +85,8 @@ pub struct Signals {
 	/// The highest segment's probability that it held no speech: Whisper's
 	/// `no_speech_prob`.
 	pub no_speech_prob: f64,
-	/// The share of the heard speech's time in segments that failed a check,
-	/// 0 to 1.
+	/// The share of the words heard that the model gave a probability below
+	/// one half (`transcribe::verdict::WORD_P_FLOOR`), 0 to 1.
 	pub unsure_share: f64,
 	/// The language detected for longest, and that detection's probability.
 	pub language: String,
