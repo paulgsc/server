@@ -97,7 +97,8 @@ fn refusal(err: IdeaError) -> FileHostError {
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "ideas_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_ideas(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Ideas>, FileHostError> {
-	let mut conn = db.acquire().await?;
+	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
+	let mut conn = db.begin().await?;
 	idea_repo::ideas(&mut conn, subject.as_str()).await.map(Json).map_err(refusal)
 }
 
@@ -109,7 +110,8 @@ pub async fn get_ideas(subject: SubjectId, State(db): State<SqlitePool>) -> Resu
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "idea_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_idea(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<Idea>, FileHostError> {
-	let mut conn = db.acquire().await?;
+	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
+	let mut conn = db.begin().await?;
 	idea_repo::idea(&mut conn, subject.as_str(), &id)
 		.await
 		.map_err(refusal)?

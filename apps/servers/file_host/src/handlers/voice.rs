@@ -275,7 +275,8 @@ pub struct NoteHeard {
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_heard_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_heard(subject: SubjectId, State(db): State<SqlitePool>, Path(id): Path<String>) -> Result<Json<NoteHeard>, FileHostError> {
-	let mut conn = db.acquire().await?;
+	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
+	let mut conn = db.begin().await?;
 	let heard = match voice_repo::transcript::heard(&mut conn, subject.as_str(), &id).await.map_err(refusal)? {
 		Hearing::NotHeld => return Err(FileHostError::NotFound),
 		Hearing::Waiting => None,
@@ -456,7 +457,8 @@ pub async fn get_takes(
 		}
 		_ => return Err(refused()),
 	};
-	let mut conn = db.acquire().await?;
+	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
+	let mut conn = db.begin().await?;
 	let library = voice_repo::takes::library(&mut conn, paired.subject.as_str(), search.as_ref()).await.map_err(refusal)?;
 	Ok(Json(library))
 }

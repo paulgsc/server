@@ -243,7 +243,9 @@ fn read(row: Row) -> Result<Verdict, VoiceError> {
 /// newest that heard something, else the newest silent ending), by the
 /// newest rule; none when that transcript was kept before verdicts were.
 /// For a note no attempt ended, its newest final failure; none while it may
-/// yet be heard.
+/// yet be heard by the model that failed. A model a deployment swapped in
+/// later hears the note afresh, and its ending then replaces the failure
+/// here (and, filed at a higher number, in the mailbox too).
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.

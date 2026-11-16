@@ -2096,6 +2096,55 @@ mod tests {
 		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 0, "filed once");
 	}
 
+	/// HEARD1: a Rust Rounds take one model heard words in and another found
+	/// silent is filed as heard only, so its silence is never numbered above,
+	/// and buries, the words; and a silence kept before verdicts were is
+	/// never backfilled.
+	#[tokio::test]
+	async fn a_silence_never_buries_words_heard() {
+		let (pool, fake) = (pool().await, Fake::default());
+		// QM-314 was heard by one model and found silent by another, and
+		// QM-315 was found silent before verdicts were: neither silence is
+		// filed, so none is numbered above, and buries, words heard.
+		for note in ["qm314", "qm315"] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'rust-round', '2026-w46:' || upper(?2), '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		heard(&pool, "qm314", "ggml-medium.bin", "a borrow checker").await;
+		for (note, judged) in [("qm314", true), ("qm315", false)] {
+			sqlx::query(
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+				 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'silent', 4000, 10, '2026-11-14T21:00:00.000Z')",
+			)
+			.bind(OWNER)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+			if judged {
+				sqlx::query(
+					"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+					 VALUES (?1, ?2, 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
+				)
+				.bind(OWNER)
+				.bind(note)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+		}
+
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 1, "QM-314's words, and nothing else");
+		assert_eq!(*fake.puts.lock().unwrap(), ["/v1/transcript/items/transcript-qm314-1.json"]);
+	}
+
 	/// A note id may hold a `:` (`voice_repo::is_name`), and the mailbox's
 	/// transcript names allow one: its transcript is handed, not refused.
 	#[tokio::test]
