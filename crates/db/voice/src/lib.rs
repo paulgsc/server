@@ -71,7 +71,8 @@
 //!
 //! Deleting a note for good, only of a kind the owner switched on
 //! ([`delete::SWITCHED_ON`]: Studio takes and idea answers since
-//! 2026-11-04), and keeping its receipt in
+//! 2026-11-04, and a note of any kind home could not hear since
+//! paulgsc/some-ui#3076), and keeping its receipt in
 //! `voice_note_deletion`, is [`delete`]'s (paulgsc/some-ui#2477, MD3).
 //!
 //! Which takes home could not hear still wait on the owner, and every act

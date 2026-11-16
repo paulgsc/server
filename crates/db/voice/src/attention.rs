@@ -83,19 +83,6 @@ pub struct Take {
 /// The most takes [`needing`] answers: the newest recorded.
 pub const LISTED: usize = 100;
 
-/// `subject`'s newest verdict on `note_id` if it needs attention: not heard,
-/// and no act answers it.
-async fn unanswered(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<Newest>, VoiceError> {
-	let Some(newest) = verdict::newest(conn, subject, note_id).await? else {
-		return Ok(None);
-	};
-	if !asks(newest.verdict.kind) {
-		return Ok(None);
-	}
-	let answered = answer_of(conn, subject, note_id, &newest).await?.is_some();
-	Ok((!answered).then_some(newest))
-}
-
 /// The newest act on `subject`'s note `note_id` that answers `newest`.
 async fn answer_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, newest: &Newest) -> Result<Option<String>, VoiceError> {
 	Ok(
@@ -117,51 +104,88 @@ async fn answer_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, ne
 /// `subject`'s takes that need attention, newest recorded first (the note's
 /// id breaking a tie), at most [`LISTED`] of them, and how many in all.
 ///
-/// Run it in one transaction, so the list and the total agree.
+/// One statement: for each note held with any verdict not heard (the
+/// verdicts' primary key leads with the note), its newest verdict, chosen as
+/// [`verdict::newest`] chooses it, kept when not heard and no act answers it,
+/// then counted and cut to [`LISTED`]. Only the listed takes' transcripts are
+/// read after. Run it in one transaction, so the list and the total agree.
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
 pub async fn needing(conn: &mut SqliteConnection, subject: &str) -> Result<(Vec<Take>, i64), VoiceError> {
-	// The notes held with a verdict not heard that no act answers: a
-	// superset of those whose newest verdict is one, so a note reconciled
-	// is not read again. Each is then judged by its newest verdict.
-	let candidates = sqlx::query!(
-		r#"SELECT n.note_id AS "note_id!", n.of_kind AS "of_kind!", n.of_ref AS "of_ref!", n.recorded_at AS "recorded_at!"
-		   FROM voice_note n
-		   WHERE n.subject_id = ?1
-		     AND EXISTS (
-		       SELECT 1 FROM voice_transcript_verdict v
-		       WHERE v.subject_id = n.subject_id AND v.note_id = n.note_id AND v.verdict <> 'heard'
-		         AND NOT EXISTS (
-		           SELECT 1 FROM voice_note_attention a
-		           WHERE a.subject_id = v.subject_id AND a.note_id = v.note_id
-		             AND a.model = v.model AND a.attempt = v.attempt AND a.rule = v.rule))
-		   ORDER BY n.recorded_at DESC, n.note_id DESC"#,
-		subject
+	let limit = i64::try_from(LISTED).unwrap_or(i64::MAX);
+	// The chosen verdict is `verdict::newest`'s: the verdict of the ending
+	// `transcript::heard` chooses, else, with no ending, the newest failure;
+	// the newest judged, then the newest rule. Keep the two in step.
+	let rows = sqlx::query!(
+		r#"WITH chosen AS (
+		     SELECT n.note_id, n.of_kind, n.of_ref, n.recorded_at,
+		            (SELECT v.rowid FROM voice_transcript_verdict v
+		             WHERE v.subject_id = n.subject_id AND v.note_id = n.note_id
+		               AND ((v.model, v.attempt) = (
+		                      SELECT t.model, t.attempt FROM voice_transcript t
+		                      WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')
+		                      ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
+		                      LIMIT 1)
+		                    OR (NOT EXISTS (
+		                          SELECT 1 FROM voice_transcript t
+		                          WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent'))
+		                        AND v.verdict = 'failed'))
+		             ORDER BY v.judged_at DESC, v.rule DESC
+		             LIMIT 1) AS chosen_row
+		     FROM voice_note n
+		     WHERE n.subject_id = ?1
+		       AND EXISTS (
+		         SELECT 1 FROM voice_transcript_verdict w
+		         WHERE w.subject_id = n.subject_id AND w.note_id = n.note_id AND w.verdict <> 'heard'))
+		   SELECT c.note_id AS "note_id!", c.of_kind AS "of_kind!", c.of_ref AS "of_ref!", c.recorded_at AS "recorded_at!",
+		          v.rule AS "rule!", v.verdict AS "verdict!", v.reasons AS "reasons!", v.avg_logprob, v.compression_ratio,
+		          v.no_speech_prob, v.unsure_share, v.language, v.language_p, v.expected_language, v.words_per_second,
+		          v.speech_ms, v.peak_dbfs, v.rms_dbfs, COUNT(*) OVER () AS "total!: i64"
+		   FROM chosen c
+		   JOIN voice_transcript_verdict v ON v.rowid = c.chosen_row
+		   WHERE v.verdict <> 'heard'
+		     AND NOT EXISTS (
+		       SELECT 1 FROM voice_note_attention a
+		       WHERE a.subject_id = ?1 AND a.note_id = c.note_id
+		         AND a.model = v.model AND a.attempt = v.attempt AND a.rule = v.rule)
+		   ORDER BY c.recorded_at DESC, c.note_id DESC
+		   LIMIT ?2"#,
+		subject,
+		limit
 	)
 	.fetch_all(&mut *conn)
 	.await?;
-	let mut takes = Vec::new();
-	let mut total: i64 = 0;
-	for note in candidates {
-		let Some(newest) = unanswered(conn, subject, &note.note_id).await? else {
-			continue;
-		};
-		total += 1;
-		if takes.len() >= LISTED {
-			continue;
-		}
-		let heard = match transcript::heard(conn, subject, &note.note_id).await? {
+	let total = rows.first().map_or(0, |row| row.total);
+	let mut takes = Vec::with_capacity(rows.len());
+	for row in rows {
+		let verdict = verdict::read(verdict::Row {
+			rule: row.rule,
+			verdict: row.verdict,
+			reasons: row.reasons,
+			avg_logprob: row.avg_logprob,
+			compression_ratio: row.compression_ratio,
+			no_speech_prob: row.no_speech_prob,
+			unsure_share: row.unsure_share,
+			language: row.language,
+			language_p: row.language_p,
+			expected_language: row.expected_language,
+			words_per_second: row.words_per_second,
+			speech_ms: row.speech_ms,
+			peak_dbfs: row.peak_dbfs,
+			rms_dbfs: row.rms_dbfs,
+		})?;
+		let heard = match transcript::heard(conn, subject, &row.note_id).await? {
 			Hearing::Heard(transcript) => Some(transcript),
 			Hearing::Waiting | Hearing::NotHeld => None,
 		};
 		takes.push(Take {
-			id: note.note_id,
-			of: note.of_kind,
-			of_ref: note.of_ref,
-			recorded_at: note.recorded_at,
+			id: row.note_id,
+			of: row.of_kind,
+			of_ref: row.of_ref,
+			recorded_at: row.recorded_at,
 			heard,
-			verdict: newest.verdict,
+			verdict,
 		});
 	}
 	Ok((takes, total))
@@ -388,6 +412,48 @@ mod tests {
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_attention").fetch_one(&pool).await.unwrap();
 		assert_eq!(left, 0, "leaves with the account");
+	}
+
+	/// The list chooses each note's verdict as `verdict::newest` does: a
+	/// final failure while nothing ended the note, then the ending's; an old
+	/// verdict no act answers never lists a note whose newest is heard.
+	#[tokio::test]
+	async fn the_list_reads_the_verdict_newest_chooses() {
+		let pool = pool().await;
+		note(&pool, A, "t", "interview", "2026-11-01").await;
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+			 VALUES (?1, 't', 'm', 'e', 1, 'deadline', 1, '2026-11-09')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let failed = Verdict {
+			kind: Kind::Failed,
+			reasons: vec![String::from("deadline")],
+			rule: String::from("heard-1"),
+			signals: None,
+		};
+		let judged = Judged {
+			subject: A,
+			note_id: "t",
+			model: "m",
+			attempt: 1,
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		keep(&mut conn, judged, &failed, "2026-11-09").await.unwrap();
+		let (takes, _) = needing(&mut conn, A).await.unwrap();
+		assert_eq!(takes.first().map(|take| (take.verdict.kind, take.heard.is_none())), Some((Kind::Failed, true)));
+		drop(conn);
+		heard(&pool, A, "t", "better", Kind::NothingSaid, "2026-11-10").await;
+		let mut conn = pool.acquire().await.unwrap();
+		let (takes, _) = needing(&mut conn, A).await.unwrap();
+		let newest = crate::verdict::newest(&mut conn, A, "t").await.unwrap().unwrap();
+		assert_eq!(takes.first().map(|take| take.verdict.clone()), Some(newest.verdict), "the ending replaces the failure");
+		drop(conn);
+		heard(&pool, A, "t", "best", Kind::Heard, "2026-11-11").await;
+		assert_eq!(listed(&pool, A).await, (Vec::new(), 0), "heard now, though the failure is unanswered");
 	}
 
 	/// Only the newest [`super::LISTED`] are listed; the total counts all.

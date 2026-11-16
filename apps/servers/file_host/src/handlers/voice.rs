@@ -693,7 +693,8 @@ const KEPT_FOR_GOOD: &str = "this voice note is kept for good";
 ///
 /// Its audio and what home heard in it go with it, and the answer is its
 /// receipt (paulgsc/some-ui#2477, MD3). Only from a paired phone (My data,
-/// or the reconciliation page), and only of a kind the owner switched on
+/// which offers it by kind, or the reconciliation page, which offers it for
+/// a note home could not hear), and only of a kind the owner switched on
 /// (`voice_repo::delete::SWITCHED_ON`: Studio takes, idea answers, and a
 /// note of any kind home could not hear, its newest verdict `garbled`, `failed`
 /// or `nothing_said`, paulgsc/some-ui#3076): every other note is kept and

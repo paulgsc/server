@@ -702,24 +702,41 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 /// A take `week`'s final record names that was deleted and that its essay
 /// may play, if any.
 ///
-/// A take home could not hear (`voice_repo::verdict::as_the_routine_reads`
-/// may call it a silence, HEARD1) is never played: the essay answers it as
-/// a silence, and its takes are not given. So deleting one, as the owner's
-/// reconciliation of it may (paulgsc/server#912, HEARD3), withdraws
-/// nothing; only a deleted take the essay may play does.
+/// An essay may answer an item whose take home could not hear as a silence,
+/// and then plays nothing for it (HEARD1); it may also play it. So a
+/// deleted take withdraws the week unless every revision of the week's
+/// essay `subject` holds answers its item as a silence: deleting a take the
+/// essay never played, as the owner's reconciliation of an unheard one may
+/// (paulgsc/server#912, HEARD3), withdraws nothing. A revision that does not
+/// read counts as playing it.
 async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
 	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
 		return Ok(None);
 	};
-	for (_, take) in standing.answers.into_iter().chain(standing.reads) {
-		if voice_repo::delete::receipt(&mut conn, subject, &take).await.map_err(voice)?.is_none() {
-			continue;
+	let mut deleted = Vec::new();
+	for ((item, take), read) in standing.answers.iter().map(|pair| (pair, false)).chain(standing.reads.iter().map(|pair| (pair, true))) {
+		if voice_repo::delete::receipt(&mut conn, subject, take).await.map_err(voice)?.is_some() {
+			deleted.push((item.clone(), take.clone(), read));
 		}
-		let judged = voice_repo::verdict::as_the_routine_reads(&mut conn, subject, &take, kind == Kind::Interview)
-			.await
-			.map_err(voice)?;
-		if !judged.is_some_and(voice_repo::verdict::Kind::may_be_silent) {
+	}
+	if deleted.is_empty() {
+		return Ok(None);
+	}
+	let revisions: Vec<_> = held_essays(&mut conn, kind, subject)
+		.await?
+		.into_iter()
+		.filter(|file| essay::parse_name_of(kind, &file.name).is_some_and(|(of, _)| of == week))
+		.map(|file| essay::read_of(kind, &file.body).ok())
+		.collect();
+	for (item, take, read) in deleted {
+		let silent = |essay: &Option<essay::Essay>| {
+			essay.as_ref().is_some_and(|essay| {
+				let items = if read { &essay.reads } else { &essay.tickets };
+				items.iter().any(|(id, answered)| *id == item && *answered == essay::Answered::Silence)
+			})
+		};
+		if revisions.is_empty() || !revisions.iter().all(silent) {
 			return Ok(Some(take));
 		}
 	}
@@ -1283,13 +1300,14 @@ mod tests {
 		assert!(!folders.essays.join("2026-w46").exists(), "and tidy leaves none");
 	}
 
-	/// HEARD3 (paulgsc/server#912, the coordinator's call): a take home could
-	/// not hear is a silence the essay never plays, so the owner deleting it
+	/// HEARD3 (paulgsc/server#912): a take home could not hear that the
+	/// essay answers as a silence is never played, so the owner deleting it
 	/// (paulgsc/some-ui#3076) withdraws nothing: a made video stays, and a
-	/// week not yet given still is, the silence standing.
+	/// week not yet given still is, the silence standing. One the essay plays
+	/// anyway withdraws its week, as any played take does.
 	#[tokio::test]
 	async fn deleting_a_take_home_could_not_hear_withdraws_nothing() {
-		for given_first in [true, false] {
+		for (given_first, plays) in [(true, false), (false, false), (true, true)] {
 			let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 			let folders = folders(dir.path());
 			hold_week(&pool, 1, "2026-w46").await;
@@ -1307,7 +1325,8 @@ mod tests {
 			] {
 				sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
 			}
-			hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
+			let answers = if plays { ["take", "silence"] } else { ["silence", "silence"] };
+			hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", answers)).await;
 			let now = "2026-11-24T08:00:00.000Z";
 			if given_first {
 				assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap().written, 1);
@@ -1319,11 +1338,14 @@ mod tests {
 			assert!(matches!(deleted, voice_repo::delete::Deleted::Gone(_)), "an unheard take may go");
 			drop(conn);
 			let tidied = tidy(&pool, Kind::RustRounds, Some(ME), &folders, now).await.unwrap();
-			assert_eq!(tidied.withdrawn, 0, "given first: {given_first}");
+			assert_eq!(tidied.withdrawn, usize::from(plays), "given first: {given_first}, plays: {plays}");
 			let mut conn = pool.acquire().await.unwrap();
-			assert!(rust_round_repo::essay_video::withdrawn(&mut conn, Kind::RustRounds, ME).await.unwrap().is_empty());
+			let withdrawn = rust_round_repo::essay_video::withdrawn(&mut conn, Kind::RustRounds, ME).await.unwrap();
+			assert_eq!(withdrawn.len(), usize::from(plays));
 			drop(conn);
-			if given_first {
+			if plays {
+				assert!(!folders.renders.join("2026-w46").exists(), "a played take's week is withdrawn");
+			} else if given_first {
 				assert!(folders.renders.join("2026-w46").join(VIDEO).exists(), "its video stays");
 			} else {
 				let done = export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap();

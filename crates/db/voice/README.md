@@ -34,8 +34,9 @@ unless it is a Jobs note, which is still heard and filed because a decisions
 or scouts file naming it is what puts it in front of the routine
 (`migrations/20261101000900_create_voice_note_set_aside.up.sql`,
 `src/set_aside.rs`). The one delete besides the account's is My data's, of a
-kind the owner switched on (none yet; a Studio take is the one kind it can
-ever delete), leaving a receipt in `voice_note_deletion`
+kind the owner switched on (Studio takes and idea answers, and a note of any
+kind home could not hear, its newest verdict garbled, failed or nothing said),
+leaving a receipt in `voice_note_deletion`
 (`migrations/20261103000100_create_voice_note_deletion.up.sql`,
 `src/delete.rs`). Where each Studio take is on the conveyor (in the oven,
 cooking, ready for pickup, picked up or canned) is `studio_take_move`'s: one

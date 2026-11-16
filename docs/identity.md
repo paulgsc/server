@@ -1268,10 +1268,11 @@ nowhere is marked as such and belongs to review.
     rendered again, while its script stays in the mailbox; (d) My data says
     the essay video holds the owner's voice (the phone's). Rust Rounds and
     interview takes can be deleted only when home could not hear them
-    (paulgsc/some-ui#3076), and such a take is a silence the essay never
-    plays (HEARD1), so deleting one withdraws nothing (paulgsc/server#912):
-    (c) withdraws for a deleted take the routine's verdict does not call
-    unheard, and stays a guard for any other. *Enforced by*
+    (paulgsc/some-ui#3076). An essay may answer such a take's item as a
+    silence, and then never plays it (HEARD1), or play it anyway; so (c)
+    withdraws a week for a deleted take unless every revision of its essay
+    home holds answers that item as a silence (paulgsc/server#912), and a
+    revision that does not read counts as playing it. *Enforced by*
     `rust_essays`' `a_kept_essay_copies_its_takes_only_until_its_video_is_made`,
     `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go`,
     `deleting_a_take_home_could_not_hear_withdraws_nothing`,
@@ -1301,8 +1302,9 @@ nowhere is marked as such and belongs to review.
     is a note home heard or has not judged yet. Deleting a note home could
     not hear keeps every record that names it by id (a game bite's
     description, which its receipt names, a week's paste, an episode note),
-    and a Rust Rounds or interview take deleted so withdraws no essay video:
-    the essay never played it ((c) of the essay videos, above). Deleting one
+    and a Rust Rounds or interview take deleted so withdraws its week's
+    essay video only if the essay plays it ((c) of the essay videos, above).
+    Deleting one
     removes the note, its audio, every transcript of it and its words, its
     vectors in the meaning index (invariant 35), its set-aside mark and its
     moves along the conveyor (`studio_take_move`, below) in one

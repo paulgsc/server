@@ -14,8 +14,9 @@
 //!   verdicts and the owner's acts on it stay, and so does every record that
 //!   names it by id (a game bite's description, a week's paste, an episode
 //!   note), as for the kinds below. A Rust Rounds or interview take deleted
-//!   so withdraws no essay video: the essay calls it a silence and never
-//!   plays it (`file_host`'s `rust_essays`, paulgsc/server#912).
+//!   so withdraws its week's essay video only if the essay plays it rather
+//!   than calling it a silence (`file_host`'s `rust_essays`,
+//!   paulgsc/server#912).
 //! - **Otherwise two kinds of note can be deleted:** a Studio take
 //!   ([`Deletable::StudioTake`]): a `studio` note whose `ref` names a take
 //!   (`<project>:<shot>:<take>`) and that no idea's answer names; and an

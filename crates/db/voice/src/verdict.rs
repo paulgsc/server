@@ -193,24 +193,24 @@ pub async fn keep(conn: &mut SqliteConnection, judged: Judged<'_>, verdict: &Ver
 }
 
 /// One stored row, as [`read`] reads it back.
-struct Row {
-	rule: String,
-	verdict: String,
-	reasons: String,
-	avg_logprob: Option<f64>,
-	compression_ratio: Option<f64>,
-	no_speech_prob: Option<f64>,
-	unsure_share: Option<f64>,
-	language: Option<String>,
-	language_p: Option<f64>,
-	expected_language: Option<String>,
-	words_per_second: Option<f64>,
-	speech_ms: Option<i64>,
-	peak_dbfs: Option<f64>,
-	rms_dbfs: Option<f64>,
+pub(crate) struct Row {
+	pub(crate) rule: String,
+	pub(crate) verdict: String,
+	pub(crate) reasons: String,
+	pub(crate) avg_logprob: Option<f64>,
+	pub(crate) compression_ratio: Option<f64>,
+	pub(crate) no_speech_prob: Option<f64>,
+	pub(crate) unsure_share: Option<f64>,
+	pub(crate) language: Option<String>,
+	pub(crate) language_p: Option<f64>,
+	pub(crate) expected_language: Option<String>,
+	pub(crate) words_per_second: Option<f64>,
+	pub(crate) speech_ms: Option<i64>,
+	pub(crate) peak_dbfs: Option<f64>,
+	pub(crate) rms_dbfs: Option<f64>,
 }
 
-fn read(row: Row) -> Result<Verdict, VoiceError> {
+pub(crate) fn read(row: Row) -> Result<Verdict, VoiceError> {
 	let kind = Kind::parse(&row.verdict).ok_or(VoiceError::Unreadable)?;
 	let signals = match row.speech_ms {
 		Some(speech_ms) => Some(Signals {
