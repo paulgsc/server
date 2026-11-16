@@ -336,6 +336,36 @@ local count(title, description, expr, steps) =
     [{ color: 'green', value: null }, { color: 'orange', value: 10800 }],
   ),
 
+  // ---- A week of mock interview's essays, the seventh job (IW6,
+  // some-ui#2937, server#899): the same worker over its interview kind
+  // (rust_essays, metrics/rust_essays.rs), its gauges `interview_essay*`.
+
+  interviewEssays: {
+    title: "Mock interview essays: waiting for the deadline, refused, given, waiting for a video and failed",
+    description: "Over time, as the Rust Rounds essays' panel reads them: an interview essay waits for its week's deadline, is given to the render worker from the week's final record (or refused; renders/interview-essay-worker/<week>.refused.log says why), and leaves waiting once its video is kept. InterviewEssay* alerts fire as RustEssay*'s.",
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      { expr: 'interview_essays_waiting_for_deadline', legendFormat: 'waiting for the deadline', refId: 'A' },
+      { expr: 'interview_essays_refused', legendFormat: 'refused', refId: 'B' },
+      { expr: 'interview_essay_render_given', legendFormat: 'given', refId: 'C' },
+      { expr: 'interview_essay_render_waiting', legendFormat: 'waiting for a video', refId: 'D' },
+      { expr: 'interview_essay_render_failed', legendFormat: 'failed', refId: 'E' },
+      { expr: 'interview_essays_pass_failing', legendFormat: 'giving failing', refId: 'F' },
+      { expr: 'time() - interview_essay_render_worker_last_pass_timestamp_seconds', legendFormat: 'seconds since the job passed', refId: 'G', hide: true },
+      { expr: '(time() - interview_essay_render_oldest_waiting_taken_timestamp_seconds) and interview_essay_render_waiting > 0', legendFormat: 'longest wait, seconds', refId: 'H', hide: true },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 'none',
+        decimals: 0,
+        custom: { drawStyle: 'line', lineInterpolation: 'stepAfter', lineWidth: 1, fillOpacity: 10, spanNulls: false },
+      },
+      overrides: [],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
   essays: {
     title: 'Essays waiting for the deadline, refused, given, waiting for a video and failed',
     description: "Over time: an essay waits for its week's deadline, is given to the render worker from the week's final record (or refused), and leaves waiting once its video is kept.",

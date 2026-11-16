@@ -1157,6 +1157,70 @@ pub async fn rust_essay_holders(conn: &mut SqliteConnection, week: &str) -> Resu
 	Ok(holders)
 }
 
+/// Every essay file of a week of mock interview `subject` holds.
+///
+/// IW6, paulgsc/some-ui#2937, by [`rust_essays`]' rules: each revision of a week
+/// included (RR16, paulgsc/some-ui#2691; C72: a correction is a new name,
+/// `-r<N>`, never a replacement), by name.
+///
+/// An essay is tens of KiB and comes once a week, so all are read; the
+/// caller picks each week's newest revision and checks it reads as its name.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn interview_essays(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<HeldEssay>, MailboxError> {
+	let essays = sqlx::query_as!(
+		HeldEssay,
+		r#"SELECT name AS "name!: String", pulled_at AS "pulled_at!: String", body AS "body!: Vec<u8>"
+		   FROM mailbox_item
+		   WHERE subject_id = ?1 AND folder = 'brief' AND name GLOB 'interview-essay-[0-9][0-9][0-9][0-9]-w[0-9][0-9]*.json'
+		   ORDER BY name"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(essays)
+}
+
+/// The weeks `subject` holds any revision of a mock interview essay of, by name
+/// alone ([`interview_essays`] reads them whole), oldest first, each once.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn interview_essay_weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, MailboxError> {
+	let weeks = sqlx::query_scalar!(
+		r#"SELECT DISTINCT substr(name, 17, 8) AS "id!: String"
+		   FROM mailbox_item
+		   WHERE subject_id = ?1 AND folder = 'brief'
+		     AND (name GLOB 'interview-essay-[0-9][0-9][0-9][0-9]-w[0-9][0-9].json' OR name GLOB 'interview-essay-[0-9][0-9][0-9][0-9]-w[0-9][0-9]-r[1-9]*.json')
+		   ORDER BY 1"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	Ok(weeks)
+}
+
+/// How many accounts hold an essay (any revision) of `week`: the drive keys
+/// an essay's files by its week alone, so a week more than one holds is
+/// none of theirs to reach (`file_host`'s `rust_essays`).
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn interview_essay_holders(conn: &mut SqliteConnection, week: &str) -> Result<i64, MailboxError> {
+	let base = String::from("interview-essay-") + week + ".json";
+	let revised = String::from("interview-essay-") + week + "-r[1-9]*.json";
+	let holders = sqlx::query_scalar!(
+		r#"SELECT COUNT(DISTINCT subject_id) AS "n!: i64" FROM mailbox_item
+		   WHERE folder = 'brief' AND (name = ?1 OR name GLOB ?2)"#,
+		base,
+		revised
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(holders)
+}
+
 /// One week home holds, whole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeekFile {

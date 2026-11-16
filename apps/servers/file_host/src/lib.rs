@@ -312,8 +312,9 @@ impl AppState {
 ///   render worker has made of each week;
 /// - Playoff Delta's fills (`pd_fills`), read hourly from `paulgsc/testing`;
 ///   always on;
-/// - Rust Rounds' essays (`rust_essays`), given to the render worker from
-///   the mailbox once their week is final; on with the mailbox;
+/// - each week's essays (`rust_essays`), Rust Rounds' and mock interview's, each
+///   kind given to the render worker by its own worker from the mailbox once
+///   its week is final; on with the mailbox;
 /// - the clips' frames (`clips`), read hourly from `paulgsc/testing`'s
 ///   index, a walk rendered on home's render lane; always on;
 /// - the cards essays (`cards_essays`), read hourly from `paulgsc/testing`'s

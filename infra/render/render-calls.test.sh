@@ -255,7 +255,8 @@ fi
 # --out <w>` writes essay.mp4 and a cache into <w>/<week>, the week being
 # the essay file's folder's name, or fails as the real one does for a take
 # its folder lacks while $FAKE/no-take exists. Each run is counted in
-# $FAKE/essay-runs as `<essay file> <takes> <out>`.
+# $FAKE/essay-runs as `<essay file> <takes> <out>`. A week of mock
+# interview's essay (IW6) is recorded by the same recorder.
 if [ "$1" = tests/record/essay.ts ]; then
   essay= takes= out=
   while [ $# -gt 0 ]; do
@@ -1003,6 +1004,35 @@ run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a failed essay's output is its failed.log" grep -q "has none for it" "$ROOT/renders/rust-essay-worker/2026-w46.failed.log"
 check "and it leaves no folder in renders/rust-essay" test ! -e "$ROOT/renders/rust-essay/2026-w46"
 check "and the job is over" test ! -e "$ROOT/renders/call-worker/job"
+
+# A week of mock interview's essay (IW6, #899): the Rust Rounds essay's job,
+# by the same recorder, from its own folders into its own; a folder of another shape, or
+# without its essay, is never read, and the Rust Rounds essay's job never
+# reads it.
+fresh interview-essay
+mkdir -p "$ROOT/interview-essays/2026-w47/takes" "$ROOT/interview-essays/2026-w48" "$ROOT/interview-essays/not-a-week"
+echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
+echo 1 > "$ROOT/interview-essays/2026-w47/revision"
+echo '{}' > "$ROOT/interview-essays/not-a-week/essay.json"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "the Rust Rounds essay's job never reads an interview essay" test ! -e "$FAKE/essay-runs"
+run_job interview-essay > "$SCRATCH/pass.out" 2>&1
+check "an interview essay is recorded by the essay's recorder from its file and its takes" \
+  test "$(cat "$FAKE/essay-runs")" = "$ROOT/interview-essays/2026-w47/essay.json $ROOT/interview-essays/2026-w47/takes $ROOT/renders/interview-essay-work"
+check "and kept whole in renders/interview-essay" \
+  test -e "$ROOT/renders/interview-essay/2026-w47/essay.mp4" -a -e "$ROOT/renders/interview-essay/2026-w47/essay.json"
+check "without its cache, and its work gone" \
+  test ! -e "$ROOT/renders/interview-essay/2026-w47/cache" -a ! -e "$ROOT/renders/interview-essay-work/2026-w47"
+check "with the speaker and the caps every job has" grep -qx -- --max-video-mb "$FAKE/args-essay"
+run_job interview-essay > "$SCRATCH/pass.out" 2>&1
+check "a rendered interview essay is not made again, and no other folder is read" test "$(wc -l < "$FAKE/essay-runs")" -eq 1
+fresh interview-essay-failed
+mkdir -p "$ROOT/interview-essays/2026-w47/takes"
+echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
+touch "$FAKE/no-take"
+run_job interview-essay > "$SCRATCH/pass.out" 2>&1
+check "a failed interview essay's output is its failed.log" grep -q "has none for it" "$ROOT/renders/interview-essay-worker/2026-w47.failed.log"
+check "and it leaves no folder in renders/interview-essay" test ! -e "$ROOT/renders/interview-essay/2026-w47"
 
 # A clip's walk: each folder file_host gave with its sample and app is
 # walked by the motion, kept whole in renders/clip-walk; a folder of another

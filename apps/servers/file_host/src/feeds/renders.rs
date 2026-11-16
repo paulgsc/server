@@ -639,8 +639,10 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 			.filter(|(week, monday)| *monday >= today && !seen.let_go.contains(week) && !seen.held.iter().any(|(key, _)| key == week))
 			.map(|(_, monday)| *monday)
 			.min(),
-		// A cards essay comes when a session writes one: no day is promised.
-		Feed::CardsEssay => None,
+		// A cards essay comes when a session writes one, and an interview
+		// essay when its routine runs, which promises no day yet: none is
+		// promised.
+		Feed::CardsEssay | Feed::InterviewEssay => None,
 		Feed::Call | Feed::PlayoffDelta => cadence(feed, seen, now, today),
 	}
 }
@@ -663,7 +665,7 @@ fn cadence(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Na
 			let taken = DateTime::<Utc>::from_timestamp(newest_taken, 0)?.with_timezone(&HOME_ZONE).date_naive();
 			Some(on_or_after((taken + Duration::days(1)).max(today), Weekday::Tue))
 		}
-		Feed::RustEssay | Feed::CardsEssay => None,
+		Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay => None,
 	}
 }
 
@@ -852,6 +854,11 @@ impl Folders {
 					PathBuf::from(crate::rust_essays::RENDERS_FOLDER),
 					PathBuf::from(crate::rust_essays::STATUS_FOLDER),
 				),
+				(
+					Feed::InterviewEssay,
+					PathBuf::from(crate::rust_essays::INTERVIEW_RENDERS_FOLDER),
+					PathBuf::from(crate::rust_essays::INTERVIEW_STATUS_FOLDER),
+				),
 			],
 			clip_walks: Some((
 				PathBuf::from(crate::clips::WALKS_FOLDER),
@@ -886,7 +893,8 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 				let (_, voiced, let_go) = crate::pd_fills::render::voiced(db).await?;
 				(voiced, let_go)
 			}
-			Feed::RustEssay => crate::rust_essays::held(db, subject, Feed::RustEssay.input()).await?,
+			Feed::RustEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::RustRounds, subject, Feed::RustEssay.input()).await?,
+			Feed::InterviewEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::Interview, subject, Feed::InterviewEssay.input()).await?,
 			// On its own shelf below (`Shelf::CardsEssay`), never in `feeds`.
 			Feed::CardsEssay => continue,
 		};

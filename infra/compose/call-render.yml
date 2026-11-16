@@ -33,7 +33,11 @@
 #   (`cards_essays::ESSAYS_FOLDER`), a cut list paulgsc/testing's cards index
 #   listed, is drawn card by card with each scene said by the speaker
 #   (EXPLAIN6, #878; an older, silent v1 essay stays silent), into
-#   ${STORAGE}/renders/cards-essay/<key>/. Every job
+#   ${STORAGE}/renders/cards-essay/<key>/. Its seventh is a week of mock
+#   interview's essay (IW6, paulgsc/some-ui#2937, #899), by the Rust Rounds
+#   essay's rules (one export over the kind, `rust_essays`): each essay file_host
+#   writes to ${STORAGE}/interview-essays/<week>/, once the week is final, is
+#   made into ${STORAGE}/renders/interview-essay/<week>/. Every job
 #   waits on the speaker alike: `render` starts only after `kokoro` has.
 #
 #   Its image is published by paulgsc/some-ui's CI, not built here (#718,
@@ -113,11 +117,11 @@ services:
         condition: service_started
       # file_host makes ${STORAGE}/call-weeks,
       # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests,
-      # ${STORAGE}/rust-essays, ${STORAGE}/clip-walks and
-      # ${STORAGE}/cards-essays before it answers its health check
-      # (call_weeks::start, pd_fills::start, previews::start,
-      # rust_essays::start, clips::start, cards_essays::start), so each is its
-      # own, never Docker's.
+      # ${STORAGE}/rust-essays, ${STORAGE}/interview-essays,
+      # ${STORAGE}/clip-walks and ${STORAGE}/cards-essays before it answers
+      # its health check (call_weeks::start, pd_fills::start,
+      # previews::start, rust_essays::start, clips::start, cards_essays::start),
+      # so each is its own, never Docker's.
       file-host:
         condition: service_healthy
     networks:
@@ -156,6 +160,16 @@ services:
       - type: volume
         source: rust_essay_files
         target: /essays
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`rust_essays::INTERVIEW_ESSAYS_FOLDER`), read here
+      # only, through `interview_essay_files` (below): one folder per week of
+      # mock interview whose essay is its final record's (IW6,
+      # paulgsc/some-ui#2937, #899).
+      - type: volume
+        source: interview_essay_files
+        target: /interview-essays
         read_only: true
         volume:
           nocopy: true
@@ -266,6 +280,15 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/rust-essays
+  # ${STORAGE}/interview-essays, where file_host writes each mock interview
+  # essay it gives the worker; bound as call_week_files is, for the same
+  # reason (rust_essays::start makes it).
+  interview_essay_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/interview-essays
   # ${STORAGE}/clip-walks, where file_host writes each clip side home walks;
   # bound as call_week_files is, for the same reason (clips::start makes it).
   clip_walk_files:
