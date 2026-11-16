@@ -71,8 +71,16 @@
 //!
 //! Deleting a note for good, only of a kind the owner switched on
 //! ([`delete::SWITCHED_ON`]: Studio takes and idea answers since
-//! 2026-11-04), and keeping its receipt in
+//! 2026-11-04, and a note of any kind home could not hear since
+//! paulgsc/some-ui#3076), and keeping its receipt in
 //! `voice_note_deletion`, is [`delete`]'s (paulgsc/some-ui#2477, MD3).
+//!
+//! Which takes home could not hear still wait on the owner, and every act
+//! of the owner's reconciling one (kept, record again, deleted), is
+//! [`attention`]'s: `voice_note_attention`, append-only, written only by
+//! `file_host`'s `handlers::voice` (`POST /api/v1/voice-notes/:id/attention`,
+//! and `DELETE /api/v1/voice-notes/:id` through [`delete`];
+//! paulgsc/server#912, HEARD3).
 //!
 //! Where each Studio take is on the conveyor, and every move that put it
 //! there, is [`conveyor`]'s: `studio_take_move`, one row per move, written
@@ -89,6 +97,7 @@
 //! scouts file naming it is what puts it in front of the routine, and a
 //! mark does not unname it.
 
+pub mod attention;
 pub mod bite_match;
 pub mod conveyor;
 pub mod delete;
@@ -436,7 +445,7 @@ fn container(content_type: &str) -> Option<&'static str> {
 /// name, not a note's, and so do `PUT /voice-notes/kept`,
 /// `DELETE /voice-notes/deleted` and `PUT /voice-notes/conveyor`. `file_host`'s `handlers::voice` tests that
 /// every such route is named here.
-const ROUTE_NAMES: [&str; 5] = ["on-drive", "kept", "deleted", "takes", "conveyor"];
+const ROUTE_NAMES: [&str; 6] = ["on-drive", "kept", "deleted", "takes", "conveyor", "attention"];
 
 /// Whether `id` reads as a note's id, as [`describe`] takes one: a name, and
 /// not one of [`ROUTE_NAMES`].

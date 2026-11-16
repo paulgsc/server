@@ -211,7 +211,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -1266,11 +1266,17 @@ nowhere is marked as such and belongs to review.
     with it (`rust_round_repo::essay_video::withdraw`, cause `take-deleted`,
     naming the note beside the note's own receipt), and the week is never
     rendered again, while its script stays in the mailbox; (d) My data says
-    the essay video holds the owner's voice (the phone's). Rust Rounds takes
-    are not a kind `DELETE /voice-notes/:id` can delete today, so (c) is a
-    guard: it holds the day the owner switches that kind on. *Enforced by*
+    the essay video holds the owner's voice (the phone's). Rust Rounds and
+    interview takes can be deleted only when home could not hear them
+    (paulgsc/some-ui#3076). An essay may answer such a take's item as a
+    silence, and then never plays it (HEARD1), or play it anyway; so (c)
+    withdraws a week for a deleted take unless the revision given to the
+    render and the newest both answer that item as a silence
+    (paulgsc/server#912), and a revision that does not read counts as
+    playing it. *Enforced by*
     `rust_essays`' `a_kept_essay_copies_its_takes_only_until_its_video_is_made`,
     `an_essay_whose_take_is_deleted_is_withdrawn_and_its_files_go`,
+    `deleting_a_take_withdraws_its_week_only_if_the_essay_plays_it`,
     `an_essay_the_subject_no_longer_holds_leaves_the_drive`,
     `an_interview_essay_is_given_from_its_weeks_final_with_its_takes`
     and `an_interview_essay_whose_take_is_deleted_is_withdrawn`, and
@@ -1289,7 +1295,16 @@ nowhere is marked as such and belongs to review.
     `idea:<idea>:<question>` or that `idea_answer` names (the owner,
     2026-11-04, paulgsc/some-ui#2579, amending the 2026-11-02 rule that kept
     an answer as the work); the owner switched both on on 2026-11-04
-    (paulgsc/some-ui#2473). Every other kind is the work and is kept.
+    (paulgsc/some-ui#2473). A note of any kind home could not hear, its
+    newest verdict `garbled`, `failed` or `nothing_said` (invariant 23's
+    `voice_transcript_verdict`), may be deleted too: the owner, 2026-11-16,
+    paulgsc/some-ui#3076, "allow delete for any kind home couldn't hear"
+    (`Deletable::Unheard`). Every other kind is the work and is kept, and so
+    is a note home heard or has not judged yet. Deleting a note home could
+    not hear keeps every record that names it by id (a game bite's
+    description, which its receipt names, a week's paste, an episode note),
+    and a Rust Rounds or interview take deleted so withdraws its week's
+    essay video only if the essay plays it ((c) of the essay videos, above).
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
     vectors in the meaning index (invariant 35), its set-aside mark and its
@@ -1300,7 +1315,10 @@ nowhere is marked as such and belongs to review.
     mailbox filer checks the note is still held in the transaction that
     files, so words deleted after it read them never leave home. What home
     made of it stays too (`voice_transcript_verdict`: codes, numbers and a
-    language, never a word; paulgsc/server#908, #911). It
+    language, never a word; paulgsc/server#908, #911), and so does the
+    owner's reconciliation of it (`voice_note_attention`, below): a delete
+    of a note whose newest verdict was not `heard` records a `deleted` act
+    there, in the same transaction. It
     writes a receipt to `voice_note_deletion`, append-only (its trigger
     aborts an `UPDATE`) and gone only with the account: the note's id and
     kind, when it was recorded, reached home and was deleted, its size, and
@@ -1551,7 +1569,18 @@ nowhere is marked as such and belongs to review.
     for the last failure the worker makes on a note only; it leaves with the
     account alone (sweep and trigger), and outlives its note: deleting a note
     for good keeps its verdicts, which hold no word (the owner's call,
-    paulgsc/server#911), and its receipt says `verdict` stayed. Every read that gives
+    paulgsc/server#911), and its receipt says `verdict` stayed. **The owner's
+    reconciliation of each note home could not hear is
+    `voice_note_attention`, append-only too** (paulgsc/server#912, HEARD3):
+    one row per act (`kept`, `record_again`, `deleted`) on a note whose
+    newest verdict is `garbled`, `failed` or `nothing_said`, naming that
+    verdict by its key, numbered per note, and when home recorded it; never
+    anything said. Written only by `POST /voice-notes/:id/attention` and
+    `DELETE /voice-notes/:id` (`voice_repo::attention::act`), never updated
+    (its trigger aborts an `UPDATE`), it outlives its note as the verdicts do
+    and leaves with the account alone (sweep and trigger). `GET
+    /voice-notes/attention` lists the notes held whose newest verdict no act
+    answers. Every read that gives
     a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
     the mailbox's transcript and pickup files) gives its verdict beside it,
     so no reader judges a transcript for itself. A reader

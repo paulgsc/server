@@ -679,7 +679,7 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 			continue;
 		}
 		let Some(subject) = subject else { continue };
-		if let Some(note) = deleted_take(db, kind, subject, &week).await? {
+		if let Some(note) = deleted_take(db, kind, subject, &week, given_revision(&input).await).await? {
 			let size = i64::try_from(crate::call_weeks::render::bytes_under(&render).await).unwrap_or(i64::MAX);
 			let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 			rust_round_repo::essay_video::withdraw(&mut tx, kind, subject, &week, &note, size, now).await?;
@@ -699,14 +699,54 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 	Ok(done)
 }
 
-/// A take `week`'s final record names that was deleted from My data, if any.
-async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
+/// A take `week`'s final record names that was deleted and that its essay
+/// may play, if any.
+///
+/// An essay may answer an item whose take home could not hear as a silence,
+/// and then plays nothing for it (HEARD1); it may also play it. So a
+/// deleted take withdraws the week unless every revision of the week's
+/// essay `subject` holds that could hold it answers its item as a silence:
+/// the revision `given` to the render, if one was, and the newest, which the
+/// next export would give. Deleting a take the essay never played, as the
+/// owner's reconciliation of an unheard one may (paulgsc/server#912,
+/// HEARD3), withdraws nothing. A revision that does not read counts as
+/// playing it.
+async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str, given: Option<u32>) -> Result<Option<String>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
 	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
 		return Ok(None);
 	};
-	for (_, take) in standing.answers.into_iter().chain(standing.reads) {
-		if voice_repo::delete::receipt(&mut conn, subject, &take).await.map_err(voice)?.is_some() {
+	let mut deleted = Vec::new();
+	for ((item, take), read) in standing.answers.iter().map(|pair| (pair, false)).chain(standing.reads.iter().map(|pair| (pair, true))) {
+		if voice_repo::delete::receipt(&mut conn, subject, take).await.map_err(voice)?.is_some() {
+			deleted.push((item.clone(), take.clone(), read));
+		}
+	}
+	if deleted.is_empty() {
+		return Ok(None);
+	}
+	let held: Vec<_> = held_essays(&mut conn, kind, subject)
+		.await?
+		.into_iter()
+		.filter_map(|file| {
+			let (of, revision) = essay::parse_name_of(kind, &file.name)?;
+			(of == week).then(|| (revision, essay::read_of(kind, &file.body).ok()))
+		})
+		.collect();
+	let newest = held.iter().map(|(revision, _)| *revision).max();
+	let revisions: Vec<_> = held
+		.into_iter()
+		.filter(|(revision, _)| Some(*revision) == newest || Some(*revision) == given)
+		.map(|(_, essay)| essay)
+		.collect();
+	for (item, take, read) in deleted {
+		let silent = |essay: &Option<essay::Essay>| {
+			essay.as_ref().is_some_and(|essay| {
+				let items = if read { &essay.reads } else { &essay.tickets };
+				items.iter().any(|(id, answered)| *id == item && *answered == essay::Answered::Silence)
+			})
+		};
+		if revisions.is_empty() || !revisions.iter().all(silent) {
 			return Ok(Some(take));
 		}
 	}
@@ -1268,6 +1308,67 @@ mod tests {
 		assert!(!folders.essays.join("2026-w46").exists(), "its input is not recreated");
 		tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
 		assert!(!folders.essays.join("2026-w46").exists(), "and tidy leaves none");
+	}
+
+	/// HEARD3 (paulgsc/server#912): a take home could not hear that the
+	/// essay answers as a silence is never played, so the owner deleting it
+	/// (paulgsc/some-ui#3076) withdraws nothing: a made video stays, and a
+	/// week not yet given still is, the silence standing. One the essay plays
+	/// anyway withdraws its week, as any played take does; one only an older
+	/// revision played, superseded before it was given, does not.
+	#[tokio::test]
+	async fn deleting_a_take_withdraws_its_week_only_if_the_essay_plays_it() {
+		for (given_first, plays, older_plays) in [(true, false, false), (false, false, false), (true, true, false), (true, false, true)] {
+			let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+			let folders = folders(dir.path());
+			hold_week(&pool, 1, "2026-w46").await;
+			send(&pool, "2026-w46").await;
+			for statement in [
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, 'note-311', 'rust-round', '2026-w46:QM-311', 'then', 'audio/ogg', 4, 's', 'now')",
+				"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'note-311', x'4f676753')",
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+				 VALUES (?1, 'note-311', 'm', 'e', 1, 'heard', 'en', 1.0, 900, 'mumble', 1, 'now')",
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+				 VALUES (?1, 'note-311', 'm', 1, 'heard-1', 'garbled', 'low_confidence', 900, 'now')",
+				"INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'note-311', 'm', 1, 'now')",
+				"INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'transcript', 'transcript-note-311-1.json', 'added', 'now')",
+			] {
+				sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+			}
+			let answers = if plays { ["take", "silence"] } else { ["silence", "silence"] };
+			if older_plays {
+				hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["take", "silence"])).await;
+				let second = essay::mailbox_name("2026-w46").replace(".json", "-r2.json");
+				hold(&pool, 3, &second, &essay("2026-w46", answers)).await;
+			} else {
+				hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", answers)).await;
+			}
+			let now = "2026-11-24T08:00:00.000Z";
+			if given_first {
+				assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap().written, 1);
+				std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
+				std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
+			}
+			let mut conn = pool.acquire().await.unwrap();
+			let deleted = voice_repo::delete::delete(&mut conn, ME, "note-311", voice_repo::delete::SWITCHED_ON, now).await.unwrap();
+			assert!(matches!(deleted, voice_repo::delete::Deleted::Gone(_)), "an unheard take may go");
+			drop(conn);
+			let tidied = tidy(&pool, Kind::RustRounds, Some(ME), &folders, now).await.unwrap();
+			assert_eq!(tidied.withdrawn, usize::from(plays), "given first: {given_first}, plays: {plays}");
+			let mut conn = pool.acquire().await.unwrap();
+			let withdrawn = rust_round_repo::essay_video::withdrawn(&mut conn, Kind::RustRounds, ME).await.unwrap();
+			assert_eq!(withdrawn.len(), usize::from(plays));
+			drop(conn);
+			if plays {
+				assert!(!folders.renders.join("2026-w46").exists(), "a played take's week is withdrawn");
+			} else if given_first {
+				assert!(folders.renders.join("2026-w46").join(VIDEO).exists(), "its video stays");
+			} else {
+				let done = export(&pool, Kind::RustRounds, ME, &folders, now).await.unwrap();
+				assert_eq!((done.written, done.withdrawn, done.refused), (1, 0, 0), "the silence stands");
+			}
+		}
 	}
 
 	/// Invariant 23's exception, (c): a take deleted from My data takes the

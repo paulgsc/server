@@ -193,24 +193,24 @@ pub async fn keep(conn: &mut SqliteConnection, judged: Judged<'_>, verdict: &Ver
 }
 
 /// One stored row, as [`read`] reads it back.
-struct Row {
-	rule: String,
-	verdict: String,
-	reasons: String,
-	avg_logprob: Option<f64>,
-	compression_ratio: Option<f64>,
-	no_speech_prob: Option<f64>,
-	unsure_share: Option<f64>,
-	language: Option<String>,
-	language_p: Option<f64>,
-	expected_language: Option<String>,
-	words_per_second: Option<f64>,
-	speech_ms: Option<i64>,
-	peak_dbfs: Option<f64>,
-	rms_dbfs: Option<f64>,
+pub(crate) struct Row {
+	pub(crate) rule: String,
+	pub(crate) verdict: String,
+	pub(crate) reasons: String,
+	pub(crate) avg_logprob: Option<f64>,
+	pub(crate) compression_ratio: Option<f64>,
+	pub(crate) no_speech_prob: Option<f64>,
+	pub(crate) unsure_share: Option<f64>,
+	pub(crate) language: Option<String>,
+	pub(crate) language_p: Option<f64>,
+	pub(crate) expected_language: Option<String>,
+	pub(crate) words_per_second: Option<f64>,
+	pub(crate) speech_ms: Option<i64>,
+	pub(crate) peak_dbfs: Option<f64>,
+	pub(crate) rms_dbfs: Option<f64>,
 }
 
-fn read(row: Row) -> Result<Verdict, VoiceError> {
+pub(crate) fn read(row: Row) -> Result<Verdict, VoiceError> {
 	let kind = Kind::parse(&row.verdict).ok_or(VoiceError::Unreadable)?;
 	let signals = match row.speech_ms {
 		Some(speech_ms) => Some(Signals {
@@ -250,30 +250,72 @@ fn read(row: Row) -> Result<Verdict, VoiceError> {
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
 pub async fn of_note(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<Verdict>, VoiceError> {
+	Ok(newest(conn, subject, note_id).await?.map(|newest| newest.verdict))
+}
+
+/// A note's verdict, as [`of_note`] chooses it, with the key it is kept
+/// under: what an act of the owner's on it answers (HEARD3,
+/// [`crate::attention`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Newest {
+	/// The attempt judged: the model and its attempt.
+	pub model: String,
+	pub attempt: i64,
+	pub verdict: Verdict,
+}
+
+/// [`of_note`]'s verdict, with its key.
+///
+/// # Errors
+/// Any `sqlx` failure, or a stored verdict this build does not know.
+pub async fn newest(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<Newest>, VoiceError> {
 	// The ending is `transcript::heard`'s choice, by its ORDER BY; then that
 	// attempt's verdict, if it has one. Only with no ending at all, the
 	// newest failure judged final.
-	let row = sqlx::query_as!(
-		Row,
+	let row = sqlx::query!(
 		r#"WITH ending AS (
 		     SELECT t.model, t.attempt FROM voice_transcript t
 		     WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome IN ('heard', 'silent')
 		     ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
 		     LIMIT 1)
-		   SELECT v.rule AS "rule!", v.verdict AS "verdict!", v.reasons AS "reasons!", v.avg_logprob, v.compression_ratio, v.no_speech_prob,
-		          v.unsure_share, v.language, v.language_p, v.expected_language, v.words_per_second, v.speech_ms, v.peak_dbfs, v.rms_dbfs
+		   SELECT v.model AS "model!", v.attempt AS "attempt!", v.rule AS "rule!", v.verdict AS "verdict!", v.reasons AS "reasons!",
+		          v.avg_logprob, v.compression_ratio, v.no_speech_prob, v.unsure_share, v.language, v.language_p, v.expected_language,
+		          v.words_per_second, v.speech_ms, v.peak_dbfs, v.rms_dbfs
 		   FROM voice_transcript_verdict v
 		   WHERE v.subject_id = ?1 AND v.note_id = ?2
 		     AND (EXISTS (SELECT 1 FROM ending e WHERE e.model = v.model AND e.attempt = v.attempt)
 		          OR (NOT EXISTS (SELECT 1 FROM ending) AND v.verdict = 'failed'))
-		   ORDER BY v.judged_at DESC, v.rule DESC
+		   ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
 		   LIMIT 1"#,
 		subject,
 		note_id
 	)
 	.fetch_optional(&mut *conn)
 	.await?;
-	row.map(read).transpose()
+	let Some(row) = row else {
+		return Ok(None);
+	};
+	let verdict = read(Row {
+		rule: row.rule,
+		verdict: row.verdict,
+		reasons: row.reasons,
+		avg_logprob: row.avg_logprob,
+		compression_ratio: row.compression_ratio,
+		no_speech_prob: row.no_speech_prob,
+		unsure_share: row.unsure_share,
+		language: row.language,
+		language_p: row.language_p,
+		expected_language: row.expected_language,
+		words_per_second: row.words_per_second,
+		speech_ms: row.speech_ms,
+		peak_dbfs: row.peak_dbfs,
+		rms_dbfs: row.rms_dbfs,
+	})?;
+	Ok(Some(Newest {
+		model: row.model,
+		attempt: row.attempt,
+		verdict,
+	}))
 }
 
 /// The verdict of what `model` made of `subject`'s note `note_id`.
@@ -342,7 +384,23 @@ pub async fn as_the_routine_reads(conn: &mut SqliteConnection, subject: &str, no
 	let Some(model) = filed else {
 		return Ok(None);
 	};
-	Ok(of_ending(conn, subject, note_id, &model).await?.map(|verdict| verdict.kind))
+	// The verdict of that model's last final attempt, read from the verdicts
+	// alone, so it outlives the note's transcripts: a take the owner deleted
+	// still reads as what home made of it (HEARD3), and an essay that called
+	// it a silence stands. A model judges at most its ending, which is its
+	// last attempt, or its last failure, so this is [`of_ending`]'s choice.
+	let kind = sqlx::query_scalar!(
+		r#"SELECT v.verdict AS "verdict!" FROM voice_transcript_verdict v
+		   WHERE v.subject_id = ?1 AND v.note_id = ?2 AND v.model = ?3
+		   ORDER BY v.attempt DESC, v.judged_at DESC, v.rule DESC
+		   LIMIT 1"#,
+		subject,
+		note_id,
+		model
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	kind.map(|kind| Kind::parse(&kind).ok_or(VoiceError::Unreadable)).transpose()
 }
 
 #[cfg(test)]

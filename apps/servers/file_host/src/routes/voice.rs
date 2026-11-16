@@ -62,13 +62,29 @@
 //! DELETE /voice-notes/:id             → { receipt }: deletes the note for
 //!                                      good, from a paired phone's My
 //!                                      data, only of a kind the owner
-//!                                      switched on (none yet), else a 409
-//!                                      (paulgsc/some-ui#2477)
+//!                                      switched on (Studio takes, idea
+//!                                      answers, any note home could not
+//!                                      hear), else a 409
+//!                                      (paulgsc/some-ui#2477, #3076)
 //! GET /voice-notes/deleted            → { receipts, total }: the receipts
 //!                                      of the caller's notes deleted for
 //!                                      good, newest first, at most 100,
 //!                                      and how many in all, to a paired
 //!                                      phone's My data (paulgsc/server#667)
+//! GET /voice-notes/attention          → { takes: [{ id, of, ref,
+//!                                      recordedAt, heard, verdict }],
+//!                                      total }: every take home could not
+//!                                      hear (its newest verdict garbled,
+//!                                      failed or nothing_said) that no act
+//!                                      answers yet, newest first, at most
+//!                                      100, to a paired phone
+//!                                      (paulgsc/server#912, HEARD3)
+//! POST /voice-notes/:id/attention     → 201 { change: "recorded", act,
+//!                                      verdict }, or 200 "unchanged" for
+//!                                      a retry: body { act: "keep" |
+//!                                      "again" }, the owner's act on that
+//!                                      verdict, append-only; 409 when it
+//!                                      asks for none
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -97,7 +113,8 @@
 //! **Trust model:** a subject route, as `routes::jobs`. The handler takes a
 //! `SubjectId`, so a request without a session is `401` and a write from an
 //! untrusted origin `403`. The phone reaches it with its pairing's bearer
-//! token. The audio read, the delete and the receipts read take a `Paired`
+//! token. The audio read, the delete, the receipts read and the attention
+//! read and act take a `Paired`
 //! phone, as `routes::rust_rounds` does, and so do the kept read and the
 //! take library, so a browser's cookie session is a `403` there too.
 //!
@@ -107,7 +124,8 @@
 //! its own code (`deleted_for_good`) so the phone lets its copy go; setting a
 //! note aside deletes nothing. The one `DELETE` is My
 //! data's, for a kind the owner switched on, with a receipt
-//! (`voice_repo::delete`): Studio takes and idea answers.
+//! (`voice_repo::delete`): Studio takes, idea answers, and a note of any
+//! kind home could not hear (paulgsc/some-ui#3076).
 //! See `handlers::voice` and `voice_repo`.
 
 use crate::auth::AuthContext;
@@ -146,7 +164,9 @@ where
 		.get("/voice-notes/kept", handlers::get_kept)
 		.get("/voice-notes/takes", handlers::get_takes)
 		.delete("/voice-notes/:id", handlers::delete_note)
-		.get("/voice-notes/deleted", handlers::get_deleted);
+		.get("/voice-notes/deleted", handlers::get_deleted)
+		.get("/voice-notes/attention", handlers::get_attention)
+		.post("/voice-notes/:id/attention", handlers::post_attention);
 
 	Module::versioned("voice", table).with_cors(cors)
 }

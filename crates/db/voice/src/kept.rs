@@ -88,7 +88,10 @@ pub struct NoteKept {
 	/// When the owner set it aside, if they did.
 	pub set_aside_at: Option<String>,
 	/// My data may offer to delete it: its kind is one the owner switched on
-	/// ([`crate::delete::SWITCHED_ON`]).
+	/// ([`crate::delete::SWITCHED_ON`]). By kind alone: a note of another
+	/// kind home could not hear ([`crate::delete::Deletable::Unheard`]) is
+	/// deletable too, but only the reconciliation page offers it
+	/// (paulgsc/server#912, left as a follow-up).
 	pub deletable: bool,
 	/// How long it runs, in milliseconds, as home heard it, words or silence;
 	/// null while home has heard it neither as words nor as silence, and when
