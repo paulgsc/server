@@ -307,9 +307,10 @@ async fn the_auth_tables_hold_exactly_their_listed_columns() {
 	for (table, expected) in [
 		("account", &["subject_id", "user_handle"][..]),
 		("passkey", &["credential_id", "subject_id", "passkey"][..]),
-		// `kind`, `pairing_id` and `paired_on` (a UTC day, phones only):
-		// some-ui#3092, the owner's call invariant 10 left open.
-		("auth_session", &["token_hash", "subject_id", "expires_at", "kind", "pairing_id", "paired_on"][..]),
+		// `kind`, `pairing_id`, `paired_on` (a UTC day, phones only) and
+		// `label` (the name the owner typed for a phone): some-ui#3092, the
+		// owner's call invariant 10 left open.
+		("auth_session", &["token_hash", "subject_id", "expires_at", "kind", "pairing_id", "paired_on", "label"][..]),
 	] {
 		let columns: Vec<String> = sqlx::query("SELECT name FROM pragma_table_info(?) ORDER BY cid")
 			.bind(table)

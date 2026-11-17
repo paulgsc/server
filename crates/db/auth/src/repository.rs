@@ -38,7 +38,27 @@ pub struct PairedPhone {
 	/// The UTC day it paired (`YYYY-MM-DD`), or `None` for a phone paired
 	/// before home kept the day.
 	pub paired_on: Option<String>,
+	/// The name the owner typed for it, if any. Already bounded by the
+	/// caller; this crate stores what it is given.
+	pub label: Option<String>,
 	pub expires_at: i64,
+}
+
+/// A phone being paired: its token's hash, its random pairing id, the UTC day
+/// (`YYYY-MM-DD`) and the name the owner typed, if any.
+#[derive(Clone, Copy)]
+pub struct NewPhone<'a> {
+	pub token_hash: &'a [u8],
+	pub pairing_id: &'a [u8],
+	pub paired_on: &'a str,
+	pub label: Option<&'a str>,
+}
+
+// Hand-written so a `{:?}` never prints the token's hash.
+impl std::fmt::Debug for NewPhone<'_> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("NewPhone").finish_non_exhaustive()
+	}
 }
 
 /// What pairing a phone did.
@@ -307,20 +327,27 @@ impl AuthRepository {
 	/// phone ends on its own sign-out, on sign-out everywhere, with the
 	/// account, or when it expires.
 	///
-	/// `paired_on` is the UTC day, computed by the caller. Expired sessions
+	/// `paired_on` is the UTC day, computed by the caller, and `label` the
+	/// name the owner typed, already bounded by the caller. Expired sessions
 	/// (anyone's) are dropped first, so an expired phone frees its place.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn pair_phone(&self, token_hash: &[u8], subject_id: &str, pairing_id: &[u8], paired_on: &str, expires_at: i64, now: i64) -> Result<PairPhone, sqlx::Error> {
+	pub async fn pair_phone(&self, subject_id: &str, phone: &NewPhone<'_>, expires_at: i64, now: i64) -> Result<PairPhone, sqlx::Error> {
+		let NewPhone {
+			token_hash,
+			pairing_id,
+			paired_on,
+			label,
+		} = *phone;
 		let mut tx = self.pool.begin().await?;
 
 		sqlx::query!("DELETE FROM auth_session WHERE expires_at <= ?1", now).execute(&mut *tx).await?;
 
 		// One statement, so two pairings racing cannot both take the last place.
 		let created = sqlx::query!(
-			"INSERT INTO auth_session (token_hash, subject_id, expires_at, kind, pairing_id, paired_on)
-			 SELECT ?1, ?2, ?3, 'phone', ?4, ?5
+			"INSERT INTO auth_session (token_hash, subject_id, expires_at, kind, pairing_id, paired_on, label)
+			 SELECT ?1, ?2, ?3, 'phone', ?4, ?5, ?7
 			 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?2)
 			   AND (SELECT COUNT(*) FROM auth_session WHERE subject_id = ?2 AND kind = 'phone') < ?6",
 			token_hash,
@@ -328,7 +355,8 @@ impl AuthRepository {
 			expires_at,
 			pairing_id,
 			paired_on,
-			MAX_PHONES_PER_SUBJECT
+			MAX_PHONES_PER_SUBJECT,
+			label
 		)
 		.execute(&mut *tx)
 		.await?
@@ -370,7 +398,7 @@ impl AuthRepository {
 	pub async fn phones(&self, subject_id: &str, now: i64) -> Result<Vec<PairedPhone>, sqlx::Error> {
 		sqlx::query_as!(
 			PairedPhone,
-			r#"SELECT pairing_id AS "pairing_id!", paired_on, expires_at FROM auth_session
+			r#"SELECT pairing_id AS "pairing_id!", paired_on, label, expires_at FROM auth_session
 			   WHERE subject_id = ?1 AND kind = 'phone' AND pairing_id IS NOT NULL AND expires_at > ?2
 			   ORDER BY paired_on IS NOT NULL, paired_on, expires_at"#,
 			subject_id,
@@ -378,6 +406,24 @@ impl AuthRepository {
 		)
 		.fetch_all(&self.pool)
 		.await
+	}
+
+	/// Name one of the subject's phones (`None` clears the name), and say
+	/// whether there was one. Scoped by subject, like [`Self::end_phone`].
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn rename_phone(&self, subject_id: &str, pairing_id: &[u8], label: Option<&str>) -> Result<bool, sqlx::Error> {
+		let renamed = sqlx::query!(
+			"UPDATE auth_session SET label = ?3 WHERE subject_id = ?1 AND pairing_id = ?2 AND kind = 'phone'",
+			subject_id,
+			pairing_id,
+			label
+		)
+		.execute(&self.pool)
+		.await?
+		.rows_affected();
+		Ok(renamed > 0)
 	}
 
 	/// Sign one of the subject's phones out, and say whether there was one.
@@ -445,7 +491,7 @@ impl AuthRepository {
 
 #[cfg(test)]
 mod tests {
-	use super::{Accounts, AddPasskey, Admission, AuthRepository, PairPhone, StoredPasskey};
+	use super::{Accounts, AddPasskey, Admission, AuthRepository, NewPhone, PairPhone, StoredPasskey};
 	use crate::{MAX_PASSKEYS_PER_SUBJECT, MAX_PHONES_PER_SUBJECT, MAX_SESSIONS_PER_SUBJECT};
 	use sqlx::sqlite::SqlitePoolOptions;
 
@@ -455,6 +501,15 @@ mod tests {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
 		AuthRepository::new(pool)
+	}
+
+	fn phone<'a>(token_hash: &'a [u8], pairing_id: &'a [u8], paired_on: &'a str) -> NewPhone<'a> {
+		NewPhone {
+			token_hash,
+			pairing_id,
+			paired_on,
+			label: None,
+		}
 	}
 
 	fn passkey(id: u8) -> StoredPasskey {
@@ -576,7 +631,10 @@ mod tests {
 
 		// The phone is the session closest to expiring, the one the old cap
 		// would have ended first.
-		assert_eq!(repo.pair_phone(b"phone", "subject-a", &[7; 16], "2026-11-17", 5_000, 200).await.unwrap(), PairPhone::Paired);
+		assert_eq!(
+			repo.pair_phone("subject-a", &phone(b"phone", &[7; 16], "2026-11-17"), 5_000, 200).await.unwrap(),
+			PairPhone::Paired
+		);
 		for n in 0..=MAX_SESSIONS_PER_SUBJECT {
 			repo.create_session(&n.to_le_bytes(), "subject-a", 10_000 + n, 200).await.unwrap();
 		}
@@ -590,6 +648,12 @@ mod tests {
 		assert_eq!(phones.len(), 1);
 		assert_eq!(phones[0].pairing_id, vec![7; 16]);
 		assert_eq!(phones[0].paired_on.as_deref(), Some("2026-11-17"));
+		assert_eq!(phones[0].label, None);
+		assert!(repo.rename_phone("subject-a", &[7; 16], Some("Pixel")).await.unwrap());
+		assert!(!repo.rename_phone("subject-b", &[7; 16], Some("not theirs")).await.unwrap());
+		assert_eq!(repo.phones("subject-a", 300).await.unwrap()[0].label.as_deref(), Some("Pixel"));
+		assert!(repo.rename_phone("subject-a", &[7; 16], None).await.unwrap());
+		assert_eq!(repo.phones("subject-a", 300).await.unwrap()[0].label, None);
 		assert_eq!(phones[0].expires_at, 5_000);
 
 		assert!(repo.phones("subject-a", 5_000).await.unwrap().is_empty(), "an expired phone is not listed");
@@ -603,24 +667,24 @@ mod tests {
 		for n in 0..MAX_PHONES_PER_SUBJECT {
 			let id = [u8::try_from(n).unwrap(); 16];
 			assert_eq!(
-				repo.pair_phone(&n.to_le_bytes(), "subject-a", &id, "2026-11-17", 10_000, 200).await.unwrap(),
+				repo.pair_phone("subject-a", &phone(&n.to_le_bytes(), &id, "2026-11-17"), 10_000, 200).await.unwrap(),
 				PairPhone::Paired
 			);
 		}
 		assert_eq!(
-			repo.pair_phone(b"one-more", "subject-a", &[200; 16], "2026-11-17", 10_000, 200).await.unwrap(),
+			repo.pair_phone("subject-a", &phone(b"one-more", &[200; 16], "2026-11-17"), 10_000, 200).await.unwrap(),
 			PairPhone::AtCapacity
 		);
 		assert!(repo.live_session(&0_i64.to_le_bytes(), 300).await.unwrap().is_some(), "the first phone is still paired");
 		assert_eq!(
-			repo.pair_phone(b"orphan", "subject-gone", &[201; 16], "2026-11-17", 10_000, 200).await.unwrap(),
+			repo.pair_phone("subject-gone", &phone(b"orphan", &[201; 16], "2026-11-17"), 10_000, 200).await.unwrap(),
 			PairPhone::NoAccount
 		);
 
 		// An expired phone frees its place.
 		repo.extend_session(&0_i64.to_le_bytes(), 250).await.unwrap();
 		assert_eq!(
-			repo.pair_phone(b"one-more", "subject-a", &[200; 16], "2026-11-18", 10_000, 300).await.unwrap(),
+			repo.pair_phone("subject-a", &phone(b"one-more", &[200; 16], "2026-11-18"), 10_000, 300).await.unwrap(),
 			PairPhone::Paired
 		);
 	}
@@ -630,8 +694,8 @@ mod tests {
 		let repo = repo().await;
 		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
 		assert!(repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::Open).await.unwrap());
-		repo.pair_phone(b"phone-a", "subject-a", &[7; 16], "2026-11-17", 10_000, 200).await.unwrap();
-		repo.pair_phone(b"phone-b", "subject-b", &[7; 16], "2026-11-17", 10_000, 200).await.unwrap();
+		repo.pair_phone("subject-a", &phone(b"phone-a", &[7; 16], "2026-11-17"), 10_000, 200).await.unwrap();
+		repo.pair_phone("subject-b", &phone(b"phone-b", &[7; 16], "2026-11-17"), 10_000, 200).await.unwrap();
 
 		assert!(!repo.end_phone("subject-b", &[8; 16]).await.unwrap(), "no such phone");
 		assert!(repo.end_phone("subject-b", &[7; 16]).await.unwrap());

@@ -24,6 +24,13 @@
 --   auth_session.paired_on  -- the UTC day (YYYY-MM-DD) a phone paired. A day,
 --                              not an instant. NULL for a browser, and for a
 --                              phone paired before home kept the day.
+--   auth_session.label      -- the name the owner typed for a phone, while
+--                              pairing it or later from the list ("yes, let
+--                              me name each phone too", the owner,
+--                              2026-11-17). Only what they typed: trimmed, at
+--                              most 40 characters, no control characters,
+--                              nothing read off the device. NULL until named,
+--                              and always for a browser.
 --
 -- Still absent: any last-seen or last-used time, on any row. When a phone was
 -- last renewed is read off `expires_at`, which already holds it.
@@ -31,5 +38,6 @@
 ALTER TABLE auth_session ADD COLUMN kind TEXT NOT NULL DEFAULT 'browser' CHECK (kind IN ('browser', 'phone'));
 ALTER TABLE auth_session ADD COLUMN pairing_id BLOB;
 ALTER TABLE auth_session ADD COLUMN paired_on TEXT;
+ALTER TABLE auth_session ADD COLUMN label TEXT;
 
 CREATE UNIQUE INDEX idx_auth_session_pairing ON auth_session (subject_id, pairing_id) WHERE pairing_id IS NOT NULL;

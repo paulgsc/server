@@ -11,8 +11,9 @@
 //! `/auth/pairing/start` for a one-time code, and the phone sends it to
 //! `/auth/pairing/finish`, which answers `{ token, expiresAt }`: a session the
 //! phone sends back as `Authorization: Bearer`. No cookie is set for it.
-//! A signed-in browser lists the account's phones at `GET /auth/phones` and
-//! signs one out with `DELETE /auth/phones/:id`.
+//! A signed-in browser lists the account's phones at `GET /auth/phones`,
+//! names one with `PATCH /auth/phones/:id`, and signs one out with
+//! `DELETE /auth/phones/:id`.
 //!
 //! No request or response carries anything about the person: not a name, not
 //! an email, not the authenticator's model. See `crate::auth`.
@@ -26,7 +27,7 @@ use crate::auth::{
 };
 use crate::subject::{new_account_subject, BrowserSubject, SubjectId, SUBJECT_SCOPED_TABLES};
 use crate::FileHostError;
-use auth_repo::{AddPasskey, PairPhone, MAX_PASSKEYS_PER_SUBJECT};
+use auth_repo::{AddPasskey, NewPhone, PairPhone, MAX_PASSKEYS_PER_SUBJECT};
 use axum::{
 	extract::{Path, State},
 	http::{
@@ -85,7 +86,21 @@ pub struct PairingStarted {
 #[derive(Deserialize)]
 pub struct FinishPairing {
 	pub code: String,
+	/// The name the owner typed for this phone while pairing it, if any
+	/// ([`phone_label`]).
+	#[serde(default)]
+	pub label: Option<String>,
 }
+
+/// `PATCH /auth/phones/:id`'s body: the phone's new name, or `null` (or
+/// blank) to clear it.
+#[derive(Debug, Deserialize)]
+pub struct RenamePhone {
+	pub label: Option<String>,
+}
+
+/// The longest name a phone may have, in characters.
+pub const MAX_PHONE_LABEL_CHARS: usize = 40;
 
 /// A paired phone's session: the token it sends as `Authorization: Bearer`,
 /// when the session ends unless it is used, and the id its owner sees it by
@@ -118,6 +133,9 @@ pub struct PhoneView {
 	/// The UTC day it paired, `YYYY-MM-DD`; `null` for a phone paired before
 	/// home kept the day.
 	pub paired_on: Option<String>,
+	/// The name the owner typed for it, while pairing or since; `null` until
+	/// they name it. Nothing is read off the device.
+	pub label: Option<String>,
 	/// ms since the epoch: when its session last started or slid to a full
 	/// term, read off its expiry. The phone has been used since then at
 	/// least; it may have been used later, since a session slides only past
@@ -414,6 +432,9 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap,
 	if crate::auth::csrf::from_a_page(&headers) {
 		return Err(FileHostError::Forbidden);
 	}
+	// Checked before the code is taken, so a name that is refused leaves the
+	// code open to try again.
+	let label = phone_label(request.label.as_deref())?;
 	let _hold = auth.hold_against_deletion().await;
 	let subject = PairingCode::typed(&request.code)
 		.and_then(|code| auth.pairings().take(&code, Instant::now()))
@@ -424,7 +445,17 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap,
 	let pairing_id = new_pairing_id();
 	match auth
 		.repository()
-		.pair_phone(&token.hash(Carrier::Bearer), &subject, &pairing_id, &utc_day(now), expires_at, now)
+		.pair_phone(
+			&subject,
+			&NewPhone {
+				token_hash: &token.hash(Carrier::Bearer),
+				pairing_id: &pairing_id,
+				paired_on: &utc_day(now),
+				label: label.as_deref(),
+			},
+			expires_at,
+			now,
+		)
 		.await?
 	{
 		PairPhone::Paired => Ok(Json(DeviceSession {
@@ -454,6 +485,7 @@ pub async fn phones(State(auth): State<AuthContext>, BrowserSubject(subject): Br
 		.map(|phone| PhoneView {
 			phone_id: URL_SAFE_NO_PAD.encode(phone.pairing_id),
 			paired_on: phone.paired_on,
+			label: phone.label,
 			renewed_at: (phone.expires_at - ttl) * 1_000,
 			expires_at: phone.expires_at * 1_000,
 		})
@@ -476,6 +508,50 @@ pub async fn sign_out_phone(State(auth): State<AuthContext>, BrowserSubject(subj
 		return Err(FileHostError::NotFound);
 	}
 	Ok(Json(Value::Object(Map::new())))
+}
+
+/// `PATCH /auth/phones/:id`: name one paired phone, or clear its name. A
+/// browser's passkey session only.
+///
+/// # Errors
+/// 401 without a session; 403 for a phone's token or from an untrusted
+/// origin; 404 for an id that names none of this account's phones; 422 for
+/// a name that is too long or holds a control character.
+#[instrument(name = "auth_rename_phone", skip_all, fields(otel.kind = "server"))]
+pub async fn rename_phone(
+	State(auth): State<AuthContext>,
+	BrowserSubject(subject): BrowserSubject,
+	Path(phone_id): Path<String>,
+	Json(request): Json<RenamePhone>,
+) -> Result<Json<Value>, FileHostError> {
+	let label = phone_label(request.label.as_deref())?;
+	let Ok(pairing_id) = URL_SAFE_NO_PAD.decode(phone_id) else {
+		return Err(FileHostError::NotFound);
+	};
+	if !auth.repository().rename_phone(subject.as_str(), &pairing_id, label.as_deref()).await? {
+		return Err(FileHostError::NotFound);
+	}
+	Ok(Json(Value::Object(Map::new())))
+}
+
+/// A phone's name as the owner typed it, bounded: trimmed, `None` when
+/// blank, at most [`MAX_PHONE_LABEL_CHARS`] characters, and no control
+/// characters (a newline or an escape would reach every screen that lists
+/// it).
+///
+/// # Errors
+/// 422 for a name that is too long or holds a control character.
+fn phone_label(typed: Option<&str>) -> Result<Option<String>, FileHostError> {
+	let Some(label) = typed.map(str::trim).filter(|label| !label.is_empty()) else {
+		return Ok(None);
+	};
+	if label.chars().count() > MAX_PHONE_LABEL_CHARS {
+		return Err(FileHostError::unprocessable_entity([("label", "at most 40 characters")]));
+	}
+	if label.chars().any(char::is_control) {
+		return Err(FileHostError::unprocessable_entity([("label", "no control characters")]));
+	}
+	Ok(Some(label.to_owned()))
 }
 
 /// The UTC day `unix_seconds` falls on, `YYYY-MM-DD`: all a phone keeps of
@@ -1132,7 +1208,8 @@ mod tests {
 		for phone in &phones {
 			assert_eq!(phone["pairedOn"], json!(today));
 			assert!(phone["renewedAt"].as_i64().unwrap() < phone["expiresAt"].as_i64().unwrap());
-			assert_eq!(phone.as_object().unwrap().len(), 4, "only phoneId, pairedOn, renewedAt and expiresAt: {phone}");
+			assert_eq!(phone["label"], Value::Null, "unnamed until the owner names it");
+			assert_eq!(phone.as_object().unwrap().len(), 5, "only phoneId, pairedOn, label, renewedAt and expiresAt: {phone}");
 		}
 
 		// Nothing listed is, or contains, a token or a stored token hash.
@@ -1193,6 +1270,59 @@ mod tests {
 		let listed: Vec<Value> = listed_phones(&app, &browser.cookie).await;
 		assert_eq!(listed.len(), 1);
 		assert_eq!(listed[0]["phoneId"], json!(kept_id));
+	}
+
+	/// The owner, 2026-11-17: "yes, let me name each phone too". A name is
+	/// set while pairing or from the list, and is only what they typed.
+	#[tokio::test]
+	async fn the_owner_names_a_phone_while_pairing_and_renames_it_from_the_list() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let other = register(&app, &mut authenticator()).await;
+
+		// A refused name leaves the code open.
+		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+		for refused in [json!("x".repeat(41)), json!("line\nbreak"), json!("bell\u{7}")] {
+			let body = json!({ "code": started["code"], "label": refused });
+			assert_eq!(call(&app, Method::POST, "/auth/pairing/finish", None, Some(body)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+		}
+		let body = json!({ "code": started["code"], "label": "  Kitchen Pixel  " });
+		let (status, _, finished) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(body)).await;
+		assert_eq!(status, StatusCode::OK, "{finished}");
+		let id = finished["phoneId"].as_str().unwrap().to_owned();
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], json!("Kitchen Pixel"), "trimmed");
+
+		let path = String::from("/auth/phones/") + &id;
+		let rename = |label: Value| Some(json!({ "label": label }));
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("é".repeat(40)))).await.0,
+			StatusCode::OK,
+			"40 characters, not bytes"
+		);
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], json!("é".repeat(40)));
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("tab\there"))).await.0,
+			StatusCode::UNPROCESSABLE_ENTITY
+		);
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&other.cookie), rename(json!("Mine"))).await.0,
+			StatusCode::NOT_FOUND,
+			"not another account's phone"
+		);
+		assert_eq!(call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("   "))).await.0, StatusCode::OK);
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], Value::Null, "a blank name clears it");
+		assert_eq!(call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("Desk"))).await.0, StatusCode::OK);
+		assert_eq!(call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(Value::Null)).await.0, StatusCode::OK);
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], Value::Null, "null clears it");
+
+		let token = finished["token"].as_str().unwrap();
+		let phone = [("authorization", bearer(token))];
+		let phone: Vec<(&str, &str)> = phone.iter().map(|(name, value)| (*name, value.as_str())).collect();
+		assert_eq!(
+			call_with(&app, Method::PATCH, &path, None, rename(json!("Phone")), &phone).await.0,
+			StatusCode::FORBIDDEN,
+			"a phone cannot rename itself"
+		);
 	}
 
 	/// some-ui#3092: "keep phone pairings past 32". Browser sign-ins past the

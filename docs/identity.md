@@ -128,7 +128,7 @@ sign-in failing with "Passkey sign-in isn't set up on this server yet".
 | Subject id | `account.subject_id` | `subject-` and 32 random hex digits, minted by `subject.rs`. The key of every per-person row. |
 | User handle | `account.user_handle` | The WebAuthn `user.id`: 16 random bytes. The only thing an authenticator returns on a sign-in that names no account. |
 | Passkeys | `passkey` | Credential id, public key, signature counter and backup flags. At most 16 per account. |
-| Sessions | `auth_session` | SHA-256 of each session token (a paired phone's over a fixed prefix too), its subject, when it expires, and its `kind` (`browser` or `phone`). A phone's row also holds a random `pairing_id` and the UTC day it paired (`paired_on`). At most 32 browser sessions and 16 paired phones per account. |
+| Sessions | `auth_session` | SHA-256 of each session token (a paired phone's over a fixed prefix too), its subject, when it expires, and its `kind` (`browser` or `phone`). A phone's row also holds a random `pairing_id`, the UTC day it paired (`paired_on`), and the name the owner typed for it, if any (`label`). At most 32 browser sessions and 16 paired phones per account. |
 
 Nothing records when an account or a passkey was made or last used, or when
 any session was last used. The one creation time stored is the day a phone
@@ -308,9 +308,17 @@ supersedes, for phones only, the "deliberately absent" note in
   only, answers each phone's `phoneId` (the `pairing_id`, base64url; random,
   never derived from the token or its hash), `pairedOn`, `renewedAt` and
   `expiresAt`. No token or hash is ever returned. `/auth/pairing/finish`
-  answers the same `phoneId`, so the phone can show its own (C496). No name
-  is kept: a `User-Agent` is barred (invariant 3) and a device model would
-  break invariant 7.
+  answers the same `phoneId`, so the phone can show its own (C496).
+- **The owner names each phone** (the owner, 2026-11-17: "yes, let me name
+  each phone too"). The name is only what the owner typed: an optional
+  `label` sent with `/auth/pairing/finish` while pairing, or set later with
+  `PATCH /auth/phones/:id` `{ label }` (a browser's passkey session only;
+  `null` or blank clears it) (C498). It is trimmed, at most 40 characters,
+  and refused (`422`) if it holds a control character. Nothing is read off
+  the device to suggest or fill one: a `User-Agent` is barred (invariant 3)
+  and a device model would break invariant 7. Whatever the owner types is
+  free text, so it may say more than a random id would; "What is still
+  exposed" covers what free text can hold.
 - **No last-seen time is stored** (C493). `renewedAt` is `expiresAt` less the
   session term: when the session last started or slid. The phone was used
   then at least, and may have been used since, by up to half a term. Kept to
@@ -549,7 +557,8 @@ nowhere is marked as such and belongs to review.
     day a phone paired (`auth_session.paired_on`), which the owner chose
     on 2026-11-17 ("yes, keep phone pairings past 32 and list them",
     some-ui#3092) so they can tell their phones apart. A day, phones only;
-    a browser session has none. A session's expiry is the one instant
+    a browser session has none. A phone's `label` is a name the owner
+    typed, not a time. A session's expiry is the one instant
     stored. That absence is why the owner's account is defined as the
     only account and not the first ("The owner's account"): nothing says
     which came first. Whether a last-used time per passkey and session would
@@ -2502,6 +2511,12 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
   a dishonest deployment could ship code that reads anything JavaScript can
   reach. A passkey's private key stays in the authenticator even then. Keys kept
   in IndexedDB, and WebAuthn PRF outputs, do not.
+- **Paired phones' names and days.** A phone's `label` is whatever the owner
+  typed for it, stored verbatim within its bounds, so it can name a person or
+  a place ("Ana's tablet"); its `paired_on` says on which day it joined. The
+  owner sees both in `GET /auth/phones`. Signing the phone out, signing out
+  everywhere or deleting the account removes them; an expired phone's row,
+  and them with it, goes at the next sign-in or pairing.
 - **The learner shelf's contents and times.** A kept body is whatever the
   learner's own model wrote from a prompt that included their recent survey
   digest, so its text can say something about them; the server stores it
