@@ -1168,7 +1168,7 @@ mkdir -p "$ROOT/essays/2026-w46/takes" "$ROOT/interview-essays/2026-w47/takes"
 echo '{}' > "$ROOT/essays/2026-w46/essay.json"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a Rust Rounds essay's recorder is handed 30 minutes" gives "$FAKE/args-essay" --max-video-minutes 30
-# Every other flag as every job's (HANDED, below), the length at 30.
+# Every other flag as every job's (HANDED, above), the length at 30.
 ESSAY_HANDED=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
   --max-video-minutes 30 --max-video-mb 500 --cache-mb 2048)
 essay_handed() {
