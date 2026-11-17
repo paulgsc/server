@@ -1132,12 +1132,11 @@ mod tests {
 		for phone in &phones {
 			assert_eq!(phone["pairedOn"], json!(today));
 			assert!(phone["renewedAt"].as_i64().unwrap() < phone["expiresAt"].as_i64().unwrap());
-			let keys: Vec<&String> = phone.as_object().unwrap().keys().collect();
-			assert_eq!(keys.len(), 4, "only phoneId, pairedOn, renewedAt and expiresAt: {phone}");
+			assert_eq!(phone.as_object().unwrap().len(), 4, "only phoneId, pairedOn, renewedAt and expiresAt: {phone}");
 		}
 
 		// Nothing listed is, or contains, a token or a stored token hash.
-		let listed = serde_json::to_string(&phones).unwrap();
+		let listed = Value::Array(phones).to_string();
 		let hashes: Vec<Vec<u8>> = sqlx::query_scalar("SELECT token_hash FROM auth_session").fetch_all(&pool).await.unwrap();
 		for secret in [first_token, second_token].into_iter().chain(hashes.iter().map(|hash| URL_SAFE_NO_PAD.encode(hash))) {
 			assert!(!listed.contains(&secret), "the list leaks a token or its hash");

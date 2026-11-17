@@ -33,12 +33,16 @@ pub use repository::{Accounts, AddPasskey, Admission, AuthRepository, PairPhone,
 /// above that rather than tuned tight.
 pub const MAX_PASSKEYS_PER_SUBJECT: i64 = 16;
 
-/// How many live browser sessions one account may hold at once. One per
-/// browser the person signs in on; past this, the browser session closest to
-/// expiring ends. Paired phones are not counted and never ended by it.
+/// How many live browser sessions one account may hold at once.
+///
+/// One per browser the person signs in on; past this, the browser session
+/// closest to expiring ends. Paired phones are not counted and never ended
+/// by it.
 pub const MAX_SESSIONS_PER_SUBJECT: i64 = 32;
 
-/// How many paired phones one account may hold at once. Past this, a new
-/// pairing is refused until the owner signs one out, never evicted: a phone
-/// that home silently forgot is what this cap exists to prevent (C491).
+/// How many paired phones one account may hold at once.
+///
+/// Past this, a new pairing is refused until the owner signs one out, never
+/// evicted: a phone that home silently forgot is what this cap exists to
+/// prevent (C491).
 pub const MAX_PHONES_PER_SUBJECT: i64 = 16;
