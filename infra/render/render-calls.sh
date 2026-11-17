@@ -147,13 +147,24 @@
 set -uo pipefail
 
 # Policy (paulgsc/some-ui#2635, the owner's caps). The recorder refuses a
-# video longer than MAX_VIDEO_MINUTES (from its words, before anything is
-# said) or larger than MAX_VIDEO_MB (removed once made), a failed attempt
-# that names the cap; it stops keeping an episode's steps past CACHE_MB, with
-# a `cache warning:` line. Each job's waiting work together is held to
-# WORK_MAX_MB: past it, the oldest other episode's work is removed (its retry
-# starts over).
+# video longer than its job's minutes (`max_minutes`: MAX_VIDEO_MINUTES, or
+# ESSAY_MAX_VIDEO_MINUTES for a Rust Rounds essay; from its words, before
+# anything is said) or larger than MAX_VIDEO_MB (removed once made), a
+# failed attempt that names the cap; it stops keeping an episode's steps
+# past CACHE_MB, with a `cache warning:` line. Each job's waiting work
+# together is held to WORK_MAX_MB: past it, the oldest other episode's work
+# is removed (its retry starts over).
 MAX_VIDEO_MINUTES=15
+# The owner, 2026-11-17, asked whether a Rust Rounds essay may run past 15
+# minutes: "yes raise the cap to 30 mins" (#927). The rust-essay job
+# only: a mock interview's essay, though recorded by the same recorder, keeps
+# MAX_VIDEO_MINUTES (C500). A 30-minute essay fits the other caps: a synthetic
+# minute of busy, moving text, encoded as the recorder encodes (2026-11-17),
+# is about 4.7 MB finished (CRF 18, AAC 160k: about 140 MB for 30 minutes,
+# under MAX_VIDEO_MB) and 16.5 MB as segments (CRF 8: about 500 MB, under
+# CACHE_MB and WORK_MAX_MB); its joins are JOIN_BATCH scenes at a time, so
+# its memory is the batch's, not the length's.
+ESSAY_MAX_VIDEO_MINUTES=30
 MAX_VIDEO_MB=500
 CACHE_MB=2048
 WORK_MAX_MB=4096
@@ -210,8 +221,16 @@ MOTION_TSX=$MOTION_DIR/node_modules/.bin/tsx
 # at the recorders' own commit, which each recorder serves to itself (#718).
 # /brand is home's folder of the owner's files a series names (its music
 # bed), read-only (call-render.yml); a series that names none never reads it.
-COMMON=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
-  --max-video-minutes "$MAX_VIDEO_MINUTES" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
+# --max-video-minutes is the job's (`max_minutes`), set by `use_job`.
+COMMON=()
+
+# The longest video `job` may make, in minutes.
+max_minutes() {
+  case $1 in
+    rust-essay) echo "$ESSAY_MAX_VIDEO_MINUTES" ;;
+    *) echo "$MAX_VIDEO_MINUTES" ;;
+  esac
+}
 
 JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay)
 
@@ -261,6 +280,8 @@ use_job() {
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
   LANE=$ROOT/renders/call-worker
+  COMMON=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
+    --max-video-minutes "$(max_minutes "$1")" --max-video-mb "$MAX_VIDEO_MB" --cache-mb "$CACHE_MB")
 }
 
 # Each episode the job has been given, one key a line, oldest first: a key
