@@ -26,7 +26,10 @@
 
 use axum::{
 	body::Body,
-	http::{header::WWW_AUTHENTICATE, HeaderValue, Response, StatusCode},
+	http::{
+		header::{RETRY_AFTER, WWW_AUTHENTICATE},
+		HeaderValue, Response, StatusCode,
+	},
 	response::IntoResponse,
 	Json,
 };
@@ -134,11 +137,17 @@ pub enum FileHostError {
 	UnexpectedSinglePair,
 
 	// ---- timeout / load ----
-	#[error("request timeout")]
-	RequestTimeout,
-
+	/// A cap on what home holds open at once is full (today's new accounts,
+	/// open pairings, open ceremonies). No `Retry-After`: when room comes
+	/// back is the cap's own business, a day for the account cap.
 	#[error("service temporarily overloaded")]
 	ServiceOverloaded,
+
+	/// Home had more work than it could answer in time, and answered this
+	/// request at once instead of keeping it waiting: `503` with
+	/// `Retry-After` (`crate::admission`, AD4).
+	#[error("busy: {0:?}")]
+	Busy(Shed),
 
 	// A feature this build supports but this deployment has not configured —
 	// the study nudge without its VAPID keys, for instance. Distinct from an
@@ -159,6 +168,18 @@ impl FileHostError {
 			map.entry(k.into()).or_default().push(v.into());
 		}
 		Self::UnprocessableEntity { errors: map }
+	}
+
+	/// `OperationError` for a failure only a log can use, except that a pool
+	/// with no connection free in time stays a pool timeout, answered busy
+	/// (AD4, `crate::admission`). `cause` is the database error inside
+	/// `err`, when it has one.
+	pub fn operation(err: &impl std::fmt::Display, cause: Option<&sqlx::Error>) -> Self {
+		if matches!(cause, Some(sqlx::Error::PoolTimedOut)) {
+			Self::Sqlite(sqlx::Error::PoolTimedOut)
+		} else {
+			Self::OperationError(err.to_string())
+		}
 	}
 
 	pub fn upstream<E: std::error::Error + Send + Sync + 'static>(e: E) -> Self {
@@ -214,8 +235,7 @@ impl FileHostError {
 			Self::NotFound => StatusCode::NOT_FOUND,
 			Self::Conflict(_) | Self::ConflictNaming { .. } | Self::DeletedForGood => StatusCode::CONFLICT,
 			Self::InvalidMimeType(_) | Self::MaxRecordLimitExceeded | Self::IntegerConversionError(_) | Self::UnexpectedSinglePair => StatusCode::BAD_REQUEST,
-			Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
-			Self::ServiceOverloaded | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
+			Self::ServiceOverloaded | Self::Busy(_) | Self::FeatureNotConfigured(_) => StatusCode::SERVICE_UNAVAILABLE,
 			Self::Cache(e) => match e {
 				DedupCacheError::NotFound => StatusCode::NOT_FOUND,
 				DedupCacheError::OperationError(_) => StatusCode::BAD_REQUEST,
@@ -258,8 +278,9 @@ impl FileHostError {
 			Self::Sqlite(_) => "database_error",
 			Self::OperationError(_) => "operation_error",
 			Self::UnexpectedSinglePair => "unexpected_single_pair",
-			Self::RequestTimeout => "request_timeout",
-			Self::ServiceOverloaded => "service_overloaded",
+			// `service_overloaded` for both, so a client reads every busy `503`
+			// as an answer, never as a feature this deployment lacks.
+			Self::ServiceOverloaded | Self::Busy(_) => "service_overloaded",
 			Self::FeatureNotConfigured(_) => "feature_not_configured",
 		}
 	}
@@ -282,8 +303,8 @@ impl FileHostError {
 			Self::IntegerConversionError(_) => "integer out of range",
 			Self::UnexpectedSinglePair => "expected exactly one key-value pair",
 			Self::Conflict(reason) | Self::ConflictNaming { reason, .. } => reason,
-			Self::RequestTimeout => "request timeout",
 			Self::ServiceOverloaded => "service temporarily overloaded",
+			Self::Busy(_) => "home is busy; ask again after Retry-After",
 			Self::FeatureNotConfigured(_) => "feature not configured on this deployment",
 			Self::Cache(e) => match e {
 				DedupCacheError::NotFound => "not found",
@@ -303,9 +324,33 @@ impl FileHostError {
 	}
 }
 
+/// Why home answered a request [`FileHostError::Busy`] (AD4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shed {
+	/// Every one of `admission::MAX_CONCURRENT_REQUESTS` was taken.
+	Concurrency,
+	/// The request ran past `admission::ANSWER_WITHIN`.
+	Timeout,
+	/// No database connection came free within `admission::POOL_ACQUIRE_TIMEOUT`.
+	Pool,
+}
+
+/// The `Retry-After`, in whole seconds, on every [`FileHostError::Busy`]:
+/// long enough for a burst to drain, short enough that a person's next tap
+/// is not turned away for it.
+pub const BUSY_RETRY_AFTER_S: u32 = 5;
+
 impl IntoResponse for FileHostError {
 	fn into_response(self) -> Response<Body> {
-		let status = self.status_code();
+		// A pool that gave no connection in time is home being busy, not a
+		// fault in the request: whichever handler's error carried it here.
+		let this = if matches!(self, Self::Sqlite(sqlx::Error::PoolTimedOut)) {
+			crate::metrics::refusals::record_http("pool_timeout");
+			Self::Busy(Shed::Pool)
+		} else {
+			self
+		};
+		let status = this.status_code();
 
 		// 5xx is this service's own fault and belongs in the ERROR-level
 		// signal `ErrorEventMetricsLayer` (metrics/observability.rs) mirrors
@@ -313,18 +358,24 @@ impl IntoResponse for FileHostError {
 		// request, not an operational fault — a mistyped token or a bad
 		// mime-type header shouldn't page anyone, so it stays at WARN and
 		// out of that metric.
-		if status.is_server_error() {
-			tracing::error!(error = ?self, "request failed");
+		// `Busy` is the exception: home shedding a burst is counted in
+		// `refusals_total`, and a storm of ERROR lines would page for load
+		// the shedding already handled.
+		if matches!(this, Self::Busy(_)) {
+			tracing::warn!(error = ?this, "request shed");
+		} else if status.is_server_error() {
+			tracing::error!(error = ?this, "request failed");
 		} else {
-			tracing::warn!(error = ?self, "request rejected");
+			tracing::warn!(error = ?this, "request rejected");
 		}
 
-		let code = self.code();
-		let message = self.message();
-		let is_unauthorized = matches!(&self, Self::Unauthorized);
+		let code = this.code();
+		let message = this.message();
+		let is_unauthorized = matches!(&this, Self::Unauthorized);
+		let is_busy = matches!(&this, Self::Busy(_));
 		// Only `UnprocessableEntity` and `ConflictNaming` carry details; every
 		// other variant's answer is its `code` and `message` alone.
-		let details = if let Self::UnprocessableEntity { errors } | Self::ConflictNaming { details: errors, .. } = self {
+		let details = if let Self::UnprocessableEntity { errors } | Self::ConflictNaming { details: errors, .. } = this {
 			Some(errors)
 		} else {
 			None
@@ -340,6 +391,9 @@ impl IntoResponse for FileHostError {
 
 		if is_unauthorized {
 			response.headers_mut().insert(WWW_AUTHENTICATE, HeaderValue::from_static("Token"));
+		}
+		if is_busy {
+			response.headers_mut().insert(RETRY_AFTER, HeaderValue::from(BUSY_RETRY_AFTER_S));
 		}
 
 		response

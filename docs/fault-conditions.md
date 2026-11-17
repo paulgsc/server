@@ -96,6 +96,13 @@ from every other angle — every request that *is* served stays fast, because
 the slow ones were never admitted. `refusals_total{stage,reason}` (#223/F3)
 is the only place this was ever counted.
 
+An HTTP request is never kept waiting instead (AD4,
+`apps/servers/file_host/src/admission.rs`): it is answered within 8 s, and
+one home has no room for (every slot of the concurrency limit taken, no
+database connection within 3 s, or the 8 s reached) is answered `503`
+`service_overloaded` with `Retry-After` at once, counted as `load_shed`,
+`pool_timeout` or `timeout`. Silence is what a phone reads as home away.
+
 ### 5. Stalled {#stalled}
 
 No background pass has *started* within 3× its interval, or the last one to
