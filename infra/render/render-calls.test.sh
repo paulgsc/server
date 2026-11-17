@@ -1168,8 +1168,14 @@ mkdir -p "$ROOT/essays/2026-w46/takes" "$ROOT/interview-essays/2026-w47/takes"
 echo '{}' > "$ROOT/essays/2026-w46/essay.json"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a Rust Rounds essay's recorder is handed 30 minutes" gives "$FAKE/args-essay" --max-video-minutes 30
-check "and the rest of the policy's caps, the stage and the speaker as every job" \
-  test "$(grep -A1 -xF -- --max-video-mb "$FAKE/args-essay" | sed -n 2p)" = 500
+# Every other flag as every job's (HANDED, below), the length at 30.
+ESSAY_HANDED=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
+  --max-video-minutes 30 --max-video-mb 500 --cache-mb 2048)
+essay_handed() {
+  local -a HANDED=("${ESSAY_HANDED[@]}")
+  handed "$1"
+}
+check "and the rest of the policy's caps, the stage and the speaker as every job" essay_handed "$FAKE/args-essay"
 echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
 run_job interview-essay > "$SCRATCH/pass.out" 2>&1
 check "a mock interview's essay keeps 15 (C500)" gives "$FAKE/args-essay" --max-video-minutes 15
@@ -1262,7 +1268,7 @@ check "nor named a job the lane would see" \
   test "$(cat "$ROOT/renders/call-worker/job-seq")" = "$seq_before" -a ! -e "$ROOT/renders/call-worker/job"
 
 fresh series-refused 2026-11-06
-touch "$FAKE/parts-refuse" "$FAKE"/minutes-*
+touch "$FAKE/parts-refuse"
 pass
 check "a week call-parts refuses fails as its recorder's refusal does, with its words" \
   grep -qF "can't make a call:" "$ROOT/renders/call-worker/2026-11-06.failed.log"
@@ -1327,7 +1333,7 @@ fresh series-uncounted 2026-11-06
 mkdir -p "$ROOT/renders/call"
 echo 3 > "$ROOT/renders/call/2026-11-06.parts"
 echo '{"template":9}' > "$ROOT/weeks/2026-11-06.next"
-touch "$FAKE/parts-refuse" "$FAKE"/minutes-*
+touch "$FAKE/parts-refuse"
 pass
 check "a revision the parts can't be asked of fails its first part" test -e "$ROOT/renders/call-worker/2026-11-06.failed.log"
 check "and names no job for a part of the old count" \
