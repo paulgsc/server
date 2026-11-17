@@ -1037,6 +1037,8 @@ render_episode() {
     esac
     rev=$(revision "$job" "$key")
     HELD=$(held_by "$job" "$key")
+    # Where this attempt's lines start in the job's log (`refusal`).
+    ATTEMPT_FROM=$(stat -c %s "$log" 2> /dev/null || echo 0)
     attempt "$job" "$key" "$log"
     # An essay corrected while it rendered (file_host gave a newer
     # revision, C72): what was made is of the old one, so it is never kept.
@@ -1202,10 +1204,13 @@ held_by() {
 # The policy's refusal in `log`, as <key>.refused's lines: its reason
 # (`too-long` with the minutes and the cap, `too-large` with the MB and the
 # cap; the recorder's numbers, never its words) and `held`, what it holds for.
-# False when the attempt was not refused by the policy.
+# Only the last attempt's lines are read, from byte `from` of the job's log:
+# an earlier attempt of the same job (one that gave way to a newer revision,
+# or after a pause) refused may not be what the last one failed of. False
+# when the last attempt was not refused by the policy.
 refusal() {
-  local log=$1 held=$2 line
-  line=$(grep -oE "$REFUSED_LONG|$REFUSED_LARGE" "$log" | tail -n 1)
+  local log=$1 held=$2 from=${3:-0} line
+  line=$(tail -c +"$(( from + 1 ))" "$log" | grep -oE "$REFUSED_LONG|$REFUSED_LARGE" | tail -n 1)
   if [[ "$line" =~ ^$REFUSED_LONG$ ]]; then
     printf 'reason=too-long\nminutes=%s\ncap=%s\nheld=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "$held"
   elif [[ "$line" =~ ^$REFUSED_LARGE$ ]]; then
@@ -1265,7 +1270,7 @@ render_one() {
   # What a refusal holds for is taken before each attempt (`render_episode`),
   # after its wait for room: an input that changes while one runs is then a
   # change, and the refusal is not held. None before any attempt.
-  HELD=
+  HELD= ATTEMPT_FROM=0
   render_episode "$job" "$key"
   outcome=$?
   keep_cache_warnings "$key"
@@ -1285,7 +1290,7 @@ render_one() {
       touch "$STATUS/$key.failed.log"
       # A refusal by the policy is kept as its reason, a preview's too: the
       # phone says why (#929).
-      if [ -n "$HELD" ] && refusal "$STATUS/$key.failed.log" "$HELD" > "$STATUS/.$key.refused"; then
+      if [ -n "$HELD" ] && refusal "$STATUS/$key.failed.log" "$HELD" "$ATTEMPT_FROM" > "$STATUS/.$key.refused"; then
         mv -f "$STATUS/.$key.refused" "$STATUS/$key.refused"
       else
         rm -f "${STATUS:?}/.$key.refused"
@@ -1293,7 +1298,7 @@ render_one() {
       if [ "$job" = preview ]; then
         echo "the preview $key did not render; the owner asks for another" >&2
       elif [ -e "$STATUS/$key.refused" ]; then
-        echo "the $job of $key was refused by the policy; it is tried again once its input, its cap or the image changes" >&2
+        echo "the $job of $key was refused by the policy; it is tried again once what it was refused for changes (its input, its cap, the recorders, the speaker or the brand files)" >&2
       else
         echo "the $job of $key did not render; it is tried again in an hour" >&2
       fi ;;
