@@ -1114,6 +1114,9 @@ fn previews_lived(seen: &mut FeedSeen, overdue: &BTreeMap<String, i64>, now: i64
 		seen.lengths.remove(key);
 		seen.failed.insert(key.clone(), (*at, Failure { by: FailedBy::Home, exit: None }));
 		seen.reasons.insert(key.clone(), "overdue");
+		// Its day is what ended it: a refusal's numbers beside `overdue`
+		// would say another reason.
+		seen.overs.remove(key);
 		seen.ended.insert(key.clone());
 	}
 	let life = preview_life();
