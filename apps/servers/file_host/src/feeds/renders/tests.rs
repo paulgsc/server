@@ -910,9 +910,12 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	}
 	let overdue = "conference-call-20261107T050000Z";
 	std::fs::write(requests.join(String::from(overdue) + ".overdue"), b"{}").unwrap();
-	// Refused by the policy too, after its deadline: overdue says why, alone.
-	std::fs::write(status.join(String::from(overdue) + ".failed.log"), b"the recorder exited 1\n").unwrap();
-	std::fs::write(status.join(String::from(overdue) + ".refused"), b"reason=too-large\nmb=512\ncap=500\nheld=ab12\n").unwrap();
+	// One refused by the policy past its deadline, with no video: overdue
+	// says why, alone (#929).
+	let refused = "conference-call-20261107T060000Z";
+	std::fs::write(requests.join(String::from(refused) + ".overdue"), b"{}").unwrap();
+	std::fs::write(status.join(String::from(refused) + ".failed.log"), b"the recorder exited 1\n").unwrap();
+	std::fs::write(status.join(String::from(refused) + ".refused"), b"reason=too-large\nmb=512\ncap=500\nheld=ab12\n").unwrap();
 	// A render that landed after the deadline: `previews::read` calls it
 	// failed, and so does the board.
 	std::fs::create_dir_all(renders.join(overdue)).unwrap();
@@ -930,8 +933,11 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(read.now, None, "the worker lets an overdue preview go");
-	assert_eq!(read.failed.iter().map(|f| (f.key.as_str(), f.reason)).collect::<Vec<_>>(), [(overdue, Some("overdue"))]);
-	assert_eq!(read.failed[0].over, None, "an overdue preview carries no refusal's numbers");
+	assert_eq!(
+		read.failed.iter().map(|f| (f.key.as_str(), f.reason, f.over)).collect::<Vec<_>>(),
+		[(overdue, Some("overdue"), None), (refused, Some("overdue"), None)],
+		"an overdue preview carries no refusal's numbers"
+	);
 	assert_eq!(read.done, [], "its late video is not done");
 }
 
