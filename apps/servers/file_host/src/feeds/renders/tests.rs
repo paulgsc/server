@@ -429,6 +429,7 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		template: None,
 		part: None,
 		reason: None,
+		over: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "recorder", "exit": 1 }));
@@ -440,9 +441,54 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		template: None,
 		part: None,
 		reason: None,
+		over: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "home", "exit": null }));
+}
+
+/// #929: a refusal by the render policy reaches the phone as a closed
+/// reason with the recorder's numbers, never its words; anything not of the
+/// worker's shape is no refusal.
+#[test]
+fn a_policy_refusal_is_its_reason_and_numbers() {
+	let long = Over::parse("reason=too-long\nminutes=24.4\ncap=30.0\nheld=ab12\n").unwrap();
+	assert_eq!(long, Over::Long { minutes: 244, cap_minutes: 300 });
+	assert_eq!(long.reason(), "too-long");
+	let large = Over::parse("reason=too-large\nmb=512\ncap=500\nheld=ab12\n").unwrap();
+	assert_eq!(large, Over::Large { mb: 512, cap_mb: 500 });
+	for text in [
+		"",
+		"reason=too-long\nminutes=24.4\n",
+		"reason=too-long\nminutes=24.45\ncap=30.0\n",
+		"reason=too-long\nminutes=-1\ncap=30\n",
+		"reason=too-large\nmb=5.5\ncap=500\n",
+		"reason=too-large\nmb=99999999\ncap=500\n",
+		"reason=the video would run 24.4 min\nminutes=24.4\ncap=30\n",
+	] {
+		assert_eq!(Over::parse(text), None, "{text:?}");
+	}
+	let failed = |over| Failed {
+		feed: String::from("rust-essay"),
+		key: String::from("2026-w46"),
+		at: 1,
+		failure: Failure {
+			by: FailedBy::Recorder,
+			exit: Some(1),
+		},
+		template: None,
+		part: None,
+		reason: Some(Over::reason(over)),
+		over: Some(over),
+	};
+	assert_eq!(
+		serde_json::to_value(failed(long)).unwrap(),
+		serde_json::json!({ "feed": "rust-essay", "key": "2026-w46", "at": 1, "by": "recorder", "exit": 1, "reason": "too-long", "minutes": 24.4, "capMinutes": 30.0 })
+	);
+	assert_eq!(
+		serde_json::to_value(failed(large)).unwrap(),
+		serde_json::json!({ "feed": "rust-essay", "key": "2026-w46", "at": 1, "by": "recorder", "exit": 1, "reason": "too-large", "mb": 512, "capMb": 500 })
+	);
 }
 
 #[test]
@@ -651,6 +697,7 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	assert_eq!(read.done[0].bytes, Some(5));
 	assert_eq!(serde_json::to_value(&read.done[0]).unwrap()["bytes"], serde_json::json!(5), "the phone reads it as `bytes`");
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["nixos-upgrade-2026-11-07"]);
+	assert_eq!((read.failed[0].reason, read.failed[0].over), (None, None), "a failure not the policy's says no reason");
 	assert_eq!(shelf(&read.waiting), [(String::from("cards-essay"), String::from("rust-scratchpad-2026-11-08"))]);
 	assert_eq!(read.waiting[0].bytes, None, "a waiting essay has no video yet");
 	assert_eq!(read.waiting[0].template, None, "an essay names no template");
@@ -665,6 +712,19 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	let read = super::read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(shelf(&read.done), [(String::from("cards-essay"), String::from("zfs-2026-11-02"))]);
 	assert_eq!(read.done[0].bytes, None, "a link's size is not the video's");
+	// #929: one the policy refused says so, on any shelf, from the worker's
+	// `.refused`; one past the file's ceiling is read as no refusal.
+	let status = dir.path().join("cards-essay-worker");
+	let refused = status.join("nixos-upgrade-2026-11-07.refused");
+	std::fs::write(&refused, b"reason=too-long\nminutes=24.4\ncap=15.0\nheld=ab12\n").unwrap();
+	let read = super::read(&db, &folders, "", NOW).await.unwrap();
+	assert_eq!(
+		(read.failed[0].reason, read.failed[0].over),
+		(Some("too-long"), Some(Over::Long { minutes: 244, cap_minutes: 150 }))
+	);
+	std::fs::write(&refused, "reason=too-long\nminutes=24.4\ncap=15.0\n".repeat(40)).unwrap();
+	let read = super::read(&db, &folders, "", NOW).await.unwrap();
+	assert_eq!(read.failed[0].over, None, "a file past its ceiling is no refusal");
 }
 
 /// The read reads the weeks of Rust Rounds the caller holds for the essay's
@@ -850,6 +910,12 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	}
 	let overdue = "conference-call-20261107T050000Z";
 	std::fs::write(requests.join(String::from(overdue) + ".overdue"), b"{}").unwrap();
+	// One refused by the policy past its deadline, with no video: overdue
+	// says why, alone (#929).
+	let refused = "conference-call-20261107T060000Z";
+	std::fs::write(requests.join(String::from(refused) + ".overdue"), b"{}").unwrap();
+	std::fs::write(status.join(String::from(refused) + ".failed.log"), b"the recorder exited 1\n").unwrap();
+	std::fs::write(status.join(String::from(refused) + ".refused"), b"reason=too-large\nmb=512\ncap=500\nheld=ab12\n").unwrap();
 	// A render that landed after the deadline: `previews::read` calls it
 	// failed, and so does the board.
 	std::fs::create_dir_all(renders.join(overdue)).unwrap();
@@ -867,7 +933,15 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(read.now, None, "the worker lets an overdue preview go");
-	assert_eq!(read.failed.iter().map(|f| (f.key.as_str(), f.reason)).collect::<Vec<_>>(), [(overdue, Some("overdue"))]);
+	// By key: each row's time is its marker's, which may fall either side
+	// of a second.
+	let mut rows = read.failed.iter().map(|f| (f.key.as_str(), f.reason, f.over)).collect::<Vec<_>>();
+	rows.sort_by_key(|row| row.0);
+	assert_eq!(
+		rows,
+		[(overdue, Some("overdue"), None), (refused, Some("overdue"), None)],
+		"an overdue preview carries no refusal's numbers"
+	);
 	assert_eq!(read.done, [], "its late video is not done");
 }
 
