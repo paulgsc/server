@@ -257,12 +257,12 @@ groups:
         # attempt at it failed (infra/render/render-calls.sh keeps that
         # attempt's whole output, and removes it once the week renders).
         # file_host reads that each minute (call_weeks::render). The worker
-        # tries again hourly, so a failure that clears on its own stops this.
+        # tries again hourly (a refusal by the render policy, once what it was refused for changes), so a failure that clears on its own stops this.
         expr: |
           max(call_render_weeks_failed) > 0
         labels:
           objective: CW5
-          says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+          says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once its input, its cap or the render image changes."
 
       - alert: CallRenderOverdue
         # CW5: a week has waited 3 hours since home took it, with no failed
@@ -285,12 +285,12 @@ groups:
         # render worker's last attempt at it failed (render-calls.sh's
         # playoff-delta job keeps that attempt's whole output, and removes it
         # once the episode renders). file_host reads that each minute
-        # (pd_fills::render). The worker tries again hourly.
+        # (pd_fills::render). The worker tries again hourly (a refusal by the render policy, once what it was refused for changes).
         expr: |
           max(pd_render_episodes_failed) > 0
         labels:
           objective: PK5
-          says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+          says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once its input, its cap or the render image changes."
 
       - alert: PlayoffDeltaRenderOverdue
         # PK5: a voiced fill has waited 3 hours since home took it, with no
@@ -309,12 +309,12 @@ groups:
         # video and the worker's last attempt at it failed (render-calls.sh's
         # rust-essay job keeps that attempt's whole output, and removes it
         # once the essay renders). file_host reads that each minute
-        # (rust_essays::observe). The worker tries again hourly.
+        # (rust_essays::observe). The worker tries again hourly (a refusal by the render policy, once what it was refused for changes).
         expr: |
           max(rust_essay_render_failed) > 0
         labels:
           objective: RR16
-          says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+          says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once its input, its cap or the render image changes."
 
       - alert: RustEssayRenderOverdue
         # RR16: an essay has waited 3 hours since home gave it, with no
@@ -357,12 +357,12 @@ groups:
         # video and the worker's last attempt at it failed (render-calls.sh's
         # interview-essay job keeps that attempt's whole output, and removes it
         # once the essay renders). file_host reads that each minute
-        # (rust_essays::observe). The worker tries again hourly.
+        # (rust_essays::observe). The worker tries again hourly (a refusal by the render policy, once what it was refused for changes).
         expr: |
           max(interview_essay_render_failed) > 0
         labels:
           objective: IW6
-          says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+          says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once its input, its cap or the render image changes."
 
       - alert: InterviewEssayRenderOverdue
         # IW6, as RustEssay*: an essay has waited 3 hours since home gave it, with no
@@ -426,12 +426,12 @@ groups:
         # attempt at it failed (render-calls.sh's cards-essay job keeps that
         # attempt's whole output, and removes it once the essay renders).
         # file_host reads that each minute (cards_essays::observe). The
-        # worker tries again hourly.
+        # worker tries again hourly (a refusal by the render policy, once what it was refused for changes).
         expr: |
           max(cards_essay_render_failed) > 0
         labels:
           objective: CE1
-          says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly."
+          says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly, or, refused as too long or too large, once its input, its cap or the render image changes."
 
       - alert: CardsEssayRenderOverdue
         # CE1: an essay has waited 3 hours since home took it, with no

@@ -44,6 +44,14 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    every minute, but only the lane's `run` starts a job: room, not a clock
    (the owner, 2026-11-07). Held by the worker's "no render starts on a
    missing or stale decision" cases.
+7. **Nothing does work it does not need: a failure that would come out the
+   same is not tried again.** A video the render policy refused (too long,
+   too large: the recorder's own refusal, for the same input, cap and
+   image, is the same refusal) is held in `<status>/<key>.refused` with what
+   it was refused for, and tried again only once its input, its job's cap
+   or the render image changes, never on the hourly clock. Every other
+   failure may clear on its own and is tried again an hour after it.
+   Held by `render-calls.test.sh`'s refusal cases (RF1, #928).
 
 ## Classes: who is low priority, and what that means
 
@@ -260,6 +268,15 @@ way; CI runs it on every PR.
   the speaker's room, as the declared peak counts it.
   An unreadable `memory.peak` writes none, and the lane keeps the declared
   one.
+- **A failure is tried again an hour later; a refusal by the policy once
+  what it was refused for changes** (invariant 7). A refusal keeps
+  `<key>.refused` beside its `failed.log`: its reason (`too-long` with the
+  minutes and the cap, or `too-large` with the MB and the cap; the
+  recorder's numbers, never its words) and `held`, one sum of the job's
+  caps, the image (`RENDER_IMAGE`, the release's pin) and each input's
+  name, size and time. A pass whose sum differs tries it at once; so a cap
+  raised and deployed renders the refused episode on its next pass, with no
+  new input.
 - **Each job's length cap is its own** (`max_minutes`): a Rust Rounds
   essay may run 30 minutes, the owner's (2026-11-17, #927); every other
   job, a mock interview's essay too, 15. The other caps are every job's.

@@ -108,6 +108,11 @@ services:
     # The loop is server's, so it is mounted, never baked: moving it needs
     # no new image.
     entrypoint: ['/usr/local/bin/render-calls']
+    # Its own pin, the same value as `image:`: a video the policy refused is
+    # tried again once the image changes, as once its input or cap does
+    # (render-calls.sh, `held_by`).
+    environment:
+      RENDER_IMAGE: ${IMAGE_RENDER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").
     oom_score_adj: 800
