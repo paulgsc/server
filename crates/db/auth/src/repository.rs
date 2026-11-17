@@ -665,6 +665,7 @@ mod tests {
 		assert!(repo.phones("subject-a", 5_000).await.unwrap().is_empty(), "an expired phone is not listed");
 		assert!(!repo.rename_phone("subject-a", &[7; 16], Some("late"), 5_000).await.unwrap(), "nor renamed");
 		assert!(!repo.end_phone("subject-a", &[7; 16], 5_000).await.unwrap(), "nor reads as signed out");
+		assert!(!repo.rename_phone("subject-a", &[7; 16], None, 0).await.unwrap(), "but its row is gone");
 	}
 
 	#[tokio::test]

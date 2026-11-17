@@ -531,7 +531,7 @@ pub async fn sign_out_phone(State(auth): State<AuthContext>, BrowserSubject(subj
 /// # Errors
 /// 401 without a session; 403 for a phone's token or from an untrusted
 /// origin; 404 for an id that names none of this account's phones; 422 for
-/// a name that is too long or holds a control character.
+/// a name that is too long or holds a character [`unseen`] refuses.
 #[instrument(name = "auth_rename_phone", skip_all, fields(otel.kind = "server"))]
 pub async fn rename_phone(
 	State(auth): State<AuthContext>,
@@ -559,7 +559,7 @@ pub async fn rename_phone(
 /// lists it, and could make one name pass for another.
 ///
 /// # Errors
-/// 422 for a name that is too long or holds a control character.
+/// 422 for a name that is too long or holds a character [`unseen`] refuses.
 fn phone_label(typed: Option<&str>) -> Result<Option<String>, FileHostError> {
 	let Some(label) = typed.map(str::trim).filter(|label| !label.is_empty()) else {
 		return Ok(None);
@@ -568,22 +568,37 @@ fn phone_label(typed: Option<&str>) -> Result<Option<String>, FileHostError> {
 		return Err(FileHostError::unprocessable_entity([("label", "at most 40 characters")]));
 	}
 	if label.chars().any(unseen) {
-		return Err(FileHostError::unprocessable_entity([("label", "no control, format or line-separator characters")]));
+		return Err(FileHostError::unprocessable_entity([(
+			"label",
+			"no control, bidi, zero-width space or line-separator characters",
+		)]));
 	}
 	Ok(Some(label.to_owned()))
 }
 
-/// Characters a name may not hold: control characters (Cc), and the format
-/// and separator characters (Cf, Zl, Zp) a name could hide in: soft hyphen,
-/// Arabic letter mark, Mongolian vowel separator, zero-width spaces and
-/// joiners, directional marks, embeddings, overrides and isolates, line and
-/// paragraph separators, invisible operators, the byte-order mark and the
-/// interlinear annotation characters.
+/// Characters a name may not hold: control characters (Cc), line and
+/// paragraph separators (Zl, Zp), and the format characters (Cf) a name
+/// could hide in or turn around: soft hyphen, Arabic letter mark, Mongolian
+/// vowel separator, zero-width space, directional marks, embeddings,
+/// overrides and isolates, word joiner and invisible operators, the
+/// byte-order mark and the interlinear annotation characters.
+///
+/// Not every Cf character. The zero-width joiner and non-joiner (U+200D,
+/// U+200C) stay allowed: emoji sequences ("👩‍💻") and scripts such as Persian
+/// and the Indic ones need them in ordinary words. So do emoji tag sequences
+/// (U+E0020–E007F, the flags of England, Scotland and Wales). Only the owner
+/// writes a name and only the owner reads it, so the list stops at what
+/// could make a name read as another.
 fn unseen(c: char) -> bool {
 	c.is_control()
 		|| matches!(
 			c,
-			'\u{AD}' | '\u{61C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+			'\u{AD}'
+				| '\u{61C}' | '\u{180E}'
+				| '\u{200B}' | '\u{200E}'
+				| '\u{200F}' | '\u{2028}'..='\u{202E}'
+				| '\u{2060}'..='\u{206F}'
+				| '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
 		)
 }
 
@@ -1349,6 +1364,16 @@ mod tests {
 			StatusCode::UNPROCESSABLE_ENTITY,
 			"an empty body is no clear"
 		);
+		let (_, _, refused) = call(&app, Method::PATCH, &path, Some(&browser.cookie), Some(json!({}))).await;
+		assert!(refused.to_string().contains("label"), "the refusal names the missing field: {refused}");
+		for joined in ["👩\u{200D}💻 work", "می\u{200C}خواهم"] {
+			assert_eq!(
+				call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!(joined))).await.0,
+				StatusCode::OK,
+				"a joiner is part of ordinary text: {joined:?}"
+			);
+			assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], json!(joined));
+		}
 		assert_eq!(
 			call(&app, Method::PATCH, &path, Some(&other.cookie), rename(json!("Mine"))).await.0,
 			StatusCode::NOT_FOUND,

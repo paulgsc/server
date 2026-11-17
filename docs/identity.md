@@ -315,8 +315,10 @@ supersedes, for phones only, the "deliberately absent" note in
   `PATCH /auth/phones/:id` `{ label }` (a browser's passkey session only;
   `null` clears it, as does a blank name; a body without `label` is
   refused) (C498). It is trimmed, at most 40 characters, and refused
-  (`422`) if it holds a control, format or line-separator character (a bidi
-  override or zero-width character could make one name pass for another).
+  (`422`) if it holds a control or line-separator character, a bidi mark,
+  embedding, override or isolate, or a zero-width space: each could make one
+  name read as another. The zero-width joiner and non-joiner stay allowed,
+  since emoji and scripts such as Persian need them in ordinary words.
   The server cannot tell a typed name from one the phone filled in, so on
   `/auth/pairing/finish` "only what the owner typed" is a promise the phone
   app keeps: it never prefills a name. Nothing is read off the device to
