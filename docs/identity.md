@@ -313,20 +313,31 @@ supersedes, for phones only, the "deliberately absent" note in
   each phone too"). The name is only what the owner typed: an optional
   `label` sent with `/auth/pairing/finish` while pairing, or set later with
   `PATCH /auth/phones/:id` `{ label }` (a browser's passkey session only;
-  `null` or blank clears it) (C498). It is trimmed, at most 40 characters,
-  and refused (`422`) if it holds a control character. Nothing is read off
-  the device to suggest or fill one: a `User-Agent` is barred (invariant 3)
+  `null` clears it, as does a blank name; a body without `label` is
+  refused) (C498). It is trimmed, at most 40 characters, and refused
+  (`422`) if it holds a control, format or line-separator character (a bidi
+  override or zero-width character could make one name pass for another).
+  The server cannot tell a typed name from one the phone filled in, so on
+  `/auth/pairing/finish` "only what the owner typed" is a promise the phone
+  app keeps: it never prefills a name. Nothing is read off the device to
+  suggest or fill one: a `User-Agent` is barred (invariant 3)
   and a device model would break invariant 7. Whatever the owner types is
   free text, so it may say more than a random id would; "What is still
   exposed" covers what free text can hold.
 - **No last-seen time is stored** (C493). `renewedAt` is `expiresAt` less the
-  session term: when the session last started or slid. The phone was used
+  session term as it is set now, never later than now: when the session last
+  started or slid. If `AUTH_SESSION_DAYS` has changed since, it is off by
+  the difference. The phone was used
   then at least, and may have been used since, by up to half a term. Kept to
   the day (C494), `paired_on` says when a phone joined, not when it is used.
 - **A phone paired before rows said so** reads as a browser row until its
   bearer token is next read, by any route; it is then marked a phone, with a
   fresh `pairing_id` and no day (`pairedOn: null`), once (C495). How the
   token arrives is still what decides it: only a bearer read marks a row.
+  Until that read, such a phone is not yet spared: the browser cap can still
+  end it. Tagging is not held to the cap of 16 (those rows came from under
+  the old cap of 32), so an account can be over 16 for a while, and is
+  refused a new pairing until it is back under.
 
 A phone's token acts on the account's study data and nothing that would
 outlive or widen it: adding a passkey, pairing another phone, deleting the

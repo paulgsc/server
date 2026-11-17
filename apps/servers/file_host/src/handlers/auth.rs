@@ -93,10 +93,22 @@ pub struct FinishPairing {
 }
 
 /// `PATCH /auth/phones/:id`'s body: the phone's new name, or `null` (or
-/// blank) to clear it.
+/// blank) to clear it. `label` must be present: `{}` is refused rather than
+/// read as a clear.
 #[derive(Debug, Deserialize)]
 pub struct RenamePhone {
-	pub label: Option<String>,
+	#[serde(default, deserialize_with = "present")]
+	pub label: Option<Option<String>>,
+}
+
+/// A field that was sent, `null` included, as `Some`; a missing one stays
+/// `None` through `#[serde(default)]`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: Deserialize<'de>,
+{
+	T::deserialize(deserializer).map(Some)
 }
 
 /// The longest name a phone may have, in characters.
@@ -477,16 +489,19 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap,
 #[instrument(name = "auth_phones", skip_all, fields(otel.kind = "server"))]
 pub async fn phones(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Json<PhonesView>, FileHostError> {
 	let ttl = auth.session_ttl_seconds();
+	let now = now();
 	let phones = auth
 		.repository()
-		.phones(subject.as_str(), now())
+		.phones(subject.as_str(), now)
 		.await?
 		.into_iter()
 		.map(|phone| PhoneView {
 			phone_id: URL_SAFE_NO_PAD.encode(phone.pairing_id),
 			paired_on: phone.paired_on,
 			label: phone.label,
-			renewed_at: (phone.expires_at - ttl) * 1_000,
+			// Never later than now: a term shortened since the phone renewed
+			// would otherwise put its renewal in the future.
+			renewed_at: (phone.expires_at - ttl).min(now) * 1_000,
 			expires_at: phone.expires_at * 1_000,
 		})
 		.collect();
@@ -504,7 +519,7 @@ pub async fn sign_out_phone(State(auth): State<AuthContext>, BrowserSubject(subj
 	let Ok(pairing_id) = URL_SAFE_NO_PAD.decode(phone_id) else {
 		return Err(FileHostError::NotFound);
 	};
-	if !auth.repository().end_phone(subject.as_str(), &pairing_id).await? {
+	if !auth.repository().end_phone(subject.as_str(), &pairing_id, now()).await? {
 		return Err(FileHostError::NotFound);
 	}
 	Ok(Json(Value::Object(Map::new())))
@@ -524,20 +539,24 @@ pub async fn rename_phone(
 	Path(phone_id): Path<String>,
 	Json(request): Json<RenamePhone>,
 ) -> Result<Json<Value>, FileHostError> {
-	let label = phone_label(request.label.as_deref())?;
+	let Some(label) = request.label else {
+		return Err(FileHostError::unprocessable_entity([("label", "required; send null to clear it")]));
+	};
+	let label = phone_label(label.as_deref())?;
 	let Ok(pairing_id) = URL_SAFE_NO_PAD.decode(phone_id) else {
 		return Err(FileHostError::NotFound);
 	};
-	if !auth.repository().rename_phone(subject.as_str(), &pairing_id, label.as_deref()).await? {
+	if !auth.repository().rename_phone(subject.as_str(), &pairing_id, label.as_deref(), now()).await? {
 		return Err(FileHostError::NotFound);
 	}
 	Ok(Json(Value::Object(Map::new())))
 }
 
 /// A phone's name as the owner typed it, bounded: trimmed, `None` when
-/// blank, at most [`MAX_PHONE_LABEL_CHARS`] characters, and no control
-/// characters (a newline or an escape would reach every screen that lists
-/// it).
+/// blank, at most [`MAX_PHONE_LABEL_CHARS`] characters, and nothing
+/// invisible that changes how it reads ([`unseen`]): a newline, an escape, a
+/// bidi override or a zero-width character would reach every screen that
+/// lists it, and could make one name pass for another.
 ///
 /// # Errors
 /// 422 for a name that is too long or holds a control character.
@@ -548,10 +567,24 @@ fn phone_label(typed: Option<&str>) -> Result<Option<String>, FileHostError> {
 	if label.chars().count() > MAX_PHONE_LABEL_CHARS {
 		return Err(FileHostError::unprocessable_entity([("label", "at most 40 characters")]));
 	}
-	if label.chars().any(char::is_control) {
-		return Err(FileHostError::unprocessable_entity([("label", "no control characters")]));
+	if label.chars().any(unseen) {
+		return Err(FileHostError::unprocessable_entity([("label", "no control, format or line-separator characters")]));
 	}
 	Ok(Some(label.to_owned()))
+}
+
+/// Characters a name may not hold: control characters (Cc), and the format
+/// and separator characters (Cf, Zl, Zp) a name could hide in: soft hyphen,
+/// Arabic letter mark, Mongolian vowel separator, zero-width spaces and
+/// joiners, directional marks, embeddings, overrides and isolates, line and
+/// paragraph separators, invisible operators, the byte-order mark and the
+/// interlinear annotation characters.
+fn unseen(c: char) -> bool {
+	c.is_control()
+		|| matches!(
+			c,
+			'\u{AD}' | '\u{61C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+		)
 }
 
 /// The UTC day `unix_seconds` falls on, `YYYY-MM-DD`: all a phone keeps of
@@ -1303,6 +1336,18 @@ mod tests {
 		assert_eq!(
 			call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("tab\there"))).await.0,
 			StatusCode::UNPROCESSABLE_ENTITY
+		);
+		for hidden in ["evil\u{202E}gnp", "zero\u{200B}width", "\u{200B}", "para\u{2029}graph", "soft\u{AD}hyphen"] {
+			assert_eq!(
+				call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!(hidden))).await.0,
+				StatusCode::UNPROCESSABLE_ENTITY,
+				"{hidden:?}"
+			);
+		}
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&browser.cookie), Some(json!({}))).await.0,
+			StatusCode::UNPROCESSABLE_ENTITY,
+			"an empty body is no clear"
 		);
 		assert_eq!(
 			call(&app, Method::PATCH, &path, Some(&other.cookie), rename(json!("Mine"))).await.0,

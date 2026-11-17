@@ -375,7 +375,10 @@ impl AuthRepository {
 	/// Mark a session read through a phone's bearer token as a phone's, with
 	/// `pairing_id`, if the row does not say so yet: a phone paired before
 	/// rows said what they are. Its day stays unknown. Once tagged, a row is
-	/// never written here again.
+	/// never written here again. Not held to [`MAX_PHONES_PER_SUBJECT`]: the
+	/// phone is already paired, and ending it is what this change prevents;
+	/// such rows came from the browser cap, so they stay bounded, and a new
+	/// pairing is refused until the owner is back under the cap.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
@@ -408,17 +411,19 @@ impl AuthRepository {
 		.await
 	}
 
-	/// Name one of the subject's phones (`None` clears the name), and say
-	/// whether there was one. Scoped by subject, like [`Self::end_phone`].
+	/// Name one of the subject's live phones (`None` clears the name), and
+	/// say whether there was one. Scoped by subject, like [`Self::end_phone`];
+	/// an expired phone, listed by nothing, is not renamed.
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn rename_phone(&self, subject_id: &str, pairing_id: &[u8], label: Option<&str>) -> Result<bool, sqlx::Error> {
+	pub async fn rename_phone(&self, subject_id: &str, pairing_id: &[u8], label: Option<&str>, now: i64) -> Result<bool, sqlx::Error> {
 		let renamed = sqlx::query!(
-			"UPDATE auth_session SET label = ?3 WHERE subject_id = ?1 AND pairing_id = ?2 AND kind = 'phone'",
+			"UPDATE auth_session SET label = ?3 WHERE subject_id = ?1 AND pairing_id = ?2 AND kind = 'phone' AND expires_at > ?4",
 			subject_id,
 			pairing_id,
-			label
+			label,
+			now
 		)
 		.execute(&self.pool)
 		.await?
@@ -426,22 +431,23 @@ impl AuthRepository {
 		Ok(renamed > 0)
 	}
 
-	/// Sign one of the subject's phones out, and say whether there was one.
-	/// Scoped by subject, so a pairing id can only ever end a phone of the
-	/// account that asks.
+	/// Sign one of the subject's phones out, and say whether a live one was
+	/// there. Scoped by subject, so a pairing id can only ever end a phone of
+	/// the account that asks. An expired row is removed too, but reads as
+	/// absent, as it does in [`Self::phones`].
 	///
 	/// # Errors
 	/// Propagates any `sqlx` failure.
-	pub async fn end_phone(&self, subject_id: &str, pairing_id: &[u8]) -> Result<bool, sqlx::Error> {
-		let ended = sqlx::query!(
-			"DELETE FROM auth_session WHERE subject_id = ?1 AND pairing_id = ?2 AND kind = 'phone'",
+	pub async fn end_phone(&self, subject_id: &str, pairing_id: &[u8], now: i64) -> Result<bool, sqlx::Error> {
+		let live = sqlx::query_scalar!(
+			r#"DELETE FROM auth_session WHERE subject_id = ?1 AND pairing_id = ?2 AND kind = 'phone' RETURNING expires_at > ?3 AS "live!: bool""#,
 			subject_id,
-			pairing_id
+			pairing_id,
+			now
 		)
-		.execute(&self.pool)
-		.await?
-		.rows_affected();
-		Ok(ended > 0)
+		.fetch_optional(&self.pool)
+		.await?;
+		Ok(live == Some(true))
 	}
 
 	/// The session a token hash names, if it has not expired by `now`.
@@ -649,14 +655,16 @@ mod tests {
 		assert_eq!(phones[0].pairing_id, vec![7; 16]);
 		assert_eq!(phones[0].paired_on.as_deref(), Some("2026-11-17"));
 		assert_eq!(phones[0].label, None);
-		assert!(repo.rename_phone("subject-a", &[7; 16], Some("Pixel")).await.unwrap());
-		assert!(!repo.rename_phone("subject-b", &[7; 16], Some("not theirs")).await.unwrap());
+		assert!(repo.rename_phone("subject-a", &[7; 16], Some("Pixel"), 300).await.unwrap());
+		assert!(!repo.rename_phone("subject-b", &[7; 16], Some("not theirs"), 300).await.unwrap());
 		assert_eq!(repo.phones("subject-a", 300).await.unwrap()[0].label.as_deref(), Some("Pixel"));
-		assert!(repo.rename_phone("subject-a", &[7; 16], None).await.unwrap());
+		assert!(repo.rename_phone("subject-a", &[7; 16], None, 300).await.unwrap());
 		assert_eq!(repo.phones("subject-a", 300).await.unwrap()[0].label, None);
 		assert_eq!(phones[0].expires_at, 5_000);
 
 		assert!(repo.phones("subject-a", 5_000).await.unwrap().is_empty(), "an expired phone is not listed");
+		assert!(!repo.rename_phone("subject-a", &[7; 16], Some("late"), 5_000).await.unwrap(), "nor renamed");
+		assert!(!repo.end_phone("subject-a", &[7; 16], 5_000).await.unwrap(), "nor reads as signed out");
 	}
 
 	#[tokio::test]
@@ -697,8 +705,8 @@ mod tests {
 		repo.pair_phone("subject-a", &phone(b"phone-a", &[7; 16], "2026-11-17"), 10_000, 200).await.unwrap();
 		repo.pair_phone("subject-b", &phone(b"phone-b", &[7; 16], "2026-11-17"), 10_000, 200).await.unwrap();
 
-		assert!(!repo.end_phone("subject-b", &[8; 16]).await.unwrap(), "no such phone");
-		assert!(repo.end_phone("subject-b", &[7; 16]).await.unwrap());
+		assert!(!repo.end_phone("subject-b", &[8; 16], 300).await.unwrap(), "no such phone");
+		assert!(repo.end_phone("subject-b", &[7; 16], 300).await.unwrap());
 		assert!(repo.live_session(b"phone-b", 300).await.unwrap().is_none());
 		assert!(
 			repo.live_session(b"phone-a", 300).await.unwrap().is_some(),
