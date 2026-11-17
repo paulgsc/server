@@ -19,14 +19,19 @@
 //! - its `opens` and `due`, RFC 3339 instants, the deadline after the
 //!   opening. A week without them is still kept, and takes no send.
 //!
-//! Anything else (the invented company and role, each question's family,
-//! prompt, target length and guidelines, each card's source and script) is
-//! kept as it came and never read here. Unlike Rust Rounds' week, nothing is
+//! Each question's `ground` (IW8: `open`, `work` and more to come) is read only
+//! to pass it through to the week's record. Anything else (the invented
+//! company and role, each question's family, prompt, target length and
+//! guidelines, each card's source and script) is kept as it came and never
+//! read here. Unlike Rust Rounds' week, nothing is
 //! queued: a week of interview runs no program.
 //!
 //! **What the owner sent** ([`read_sent`], [`Sent`]): each question answered
 //! and each card read, with its take (a voice note, by id, never audio) and
-//! when it was recorded, and those passed over. It is a draft until the
+//! when it was recorded, and those passed over. An answer may say how it was
+//! given, its [`Rung`] (paulgsc/some-ui#3175, IW8): read aloud from the ready
+//! answer, from cues, or in the owner's own words. It is the owner's account
+//! of the take, kept for the essay, and never a score. It is a draft until the
 //! week's deadline and final at it, by the rules every kind of week shares
 //! (`crate::draft`, kept in `interview_week_draft` and
 //! `interview_week_final`).
@@ -70,15 +75,32 @@ pub fn mailbox_name(id: &str) -> String {
 }
 
 /// A week home can keep sends of: its id, its questions' and cards' ids in
-/// the week's order, and its window.
+/// the week's order, each question's ground, and its window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Week {
 	pub id: String,
 	pub questions: Vec<String>,
+	/// Each question's ground ([`ground`]), in the order of `questions`, when
+	/// it says one; `None` otherwise (every `/1` question).
+	pub grounds: Vec<Option<String>>,
 	pub cards: Vec<String>,
 	/// When the week opens and its deadline, when both are RFC 3339
 	/// instants and the deadline comes after the opening; `None` otherwise.
 	pub window: Option<Window>,
+}
+
+/// What a question is about, when it says (paulgsc/some-ui#3175, IW8): a
+/// `/2` question's `ground`, passed through to the week's record so the
+/// owner can query and pivot by it, "not all mushed as a soup of questions"
+/// (the owner's words).
+///
+/// `open` (a generic question) and `work` (one about the owner's body of
+/// work) today, and more to come (`decision`, paulgsc/some-ui#3181), so home
+/// keeps it as an open slug ([`is_slug`]) rather than a closed list. The
+/// week is the routine's and held to its format there; home only passes
+/// this through, so anything that is not a slug is no ground, never no week.
+fn ground(question: &Value) -> Option<String> {
+	question.get("ground").and_then(Value::as_str).filter(|ground| is_slug(ground)).map(str::to_owned)
 }
 
 /// The ids of `list` (a week's `questions` or `cards`), each a slug and
@@ -151,12 +173,33 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 	match id {
 		Some(id) if problems.is_empty() => Ok(Week {
 			id: id.to_owned(),
+			grounds: week
+				.get("questions")
+				.and_then(Value::as_array)
+				.map_or_else(Vec::new, |list| list.iter().map(ground).collect()),
 			questions,
 			cards,
 			window,
 		}),
 		_ => Err(problems),
 	}
+}
+
+/// How an answer was given (paulgsc/some-ui#3175, IW8).
+///
+/// The rung of the ladder from the week's ready answer to the owner's own
+/// words: the owner's account of the take, passed through to the week's
+/// record for the essay. Never a score, and nothing here ranks one above
+/// another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Rung {
+	/// Read aloud from the ready answer.
+	Aloud,
+	/// Said from the ready answer's cues.
+	Cues,
+	/// Said in the owner's own words.
+	Own,
 }
 
 /// One question answered, as Send kept it.
@@ -169,6 +212,10 @@ pub struct Answer {
 	pub take: String,
 	/// When the take was recorded.
 	pub recorded_at: String,
+	/// How it was given, when the phone says: a send from before IW8 has
+	/// none, and reads as it did.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub rung: Option<Rung>,
 }
 
 /// One teleprompter card read, as Send kept it.
@@ -246,7 +293,7 @@ fn take_problems(field: &str, (take, recorded_at): (&str, &str), at: &str, probl
 /// not the format's shape (an unknown key included); a `week` that is not
 /// `week`'s id, or is final (`now` is past its deadline); an `at` that is not
 /// an instant, is before the week opens, after its deadline or ahead of
-/// `now`; no take at all; a question or a card the week does not name, named
+/// `now`; no take at all; a `rung` that is not `aloud`, `cues` or `own`; a question or a card the week does not name, named
 /// twice, or not named at all; a take that is not a note id; a `recordedAt`
 /// that is not an instant or is after `at`.
 pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Problem>> {
@@ -254,7 +301,7 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 	let sent: Sent = serde_json::from_value(value).map_err(|_| {
 		vec![(
 			String::from("body"),
-			"must be a week sent: week, at, answers, reads, passed and passedReads, and nothing else",
+			"must be a week sent: week, at, answers, reads, passed and passedReads, and nothing else; a rung is aloud, cues or own",
 		)]
 	})?;
 	let mut problems: Vec<Problem> = Vec::new();
@@ -286,7 +333,7 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 
 #[cfg(test)]
 mod tests {
-	use super::{mailbox_name, read, read_sent, Sent};
+	use super::{mailbox_name, read, read_sent, Rung, Sent};
 	use crate::draft::{finalize, is_final, put_draft, standing, DraftChange, Kind, Stored};
 	use serde_json::{json, Value};
 	use sqlx::sqlite::SqlitePoolOptions;
@@ -390,6 +437,55 @@ mod tests {
 			"final once home's clock is past due"
 		);
 		assert_eq!(fields(&read_sent(br#"{"week":"2026-w47","extra":1}"#, &week, OPEN).unwrap_err()), ["body"]);
+	}
+
+	/// A question's ground is read for the record; one missing or not known
+	/// is none, and never makes the week unreadable.
+	#[test]
+	fn a_questions_ground_is_read_when_it_says_one() {
+		assert_eq!(read(week_body().to_string().as_bytes()).unwrap().grounds, [None, None], "none said");
+		let mut said = week_body();
+		said["questions"][0]["ground"] = json!("open");
+		said["questions"][1]["ground"] = json!("work");
+		let grounds = |said: &Value| read(said.to_string().as_bytes()).unwrap().grounds;
+		assert_eq!(grounds(&said), [Some(String::from("open")), Some(String::from("work"))]);
+		said["questions"][1]["ground"] = json!("decision");
+		assert_eq!(grounds(&said)[1].as_deref(), Some("decision"), "an open slug: a ground to come passes through");
+		for not in [json!("Not A Slug"), json!(3), json!(null)] {
+			said["questions"][1]["ground"] = not.clone();
+			assert_eq!(grounds(&said)[1], None, "{not}");
+		}
+	}
+
+	/// An answer may say its rung; one without it (a send from before IW8)
+	/// reads as it did and writes back without one; a rung that is not one
+	/// of the three is refused with the body.
+	#[test]
+	fn an_answer_may_say_its_rung() {
+		let week = read(week_body().to_string().as_bytes()).unwrap();
+		let plain = read_sent(sent_body(OPEN).to_string().as_bytes(), &week, OPEN).unwrap();
+		assert_eq!(plain.answers[0].rung, None);
+		assert!(serde_json::to_value(&plain).unwrap()["answers"][0].get("rung").is_none(), "none written");
+		for (said, rung) in [("aloud", Rung::Aloud), ("cues", Rung::Cues), ("own", Rung::Own)] {
+			let mut body = sent_body(OPEN);
+			body["answers"][0]["rung"] = json!(said);
+			let sent = read_sent(body.to_string().as_bytes(), &week, OPEN).unwrap();
+			assert_eq!(sent.answers[0].rung, Some(rung));
+			assert_eq!(serde_json::to_value(&sent).unwrap()["answers"][0]["rung"], json!(said), "kept as said");
+		}
+		for bad in [json!("score"), json!(3), json!("Own")] {
+			let mut body = sent_body(OPEN);
+			body["answers"][0]["rung"] = bad.clone();
+			let refused = read_sent(body.to_string().as_bytes(), &week, OPEN);
+			assert_eq!(fields(&refused.unwrap_err()), ["body"], "{bad}");
+		}
+		let mut on_a_read = sent_body(OPEN);
+		on_a_read["reads"][0]["rung"] = json!("own");
+		assert_eq!(
+			fields(&read_sent(on_a_read.to_string().as_bytes(), &week, OPEN).unwrap_err()),
+			["body"],
+			"a card's read has no rung"
+		);
 	}
 
 	/// The draft and the final keep Rust Rounds' rules, in the interview's

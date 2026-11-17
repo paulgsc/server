@@ -41,7 +41,7 @@ use axum::{
 	Json,
 };
 use rust_round_repo::draft::{self, DraftChange, Kind};
-use rust_round_repo::interview::{self, Sent, Week};
+use rust_round_repo::interview::{self, Rung, Sent, Week};
 use rust_round_repo::sent::SENT_TWICE;
 use rust_round_repo::{instant_order, RoundError, LIST_LIMIT};
 use serde::Serialize;
@@ -101,11 +101,19 @@ pub struct InterviewRecord {
 #[serde(rename_all = "camelCase")]
 pub struct QuestionRecord {
 	pub question: String,
+	/// What it is about, when the week says (`open`, `work` or another slug,
+	/// IW8): from the week, so it is there whether or not the question was
+	/// answered.
+	pub ground: Option<String>,
 	pub answered: bool,
 	/// The take's voice-note id, when answered.
 	pub take: Option<String>,
 	/// When the take was recorded, when answered.
 	pub recorded_at: Option<String>,
+	/// How it was given, when answered and the send says
+	/// (`rust_round_repo::interview::Rung`, paulgsc/some-ui#3175, IW8):
+	/// passed through for the essay, never a score.
+	pub rung: Option<Rung>,
 }
 
 /// One teleprompter card of a week's record.
@@ -300,16 +308,19 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 	let questions = week
 		.questions
 		.into_iter()
-		.map(|question| {
+		.zip(week.grounds.into_iter().chain(std::iter::repeat(None)))
+		.map(|(question, ground)| {
 			let answer = answers.iter().find(|answer| answer.question == question);
 			if answer.is_none() {
 				unanswered.push(question.clone());
 			}
 			QuestionRecord {
 				question,
+				ground,
 				answered: answer.is_some(),
 				take: answer.map(|answer| answer.take.clone()),
 				recorded_at: answer.map(|answer| answer.recorded_at.clone()),
+				rung: answer.and_then(|answer| answer.rung),
 			}
 		})
 		.collect();
@@ -454,7 +465,10 @@ mod tests {
 			"schema": "some-ui.interview-week/2", "id": id, "opens": opens, "due": due,
 			"company": { "name": "Fernbrook Labs" }, "role": "Platform engineer",
 			"questions": [
-				{ "id": "about-you", "prompt": "Tell me about yourself.", "ready": { "text": "I build the tools I study with." } },
+				{
+					"id": "about-you", "prompt": "Tell me about yourself.", "ground": "open",
+					"ready": { "text": "I build the tools I study with." },
+				},
 				{ "id": "a-conflict", "prompt": "A time you disagreed." },
 			],
 			"cards": [{ "id": "home-first", "script": "I built home first." }],
@@ -587,7 +601,10 @@ mod tests {
 		let other = sent("2026-w47", &first_at, &days(-2));
 		let conflict = call(&app, Method::PUT, "/interview-weeks/2026-w47/sent", Some(&phone), None, &other).await;
 		assert_eq!(conflict.0, StatusCode::CONFLICT, "another body at the draft's moment");
-		let later = sent("2026-w47", &days(0), &days(-1));
+		// A later send says the answer's rung, which the record passes through.
+		let mut later: Value = serde_json::from_slice(&sent("2026-w47", &days(0), &days(-1))).unwrap();
+		later["answers"][0]["rung"] = json!("cues");
+		let later = later.to_string().into_bytes();
 		assert_eq!(
 			call(&app, Method::PUT, "/interview-weeks/2026-w47/sent", Some(&phone), None, &later).await.2["change"],
 			json!("replaced")
@@ -608,8 +625,8 @@ mod tests {
 		assert_eq!(
 			record["questions"],
 			json!([
-				{ "question": "about-you", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"] },
-				{ "question": "a-conflict", "answered": false, "take": null, "recordedAt": null },
+				{ "question": "about-you", "ground": "open", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"], "rung": "cues" },
+				{ "question": "a-conflict", "ground": null, "answered": false, "take": null, "recordedAt": null, "rung": null },
 			])
 		);
 		assert_eq!((&record["unanswered"], &record["unread"]), (&json!(["a-conflict"]), &json!(["home-first"])));
