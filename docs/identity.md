@@ -2010,14 +2010,21 @@ nowhere is marked as such and belongs to review.
     week: a draft that no longer reads as its kind's send is never made
     final, and stays a draft for a person to read. Both are the
     subject's, read only by them (`GET /interview-weeks/:id/record`), never
-    audio, and deleted only with the account; the final is never updated. A
+    audio, and deleted only with the account; the final is never updated.
+    The record also names each question's first take, the earliest
+    `interview` note held for it by when it was recorded, which the phone
+    sends home on its own whether or not a send names it (IW8,
+    paulgsc/some-ui#3175; `voice_repo::interview::firsts`): a note no send
+    names is held, heard and filed like any other, never refused. A
     final week's record reaches the subject's own mailbox as
     `index-interview-*` (`mailbox::index::interview`) under the same terms
     as `index-rust-*`. Not yet counted by `GET /subjects/me/kept` (#844).
     *Enforced by* `rust_round_repo::interview`'s
     `a_send_is_a_draft_until_the_deadline_then_final`,
     `handlers::interview_weeks`' `a_week_reads_back_as_the_routine_put_it_and_only_for_its_subject`
-    and `the_draft_standing_at_the_deadline_is_final_at_the_first_read`,
+    `the_draft_standing_at_the_deadline_is_final_at_the_first_read` and
+    `the_record_names_each_questions_first_take_sent_or_not`,
+    `voice_repo::interview`'s `each_questions_first_is_its_earliest_note`,
     `mailbox::pass`'s `the_interview_index_puts_each_week_final_once_its_deadline_passes`,
     and the account-deletion test (invariant 12).
 

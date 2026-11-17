@@ -178,7 +178,7 @@ pub(in crate::mailbox) async fn put_interview_index<T: MailboxTransport>(
 #[cfg(test)]
 mod tests {
 	use super::{fitted, interview_index};
-	use crate::handlers::interview_weeks::{CardRecord, InterviewRecord, QuestionRecord};
+	use crate::handlers::interview_weeks::{CardRecord, FirstTake, InterviewRecord, QuestionRecord};
 	use crate::handlers::rust_week_record::SentAt;
 	use crate::mailbox::pass::MAILBOX_BODY_CEILING;
 	use serde_json::{json, Value};
@@ -202,6 +202,10 @@ mod tests {
 					take: Some(String::from("n1")),
 					recorded_at: Some(String::from("2026-11-18T17:00:00.000Z")),
 					rung: Some(rust_round_repo::interview::Rung::Own),
+					first: Some(FirstTake {
+						take: String::from("n0"),
+						recorded_at: String::from("2026-11-18T16:00:00.000Z"),
+					}),
 				},
 				QuestionRecord {
 					question: String::from("a-conflict"),
@@ -210,6 +214,7 @@ mod tests {
 					take: None,
 					recorded_at: None,
 					rung: None,
+					first: None,
 				},
 			],
 			cards: vec![CardRecord {
@@ -240,8 +245,9 @@ mod tests {
 					"closed": true,
 					"sent": { "at": "2026-11-18T18:00:00.000Z", "receivedAt": "2026-11-18T18:00:01.000Z", "draft": false },
 					"questions": [
-						{ "question": "about-you", "ground": "work", "answered": true, "take": "n1", "recordedAt": "2026-11-18T17:00:00.000Z", "rung": "own" },
-						{ "question": "a-conflict", "ground": null, "answered": false, "take": null, "recordedAt": null, "rung": null },
+						{ "question": "about-you", "ground": "work", "answered": true, "take": "n1", "recordedAt": "2026-11-18T17:00:00.000Z", "rung": "own",
+							"first": { "take": "n0", "recordedAt": "2026-11-18T16:00:00.000Z" } },
+						{ "question": "a-conflict", "ground": null, "answered": false, "take": null, "recordedAt": null, "rung": null, "first": null },
 					],
 					"cards": [{ "card": "home-first", "read": false, "take": null, "recordedAt": null }],
 					"unanswered": ["a-conflict"],
