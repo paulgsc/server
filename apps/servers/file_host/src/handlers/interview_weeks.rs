@@ -447,12 +447,16 @@ mod tests {
 	}
 
 	/// A week the routine wrote, open over `opens`..`due`, kept in
-	/// `subject`'s `brief` as the mailbox pass keeps one.
+	/// `subject`'s `brief` as the mailbox pass keeps one. It is a `/2` week
+	/// (IW8), its first question with a ready answer home never reads.
 	async fn hold_week(pool: &SqlitePool, subject: &str, seq: i64, id: &str, (opens, due): (&str, &str)) {
 		let body = json!({
-			"schema": "some-ui.interview-week/1", "id": id, "opens": opens, "due": due,
+			"schema": "some-ui.interview-week/2", "id": id, "opens": opens, "due": due,
 			"company": { "name": "Fernbrook Labs" }, "role": "Platform engineer",
-			"questions": [{ "id": "about-you", "prompt": "Tell me about yourself." }, { "id": "a-conflict", "prompt": "A time you disagreed." }],
+			"questions": [
+				{ "id": "about-you", "prompt": "Tell me about yourself.", "ready": { "text": "I build the tools I study with." } },
+				{ "id": "a-conflict", "prompt": "A time you disagreed." },
+			],
 			"cards": [{ "id": "home-first", "script": "I built home first." }],
 		})
 		.to_string();
@@ -535,6 +539,11 @@ mod tests {
 		let (status, etag, week) = call(&app, Method::GET, "/interview-weeks/2026-w47", Some(&phone), None, b"").await;
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!((week["id"].as_str(), week["week"]["role"].as_str()), (Some("2026-w47"), Some("Platform engineer")));
+		assert_eq!(
+			(&week["week"]["schema"], &week["week"]["questions"][0]["ready"]),
+			(&json!("some-ui.interview-week/2"), &json!({ "text": "I build the tools I study with." })),
+			"a /2 week is served with its ready answers, as the routine put it"
+		);
 		let etag = etag.unwrap();
 		let (status, _, _) = call(&app, Method::GET, "/interview-weeks/2026-w47", Some(&phone), Some((IF_NONE_MATCH, &etag)), b"").await;
 		assert_eq!(status, StatusCode::NOT_MODIFIED);
