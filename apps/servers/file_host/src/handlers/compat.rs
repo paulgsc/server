@@ -32,9 +32,11 @@ pub struct Running {
 	version: &'static str,
 }
 
-/// What home's limiter lets each client send (AD1): `burst` requests at
-/// once, refilling to `per_minute` a minute, one each `60 / per_minute`
-/// seconds. A client paces itself to it rather than assume a number.
+/// What home's limiter lets each client send (AD1).
+///
+/// `burst` requests at once, refilling to `per_minute` a minute, one each
+/// `60 / per_minute` seconds. A client paces itself to it rather than
+/// assume a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct RateLimit {
 	per_minute: u32,

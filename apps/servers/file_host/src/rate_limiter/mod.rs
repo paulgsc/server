@@ -6,8 +6,9 @@ use some_services::rate_limiter::Quota;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-/// The quota each client gets for `RATE_LIMIT` requests a minute: all of
-/// them at once, refilling one each `60 s / rate_limit`. The one place it is
+/// The quota each client gets for `RATE_LIMIT` requests a minute.
+///
+/// All of them at once, refilling one each `60 s / rate_limit`. The one place it is
 /// built, so what the limiter enforces and what `GET /compat` tells a client
 /// (`rate_limit`) cannot differ. `None` for a limit of 0.
 #[must_use]
