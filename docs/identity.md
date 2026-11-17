@@ -2000,7 +2000,9 @@ nowhere is marked as such and belongs to review.
     answered and each teleprompter card read, its take named by voice-note
     id and when it was recorded, an answer's rung when the phone says it
     (`aloud`, `cues` or `own`: how the owner gave it, passed through to the
-    record for the essay and never a score; paulgsc/some-ui#3175, IW8),
+    record for the essay and never a score; paulgsc/some-ui#3175, IW8;
+    the record also names each question's `ground`, a slug such as `open`
+    or `work`, read from the week),
     those passed over, when Send was pressed
     and when it reached home) is a draft until the deadline
     (`interview_week_draft`) and final at it (`interview_week_final`), by

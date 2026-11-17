@@ -101,6 +101,10 @@ pub struct InterviewRecord {
 #[serde(rename_all = "camelCase")]
 pub struct QuestionRecord {
 	pub question: String,
+	/// What it is about, when the week says (`open`, `work` or another slug,
+	/// IW8): from the week, so it is there whether or not the question was
+	/// answered.
+	pub ground: Option<String>,
 	pub answered: bool,
 	/// The take's voice-note id, when answered.
 	pub take: Option<String>,
@@ -304,13 +308,15 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 	let questions = week
 		.questions
 		.into_iter()
-		.map(|question| {
+		.zip(week.grounds.into_iter().chain(std::iter::repeat(None)))
+		.map(|(question, ground)| {
 			let answer = answers.iter().find(|answer| answer.question == question);
 			if answer.is_none() {
 				unanswered.push(question.clone());
 			}
 			QuestionRecord {
 				question,
+				ground,
 				answered: answer.is_some(),
 				take: answer.map(|answer| answer.take.clone()),
 				recorded_at: answer.map(|answer| answer.recorded_at.clone()),
@@ -459,7 +465,10 @@ mod tests {
 			"schema": "some-ui.interview-week/2", "id": id, "opens": opens, "due": due,
 			"company": { "name": "Fernbrook Labs" }, "role": "Platform engineer",
 			"questions": [
-				{ "id": "about-you", "prompt": "Tell me about yourself.", "ready": { "text": "I build the tools I study with." } },
+				{
+					"id": "about-you", "prompt": "Tell me about yourself.", "ground": "open",
+					"ready": { "text": "I build the tools I study with." },
+				},
 				{ "id": "a-conflict", "prompt": "A time you disagreed." },
 			],
 			"cards": [{ "id": "home-first", "script": "I built home first." }],
@@ -616,8 +625,8 @@ mod tests {
 		assert_eq!(
 			record["questions"],
 			json!([
-				{ "question": "about-you", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"], "rung": "cues" },
-				{ "question": "a-conflict", "answered": false, "take": null, "recordedAt": null, "rung": null },
+				{ "question": "about-you", "ground": "open", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"], "rung": "cues" },
+				{ "question": "a-conflict", "ground": null, "answered": false, "take": null, "recordedAt": null, "rung": null },
 			])
 		);
 		assert_eq!((&record["unanswered"], &record["unread"]), (&json!(["a-conflict"]), &json!(["home-first"])));

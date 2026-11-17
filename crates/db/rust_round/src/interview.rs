@@ -19,9 +19,11 @@
 //! - its `opens` and `due`, RFC 3339 instants, the deadline after the
 //!   opening. A week without them is still kept, and takes no send.
 //!
-//! Anything else (the invented company and role, each question's family,
-//! prompt, target length and guidelines, each card's source and script) is
-//! kept as it came and never read here. Unlike Rust Rounds' week, nothing is
+//! Each question's `ground` (IW8: `open`, `work` and more to come) is read only
+//! to pass it through to the week's record. Anything else (the invented
+//! company and role, each question's family, prompt, target length and
+//! guidelines, each card's source and script) is kept as it came and never
+//! read here. Unlike Rust Rounds' week, nothing is
 //! queued: a week of interview runs no program.
 //!
 //! **What the owner sent** ([`read_sent`], [`Sent`]): each question answered
@@ -73,15 +75,32 @@ pub fn mailbox_name(id: &str) -> String {
 }
 
 /// A week home can keep sends of: its id, its questions' and cards' ids in
-/// the week's order, and its window.
+/// the week's order, each question's ground, and its window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Week {
 	pub id: String,
 	pub questions: Vec<String>,
+	/// Each question's ground ([`ground`]), in the order of `questions`, when
+	/// it says one; `None` otherwise (every `/1` question).
+	pub grounds: Vec<Option<String>>,
 	pub cards: Vec<String>,
 	/// When the week opens and its deadline, when both are RFC 3339
 	/// instants and the deadline comes after the opening; `None` otherwise.
 	pub window: Option<Window>,
+}
+
+/// What a question is about, when it says (paulgsc/some-ui#3175, IW8): a
+/// `/2` question's `ground`, passed through to the week's record so the
+/// owner can query and pivot by it, "not all mushed as a soup of questions"
+/// (the owner's words).
+///
+/// `open` (a generic question) and `work` (one about the owner's body of
+/// work) today, and more to come (`decision`, paulgsc/some-ui#3181), so home
+/// keeps it as an open slug ([`is_slug`]) rather than a closed list. The
+/// week is the routine's and held to its format there; home only passes
+/// this through, so anything that is not a slug is no ground, never no week.
+fn ground(question: &Value) -> Option<String> {
+	question.get("ground").and_then(Value::as_str).filter(|ground| is_slug(ground)).map(str::to_owned)
 }
 
 /// The ids of `list` (a week's `questions` or `cards`), each a slug and
@@ -154,6 +173,10 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 	match id {
 		Some(id) if problems.is_empty() => Ok(Week {
 			id: id.to_owned(),
+			grounds: week
+				.get("questions")
+				.and_then(Value::as_array)
+				.map_or_else(Vec::new, |list| list.iter().map(ground).collect()),
 			questions,
 			cards,
 			window,
@@ -414,6 +437,24 @@ mod tests {
 			"final once home's clock is past due"
 		);
 		assert_eq!(fields(&read_sent(br#"{"week":"2026-w47","extra":1}"#, &week, OPEN).unwrap_err()), ["body"]);
+	}
+
+	/// A question's ground is read for the record; one missing or not known
+	/// is none, and never makes the week unreadable.
+	#[test]
+	fn a_questions_ground_is_read_when_it_says_one() {
+		assert_eq!(read(week_body().to_string().as_bytes()).unwrap().grounds, [None, None], "none said");
+		let mut said = week_body();
+		said["questions"][0]["ground"] = json!("open");
+		said["questions"][1]["ground"] = json!("work");
+		let grounds = |said: &Value| read(said.to_string().as_bytes()).unwrap().grounds;
+		assert_eq!(grounds(&said), [Some(String::from("open")), Some(String::from("work"))]);
+		said["questions"][1]["ground"] = json!("decision");
+		assert_eq!(grounds(&said)[1].as_deref(), Some("decision"), "an open slug: a ground to come passes through");
+		for not in [json!("Not A Slug"), json!(3), json!(null)] {
+			said["questions"][1]["ground"] = not.clone();
+			assert_eq!(grounds(&said)[1], None, "{not}");
+		}
 	}
 
 	/// An answer may say its rung; one without it (a send from before IW8)

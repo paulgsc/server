@@ -197,6 +197,7 @@ mod tests {
 			questions: vec![
 				QuestionRecord {
 					question: question.to_owned(),
+					ground: Some(String::from("work")),
 					answered: true,
 					take: Some(String::from("n1")),
 					recorded_at: Some(String::from("2026-11-18T17:00:00.000Z")),
@@ -204,6 +205,7 @@ mod tests {
 				},
 				QuestionRecord {
 					question: String::from("a-conflict"),
+					ground: None,
 					answered: false,
 					take: None,
 					recorded_at: None,
@@ -238,8 +240,8 @@ mod tests {
 					"closed": true,
 					"sent": { "at": "2026-11-18T18:00:00.000Z", "receivedAt": "2026-11-18T18:00:01.000Z", "draft": false },
 					"questions": [
-						{ "question": "about-you", "answered": true, "take": "n1", "recordedAt": "2026-11-18T17:00:00.000Z", "rung": "own" },
-						{ "question": "a-conflict", "answered": false, "take": null, "recordedAt": null, "rung": null },
+						{ "question": "about-you", "ground": "work", "answered": true, "take": "n1", "recordedAt": "2026-11-18T17:00:00.000Z", "rung": "own" },
+						{ "question": "a-conflict", "ground": null, "answered": false, "take": null, "recordedAt": null, "rung": null },
 					],
 					"cards": [{ "card": "home-first", "read": false, "take": null, "recordedAt": null }],
 					"unanswered": ["a-conflict"],
