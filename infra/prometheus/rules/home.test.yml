@@ -839,7 +839,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: CW5
-              says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 4h
         alertname: CallRenderOverdue
         exp_alerts: []
@@ -897,7 +897,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: PK5
-              says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: PlayoffDeltaRenderOverdue
         exp_alerts: []
@@ -948,7 +948,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: RR16
-              says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: RustEssayRenderOverdue
         exp_alerts: []
@@ -999,7 +999,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: IW6
-              says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: InterviewEssayRenderOverdue
         exp_alerts: []
@@ -1041,7 +1041,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: CE1
-              says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly."
+              says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: CardsEssayRenderOverdue
         exp_alerts: []

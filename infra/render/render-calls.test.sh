@@ -276,6 +276,13 @@ if [ "$1" = tests/record/essay.ts ]; then
     echo '{"r":2}' > "$essay"
     echo 2 > "$(dirname "$essay")/revision"
   fi
+  # $FAKE/refuse-once: this run is refused as too long, in the real
+  # recorder's words, and the next is not.
+  if [ -e "$fake/refuse-once" ]; then
+    rm -f "$fake/refuse-once"
+    echo "the video would run 40.0 min, past the policy's $max_min.0 min, by its words; nothing was recorded" >&2
+    exit 1
+  fi
   if [ -e "$fake/no-take" ]; then
     echo "QM-311 is answered with a take, and $takes has none for it" >&2
     exit 1
@@ -451,7 +458,7 @@ fresh() {
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
-    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-*
+    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1194,6 +1201,147 @@ ESSAY_MAX_VIDEO_MINUTES=30
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "and the same essay is made at 30, with no new one" test -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
 
+# RF1: a refusal by the policy is not tried again until what it was refused for
+# changes (#928): its input, its cap or the image. Week 46's essay, whose
+# words run 24.4 minutes, refused at 15: held on every pass, RETRY_AFTER or
+# not, with its reason kept for file_host to read (#929); tried again once the
+# image changes, and rendered once the cap is 30, with no new essay.
+fresh refused
+RETRY_AFTER=0
+ESSAY_MAX_VIDEO_MINUTES=15
+mkdir -p "$ROOT/essays/2026-w46/takes"
+echo '{"r":1}' > "$ROOT/essays/2026-w46/essay.json"
+echo 1 > "$ROOT/essays/2026-w46/revision"
+echo 244 > "$FAKE/minutes-2026-w46"
+essay_runs() {
+  wc -l < "$FAKE/essay-runs"
+}
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay past its length is refused, its failed.log the recorder's words" \
+  grep -qF "the video would run 24.4 min, past the policy's 15.0 min" "$ROOT/renders/rust-essay-worker/2026-w46.failed.log"
+check "its refusal is kept as a reason, the minutes and the cap, never its words" \
+  test "$(grep -v '^held=' "$ROOT/renders/rust-essay-worker/2026-w46.refused")" = "$(printf 'reason=too-long\nminutes=24.4\ncap=15.0')"
+check "and it is said so" grep -qF "refused by the policy; it is tried again once what it was refused for changes" "$SCRATCH/pass.out"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+touch -d '2 hours ago' "$ROOT/renders/rust-essay-worker/2026-w46.failed.log"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "it is not tried again while nothing it was refused for changes, RETRY_AFTER or not" test "$(essay_runs)" -eq 1
+RENDER_IMAGE=pgathondu/render@sha256:next
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a new image is tried once" test "$(essay_runs)" -eq 2
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and, refused again, held again" test "$(essay_runs)" -eq 2
+KOKORO_IMAGE=pgathondu/kokoro@sha256:next
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a new speaker is tried once too: a take's length is its" test "$(essay_runs)" -eq 3
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and held again" test "$(essay_runs)" -eq 3
+# This worker's own text is what it holds for too: it is mounted, not
+# imaged, and `record` decides a video as the image does.
+SCRIPT_SUM_WAS=$SCRIPT_SUM # put back where this case ends
+SCRIPT_SUM=changed
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a changed worker script is tried once" test "$(essay_runs)" -eq 4
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and held again" test "$(essay_runs)" -eq 4
+# A job a restart left of a refusal held again (the image it was released
+# for rolled back) never runs, and is over.
+mkdir -p "$ROOT/renders/call-worker"
+echo 81 > "$ROOT/renders/call-worker/job"
+printf 'id=81\nkind=rust-essay\nkey=2026-w46\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0' > "$ROOT/renders/call-worker/job.state"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a job a restart left of a held refusal is over, not run" \
+  test "$(essay_runs)" -eq 4 -a ! -e "$ROOT/renders/call-worker/job" -a ! -e "$ROOT/renders/call-worker/job.state"
+ESSAY_MAX_VIDEO_MINUTES=30
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "once the cap is 30 the same essay renders, with no new one" \
+  test "$(essay_runs)" -eq 5 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
+check "and its failed.log and its refusal are gone" \
+  test ! -e "$ROOT/renders/rust-essay-worker/2026-w46.failed.log" -a ! -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
+# A new revision of a held essay is tried at once.
+mkdir -p "$ROOT/essays/2026-w47/takes"
+echo '{"r":1}' > "$ROOT/essays/2026-w47/essay.json"
+echo 1 > "$ROOT/essays/2026-w47/revision"
+echo 400 > "$FAKE/minutes-2026-w47"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay of 40 minutes is held at 30" test "$(essay_runs)" -eq 6
+echo 290 > "$FAKE/minutes-2026-w47"
+sleep 0.01
+echo '{"r":2}' > "$ROOT/essays/2026-w47/.essay.json" && mv "$ROOT/essays/2026-w47/.essay.json" "$ROOT/essays/2026-w47/essay.json"
+echo 2 > "$ROOT/essays/2026-w47/revision"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and its newer revision is tried at once, and renders" \
+  test "$(essay_runs)" -eq 7 -a -e "$ROOT/renders/rust-essay/2026-w47/essay.mp4"
+# Any other failure keeps RETRY_AFTER, and keeps no refusal.
+RETRY_AFTER=3600
+mkdir -p "$ROOT/essays/2026-w48/takes"
+echo '{}' > "$ROOT/essays/2026-w48/essay.json"
+touch "$FAKE/no-take"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a failure that is not the policy's keeps no refusal" test ! -e "$ROOT/renders/rust-essay-worker/2026-w48.refused"
+check "and is said to be tried again in an hour" grep -qF "the rust-essay of 2026-w48 did not render; it is tried again in an hour" "$SCRATCH/pass.out"
+rm -f "$FAKE/no-take"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and is not tried again within RETRY_AFTER" test ! -e "$ROOT/renders/rust-essay/2026-w48/essay.mp4"
+RETRY_AFTER=0
+ESSAY_MAX_VIDEO_MINUTES=30
+RENDER_IMAGE=
+KOKORO_IMAGE=
+SCRIPT_SUM=$SCRIPT_SUM_WAS
+
+# RF1, what a refusal is and holds for, attempt by attempt (#928).
+# - The brand files are what it holds for too: a new one is tried once.
+fresh refused-brand
+RETRY_AFTER=0
+BRAND_DIR=$SCRATCH/brand
+mkdir -p "$BRAND_DIR" "$ROOT/essays/2026-w46/takes"
+echo '{}' > "$ROOT/essays/2026-w46/essay.json"
+echo 400 > "$FAKE/minutes-2026-w46"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a refused essay is held while the brand files are as they were" test "$(wc -l < "$FAKE/essay-runs")" -eq 1
+echo bed > "$BRAND_DIR/bed.ogg"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and tried once a brand file changes" test "$(wc -l < "$FAKE/essay-runs")" -eq 2
+BRAND_DIR=/brand
+# - What it holds for is the last attempt's: one corrected while it rendered
+#   runs again over the newer revision, and that run's refusal is held, not
+#   tried again on the next pass.
+fresh refused-corrected
+mkdir -p "$ROOT/essays/2026-w46/takes"
+echo '{"r":1}' > "$ROOT/essays/2026-w46/essay.json"
+echo 1 > "$ROOT/essays/2026-w46/revision"
+echo 400 > "$FAKE/minutes-2026-w46"
+touch "$FAKE/correct-mid-render"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay corrected while it rendered runs again over the newer one, refused" \
+  test "$(wc -l < "$FAKE/essay-runs")" -eq 2 -a -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and that refusal holds for the newer revision: not tried on the next pass" test "$(wc -l < "$FAKE/essay-runs")" -eq 2
+# - A refusal is the last attempt's alone: an earlier attempt of the job
+#   refused, then corrected, and the run over the newer revision failing of
+#   something else, keeps the hourly retry, with no refusal.
+fresh refused-then-other
+mkdir -p "$ROOT/essays/2026-w46/takes"
+echo '{"r":1}' > "$ROOT/essays/2026-w46/essay.json"
+echo 1 > "$ROOT/essays/2026-w46/revision"
+touch "$FAKE/correct-mid-render" "$FAKE/refuse-once" "$FAKE/no-take"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an attempt refused, then a run of the newer revision failing of another thing, keeps no refusal" \
+  test "$(wc -l < "$FAKE/essay-runs")" -eq 2 -a ! -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
+check "and is tried again in an hour" grep -qF "the rust-essay of 2026-w46 did not render; it is tried again in an hour" "$SCRATCH/pass.out"
+rm -f "$FAKE/no-take"
+# - A week of the call frozen at the revision its parts were made from
+#   (`promote`) is not made from a newer one file_host gives: that is no
+#   input a refusal holds for.
+fresh frozen-next 2026-11-06
+use_job call
+echo '{"r":2}' > "$ROOT/weeks/2026-11-06.next"
+check "a week with no part made is made from its newer revision" grep -qx "$ROOT/weeks/2026-11-06.next" <(inputs_of call 2026-11-06-p2)
+mkdir -p "$ROOT/renders/call/2026-11-06" && echo video > "$ROOT/renders/call/2026-11-06/call.mp4"
+check "a week a part of which is made is not" bash -c '! grep -qx "$1" "$2"' _ "$ROOT/weeks/2026-11-06.next" <(inputs_of call 2026-11-06-p2)
+
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
 # made and removes it, and the worker takes that as any failed attempt. A
 # week keeps no folder and is not tried again within RETRY_AFTER; a preview
@@ -1208,6 +1356,15 @@ check "and leaves no folder in renders/call" test ! -e "$ROOT/renders/call/2026-
 check "nor the video it refused" test ! -e "$ROOT/renders/call-work/2026-10-30/call.mp4"
 pass
 check "and is not tried again within RETRY_AFTER" test "$(runs_of 2026-10-30)" -eq 1
+check "its refusal is kept, the MB and the cap (C501)" \
+  test "$(grep -v '^held=' "$ROOT/renders/call-worker/2026-10-30.refused")" = "$(printf 'reason=too-large\nmb=512\ncap=500')"
+touch -d '2 hours ago' "$ROOT/renders/call-worker/2026-10-30.failed.log"
+pass
+check "and, refused by the policy, it is held past RETRY_AFTER until what it was refused for changes" \
+  test "$(runs_of 2026-10-30)" -eq 1
+echo '{"r":2}' > "$ROOT/weeks/2026-10-30.next"
+pass
+check "a newer revision of the week is tried at once" test "$(runs_of 2026-10-30)" -eq 2
 RETRY_AFTER=0
 mkdir -p "$ROOT/previews"
 ID=conference-call-20261108T100000Z
@@ -1215,9 +1372,14 @@ echo '{}' > "$ROOT/previews/$ID.json"
 run_job preview > "$SCRATCH/pass.out" 2>&1
 check "a preview past MAX_VIDEO_MB fails, with the cap named" \
   grep -qF "the video is 512 MB, past the policy's 500 MB" "$ROOT/renders/preview-worker/$ID.failed.log"
+check "and keeps its refusal, for the phone to say why" grep -qx 'reason=too-large' "$ROOT/renders/preview-worker/$ID.refused"
 check "and leaves no folder in renders/preview" test ! -e "$ROOT/renders/preview/$ID"
 run_job preview > "$SCRATCH/pass.out" 2>&1
 check "and is never tried again" test "$(wc -l < "$FAKE/preview-runs")" -eq 1
+# file_host prunes it, its request first (`previews::remove`).
+rm "$ROOT/previews/$ID.json" "$ROOT/renders/preview-worker/$ID.failed.log"
+run_job preview > "$SCRATCH/pass.out" 2>&1
+check "and its refusal goes once file_host prunes its failed.log" test ! -e "$ROOT/renders/preview-worker/$ID.refused"
 
 # A week that is a series of parts (paulgsc/some-ui#2918): its first job asks
 # `render call-parts` how many, once, and keeps the answer where file_host
