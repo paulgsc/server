@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use ws_conn_manager::ConnectionGuard;
 use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
+pub mod admission;
 pub mod auth;
 pub mod cache;
 pub mod call_weeks;

@@ -124,7 +124,7 @@ pub async fn upsert_tab(State(state): State<AppState>, Json(tab): Json<TabCaptur
 		let _db = OperationTimer::new("upsert_tab", "database_upsert");
 		repo.upsert(tab).await
 	}
-	.map_err(|e| FileHostError::OperationError(e.to_string()))?;
+	.map_err(|e| FileHostError::operation(&e, Some(&e)))?;
 
 	{
 		let _ct = OperationTimer::new("upsert_tab", "cache_invalidation");

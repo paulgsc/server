@@ -839,7 +839,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: CW5
-              says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 4h
         alertname: CallRenderOverdue
         exp_alerts: []
@@ -897,7 +897,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: PK5
-              says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: PlayoffDeltaRenderOverdue
         exp_alerts: []
@@ -948,7 +948,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: RR16
-              says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: RustEssayRenderOverdue
         exp_alerts: []
@@ -999,7 +999,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: IW6
-              says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly."
+              says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: InterviewEssayRenderOverdue
         exp_alerts: []
@@ -1041,7 +1041,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: CE1
-              says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly."
+              says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: CardsEssayRenderOverdue
         exp_alerts: []
@@ -1405,6 +1405,64 @@ tests:
     alert_rule_test:
       - eval_time: 30m
         alertname: ClientRateLimited
+        exp_alerts: []
+
+  - name: a shed request is told, once, and resolves after a quiet 15 minutes (AD4)
+    interval: 1m
+    input_series:
+      - series: 'refusals_total{job="file_host",stage="http",reason="load_shed"}'
+        values: '0x10 3 3x30'
+      - series: 'refusals_total{job="file_host",stage="http",reason="pool_timeout"}'
+        values: '0x40'
+      - series: 'refusals_total{job="file_host",stage="http",reason="timeout"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HomeShedding
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HomeShedding
+        exp_alerts:
+          - exp_labels:
+              objective: AD4
+              says: "Home answered requests busy in the last 15 minutes (a 503 with Retry-After): too many at once, no database connection free, or the 8 s deadline reached. refusals_total by reason on the file_host dashboard shows which."
+      - eval_time: 28m
+        alertname: HomeShedding
+        exp_alerts: []
+
+  - name: each busy reason is told (AD4)
+    interval: 1m
+    input_series:
+      - series: 'refusals_total{job="file_host",stage="http",reason="timeout"}'
+        values: '0x5 1x20'
+      - series: 'refusals_total{job="file_host",stage="http",reason="pool_timeout"}'
+        values: '0x30 2x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: HomeShedding
+        exp_alerts:
+          - exp_labels:
+              objective: AD4
+              says: "Home answered requests busy in the last 15 minutes (a 503 with Retry-After): too many at once, no database connection free, or the 8 s deadline reached. refusals_total by reason on the file_host dashboard shows which."
+      - eval_time: 32m
+        alertname: HomeShedding
+        exp_alerts:
+          - exp_labels:
+              objective: AD4
+              says: "Home answered requests busy in the last 15 minutes (a 503 with Retry-After): too many at once, no database connection free, or the 8 s deadline reached. refusals_total by reason on the file_host dashboard shows which."
+
+  - name: refusals that are not shedding say nothing (AD4)
+    interval: 1m
+    input_series:
+      - series: 'refusals_total{job="file_host",stage="http",reason="body_limit"}'
+        values: '0+1x40'
+      - series: 'refusals_total{job="file_host",stage="ws",reason="global_capacity"}'
+        values: '0+1x40'
+      - series: 'refusals_total{job="file_host",stage="http",reason="load_shed"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: HomeShedding
         exp_alerts: []
 
   - name: a refusal across a restart is still told (AD2)

@@ -435,11 +435,6 @@
         "if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {": 1
       }
     },
-    "clippy::unused_async": {
-      "fn handle_tower_error": {
-        "async fn handle_tower_error(error: BoxError) -> FileHostError { if error.is::<tower::timeout::error::Elapsed>() { tracing::warn!(\"Request timeout: {}\", error); refusals::record_http(\"timeout\"); FileHostError::RequestTimeout } else if error.is::<tower::load_shed::error::Overloaded>() { tracing::warn!(\"Service overloaded: {}\", error); refusals::record_http(\"load_shed\"); FileHostError::ServiceOverloaded } else { tracing::error!(\"Unhandled tower error: {}\", error); FileHostError::TowerError(error) } }": 1
-      }
-    },
     "clippy::unwrap_used": {
       "fn main": {
         "if let Some(guard) = app_state.core.otel_guard.lock().unwrap().take() {": 1

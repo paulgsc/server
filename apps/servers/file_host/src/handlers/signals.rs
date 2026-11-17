@@ -41,7 +41,7 @@ pub async fn observe(State(state): State<AppState>, subject: SubjectId, Json(sig
 
 	let eligible_at = waker::observe(&state.core.shared_db, subject.as_str(), &signal)
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+		.map_err(|err| FileHostError::operation(&err, Some(&err)))?;
 
 	Ok(Json(SignalAccepted {
 		kind: signal.kind(),

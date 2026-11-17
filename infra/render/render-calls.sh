@@ -175,6 +175,31 @@ EVERY=60
 # A failed episode is tried again this long after its failure, not on every
 # look: a week that fails for a reason that stays would fail every minute.
 RETRY_AFTER=3600
+# A refusal by the policy (#928): the recorder's own words for a video
+# past its length or size (paulgsc/some-ui packages/video-render/src/policy.ts,
+# `overLength`, `overSize`). The same input, recorded with the same flags by
+# the same recorders and the same speaker over the same brand files, is
+# refused the same way, so such a failure is not tried again on
+# RETRY_AFTER's clock: <status>/<key>.refused keeps what it was refused for
+# (`held_by`), and it is tried again once that changes. Every other failure
+# keeps RETRY_AFTER.
+# The recorder says minutes to one decimal (`toFixed(1)`) and MB whole
+# (`toFixed(0)`); .refused keeps exactly those, for file_host's board (#929).
+REFUSED_LONG="the video would run ([0-9]+(\.[0-9])?) min, past the policy's ([0-9]+(\.[0-9])?) min"
+REFUSED_LARGE="the video is ([0-9]+) MB, past the policy's ([0-9]+) MB"
+# The image the recorders are (deploy/home/release.json's render pin, which
+# call-render.yml hands in): a new image may say another length or size.
+RENDER_IMAGE=${RENDER_IMAGE:-}
+# The speaker's image (its pin, likewise): a take's length, so a video's, is
+# the speaker's.
+KOKORO_IMAGE=${KOKORO_IMAGE:-}
+# home's brand files, the music bed a series names (COMMON's --brand): a
+# video's sound, so its size.
+BRAND_DIR=/brand
+# This worker's own text: it is mounted, not in the image, and how it calls
+# the recorders (`record`) decides a video as the image does. Taken once: a
+# changed script runs only once the container restarts.
+SCRIPT_SUM=$(sha256sum < "${BASH_SOURCE[0]}" | cut -d' ' -f1)
 # How often the worker reads the lane's decision while a job waits or runs.
 # The lane decides every 5 s (`call_weeks::lane::TICK`).
 LANE_POLL=2
@@ -423,7 +448,8 @@ promote() {
     mv -f "$RENDERS/.taken/.$from.json" "$RENDERS/.taken/$from.json" &&
     put_in "$RENDERS" "$from.served" "$sha" || return 1
   # An attempt that failed was of the old revision: the new one is tried now.
-  rm -f "${STATUS:?}/$from.failed.log" "${STATUS:?}/$from"-p*.failed.log
+  rm -f "${STATUS:?}/$from.failed.log" "${STATUS:?}/$from"-p*.failed.log \
+    "${STATUS:?}/$from.refused" "${STATUS:?}/$from"-p*.refused
   echo "the week of $from takes the newer revision file_host gave; its parts are asked again"
 }
 
@@ -1014,6 +1040,9 @@ render_episode() {
         return 2 ;;
     esac
     rev=$(revision "$job" "$key")
+    HELD=$(held_by "$job" "$key")
+    # Where this attempt's lines start in the job's log (`refusal`).
+    ATTEMPT_FROM=$(stat -c %s "$log" 2> /dev/null || echo 0)
     attempt "$job" "$key" "$log"
     # An essay corrected while it rendered (file_host gave a newer
     # revision, C72): what was made is of the old one, so it is never kept.
@@ -1143,12 +1172,71 @@ prune_week() {
   return 0
 }
 
-# Whether `job`'s `key` failed less than RETRY_AFTER ago. A preview that failed
-# stays failed: the owner asks for another, under a new id.
+# The files `job`'s `key` is made from, one path a line (a folder stands for
+# everything in it), whether or not each is there.
+inputs_of() {
+  local from
+  case $1 in
+    call)
+      from=$(week_of "$2")
+      printf '%s\n' "$INPUT/$from.json" "$INPUT/$2.let-go" "$RENDERS/.taken/$from.json"
+      # A newer revision is taken in only while no part is made (`promote`):
+      # one given for a frozen week changes nothing it is made from.
+      week_made "$from" || echo "$INPUT/$from.next" ;;
+    playoff-delta | rust-essay | interview-essay | clip-walk) echo "$INPUT/$2" ;;
+    preview | cards-essay) echo "$INPUT/$2.json" ;;
+  esac
+}
+
+# What a refusal of `job`'s `key` holds for, as one sum: every flag its
+# recorder is handed (COMMON, the job's caps among them), the recorders' and
+# the speaker's images, this worker's own text, and each of its inputs' and the brand files' name,
+# size and time. Never their bytes: a held essay's takes are not read every
+# pass. file_host writes an input whole and new (a revision is a new file),
+# so a changed one has a new time. Called after `use_job`.
+held_by() {
+  local path
+  {
+    printf '%s\n' "${COMMON[@]}"
+    printf 'image=%s\nspeaker=%s\nscript=%s\n' "$RENDER_IMAGE" "$KOKORO_IMAGE" "$SCRIPT_SUM"
+    { inputs_of "$1" "$2"; echo "$BRAND_DIR"; } | while IFS= read -r path; do
+      [ -e "$path" ] && find "$path" -printf '%p %s %T@\n'
+    done | LC_ALL=C sort
+  } | sha256sum | cut -d' ' -f1
+}
+
+# The policy's refusal in `log`, as <key>.refused's lines: its reason
+# (`too-long` with the minutes and the cap, `too-large` with the MB and the
+# cap; the recorder's numbers, never its words) and `held`, what it holds for.
+# Only the last attempt's lines are read, from byte `from` of the job's log:
+# an earlier attempt of the same job (one that gave way to a newer revision,
+# or after a pause) refused may not be what the last one failed of. False
+# when the last attempt was not refused by the policy.
+refusal() {
+  local log=$1 held=$2 from=${3:-0} line
+  line=$(tail -c +"$(( from + 1 ))" "$log" | grep -oE "$REFUSED_LONG|$REFUSED_LARGE" | tail -n 1)
+  if [[ "$line" =~ ^$REFUSED_LONG$ ]]; then
+    printf 'reason=too-long\nminutes=%s\ncap=%s\nheld=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "$held"
+  elif [[ "$line" =~ ^$REFUSED_LARGE$ ]]; then
+    printf 'reason=too-large\nmb=%s\ncap=%s\nheld=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$held"
+  else
+    return 1
+  fi
+}
+
+# Whether `job`'s `key` is not to be tried now: a preview that failed stays
+# failed (the owner asks for another, under a new id); one the policy refused
+# waits until what it was refused for changes (`held_by`), then is tried at
+# once; any other failure waits RETRY_AFTER.
 failed_recently() {
-  local job=$1 failed="$STATUS/$2.failed.log" when
+  local job=$1 failed="$STATUS/$2.failed.log" refused="$STATUS/$2.refused" when held=
   [ -e "$failed" ] || return 1
   [ "$job" != preview ] || return 0
+  if [ -e "$refused" ]; then
+    held=$(sed -n 's/^held=//p' "$refused")
+    [ -n "$held" ] && [ "$held" = "$(held_by "$job" "$2")" ]
+    return
+  fi
   when=$(stat -c %Y "$failed") || return 1
   [ $(( $(date +%s) - when )) -lt "$RETRY_AFTER" ]
 }
@@ -1175,25 +1263,46 @@ render_one() {
     end_job
     return 0
   fi
-  failed_recently "$job" "$key" && return 0
+  if failed_recently "$job" "$key"; then
+    # A job a restart left of it is over: a refusal held again (the image it
+    # was released for rolled back, say) never runs it.
+    if left_job && [ "$LEFT_KIND" = "$job" ] && [ "$LEFT_KEY" = "$key" ]; then end_job; fi
+    return 0
+  fi
   echo "rendering the $job of $key"
   mkdir -p "$WORK" && prune_work "$job" "$key"
+  # What a refusal holds for is taken before each attempt (`render_episode`),
+  # after its wait for room: an input that changes while one runs is then a
+  # change, and the refusal is not held. None before any attempt.
+  HELD= ATTEMPT_FROM=0
   render_episode "$job" "$key"
   outcome=$?
   keep_cache_warnings "$key"
   case $outcome in
     0)
-      rm -f "${STATUS:?}/.$key.log" "${STATUS:?}/$key.failed.log"
+      rm -f "${STATUS:?}/.$key.log" "${STATUS:?}/$key.failed.log" "${STATUS:?}/$key.refused"
       echo "rendered the $job of $key" ;;
     2)
-      rm -f "${STATUS:?}/.$key.log"
+      rm -f "${STATUS:?}/.$key.log" "${STATUS:?}/$key.refused"
       echo "the $job of $key was let go before it rendered" ;;
     *)
+      # The last attempt's refusal first: a failed.log is never read beside
+      # another attempt's.
+      rm -f "${STATUS:?}/$key.refused"
       mv -f "$STATUS/.$key.log" "$STATUS/$key.failed.log"
       # Its time is the failure's, which RETRY_AFTER counts from.
       touch "$STATUS/$key.failed.log"
+      # A refusal by the policy is kept as its reason, a preview's too: the
+      # phone says why (#929).
+      if [ -n "$HELD" ] && refusal "$STATUS/$key.failed.log" "$HELD" "$ATTEMPT_FROM" > "$STATUS/.$key.refused"; then
+        mv -f "$STATUS/.$key.refused" "$STATUS/$key.refused"
+      else
+        rm -f "${STATUS:?}/.$key.refused"
+      fi
       if [ "$job" = preview ]; then
         echo "the preview $key did not render; the owner asks for another" >&2
+      elif [ -e "$STATUS/$key.refused" ]; then
+        echo "the $job of $key was refused by the policy; it is tried again once what it was refused for changes (its input, its cap, the recorders, the speaker or the brand files)" >&2
       else
         echo "the $job of $key did not render; it is tried again in an hour" >&2
       fi ;;
@@ -1205,6 +1314,12 @@ run_job() {
   local job=$1 key
   use_job "$job"
   mkdir -p "$STATUS" && put last-pass "$(date +%s)"
+  # A refusal outlives no failed.log: file_host removes a preview's when it
+  # prunes it, and a refusal is the reason of that failure alone.
+  local refused
+  for refused in "$STATUS"/*.refused; do
+    [ -e "$refused" ] && [ ! -e "${refused%.refused}.failed.log" ] && rm -f "$refused"
+  done
   for key in $(episodes "$job"); do
     render_one "$job" "$key"
   done
