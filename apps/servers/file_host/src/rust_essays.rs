@@ -1565,6 +1565,7 @@ mod tests {
 				question: String::from("about-you"),
 				take: String::from("note-iw"),
 				recorded_at: String::from("2026-11-15T19:00:00.000Z"),
+				rung: None,
 			}],
 			reads: vec![rust_round_repo::interview::Read {
 				card: String::from("intro"),

@@ -1998,7 +1998,10 @@ nowhere is marked as such and belongs to review.
     (`interview-week-<id>.json`) served only to its own subject
     (`GET /interview-weeks[/:id]`). What the owner sent of it (each question
     answered and each teleprompter card read, its take named by voice-note
-    id and when it was recorded, those passed over, when Send was pressed
+    id and when it was recorded, an answer's rung when the phone says it
+    (`aloud`, `cues` or `own`: how the owner gave it, passed through to the
+    record for the essay and never a score; paulgsc/some-ui#3175, IW8),
+    those passed over, when Send was pressed
     and when it reached home) is a draft until the deadline
     (`interview_week_draft`) and final at it (`interview_week_final`), by
     the same rules, kept once in `rust_round_repo::draft`, for both kinds of

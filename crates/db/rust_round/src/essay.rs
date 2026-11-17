@@ -526,6 +526,7 @@ mod tests {
 					question: (*question).to_owned(),
 					take: (*take).to_owned(),
 					recorded_at: String::from("2026-11-22T19:00:00.000Z"),
+					rung: None,
 				})
 				.collect(),
 			reads: vec![crate::interview::Read {

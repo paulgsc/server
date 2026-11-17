@@ -41,7 +41,7 @@ use axum::{
 	Json,
 };
 use rust_round_repo::draft::{self, DraftChange, Kind};
-use rust_round_repo::interview::{self, Sent, Week};
+use rust_round_repo::interview::{self, Rung, Sent, Week};
 use rust_round_repo::sent::SENT_TWICE;
 use rust_round_repo::{instant_order, RoundError, LIST_LIMIT};
 use serde::Serialize;
@@ -106,6 +106,10 @@ pub struct QuestionRecord {
 	pub take: Option<String>,
 	/// When the take was recorded, when answered.
 	pub recorded_at: Option<String>,
+	/// How it was given, when answered and the send says
+	/// (`rust_round_repo::interview::Rung`, paulgsc/some-ui#3175, IW8):
+	/// passed through for the essay, never a score.
+	pub rung: Option<Rung>,
 }
 
 /// One teleprompter card of a week's record.
@@ -310,6 +314,7 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 				answered: answer.is_some(),
 				take: answer.map(|answer| answer.take.clone()),
 				recorded_at: answer.map(|answer| answer.recorded_at.clone()),
+				rung: answer.and_then(|answer| answer.rung),
 			}
 		})
 		.collect();
@@ -587,7 +592,10 @@ mod tests {
 		let other = sent("2026-w47", &first_at, &days(-2));
 		let conflict = call(&app, Method::PUT, "/interview-weeks/2026-w47/sent", Some(&phone), None, &other).await;
 		assert_eq!(conflict.0, StatusCode::CONFLICT, "another body at the draft's moment");
-		let later = sent("2026-w47", &days(0), &days(-1));
+		// A later send says the answer's rung, which the record passes through.
+		let mut later: Value = serde_json::from_slice(&sent("2026-w47", &days(0), &days(-1))).unwrap();
+		later["answers"][0]["rung"] = json!("cues");
+		let later = later.to_string().into_bytes();
 		assert_eq!(
 			call(&app, Method::PUT, "/interview-weeks/2026-w47/sent", Some(&phone), None, &later).await.2["change"],
 			json!("replaced")
@@ -608,8 +616,8 @@ mod tests {
 		assert_eq!(
 			record["questions"],
 			json!([
-				{ "question": "about-you", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"] },
-				{ "question": "a-conflict", "answered": false, "take": null, "recordedAt": null },
+				{ "question": "about-you", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"], "rung": "cues" },
+				{ "question": "a-conflict", "answered": false, "take": null, "recordedAt": null, "rung": null },
 			])
 		);
 		assert_eq!((&record["unanswered"], &record["unread"]), (&json!(["a-conflict"]), &json!(["home-first"])));
