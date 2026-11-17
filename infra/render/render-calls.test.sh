@@ -189,9 +189,11 @@ printf '%s\n' "$@" > "$fake/args-$script"
 echo "start $(date +%s)" >> "$fake/times"
 trap 'echo "end $(date +%s)" >> "$fake/times"' EXIT
 max_mb=
+max_min=
 prev=
 for arg in "$@"; do
   [ "$prev" = --max-video-mb ] && max_mb=$arg
+  [ "$prev" = --max-video-minutes ] && max_min=$arg
   prev=$arg
 done
 # The real recorder's refusal of a video past --max-video-mb, once made.
@@ -279,6 +281,16 @@ if [ "$1" = tests/record/essay.ts ]; then
     exit 1
   fi
   week=$(basename "$(dirname "$essay")")
+  # $FAKE/minutes-<week>, in tenths: how long its words would run; past
+  # --max-video-minutes it is refused in the real recorder's words
+  # (voiced.ts, `refuseLong`), before anything is recorded.
+  if [ -e "$fake/minutes-$week" ]; then
+    tenths=$(cat "$fake/minutes-$week")
+    if [ "$tenths" -gt $(( max_min * 10 )) ]; then
+      echo "the video would run $(( tenths / 10 )).$(( tenths % 10 )) min, past the policy's $max_min.0 min, by its words; nothing was recorded" >&2
+      exit 1
+    fi
+  fi
   mkdir -p "$out/$week/cache"
   echo intermediate > "$out/$week/cache/frame"
   cp "$essay" "$out/$week/essay.json"
@@ -439,7 +451,7 @@ fresh() {
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
-    "$FAKE"/parts-* "$FAKE/parts-refuse"
+    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-*
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1143,6 +1155,39 @@ check "the call's recorder is handed the policy's caps, the pinned stage and hom
 check "and a preview's recorder the same" handed "$FAKE/args-preview"
 check "and a cards essay's recorder the same (CARDS7)" handed "$FAKE/args-cards"
 
+# Each job's own length cap (#927): a Rust Rounds essay may run
+# ESSAY_MAX_VIDEO_MINUTES, the owner's 30; every other job, a mock
+# interview's essay too (C500), keeps MAX_VIDEO_MINUTES, 15. Read from what
+# the recorders were given.
+# Whether `args` (one to a line) gives `flag` exactly `value`.
+gives() {
+  grep -A1 -xF -- "$2" "$1" | sed -n 2p | grep -qxF -- "$3"
+}
+fresh caps
+mkdir -p "$ROOT/essays/2026-w46/takes" "$ROOT/interview-essays/2026-w47/takes"
+echo '{}' > "$ROOT/essays/2026-w46/essay.json"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a Rust Rounds essay's recorder is handed 30 minutes" gives "$FAKE/args-essay" --max-video-minutes 30
+check "and the rest of the policy's caps, the stage and the speaker as every job" \
+  test "$(grep -A1 -xF -- --max-video-mb "$FAKE/args-essay" | sed -n 2p)" = 500
+echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
+run_job interview-essay > "$SCRATCH/pass.out" 2>&1
+check "a mock interview's essay keeps 15 (C500)" gives "$FAKE/args-essay" --max-video-minutes 15
+
+# A Rust Rounds essay of 24.4 minutes, week 46's (#927): refused at 15,
+# made at 30.
+fresh essay-cap
+mkdir -p "$ROOT/essays/2026-w46/takes"
+echo '{}' > "$ROOT/essays/2026-w46/essay.json"
+echo 244 > "$FAKE/minutes-2026-w46"
+ESSAY_MAX_VIDEO_MINUTES=15
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay past its job's length is refused in the recorder's words" \
+  grep -qF "the video would run 24.4 min, past the policy's 15.0 min" "$ROOT/renders/rust-essay-worker/2026-w46.failed.log"
+ESSAY_MAX_VIDEO_MINUTES=30
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and the same essay is made at 30, with no new one" test -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
+
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
 # made and removes it, and the worker takes that as any failed attempt. A
 # week keeps no folder and is not tried again within RETRY_AFTER; a preview
@@ -1217,7 +1262,7 @@ check "nor named a job the lane would see" \
   test "$(cat "$ROOT/renders/call-worker/job-seq")" = "$seq_before" -a ! -e "$ROOT/renders/call-worker/job"
 
 fresh series-refused 2026-11-06
-touch "$FAKE/parts-refuse"
+touch "$FAKE/parts-refuse" "$FAKE"/minutes-*
 pass
 check "a week call-parts refuses fails as its recorder's refusal does, with its words" \
   grep -qF "can't make a call:" "$ROOT/renders/call-worker/2026-11-06.failed.log"
@@ -1282,7 +1327,7 @@ fresh series-uncounted 2026-11-06
 mkdir -p "$ROOT/renders/call"
 echo 3 > "$ROOT/renders/call/2026-11-06.parts"
 echo '{"template":9}' > "$ROOT/weeks/2026-11-06.next"
-touch "$FAKE/parts-refuse"
+touch "$FAKE/parts-refuse" "$FAKE"/minutes-*
 pass
 check "a revision the parts can't be asked of fails its first part" test -e "$ROOT/renders/call-worker/2026-11-06.failed.log"
 check "and names no job for a part of the old count" \
