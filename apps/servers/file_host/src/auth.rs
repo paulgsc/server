@@ -17,8 +17,10 @@
 //! - A phone has no passkey for this site and cannot hold the cookie. A
 //!   signed-in browser asks for a one-time code, the phone trades it for a
 //!   session of its own, and sends that as `Authorization: Bearer`
-//!   ([`pairing`]). It is an ordinary session row: it expires, slides, and
-//!   ends with sign-out, sign-out everywhere, or the account.
+//!   ([`pairing`]). Its session row says it is a phone's and the day it
+//!   paired: it expires and slides like any session, ends with its own
+//!   sign-out, sign-out everywhere, its owner signing it out from a browser,
+//!   or the account, and is never ended by the browser-session cap.
 //! - Account creation closes once an account exists, unless `AUTH_OPEN_SIGNUP`
 //!   opens it for a product: the box is one person's, and that person's
 //!   account is the only one ([`owner`]).
@@ -40,10 +42,10 @@ pub mod pairing;
 pub mod passkey;
 
 use crate::{Config, FileHostError};
-use auth_repo::{Accounts, Admission, AuthRepository};
+use auth_repo::{Accounts, Admission, AuthRepository, SessionRow};
 use axum::http::{HeaderMap, Method};
 use ceremony::CeremonyStore;
-use cookie::SessionToken;
+use cookie::{Carrier, SessionToken};
 use pairing::PairingStore;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -450,8 +452,27 @@ impl AuthContext {
 		let Some((token, carrier)) = SessionToken::from_headers(headers) else {
 			return Ok(None);
 		};
-		let session = self.repository().live_session(&token.hash(carrier), now()).await?;
+		let hash = token.hash(carrier);
+		let session = self.repository().live_session(&hash, now()).await?;
+		if let Some(session) = &session {
+			self.tag_if_unmarked_phone(&hash, carrier, session).await?;
+		}
 		Ok(session.map(|session| session.subject_id))
+	}
+
+	/// A session read through a phone's bearer token whose row does not yet
+	/// say it is a phone's was paired before rows said so: mark it now, with a
+	/// fresh pairing id and no day, so the browser cap spares it from here on
+	/// and its owner can list it. Reads only otherwise; the write happens once
+	/// per such phone (`AuthRepository::tag_phone`).
+	///
+	/// # Errors
+	/// A storage failure.
+	pub(crate) async fn tag_if_unmarked_phone(&self, hash: &[u8], carrier: Carrier, session: &SessionRow) -> Result<(), FileHostError> {
+		if carrier == Carrier::Bearer && !session.is_phone {
+			self.repository().tag_phone(hash, &pairing::new_pairing_id()).await?;
+		}
+		Ok(())
 	}
 }
 

@@ -11,6 +11,9 @@
 //! `/auth/pairing/start` for a one-time code, and the phone sends it to
 //! `/auth/pairing/finish`, which answers `{ token, expiresAt }`: a session the
 //! phone sends back as `Authorization: Bearer`. No cookie is set for it.
+//! A signed-in browser lists the account's phones at `GET /auth/phones`,
+//! names one with `PATCH /auth/phones/:id`, and signs one out with
+//! `DELETE /auth/phones/:id`.
 //!
 //! No request or response carries anything about the person: not a name, not
 //! an email, not the authenticator's model. See `crate::auth`.
@@ -19,14 +22,14 @@ use crate::auth::{
 	ceremony::{Ceremony, CeremonyId},
 	cookie::{clear_cookie, Carrier, SessionToken},
 	now,
-	pairing::{PairingCode, PAIRING_TTL_SECONDS},
+	pairing::{new_pairing_id, PairingCode, PAIRING_TTL_SECONDS},
 	passkey, AuthContext, PRODUCT_NAME,
 };
 use crate::subject::{new_account_subject, BrowserSubject, SubjectId, SUBJECT_SCOPED_TABLES};
 use crate::FileHostError;
-use auth_repo::{AddPasskey, MAX_PASSKEYS_PER_SUBJECT};
+use auth_repo::{AddPasskey, NewPhone, PairPhone, MAX_PASSKEYS_PER_SUBJECT};
 use axum::{
-	extract::State,
+	extract::{Path, State},
 	http::{
 		header::{HeaderName, SET_COOKIE},
 		HeaderMap, HeaderValue, Method,
@@ -83,14 +86,73 @@ pub struct PairingStarted {
 #[derive(Deserialize)]
 pub struct FinishPairing {
 	pub code: String,
+	/// The name the owner typed for this phone while pairing it, if any
+	/// ([`phone_label`]).
+	#[serde(default)]
+	pub label: Option<String>,
 }
 
+/// `PATCH /auth/phones/:id`'s body: the phone's new name, or `null` (or
+/// blank) to clear it. `label` must be present: `{}` is refused rather than
+/// read as a clear.
+#[derive(Debug, Deserialize)]
+pub struct RenamePhone {
+	#[serde(default, deserialize_with = "present")]
+	pub label: Option<Option<String>>,
+}
+
+/// A field that was sent, `null` included, as `Some`; a missing one stays
+/// `None` through `#[serde(default)]`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: Deserialize<'de>,
+{
+	T::deserialize(deserializer).map(Some)
+}
+
+/// The longest name a phone may have, in characters.
+pub const MAX_PHONE_LABEL_CHARS: usize = 40;
+
 /// A paired phone's session: the token it sends as `Authorization: Bearer`,
-/// and when the session ends unless it is used. No `Debug`, for the token.
+/// when the session ends unless it is used, and the id its owner sees it by
+/// in `GET /auth/phones`. No `Debug`, for the token.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceSession {
 	pub token: String,
+	/// ms since the epoch.
+	pub expires_at: i64,
+	/// base64url of 16 random bytes; see [`PhoneView::phone_id`].
+	pub phone_id: String,
+}
+
+/// The account's paired phones, the earliest paired first.
+#[derive(Debug, Serialize)]
+pub struct PhonesView {
+	pub phones: Vec<PhoneView>,
+}
+
+/// One paired phone as its owner sees it. Never its token or the token's
+/// hash: what is here opens nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneView {
+	/// base64url of 16 random bytes, made when it paired (or when home first
+	/// read a phone paired before it kept ids). `DELETE /auth/phones/:id`
+	/// takes it.
+	pub phone_id: String,
+	/// The UTC day it paired, `YYYY-MM-DD`; `null` for a phone paired before
+	/// home kept the day.
+	pub paired_on: Option<String>,
+	/// The name the owner typed for it, while pairing or since; `null` until
+	/// they name it. Nothing is read off the device.
+	pub label: Option<String>,
+	/// ms since the epoch: when its session last started or slid to a full
+	/// term, read off its expiry. The phone has been used since then at
+	/// least; it may have been used later, since a session slides only past
+	/// half its term. No last-seen time is stored.
+	pub renewed_at: i64,
 	/// ms since the epoch.
 	pub expires_at: i64,
 }
@@ -306,6 +368,7 @@ pub async fn session(State(auth): State<AuthContext>, headers: HeaderMap) -> Res
 	let Some(live) = repository.live_session(&token.hash(carrier), now).await? else {
 		return Ok(signed_out(FileHostError::Unauthorized));
 	};
+	auth.tag_if_unmarked_phone(&token.hash(carrier), carrier, &live).await?;
 
 	let ttl = auth.session_ttl_seconds();
 	// Reporting is open to any GET; extending is not (`AuthContext::may_renew`).
@@ -366,25 +429,183 @@ pub async fn start_pairing(State(auth): State<AuthContext>, BrowserSubject(subje
 /// its session made under one hold against deletion, so a sign-out
 /// everywhere or an account deletion lands wholly before or after it.
 ///
+/// The phone's session says it is a phone's and the UTC day it paired. No
+/// browser sign-in ever ends it (`auth_repo::MAX_PHONES_PER_SUBJECT`).
+///
 /// # Errors
 /// 403 from a browser page; 422 for a code that is malformed, unknown,
 /// expired or already used; 401 when the account was deleted while the code
-/// was open; 503 while passkey auth is off, since no session could be used.
+/// was open; 409 when the account already has the most paired phones it may
+/// (the code is used up: sign a phone out and ask for another); 503 while
+/// passkey auth is off, since no session could be used.
 #[instrument(name = "auth_pairing_finish", skip_all, fields(otel.kind = "server"))]
 pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap, Json(request): Json<FinishPairing>) -> Result<Json<DeviceSession>, FileHostError> {
 	auth.relying_party()?;
 	if crate::auth::csrf::from_a_page(&headers) {
 		return Err(FileHostError::Forbidden);
 	}
+	// Checked before the code is taken, so a name that is refused leaves the
+	// code open to try again.
+	let label = phone_label(request.label.as_deref())?;
 	let _hold = auth.hold_against_deletion().await;
 	let subject = PairingCode::typed(&request.code)
 		.and_then(|code| auth.pairings().take(&code, Instant::now()))
 		.ok_or_else(|| FileHostError::unprocessable_entity([("code", "unknown or expired; ask for a new one")]))?;
-	let (token, expires_at) = new_session(&auth, &subject, now(), Carrier::Bearer).await?;
-	Ok(Json(DeviceSession {
-		token: token.encoded(),
-		expires_at: expires_at * 1_000,
-	}))
+	let now = now();
+	let token = SessionToken::mint();
+	let expires_at = now + auth.session_ttl_seconds();
+	let pairing_id = new_pairing_id();
+	match auth
+		.repository()
+		.pair_phone(
+			&subject,
+			&NewPhone {
+				token_hash: &token.hash(Carrier::Bearer),
+				pairing_id: &pairing_id,
+				paired_on: &utc_day(now),
+				label: label.as_deref(),
+			},
+			expires_at,
+			now,
+		)
+		.await?
+	{
+		PairPhone::Paired => Ok(Json(DeviceSession {
+			token: token.encoded(),
+			expires_at: expires_at * 1_000,
+			phone_id: URL_SAFE_NO_PAD.encode(pairing_id),
+		})),
+		PairPhone::AtCapacity => Err(FileHostError::Conflict("this account already has the most paired phones it may; sign one out first")),
+		PairPhone::NoAccount => Err(FileHostError::Unauthorized),
+	}
+}
+
+/// `GET /auth/phones`: the phones paired with this account, each with the
+/// day it paired and when its session last renewed. A browser's passkey
+/// session only.
+///
+/// # Errors
+/// 401 without a session; 403 for a phone's token.
+#[instrument(name = "auth_phones", skip_all, fields(otel.kind = "server"))]
+pub async fn phones(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject) -> Result<Json<PhonesView>, FileHostError> {
+	let ttl = auth.session_ttl_seconds();
+	let now = now();
+	let phones = auth
+		.repository()
+		.phones(subject.as_str(), now)
+		.await?
+		.into_iter()
+		.map(|phone| PhoneView {
+			phone_id: URL_SAFE_NO_PAD.encode(phone.pairing_id),
+			paired_on: phone.paired_on,
+			label: phone.label,
+			// Never later than now: a term shortened since the phone renewed
+			// would otherwise put its renewal in the future.
+			renewed_at: (phone.expires_at - ttl).min(now) * 1_000,
+			expires_at: phone.expires_at * 1_000,
+		})
+		.collect();
+	Ok(Json(PhonesView { phones }))
+}
+
+/// `DELETE /auth/phones/:id`: sign one paired phone out. Its next request is
+/// `401`, as after its own sign-out. A browser's passkey session only.
+///
+/// # Errors
+/// 401 without a session; 403 for a phone's token or from an untrusted
+/// origin; 404 for an id that names none of this account's phones.
+#[instrument(name = "auth_sign_out_phone", skip_all, fields(otel.kind = "server"))]
+pub async fn sign_out_phone(State(auth): State<AuthContext>, BrowserSubject(subject): BrowserSubject, Path(phone_id): Path<String>) -> Result<Json<Value>, FileHostError> {
+	let Ok(pairing_id) = URL_SAFE_NO_PAD.decode(phone_id) else {
+		return Err(FileHostError::NotFound);
+	};
+	if !auth.repository().end_phone(subject.as_str(), &pairing_id, now()).await? {
+		return Err(FileHostError::NotFound);
+	}
+	Ok(Json(Value::Object(Map::new())))
+}
+
+/// `PATCH /auth/phones/:id`: name one paired phone, or clear its name. A
+/// browser's passkey session only.
+///
+/// # Errors
+/// 401 without a session; 403 for a phone's token or from an untrusted
+/// origin; 404 for an id that names none of this account's phones; 422 for
+/// a name that is too long or holds a character [`unseen`] refuses.
+#[instrument(name = "auth_rename_phone", skip_all, fields(otel.kind = "server"))]
+pub async fn rename_phone(
+	State(auth): State<AuthContext>,
+	BrowserSubject(subject): BrowserSubject,
+	Path(phone_id): Path<String>,
+	Json(request): Json<RenamePhone>,
+) -> Result<Json<Value>, FileHostError> {
+	let Some(label) = request.label else {
+		return Err(FileHostError::unprocessable_entity([("label", "required; send null to clear it")]));
+	};
+	let label = phone_label(label.as_deref())?;
+	let Ok(pairing_id) = URL_SAFE_NO_PAD.decode(phone_id) else {
+		return Err(FileHostError::NotFound);
+	};
+	if !auth.repository().rename_phone(subject.as_str(), &pairing_id, label.as_deref(), now()).await? {
+		return Err(FileHostError::NotFound);
+	}
+	Ok(Json(Value::Object(Map::new())))
+}
+
+/// A phone's name as the owner typed it, bounded: trimmed, `None` when
+/// blank, at most [`MAX_PHONE_LABEL_CHARS`] characters, and nothing
+/// invisible that changes how it reads ([`unseen`]): a newline, an escape, a
+/// bidi override or a zero-width character would reach every screen that
+/// lists it, and could make one name pass for another.
+///
+/// # Errors
+/// 422 for a name that is too long or holds a character [`unseen`] refuses.
+fn phone_label(typed: Option<&str>) -> Result<Option<String>, FileHostError> {
+	let Some(label) = typed.map(str::trim).filter(|label| !label.is_empty()) else {
+		return Ok(None);
+	};
+	if label.chars().count() > MAX_PHONE_LABEL_CHARS {
+		return Err(FileHostError::unprocessable_entity([("label", "at most 40 characters")]));
+	}
+	if label.chars().any(unseen) {
+		return Err(FileHostError::unprocessable_entity([(
+			"label",
+			"no control, bidi, zero-width space or line-separator characters",
+		)]));
+	}
+	Ok(Some(label.to_owned()))
+}
+
+/// Characters a name may not hold: control characters (Cc), line and
+/// paragraph separators (Zl, Zp), and the format characters (Cf) a name
+/// could hide in or turn around: soft hyphen, Arabic letter mark, Mongolian
+/// vowel separator, zero-width space, directional marks, embeddings,
+/// overrides and isolates, word joiner and invisible operators, the
+/// byte-order mark and the interlinear annotation characters.
+///
+/// Not every Cf character. The zero-width joiner and non-joiner (U+200D,
+/// U+200C) stay allowed: emoji sequences ("👩‍💻") and scripts such as Persian
+/// and the Indic ones need them in ordinary words. So do emoji tag sequences
+/// (U+E0020–E007F, the flags of England, Scotland and Wales). Only the owner
+/// writes a name and only the owner reads it, so the list stops at what
+/// could make a name read as another.
+fn unseen(c: char) -> bool {
+	c.is_control()
+		|| matches!(
+			c,
+			'\u{AD}'
+				| '\u{61C}' | '\u{180E}'
+				| '\u{200B}' | '\u{200E}'
+				| '\u{200F}' | '\u{2028}'..='\u{202E}'
+				| '\u{2060}'..='\u{206F}'
+				| '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+		)
+}
+
+/// The UTC day `unix_seconds` falls on, `YYYY-MM-DD`: all a phone keeps of
+/// when it paired.
+fn utc_day(unix_seconds: i64) -> String {
+	chrono::DateTime::from_timestamp(unix_seconds, 0).unwrap_or_default().format("%Y-%m-%d").to_string()
 }
 
 /// `POST /auth/sign-out-everywhere`: end every session this account holds,
@@ -442,25 +663,20 @@ pub(crate) async fn delete_subject(auth: &AuthContext, subject: &str) -> Result<
 	Ok(())
 }
 
-async fn start_session(auth: &AuthContext, subject: &str, now: i64) -> Result<WithCookie<SessionView>, FileHostError> {
-	let (token, expires_at) = new_session(auth, subject, now, Carrier::Cookie).await?;
-	Ok(with_cookie(token.set_cookie(auth.session_ttl_seconds()), expires_at))
-}
-
-/// A new session for `subject`, to be carried as `carrier` (a browser's
-/// cookie or a phone's bearer token, stored apart: `SessionToken::hash`),
-/// and when it ends.
+/// A new browser session for `subject`, set as the session cookie. A phone's
+/// session is made by `finish_pairing` instead (`AuthRepository::pair_phone`).
 ///
 /// # Errors
-/// 401 when the account was deleted while the sign-in or pairing was in
-/// flight; 500 for a storage failure.
-async fn new_session(auth: &AuthContext, subject: &str, now: i64, carrier: Carrier) -> Result<(SessionToken, i64), FileHostError> {
+/// 401 when the account was deleted while the sign-in was in flight; 500 for
+/// a storage failure.
+async fn start_session(auth: &AuthContext, subject: &str, now: i64) -> Result<WithCookie<SessionView>, FileHostError> {
 	let token = SessionToken::mint();
-	let expires_at = now + auth.session_ttl_seconds();
-	if !auth.repository().create_session(&token.hash(carrier), subject, expires_at, now).await? {
+	let ttl = auth.session_ttl_seconds();
+	let expires_at = now + ttl;
+	if !auth.repository().create_session(&token.hash(Carrier::Cookie), subject, expires_at, now).await? {
 		return Err(FileHostError::Unauthorized);
 	}
-	Ok((token, expires_at))
+	Ok(with_cookie(token.set_cookie(ttl), expires_at))
 }
 
 const fn with_cookie(set_cookie: HeaderValue, expires_at: i64) -> WithCookie<SessionView> {
@@ -522,7 +738,10 @@ mod tests {
 	//! authenticator signs what the server challenges, over the router the
 	//! server serves. Nothing here fakes a verification.
 
-	use crate::auth::{cookie::SESSION_COOKIE, AuthContext};
+	use crate::auth::{
+		cookie::{Carrier, SessionToken, SESSION_COOKIE},
+		AuthContext,
+	};
 	use crate::subject::{SubjectId, SUBJECT_SCOPED_TABLES};
 	use axum::{
 		body::Body,
@@ -1000,6 +1219,246 @@ mod tests {
 		let (_, token) = pair(&app, &browser.cookie).await;
 		assert_eq!(call(&app, Method::POST, "/auth/sign-out-everywhere", Some(&browser.cookie), None).await.0, StatusCode::OK);
 		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::UNAUTHORIZED);
+	}
+
+	/// Pair a phone and return its token and the id `GET /auth/phones`
+	/// lists it by.
+	async fn pair_with_id(app: &Router, cookie: &str) -> (String, String) {
+		let (_, _, started) = call(app, Method::POST, "/auth/pairing/start", Some(cookie), None).await;
+		let (status, _, finished) = call(app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] }))).await;
+		assert_eq!(status, StatusCode::OK, "{finished}");
+		(finished["token"].as_str().unwrap().to_owned(), finished["phoneId"].as_str().unwrap().to_owned())
+	}
+
+	async fn listed_phones(app: &Router, cookie: &str) -> Vec<Value> {
+		let (status, _, body) = call(app, Method::GET, "/auth/phones", Some(cookie), None).await;
+		assert_eq!(status, StatusCode::OK, "{body}");
+		body["phones"].as_array().unwrap().clone()
+	}
+
+	/// some-ui#3092: the owner lists their phones, by an id that is no token
+	/// and no token hash, with the day each paired.
+	#[tokio::test]
+	async fn a_browser_lists_its_paired_phones_and_never_their_tokens() {
+		let pool = pool().await;
+		let app = app(AuthContext::for_tests(pool.clone(), 100));
+		let browser = register(&app, &mut authenticator()).await;
+		assert!(listed_phones(&app, &browser.cookie).await.is_empty());
+
+		let (first_token, first_id) = pair_with_id(&app, &browser.cookie).await;
+		let (second_token, second_id) = pair_with_id(&app, &browser.cookie).await;
+		let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+		let phones = listed_phones(&app, &browser.cookie).await;
+		let ids: Vec<&str> = phones.iter().map(|phone| phone["phoneId"].as_str().unwrap()).collect();
+		assert_eq!(ids.len(), 2);
+		assert!(ids.contains(&first_id.as_str()) && ids.contains(&second_id.as_str()));
+		for phone in &phones {
+			assert_eq!(phone["pairedOn"], json!(today));
+			assert!(phone["renewedAt"].as_i64().unwrap() < phone["expiresAt"].as_i64().unwrap());
+			assert_eq!(phone["label"], Value::Null, "unnamed until the owner names it");
+			assert_eq!(phone.as_object().unwrap().len(), 5, "only phoneId, pairedOn, label, renewedAt and expiresAt: {phone}");
+		}
+
+		// Nothing listed is, or contains, a token or a stored token hash.
+		let listed = Value::Array(phones).to_string();
+		let hashes: Vec<Vec<u8>> = sqlx::query_scalar("SELECT token_hash FROM auth_session").fetch_all(&pool).await.unwrap();
+		for secret in [first_token, second_token].into_iter().chain(hashes.iter().map(|hash| URL_SAFE_NO_PAD.encode(hash))) {
+			assert!(!listed.contains(&secret), "the list leaks a token or its hash");
+		}
+	}
+
+	#[tokio::test]
+	async fn only_a_browser_session_lists_or_signs_out_phones() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let (token, id) = pair_with_id(&app, &browser.cookie).await;
+		let phone = [("authorization", bearer(&token))];
+		let phone: Vec<(&str, &str)> = phone.iter().map(|(name, value)| (*name, value.as_str())).collect();
+
+		assert_eq!(call(&app, Method::GET, "/auth/phones", None, None).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(call_with(&app, Method::GET, "/auth/phones", None, None, &phone).await.0, StatusCode::FORBIDDEN);
+		let path = String::from("/auth/phones/") + &id;
+		assert_eq!(call_with(&app, Method::DELETE, &path, None, None, &phone).await.0, StatusCode::FORBIDDEN);
+		let sibling = [("origin", "https://evil.app.test")];
+		assert_eq!(
+			call_with(&app, Method::DELETE, &path, Some(&browser.cookie), None, &sibling).await.0,
+			StatusCode::FORBIDDEN,
+			"a sibling page cannot sign a phone out"
+		);
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::OK, "the phone is still paired");
+	}
+
+	#[tokio::test]
+	async fn a_browser_signs_one_phone_out_and_leaves_the_others() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let other = register(&app, &mut authenticator()).await;
+		let (gone, gone_id) = pair_with_id(&app, &browser.cookie).await;
+		let (kept, kept_id) = pair_with_id(&app, &browser.cookie).await;
+
+		let path = String::from("/auth/phones/") + &gone_id;
+		assert_eq!(
+			call(&app, Method::DELETE, &path, Some(&other.cookie), None).await.0,
+			StatusCode::NOT_FOUND,
+			"not another account's phone"
+		);
+		assert_eq!(call(&app, Method::DELETE, &path, Some(&browser.cookie), None).await.0, StatusCode::OK);
+		assert_eq!(whoami_as_phone(&app, &gone).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(whoami_as_phone(&app, &kept).await.0, StatusCode::OK);
+		assert_eq!(
+			call(&app, Method::DELETE, &path, Some(&browser.cookie), None).await.0,
+			StatusCode::NOT_FOUND,
+			"already signed out"
+		);
+		assert_eq!(
+			call(&app, Method::DELETE, "/auth/phones/not-base64!", Some(&browser.cookie), None).await.0,
+			StatusCode::NOT_FOUND
+		);
+		let listed: Vec<Value> = listed_phones(&app, &browser.cookie).await;
+		assert_eq!(listed.len(), 1);
+		assert_eq!(listed[0]["phoneId"], json!(kept_id));
+	}
+
+	/// The owner, 2026-11-17: "yes, let me name each phone too". A name is
+	/// set while pairing or from the list, and is only what they typed.
+	#[tokio::test]
+	async fn the_owner_names_a_phone_while_pairing_and_renames_it_from_the_list() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let other = register(&app, &mut authenticator()).await;
+
+		// A refused name leaves the code open.
+		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+		for refused in [json!("x".repeat(41)), json!("line\nbreak"), json!("bell\u{7}")] {
+			let body = json!({ "code": started["code"], "label": refused });
+			assert_eq!(call(&app, Method::POST, "/auth/pairing/finish", None, Some(body)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+		}
+		let body = json!({ "code": started["code"], "label": "  Kitchen Pixel  " });
+		let (status, _, finished) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(body)).await;
+		assert_eq!(status, StatusCode::OK, "{finished}");
+		let id = finished["phoneId"].as_str().unwrap().to_owned();
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], json!("Kitchen Pixel"), "trimmed");
+
+		let path = String::from("/auth/phones/") + &id;
+		let rename = |label: Value| Some(json!({ "label": label }));
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("é".repeat(40)))).await.0,
+			StatusCode::OK,
+			"40 characters, not bytes"
+		);
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], json!("é".repeat(40)));
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("tab\there"))).await.0,
+			StatusCode::UNPROCESSABLE_ENTITY
+		);
+		for hidden in ["evil\u{202E}gnp", "zero\u{200B}width", "\u{200B}", "para\u{2029}graph", "soft\u{AD}hyphen"] {
+			assert_eq!(
+				call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!(hidden))).await.0,
+				StatusCode::UNPROCESSABLE_ENTITY,
+				"{hidden:?}"
+			);
+		}
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&browser.cookie), Some(json!({}))).await.0,
+			StatusCode::UNPROCESSABLE_ENTITY,
+			"an empty body is no clear"
+		);
+		let (_, _, refused) = call(&app, Method::PATCH, &path, Some(&browser.cookie), Some(json!({}))).await;
+		assert!(refused.to_string().contains("label"), "the refusal names the missing field: {refused}");
+		for joined in ["👩\u{200D}💻 work", "می\u{200C}خواهم"] {
+			assert_eq!(
+				call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!(joined))).await.0,
+				StatusCode::OK,
+				"a joiner is part of ordinary text: {joined:?}"
+			);
+			assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], json!(joined));
+		}
+		assert_eq!(
+			call(&app, Method::PATCH, &path, Some(&other.cookie), rename(json!("Mine"))).await.0,
+			StatusCode::NOT_FOUND,
+			"not another account's phone"
+		);
+		assert_eq!(call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("   "))).await.0, StatusCode::OK);
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], Value::Null, "a blank name clears it");
+		assert_eq!(call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(json!("Desk"))).await.0, StatusCode::OK);
+		assert_eq!(call(&app, Method::PATCH, &path, Some(&browser.cookie), rename(Value::Null)).await.0, StatusCode::OK);
+		assert_eq!(listed_phones(&app, &browser.cookie).await[0]["label"], Value::Null, "null clears it");
+
+		let token = finished["token"].as_str().unwrap();
+		let phone = [("authorization", bearer(token))];
+		let phone: Vec<(&str, &str)> = phone.iter().map(|(name, value)| (*name, value.as_str())).collect();
+		assert_eq!(
+			call_with(&app, Method::PATCH, &path, None, rename(json!("Phone")), &phone).await.0,
+			StatusCode::FORBIDDEN,
+			"a phone cannot rename itself"
+		);
+	}
+
+	/// some-ui#3092: "keep phone pairings past 32". Browser sign-ins past the
+	/// browser cap end browsers, never a phone.
+	#[tokio::test]
+	async fn a_phone_stays_paired_past_the_browser_session_cap() {
+		let auth = AuthContext::for_tests(pool().await, 100);
+		let app = app(auth.clone());
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, subject) = whoami(&app, &browser.cookie).await;
+		let (token, _) = pair_with_id(&app, &browser.cookie).await;
+
+		// Every new browser session expires after the phone's, so the old cap
+		// would have ended the phone first.
+		let now = crate::auth::now();
+		for n in 0..=auth_repo::MAX_SESSIONS_PER_SUBJECT {
+			let hash = SessionToken::mint().hash(Carrier::Cookie);
+			assert!(auth
+				.repository()
+				.create_session(&hash, subject.as_str().unwrap(), now + 10 * 86_400 * 365 + n, now)
+				.await
+				.unwrap());
+		}
+		assert_eq!(whoami_as_phone(&app, &token).await.0, StatusCode::OK, "the phone outlived 33 browser sign-ins");
+		assert_eq!(whoami(&app, &browser.cookie).await.0, StatusCode::UNAUTHORIZED, "the browser closest to expiring ended");
+	}
+
+	#[tokio::test]
+	async fn a_pairing_past_the_phone_cap_is_refused_and_ends_no_phone() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let mut tokens = Vec::new();
+		for _ in 0..auth_repo::MAX_PHONES_PER_SUBJECT {
+			tokens.push(pair_with_id(&app, &browser.cookie).await.0);
+		}
+		let (_, _, started) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+		let (status, _, _) = call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] }))).await;
+		assert_eq!(status, StatusCode::CONFLICT);
+		for token in &tokens {
+			assert_eq!(whoami_as_phone(&app, token).await.0, StatusCode::OK);
+		}
+	}
+
+	/// A phone paired before rows said what they are is a plain session row.
+	/// The first time its bearer token is read, it is marked a phone, with no
+	/// day, and from then on listed and spared by the browser cap.
+	#[tokio::test]
+	async fn a_phone_paired_before_rows_said_so_is_found_out_on_its_next_request() {
+		let auth = AuthContext::for_tests(pool().await, 100);
+		let app = app(auth.clone());
+		let browser = register(&app, &mut authenticator()).await;
+		let (_, subject) = whoami(&app, &browser.cookie).await;
+
+		let token = SessionToken::mint();
+		let now = crate::auth::now();
+		assert!(auth
+			.repository()
+			.create_session(&token.hash(Carrier::Bearer), subject.as_str().unwrap(), now + 3_600, now)
+			.await
+			.unwrap());
+		assert!(listed_phones(&app, &browser.cookie).await.is_empty(), "not known to be a phone yet");
+
+		assert_eq!(whoami_as_phone(&app, &token.encoded()).await.0, StatusCode::OK);
+		let listed = listed_phones(&app, &browser.cookie).await;
+		assert_eq!(listed.len(), 1);
+		assert_eq!(listed[0]["pairedOn"], Value::Null, "the day it paired was never kept");
 	}
 
 	#[tokio::test]
