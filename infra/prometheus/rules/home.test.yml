@@ -1407,6 +1407,64 @@ tests:
         alertname: ClientRateLimited
         exp_alerts: []
 
+  - name: a shed request is told, once, and resolves after a quiet 15 minutes (AD4)
+    interval: 1m
+    input_series:
+      - series: 'refusals_total{job="file_host",stage="http",reason="load_shed"}'
+        values: '0x10 3 3x30'
+      - series: 'refusals_total{job="file_host",stage="http",reason="pool_timeout"}'
+        values: '0x40'
+      - series: 'refusals_total{job="file_host",stage="http",reason="timeout"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HomeShedding
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HomeShedding
+        exp_alerts:
+          - exp_labels:
+              objective: AD4
+              says: "Home answered requests busy in the last 15 minutes (a 503 with Retry-After): too many at once, no database connection free, or the 8 s deadline reached. refusals_total by reason on the file_host dashboard shows which."
+      - eval_time: 28m
+        alertname: HomeShedding
+        exp_alerts: []
+
+  - name: each busy reason is told (AD4)
+    interval: 1m
+    input_series:
+      - series: 'refusals_total{job="file_host",stage="http",reason="timeout"}'
+        values: '0x5 1x20'
+      - series: 'refusals_total{job="file_host",stage="http",reason="pool_timeout"}'
+        values: '0x30 2x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: HomeShedding
+        exp_alerts:
+          - exp_labels:
+              objective: AD4
+              says: "Home answered requests busy in the last 15 minutes (a 503 with Retry-After): too many at once, no database connection free, or the 8 s deadline reached. refusals_total by reason on the file_host dashboard shows which."
+      - eval_time: 32m
+        alertname: HomeShedding
+        exp_alerts:
+          - exp_labels:
+              objective: AD4
+              says: "Home answered requests busy in the last 15 minutes (a 503 with Retry-After): too many at once, no database connection free, or the 8 s deadline reached. refusals_total by reason on the file_host dashboard shows which."
+
+  - name: refusals that are not shedding say nothing (AD4)
+    interval: 1m
+    input_series:
+      - series: 'refusals_total{job="file_host",stage="http",reason="body_limit"}'
+        values: '0+1x40'
+      - series: 'refusals_total{job="file_host",stage="ws",reason="global_capacity"}'
+        values: '0+1x40'
+      - series: 'refusals_total{job="file_host",stage="http",reason="load_shed"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: HomeShedding
+        exp_alerts: []
+
   - name: a refusal across a restart is still told (AD2)
     interval: 1m
     input_series:

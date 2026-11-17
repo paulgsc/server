@@ -10,29 +10,22 @@
 //!
 //! `stage` is `"http"` or `"ws"`. `reason` is one of:
 //!
-//!   http: `timeout`, `load_shed`, `body_limit`
+//!   http: `timeout`, `load_shed`, `body_limit`, `pool_timeout`
 //!   ws:   `global_capacity`, `queue_full`, `permit_timeout`
 //!
-//! One row from #213's refusal table is deliberately not counted here:
-//!
-//! - **Concurrency limit** (`tower::limit::ConcurrencyLimitLayer`) — in the
-//!   tower 0.4 this workspace pins, `ConcurrencyLimit::poll_ready` never
-//!   produces an error; it is pure backpressure (`Poll::Pending` on a
-//!   semaphore) with no discrete "refused" event to count. When sustained
-//!   concurrency pressure does turn into an actual refusal, that refusal
-//!   happens at a layer this module *does* count — `load_shed` if
-//!   `LoadShedLayer` sheds it, `timeout` if `TimeoutLayer` elapses first.
-//!   Inventing a synthetic "queued" counter here would mean fabricating a
-//!   signal tower itself doesn't produce, which is exactly what this story
-//!   (and #223's "observe first" non-goal) argues against.
+//! A full concurrency limit is counted as `load_shed`: the load shed sits
+//! directly over the limit and answers busy the moment it is full
+//! (`crate::admission`, AD4). `pool_timeout` is a request that found no
+//! database connection within `admission::POOL_ACQUIRE_TIMEOUT`.
 
 use metrics::counter;
 
 /// Every `(stage, reason)` pair this module can record — the table above.
-pub const REASONS: [(&str, &str); 6] = [
+pub const REASONS: [(&str, &str); 7] = [
 	("http", "timeout"),
 	("http", "load_shed"),
 	("http", "body_limit"),
+	("http", "pool_timeout"),
 	("ws", "global_capacity"),
 	("ws", "queue_full"),
 	("ws", "permit_timeout"),

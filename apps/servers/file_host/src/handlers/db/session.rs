@@ -53,8 +53,13 @@ fn repo(state: &AppState) -> SessionRepository {
 	SessionRepository::new(state.core.shared_db.clone())
 }
 
-fn to_http(err: &session_repo::repository::SessionRepoError) -> FileHostError {
-	FileHostError::OperationError(err.to_string())
+pub(crate) fn to_http(err: &session_repo::repository::SessionRepoError) -> FileHostError {
+	let cause = if let session_repo::repository::SessionRepoError::Sqlx(cause) = err {
+		Some(cause)
+	} else {
+		None
+	};
+	FileHostError::operation(err, cause)
 }
 
 /// How far past home's clock a sent `createdAt` may be: five minutes. A
