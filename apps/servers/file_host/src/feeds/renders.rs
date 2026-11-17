@@ -57,6 +57,14 @@
 //! `previews`' short class (`reason`): fields only a preview's row carries, so
 //! every other row reads as it did.
 //!
+//! **Why the policy refused one** (#929): any shelf's failed row whose
+//! attempt the render policy refused carries `reason` `too-long`, with the
+//! `minutes` it would run and its job's `capMinutes`, or `too-large`, with
+//! its `mb` and the `capMb`: read from the worker's `<key>.refused`
+//! (`infra/render/render-calls.sh`, `refusal`), a closed shape of the
+//! recorder's numbers, never its words. Any other failure carries none of
+//! them, as before.
+//!
 //! **A done row's size** (`bytes`): a finished video's length on the drive,
 //! for every shelf whose finished file is a video (not a clip's walk, whose
 //! is `walk.json`), and only when that shelf's download would serve the file
@@ -384,9 +392,12 @@ pub struct FeedSeen {
 	pub failed: BTreeMap<String, (i64, Failure)>,
 	/// Each episode the owner let go.
 	pub let_go: BTreeSet<String>,
-	/// Of the failed, why, as a short class, a preview's only
-	/// (`previews`' classes, and `overdue`): never its log.
+	/// Of the failed, why, as a short class: a preview's (`previews`'
+	/// classes, and `overdue`), and any one the policy refused (`Over`):
+	/// never its log.
 	pub reasons: BTreeMap<String, &'static str>,
+	/// Of the failed, each the render policy refused, and by how much.
+	pub overs: BTreeMap<String, Over>,
 	/// Of the failed, each that is over whatever `job.state` says: a preview
 	/// past its day, which the worker lets go.
 	pub ended: BTreeSet<String>,
@@ -560,10 +571,87 @@ pub struct Failed {
 	/// A part of a call's week of more than one: which, and of how many.
 	#[serde(flatten, skip_serializing_if = "Option::is_none")]
 	pub part: Option<PartOf>,
-	/// Why a preview failed, as a short class (`previews`: `no-sample`,
-	/// `too-long`, `too-large`, `render`, `overdue`), never its log.
+	/// Why it failed, as a short class, never its log: a preview's
+	/// (`previews`: `no-sample`, `too-long`, `too-large`, `render`,
+	/// `overdue`), and any shelf's the render policy refused (`too-long`,
+	/// `too-large`, with [`Over`]).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<&'static str>,
+	/// By how much the render policy refused it (#929).
+	#[serde(flatten, skip_serializing_if = "Option::is_none")]
+	pub over: Option<Over>,
+}
+
+/// What the render policy refused an episode for, as the worker's
+/// `<key>.refused` says it (`infra/render/render-calls.sh`, `refusal`): the
+/// recorder's numbers, never its words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Over {
+	/// It would run `minutes`, past its job's `capMinutes`; both in tenths
+	/// of a minute here, as the recorder says them, and minutes on the wire.
+	#[serde(rename_all = "camelCase")]
+	Long {
+		#[serde(serialize_with = "tenths")]
+		minutes: u32,
+		#[serde(serialize_with = "tenths")]
+		cap_minutes: u32,
+	},
+	/// It was `mb` MB, past the policy's `capMb`.
+	#[serde(rename_all = "camelCase")]
+	Large { mb: u32, cap_mb: u32 },
+}
+
+/// The refusal file's longest: four short lines and a SHA-256.
+const REFUSED_CEILING: u64 = 512;
+
+impl Over {
+	/// Its short class, the `reason` it is sent with.
+	#[must_use]
+	pub const fn reason(self) -> &'static str {
+		match self {
+			Self::Long { .. } => "too-long",
+			Self::Large { .. } => "too-large",
+		}
+	}
+
+	/// What a `.refused` says, or `None` for anything not of its shape.
+	#[must_use]
+	pub fn parse(text: &str) -> Option<Self> {
+		let field = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
+		let cap = field("cap")?;
+		match field("reason")? {
+			"too-long" => Some(Self::Long {
+				minutes: tenths_of(field("minutes")?)?,
+				cap_minutes: tenths_of(cap)?,
+			}),
+			"too-large" => Some(Self::Large {
+				mb: whole(field("mb")?)?,
+				cap_mb: whole(cap)?,
+			}),
+			_ => None,
+		}
+	}
+}
+
+/// A whole number of at most six digits.
+fn whole(text: &str) -> Option<u32> {
+	(!text.is_empty() && text.len() <= 6 && text.bytes().all(|b| b.is_ascii_digit())).then(|| text.parse().ok())?
+}
+
+/// `<whole>` or `<whole>.<digit>`, in tenths.
+fn tenths_of(text: &str) -> Option<u32> {
+	let (whole_part, tenth) = text.split_once('.').unwrap_or((text, "0"));
+	if tenth.len() != 1 {
+		return None;
+	}
+	whole(whole_part)?.checked_mul(10)?.checked_add(whole(tenth)?)
+}
+
+/// Tenths, as a number of minutes on the wire.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `serialize_with` passes a reference
+fn tenths<S: serde::Serializer>(tenths: &u32, serializer: S) -> Result<S::Ok, S::Error> {
+	serializer.serialize_f64(f64::from(*tenths) / 10.0)
 }
 
 /// How an attempt failed, as its log ends: never its words.
@@ -792,6 +880,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					failure: *failure,
 					template: template_of(Some(*feed), key),
 					reason: seen.reasons.get(key).copied(),
+					over: seen.overs.get(key).copied(),
 				});
 			} else if !current {
 				waiting.push(Episode {
@@ -1092,6 +1181,12 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 					.reasons
 					.insert(episode.key.clone(), crate::previews::failure_class(text.as_deref().unwrap_or_default()));
 			}
+			let mut refused = episode.key.clone();
+			refused.push_str(".refused");
+			if let Some(over) = read_refused(&status.join(refused)).await {
+				seen.reasons.insert(episode.key.clone(), over.reason());
+				seen.overs.insert(episode.key.clone(), over);
+			}
 			let failure = text.as_deref().map_or(
 				Failure {
 					by: FailedBy::Recorder,
@@ -1131,6 +1226,18 @@ async fn made_and_size(path: &Path, follows: bool) -> Option<(i64, Option<u64>)>
 		}
 	}
 	modified(path).await.map(|at| (at, None))
+}
+
+/// The worker's `.refused` beside a failed log, read whole up to its
+/// ceiling, or `None`.
+async fn read_refused(path: &Path) -> Option<Over> {
+	let file = tokio::fs::File::open(path).await.ok()?;
+	let mut bytes = Vec::new();
+	file.take(REFUSED_CEILING + 1).read_to_end(&mut bytes).await.ok()?;
+	if bytes.len() as u64 > REFUSED_CEILING {
+		return None;
+	}
+	Over::parse(std::str::from_utf8(&bytes).ok()?)
 }
 
 /// The end of a failed attempt's log.
