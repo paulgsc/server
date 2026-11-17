@@ -461,11 +461,14 @@ mod tests {
 	use std::time::Duration;
 
 	/// A repository whose pool has its one connection held, so each step
-	/// times out waiting for one, as under load; and the connection.
+	/// times out waiting for one, as under load; and the connection. The
+	/// timeout also bounds opening that connection, so it leaves a loaded
+	/// runner room: the step times out however long it is, since the one
+	/// connection is held throughout.
 	async fn exhausted() -> (TabRepository, sqlx::pool::PoolConnection<sqlx::Sqlite>) {
 		let pool = SqlitePoolOptions::new()
 			.max_connections(1)
-			.acquire_timeout(Duration::from_millis(50))
+			.acquire_timeout(Duration::from_millis(500))
 			.connect("sqlite::memory:")
 			.await
 			.unwrap();

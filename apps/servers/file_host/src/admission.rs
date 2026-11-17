@@ -19,7 +19,8 @@
 //!   request is answered within [`ANSWER_WITHIN`], each either served or
 //!   `503` with `Retry-After`; the other tests here take each limit alone.
 //!   A handler that maps its own database error keeps a pool timeout busy
-//!   through `FileHostError::operation`; `handlers::db::tab`'s write steps
+//!   through `FileHostError::operation`; in `handlers::db::tab`, the steps
+//!   of `delete_tab`, `batch_delete_tabs`, `prune_tabs` and `reconcile_tabs`
 //!   each have a test that a pool timeout is answered busy (#946).
 //! - _Tolerance:_ the bound starts once the server has accepted the
 //!   connection and parsed the request head; time on the network and in
