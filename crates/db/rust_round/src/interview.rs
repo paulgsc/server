@@ -1,14 +1,16 @@
 //! What home reads of a week of mock interview, and what the owner sent of
 //! it (paulgsc/some-ui#2935, IW4, under epic #2931).
 //!
-//! The format is paulgsc/some-ui's `some-ui.interview-week/1`, written by the
+//! The format is paulgsc/some-ui's `some-ui.interview-week/1` or `/2`, written by the
 //! Monday routine and held to all of it there before it is put in the
 //! mailbox, as `interview-week-<id>.json` in `brief` ([`MAILBOX_PREFIX`]), the
 //! way a week of Rust Rounds rides (`crate::week`). Home checks only what it
 //! keeps the owner's sends against ([`read`]):
 //!
 //! - its size ([`WEEK_CEILING`]), its encoding and that it is one JSON object;
-//! - its `schema` tag;
+//! - its `schema` tag, one of [`WEEK_SCHEMAS`]: `/2` adds a `ready` answer
+//!   to each question (paulgsc/some-ui#3175, IW8), which home keeps with
+//!   the rest and never reads;
 //! - its `id`, the ISO week it opens (`2026-w47`), which names it for good;
 //! - each question's `id` and each teleprompter card's `id`, slugs
 //!   (`crate::round::is_slug`), each once, no question named `read`, so
@@ -38,8 +40,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
 
-/// The format's tag.
+/// The format's first tag.
 pub const WEEK_SCHEMA: &str = "some-ui.interview-week/1";
+
+/// Every tag home keeps a week under.
+///
+/// `/2` (paulgsc/some-ui#3175, IW8) adds a `ready` object to each question;
+/// home keeps the week byte for byte, so it reads both the same way, held to
+/// the same [`WEEK_CEILING`].
+pub const WEEK_SCHEMAS: [&str; 2] = [WEEK_SCHEMA, "some-ui.interview-week/2"];
 
 /// The most bytes a week may hold.
 ///
@@ -97,7 +106,7 @@ fn ids(list: &[Value], field: &str, problems: &mut Vec<Problem>) -> Vec<String> 
 ///
 /// # Errors
 /// Each [`Problem`]: a body past [`WEEK_CEILING`], not UTF-8 or not one JSON
-/// object; a missing or other `schema`; an `id` that is not an ISO week; no
+/// object; a missing `schema` or one not in [`WEEK_SCHEMAS`]; an `id` that is not an ISO week; no
 /// `questions`; `cards` that is there and not a list; a question or a card
 /// whose id is not a slug or is used twice, or a question named `read`.
 pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
@@ -112,8 +121,8 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 		return Err(problem("body", "is not one JSON object"));
 	};
 	let mut problems = Vec::new();
-	if week.get("schema").and_then(Value::as_str) != Some(WEEK_SCHEMA) {
-		problems.push((String::from("schema"), "must be \"some-ui.interview-week/1\""));
+	if !week.get("schema").and_then(Value::as_str).is_some_and(|schema| WEEK_SCHEMAS.contains(&schema)) {
+		problems.push((String::from("schema"), "must be \"some-ui.interview-week/1\" or \"some-ui.interview-week/2\""));
 	}
 	let id = week.get("id").and_then(Value::as_str).filter(|id| is_week_id(id));
 	if id.is_none() {
@@ -320,6 +329,13 @@ mod tests {
 		assert_eq!(week.cards, ["home-first"]);
 		assert_eq!(week.window.unwrap().due, DUE);
 		assert_eq!(mailbox_name("2026-w47"), "interview-week-2026-w47.json");
+		let mut second = week_body();
+		second["schema"] = json!("some-ui.interview-week/2");
+		second["questions"][0]["ready"] = json!({ "text": "I build the tools I study with.", "cues": ["home", "phone"] });
+		let kept = read(second.to_string().as_bytes()).unwrap();
+		assert_eq!((kept.id.as_str(), kept.questions.len()), ("2026-w47", 2), "/2 reads as /1, its ready answers kept unread");
+		second["schema"] = json!("some-ui.interview-week/3");
+		assert_eq!(fields(&read(second.to_string().as_bytes()).unwrap_err()), ["schema"], "no other tag");
 		let mut no_cards = week_body();
 		no_cards.as_object_mut().unwrap().remove("cards");
 		assert!(read(no_cards.to_string().as_bytes()).unwrap().cards.is_empty(), "a week may have no cards");
@@ -346,6 +362,10 @@ mod tests {
 			["questions", "cards"]
 		);
 		assert_eq!(fields(&read(&vec![b' '; super::WEEK_CEILING + 1]).unwrap_err()), ["body"]);
+		let mut large = week_body();
+		large["schema"] = json!("some-ui.interview-week/2");
+		large["questions"][0]["ready"] = json!({ "text": "x".repeat(super::WEEK_CEILING) });
+		assert_eq!(fields(&read(large.to_string().as_bytes()).unwrap_err()), ["body"], "/2 is held to the same ceiling");
 	}
 
 	#[test]
