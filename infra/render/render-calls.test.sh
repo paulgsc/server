@@ -11,9 +11,12 @@
 # - the all-weeks cap removes only another waiting week's work, never a video;
 # - a week no longer held loses its waiting work and is not tried again;
 # - `cache warning:` lines reach <week>.cache.log, a failed attempt's too;
-# - the recorder is handed the render policy's caps, the pinned stage and
-#   home's Kokoro speaker, and a video it refuses as past MAX_VIDEO_MB fails
-#   its attempt, which is tried again only RETRY_AFTER later (#752);
+# - the recorder is handed the render policy's caps, its job's own length
+#   (`max_minutes`: 30 for a Rust Rounds essay, 15 for every other job,
+#   #927), the pinned stage and home's Kokoro speaker; a video it refuses as
+#   too long or past MAX_VIDEO_MB fails its attempt, and is held, not tried
+#   again on RETRY_AFTER's clock, until what it was refused for changes
+#   (RF1, #928);
 # - the worker's own loop (`serve`) tries a failed week again on its own
 #   clock, RETRY_AFTER after the failure, with no pass run by hand;
 # - the stage and the speaker are pinned by digest, the recorders by commit,
@@ -1343,9 +1346,10 @@ mkdir -p "$ROOT/renders/call/2026-11-06" && echo video > "$ROOT/renders/call/202
 check "a week a part of which is made is not" bash -c '! grep -qx "$1" "$2"' _ "$ROOT/weeks/2026-11-06.next" <(inputs_of call 2026-11-06-p2)
 
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
-# made and removes it, and the worker takes that as any failed attempt. A
-# week keeps no folder and is not tried again within RETRY_AFTER; a preview
-# keeps none and is never tried again.
+# made and removes it, and the worker takes that as a refusal by the policy
+# (RF1, #928). A week keeps no folder and is held until what it was refused
+# for changes, not tried again on RETRY_AFTER's clock; a preview keeps none
+# and is never tried again.
 fresh too-large 2026-10-30
 RETRY_AFTER=3600
 touch "$FAKE/too-large"
