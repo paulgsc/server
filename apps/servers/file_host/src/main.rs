@@ -75,6 +75,27 @@ fn exit_if_asked_for_contract_epoch() {
 	}
 }
 
+/// The versioned and unversioned halves of what `main` serves.
+fn served_routes(config: &Config, rate_limiter: &Arc<HttpLimiter>) -> (Router<file_host::AppState>, Router<file_host::AppState>) {
+	// Every route module comes from `inventory::modules`, the same list
+	// `dump-routes` reads, so what is served here and what the client's
+	// snapshot says is served cannot differ. See `routes::table`. The limiter
+	// goes inside each versioned module's CORS, so a 429 still carries that
+	// module's CORS headers (and exposes `Retry-After`): outside them, a
+	// browser reads the refusal as a network error and cannot back off.
+	//
+	// AD4's admission goes inside each module's CORS too, for the same
+	// reason, and inside the limiter, so a client over its limit is told 429
+	// without taking a slot. Every module's clone of `admission` shares one
+	// concurrency count (`file_host::admission`).
+	let admission = admission::Admission::new(admission::MAX_CONCURRENT_REQUESTS, admission::ANSWER_WITHIN);
+	inventory::routers(
+		config,
+		|router| admission.bound(router).layer(from_fn_with_state(Arc::clone(rate_limiter), rate_limit_middleware)),
+		|module, router| if admission::exempt(module) { router } else { admission.bound(router) },
+	)
+}
+
 // Worker threads are a source constant (#617), not tokio's own
 // TOKIO_WORKER_THREADS: compose gave this 2-CPU container 4, so 4 it is,
 // and nothing about how it runs changes.
@@ -173,13 +194,7 @@ async fn main() -> Result<()> {
 	file_host::metrics::rate_limit::record_capacity(config.rate_limit);
 	file_host::metrics::rate_limit::register_all();
 
-	// Every route module comes from `inventory::modules`, the same list
-	// `dump-routes` reads, so what is served here and what the client's
-	// snapshot says is served cannot differ. See `routes::table`. The limiter
-	// goes inside each versioned module's CORS, so a 429 still carries that
-	// module's CORS headers (and exposes `Retry-After`): outside them, a
-	// browser reads the refusal as a network error and cannot back off.
-	let (versioned_routes, unversioned_routes) = inventory::routers(&config, |router| router.layer(from_fn_with_state(rate_limiter.clone(), rate_limit_middleware)));
+	let (versioned_routes, unversioned_routes) = served_routes(&config, &rate_limiter);
 
 	let app = Router::new()
 		.nest(API_V1_BASE_PATH, versioned_routes)
@@ -197,10 +212,6 @@ async fn main() -> Result<()> {
 	// `route="unmatched"` label so an unbounded set of garbage paths can
 	// never grow this metric's cardinality.
 	let app = app.layer(from_fn(track_http_metrics)).fallback(unmatched);
-
-	// AD4: every request answered within `ANSWER_WITHIN`, the ones home has
-	// no room for at once (`file_host::admission`).
-	let app = admission::bounded(app, admission::MAX_CONCURRENT_REQUESTS, admission::ANSWER_WITHIN);
 
 	let app = app.layer(
 		ServiceBuilder::new()

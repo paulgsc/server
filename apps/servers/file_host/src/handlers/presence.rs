@@ -60,7 +60,7 @@ pub async fn observe_lease(State(state): State<AppState>, subject: SubjectId, Js
 	PresenceLeaseRepository::new(state.core.shared_db)
 		.observe(subject.as_str(), &request.context_key, &observed_at)
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+		.map_err(|err| FileHostError::operation(&err, Some(&err)))?;
 
 	Ok(Json(ObserveLeaseResponse {
 		context_key: request.context_key,

@@ -170,6 +170,18 @@ impl FileHostError {
 		Self::UnprocessableEntity { errors: map }
 	}
 
+	/// `OperationError` for a failure only a log can use, except that a pool
+	/// with no connection free in time stays a pool timeout, answered busy
+	/// (AD4, `crate::admission`). `cause` is the database error inside
+	/// `err`, when it has one.
+	pub fn operation(err: &impl std::fmt::Display, cause: Option<&sqlx::Error>) -> Self {
+		if matches!(cause, Some(sqlx::Error::PoolTimedOut)) {
+			Self::Sqlite(sqlx::Error::PoolTimedOut)
+		} else {
+			Self::OperationError(err.to_string())
+		}
+	}
+
 	pub fn upstream<E: std::error::Error + Send + Sync + 'static>(e: E) -> Self {
 		Self::Upstream(anyhow::anyhow!(e))
 	}

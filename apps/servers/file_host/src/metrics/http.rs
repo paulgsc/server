@@ -22,8 +22,9 @@ use std::time::Instant;
 ///
 /// See `main.rs`'s `some_metrics::install_with` call, which is where this
 /// actually takes effect. The exporter's default buckets top out at 10s;
-/// `admission::ANSWER_WITHIN` is 8 s, so a request that
-/// times out needs a bucket above that or it falls off the end of the
+/// a request answered busy at `admission::ANSWER_WITHIN` (8 s) is recorded
+/// here at about that, since this middleware sits outside each module's
+/// admission, so it needs a bucket above it or it falls off the end of the
 /// histogram into `+Inf` and p99 becomes unrepresentable for exactly the
 /// requests it matters most to see.
 pub const HTTP_DURATION_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0];
