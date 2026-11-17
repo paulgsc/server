@@ -1,4 +1,4 @@
-use crate::{MAX_PASSKEYS_PER_SUBJECT, MAX_SESSIONS_PER_SUBJECT};
+use crate::{MAX_PASSKEYS_PER_SUBJECT, MAX_PHONES_PER_SUBJECT, MAX_SESSIONS_PER_SUBJECT};
 use sqlx::{FromRow, SqlitePool};
 
 /// One passkey as stored: the authenticator's credential id, and the
@@ -18,11 +18,37 @@ impl std::fmt::Debug for StoredPasskey {
 	}
 }
 
-/// A live session: whose it is and when it ends (unix seconds).
+/// A live session: whose it is, when it ends (unix seconds), and whether it
+/// is known to be a paired phone's.
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct SessionRow {
 	pub subject_id: String,
 	pub expires_at: i64,
+	/// `true` once the row says it is a phone's (`kind = 'phone'`). A phone
+	/// paired before rows said so reads `false` until it is tagged
+	/// ([`AuthRepository::tag_phone`]).
+	pub is_phone: bool,
+}
+
+/// One paired phone, as its owner may see it. Never its token or the token's
+/// hash: `pairing_id` is random and names nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct PairedPhone {
+	pub pairing_id: Vec<u8>,
+	/// The UTC day it paired (`YYYY-MM-DD`), or `None` for a phone paired
+	/// before home kept the day.
+	pub paired_on: Option<String>,
+	pub expires_at: i64,
+}
+
+/// What pairing a phone did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairPhone {
+	Paired,
+	/// The account already holds [`MAX_PHONES_PER_SUBJECT`] live phones.
+	AtCapacity,
+	/// No account has this subject id (it was deleted while the code was open).
+	NoAccount,
 }
 
 /// What adding a passkey to an existing account did.
@@ -223,10 +249,12 @@ impl AuthRepository {
 		Ok(())
 	}
 
-	/// Start a session, if the subject still has an account, and say whether
-	/// it did: store the token's hash, and, in the same transaction, drop
-	/// every expired session (anyone's) and trim this subject to
-	/// [`MAX_SESSIONS_PER_SUBJECT`], ending the ones closest to expiring.
+	/// Start a browser's session, if the subject still has an account, and say
+	/// whether it did: store the token's hash, and, in the same transaction,
+	/// drop every expired session (anyone's) and trim this subject's browser
+	/// sessions to [`MAX_SESSIONS_PER_SUBJECT`], ending the ones closest to
+	/// expiring. A paired phone's session is never trimmed here
+	/// ([`Self::pair_phone`]).
 	///
 	/// The account check and the insert are one statement. A sign-in that
 	/// verified a passkey just before the account was deleted therefore gets
@@ -256,9 +284,10 @@ impl AuthRepository {
 		sqlx::query!(
 			"DELETE FROM auth_session
 			 WHERE subject_id = ?1
+			   AND kind = 'browser'
 			   AND token_hash NOT IN (
 			       SELECT token_hash FROM auth_session
-			       WHERE subject_id = ?1
+			       WHERE subject_id = ?1 AND kind = 'browser'
 			       ORDER BY expires_at DESC
 			       LIMIT ?2
 			   )",
@@ -272,6 +301,103 @@ impl AuthRepository {
 		Ok(true)
 	}
 
+	/// Start a paired phone's session, if the subject still has an account
+	/// and fewer than [`MAX_PHONES_PER_SUBJECT`] live phones. A phone past the
+	/// cap is refused, never evicted, and no browser sign-in ever ends one: a
+	/// phone ends on its own sign-out, on sign-out everywhere, with the
+	/// account, or when it expires.
+	///
+	/// `paired_on` is the UTC day, computed by the caller. Expired sessions
+	/// (anyone's) are dropped first, so an expired phone frees its place.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn pair_phone(&self, token_hash: &[u8], subject_id: &str, pairing_id: &[u8], paired_on: &str, expires_at: i64, now: i64) -> Result<PairPhone, sqlx::Error> {
+		let mut tx = self.pool.begin().await?;
+
+		sqlx::query!("DELETE FROM auth_session WHERE expires_at <= ?1", now).execute(&mut *tx).await?;
+
+		// One statement, so two pairings racing cannot both take the last place.
+		let created = sqlx::query!(
+			"INSERT INTO auth_session (token_hash, subject_id, expires_at, kind, pairing_id, paired_on)
+			 SELECT ?1, ?2, ?3, 'phone', ?4, ?5
+			 WHERE EXISTS (SELECT 1 FROM account WHERE subject_id = ?2)
+			   AND (SELECT COUNT(*) FROM auth_session WHERE subject_id = ?2 AND kind = 'phone') < ?6",
+			token_hash,
+			subject_id,
+			expires_at,
+			pairing_id,
+			paired_on,
+			MAX_PHONES_PER_SUBJECT
+		)
+		.execute(&mut *tx)
+		.await?
+		.rows_affected();
+		if created == 0 {
+			let has_account = sqlx::query_scalar!("SELECT COUNT(*) FROM account WHERE subject_id = ?1", subject_id)
+				.fetch_one(&mut *tx)
+				.await?;
+			return Ok(if has_account == 0 { PairPhone::NoAccount } else { PairPhone::AtCapacity });
+		}
+
+		tx.commit().await?;
+		Ok(PairPhone::Paired)
+	}
+
+	/// Mark a session read through a phone's bearer token as a phone's, with
+	/// `pairing_id`, if the row does not say so yet: a phone paired before
+	/// rows said what they are. Its day stays unknown. Once tagged, a row is
+	/// never written here again.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn tag_phone(&self, token_hash: &[u8], pairing_id: &[u8]) -> Result<(), sqlx::Error> {
+		sqlx::query!(
+			"UPDATE auth_session SET kind = 'phone', pairing_id = ?2 WHERE token_hash = ?1 AND kind = 'browser'",
+			token_hash,
+			pairing_id
+		)
+		.execute(&self.pool)
+		.await?;
+		Ok(())
+	}
+
+	/// The subject's live paired phones, the earliest paired first (a phone
+	/// whose day is unknown first of all).
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn phones(&self, subject_id: &str, now: i64) -> Result<Vec<PairedPhone>, sqlx::Error> {
+		sqlx::query_as!(
+			PairedPhone,
+			r#"SELECT pairing_id AS "pairing_id!", paired_on, expires_at FROM auth_session
+			   WHERE subject_id = ?1 AND kind = 'phone' AND pairing_id IS NOT NULL AND expires_at > ?2
+			   ORDER BY paired_on IS NOT NULL, paired_on, expires_at"#,
+			subject_id,
+			now
+		)
+		.fetch_all(&self.pool)
+		.await
+	}
+
+	/// Sign one of the subject's phones out, and say whether there was one.
+	/// Scoped by subject, so a pairing id can only ever end a phone of the
+	/// account that asks.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn end_phone(&self, subject_id: &str, pairing_id: &[u8]) -> Result<bool, sqlx::Error> {
+		let ended = sqlx::query!(
+			"DELETE FROM auth_session WHERE subject_id = ?1 AND pairing_id = ?2 AND kind = 'phone'",
+			subject_id,
+			pairing_id
+		)
+		.execute(&self.pool)
+		.await?
+		.rows_affected();
+		Ok(ended > 0)
+	}
+
 	/// The session a token hash names, if it has not expired by `now`.
 	///
 	/// # Errors
@@ -279,7 +405,7 @@ impl AuthRepository {
 	pub async fn live_session(&self, token_hash: &[u8], now: i64) -> Result<Option<SessionRow>, sqlx::Error> {
 		sqlx::query_as!(
 			SessionRow,
-			"SELECT subject_id, expires_at FROM auth_session WHERE token_hash = ?1 AND expires_at > ?2",
+			r#"SELECT subject_id, expires_at, kind = 'phone' AS "is_phone!: bool" FROM auth_session WHERE token_hash = ?1 AND expires_at > ?2"#,
 			token_hash,
 			now
 		)
@@ -319,8 +445,8 @@ impl AuthRepository {
 
 #[cfg(test)]
 mod tests {
-	use super::{Accounts, AddPasskey, Admission, AuthRepository, StoredPasskey};
-	use crate::{MAX_PASSKEYS_PER_SUBJECT, MAX_SESSIONS_PER_SUBJECT};
+	use super::{Accounts, AddPasskey, Admission, AuthRepository, PairPhone, StoredPasskey};
+	use crate::{MAX_PASSKEYS_PER_SUBJECT, MAX_PHONES_PER_SUBJECT, MAX_SESSIONS_PER_SUBJECT};
 	use sqlx::sqlite::SqlitePoolOptions;
 
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
@@ -439,5 +565,101 @@ mod tests {
 		assert!(repo.live_session(&MAX_SESSIONS_PER_SUBJECT.to_le_bytes(), 300).await.unwrap().is_none());
 		repo.end_session(b"new").await.unwrap();
 		assert!(repo.live_session(b"new", 300).await.unwrap().is_none());
+	}
+
+	/// some-ui#3092: "keep phone pairings past 32". Browser sign-ins past the
+	/// browser cap end browsers only, never a phone.
+	#[tokio::test]
+	async fn browser_sign_ins_past_the_cap_never_end_a_phone() {
+		let repo = repo().await;
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
+
+		// The phone is the session closest to expiring, the one the old cap
+		// would have ended first.
+		assert_eq!(repo.pair_phone(b"phone", "subject-a", &[7; 16], "2026-11-17", 5_000, 200).await.unwrap(), PairPhone::Paired);
+		for n in 0..=MAX_SESSIONS_PER_SUBJECT {
+			repo.create_session(&n.to_le_bytes(), "subject-a", 10_000 + n, 200).await.unwrap();
+		}
+
+		let phone = repo.live_session(b"phone", 300).await.unwrap().unwrap();
+		assert!(phone.is_phone, "the phone outlived 33 browser sign-ins");
+		assert!(repo.live_session(&0_i64.to_le_bytes(), 300).await.unwrap().is_none(), "the oldest browser ended");
+		assert!(!repo.live_session(&1_i64.to_le_bytes(), 300).await.unwrap().unwrap().is_phone);
+
+		let phones = repo.phones("subject-a", 300).await.unwrap();
+		assert_eq!(phones.len(), 1);
+		assert_eq!(phones[0].pairing_id, vec![7; 16]);
+		assert_eq!(phones[0].paired_on.as_deref(), Some("2026-11-17"));
+		assert_eq!(phones[0].expires_at, 5_000);
+
+		assert!(repo.phones("subject-a", 5_000).await.unwrap().is_empty(), "an expired phone is not listed");
+	}
+
+	#[tokio::test]
+	async fn a_phone_past_its_cap_is_refused_not_evicted() {
+		let repo = repo().await;
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
+
+		for n in 0..MAX_PHONES_PER_SUBJECT {
+			let id = [u8::try_from(n).unwrap(); 16];
+			assert_eq!(
+				repo.pair_phone(&n.to_le_bytes(), "subject-a", &id, "2026-11-17", 10_000, 200).await.unwrap(),
+				PairPhone::Paired
+			);
+		}
+		assert_eq!(
+			repo.pair_phone(b"one-more", "subject-a", &[200; 16], "2026-11-17", 10_000, 200).await.unwrap(),
+			PairPhone::AtCapacity
+		);
+		assert!(repo.live_session(&0_i64.to_le_bytes(), 300).await.unwrap().is_some(), "the first phone is still paired");
+		assert_eq!(
+			repo.pair_phone(b"orphan", "subject-gone", &[201; 16], "2026-11-17", 10_000, 200).await.unwrap(),
+			PairPhone::NoAccount
+		);
+
+		// An expired phone frees its place.
+		repo.extend_session(&0_i64.to_le_bytes(), 250).await.unwrap();
+		assert_eq!(
+			repo.pair_phone(b"one-more", "subject-a", &[200; 16], "2026-11-18", 10_000, 300).await.unwrap(),
+			PairPhone::Paired
+		);
+	}
+
+	#[tokio::test]
+	async fn one_phone_signs_out_only_for_its_own_account() {
+		let repo = repo().await;
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
+		assert!(repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::Open).await.unwrap());
+		repo.pair_phone(b"phone-a", "subject-a", &[7; 16], "2026-11-17", 10_000, 200).await.unwrap();
+		repo.pair_phone(b"phone-b", "subject-b", &[7; 16], "2026-11-17", 10_000, 200).await.unwrap();
+
+		assert!(!repo.end_phone("subject-b", &[8; 16]).await.unwrap(), "no such phone");
+		assert!(repo.end_phone("subject-b", &[7; 16]).await.unwrap());
+		assert!(repo.live_session(b"phone-b", 300).await.unwrap().is_none());
+		assert!(
+			repo.live_session(b"phone-a", 300).await.unwrap().is_some(),
+			"the same id on another account is another phone"
+		);
+
+		repo.end_all_sessions("subject-a").await.unwrap();
+		assert!(repo.live_session(b"phone-a", 300).await.unwrap().is_none(), "sign-out everywhere ends phones too");
+	}
+
+	/// A phone paired before rows said what they are reads as a browser
+	/// until its bearer token is read, then is tagged once, with no day.
+	#[tokio::test]
+	async fn a_phone_paired_before_kinds_is_tagged_once() {
+		let repo = repo().await;
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
+		repo.create_session(b"legacy", "subject-a", 10_000, 200).await.unwrap();
+		assert!(!repo.live_session(b"legacy", 300).await.unwrap().unwrap().is_phone);
+
+		repo.tag_phone(b"legacy", &[9; 16]).await.unwrap();
+		repo.tag_phone(b"legacy", &[10; 16]).await.unwrap();
+		assert!(repo.live_session(b"legacy", 300).await.unwrap().unwrap().is_phone);
+		let phones = repo.phones("subject-a", 300).await.unwrap();
+		assert_eq!(phones.len(), 1);
+		assert_eq!(phones[0].pairing_id, vec![9; 16], "a second tag changes nothing");
+		assert_eq!(phones[0].paired_on, None);
 	}
 }

@@ -128,10 +128,12 @@ sign-in failing with "Passkey sign-in isn't set up on this server yet".
 | Subject id | `account.subject_id` | `subject-` and 32 random hex digits, minted by `subject.rs`. The key of every per-person row. |
 | User handle | `account.user_handle` | The WebAuthn `user.id`: 16 random bytes. The only thing an authenticator returns on a sign-in that names no account. |
 | Passkeys | `passkey` | Credential id, public key, signature counter and backup flags. At most 16 per account. |
-| Sessions | `auth_session` | SHA-256 of each session token (a paired phone's over a fixed prefix too), its subject, and when it expires. At most 32 per account, paired phones included. |
+| Sessions | `auth_session` | SHA-256 of each session token (a paired phone's over a fixed prefix too), its subject, when it expires, and its `kind` (`browser` or `phone`). A phone's row also holds a random `pairing_id` and the UTC day it paired (`paired_on`). At most 32 browser sessions and 16 paired phones per account. |
 
-Nothing records when an account or a passkey was made or last used. The
-per-day cap on new accounts is counted in memory for the same reason.
+Nothing records when an account or a passkey was made or last used, or when
+any session was last used. The one creation time stored is the day a phone
+paired ("Pairing a phone"). The per-day cap on new accounts is counted in
+memory for the same reason.
 
 Every new account gets a random subject id, the owner's included.
 
@@ -279,14 +281,44 @@ ceremony; a restart drops the open ones, and so do account deletion and
 sign-out everywhere. Both run under the exclusive hold against deletion,
 and redeeming a code holds it from taking the code to making the session, so
 a pairing in flight lands wholly before them (and is ended) or after them
-(and finds no code). The token is an ordinary
-`auth_session` row, so no column is added: it expires and slides like any
-session (renewing it sets no cookie), and it ends with `/auth/sign-out` sent
-with the token (unpairing), with `/auth/sign-out-everywhere`, or with the
-account. No column says a session is a phone's; its digest is taken over a
-fixed prefix and the token (`SessionToken::hash`), so a phone's token sent as
-a cookie, or a browser's sent as a bearer, finds no session. How a session
-arrives is therefore what kind it is.
+(and finds no code). The phone's digest is taken over a fixed prefix and the
+token (`SessionToken::hash`), so a phone's token sent as a cookie, or a
+browser's sent as a bearer, finds no session.
+
+**A phone's row says it is one** (some-ui#3092; the owner, 2026-11-17: "yes,
+keep phone pairings past 32 and list them"). Until then no column said a
+session was a phone's, and the per-account cap of 32 ended the session
+closest to expiring on the 33rd sign-in, a phone's included, so a phone could
+find home had forgotten it for no reason it could tell. Now `auth_session`
+carries `kind` (`phone`), a random `pairing_id`, and `paired_on`, the UTC
+day it paired (migration `20261117000100_add_pairing_to_auth_session`, which
+supersedes, for phones only, the "deliberately absent" note in
+`20260927000200_create_passkey_auth`; invariant 10). So:
+
+- **The browser cap never ends a phone.** It counts and trims browser
+  sessions only. A phone ends with `/auth/sign-out` sent with its token
+  (unpairing), with `/auth/sign-out-everywhere`, when its owner signs it out
+  from a browser (`DELETE /auth/phones/:id`), with the account, or when it
+  expires. It expires and slides like any session: 30 days, renewed to a full
+  term by `GET /auth/session` past halfway, with no cookie set (C492).
+- **Phones have their own cap, 16, and a pairing past it is refused**
+  (`409`), never evicted, like a passkey (C491): the code is used up, and the
+  owner signs a phone out first. Rows per account stay bounded.
+- **The owner lists them.** `GET /auth/phones`, a browser's passkey session
+  only, answers each phone's `phoneId` (the `pairing_id`, base64url; random,
+  never derived from the token or its hash), `pairedOn`, `renewedAt` and
+  `expiresAt`. No token or hash is ever returned. `/auth/pairing/finish`
+  answers the same `phoneId`, so the phone can show its own (C496). No name
+  is kept: a `User-Agent` is barred (invariant 3) and a device model would
+  break invariant 7.
+- **No last-seen time is stored** (C493). `renewedAt` is `expiresAt` less the
+  session term: when the session last started or slid. The phone was used
+  then at least, and may have been used since, by up to half a term. Kept to
+  the day (C494), `paired_on` says when a phone joined, not when it is used.
+- **A phone paired before rows said so** reads as a browser row until its
+  bearer token is next read, by any route; it is then marked a phone, with a
+  fresh `pairing_id` and no day (`pairedOn: null`), once (C495). How the
+  token arrives is still what decides it: only a bearer read marks a row.
 
 A phone's token acts on the account's study data and nothing that would
 outlive or widen it: adding a passkey, pairing another phone, deleting the
@@ -513,8 +545,12 @@ nowhere is marked as such and belongs to review.
 
 10. **The auth tables keep no timeline.** `account`, `passkey` and
     `auth_session` hold exactly the columns listed under "What an account is":
-    no creation, last-seen or last-used time. A session's expiry is the one
-    instant stored. That absence is why the owner's account is defined as the
+    no last-seen or last-used time, and no creation time but one: the UTC
+    day a phone paired (`auth_session.paired_on`), which the owner chose
+    on 2026-11-17 ("yes, keep phone pairings past 32 and list them",
+    some-ui#3092) so they can tell their phones apart. A day, phones only;
+    a browser session has none. A session's expiry is the one instant
+    stored. That absence is why the owner's account is defined as the
     only account and not the first ("The owner's account"): nothing says
     which came first. Whether a last-used time per passkey and session would
     serve one admin as a security feature (#510 raised it) is the owner's

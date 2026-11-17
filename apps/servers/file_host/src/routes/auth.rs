@@ -40,6 +40,9 @@ where
 		// sent as `Authorization: Bearer` (`auth::pairing`).
 		.post("/auth/pairing/start", handlers::start_pairing)
 		.post("/auth/pairing/finish", handlers::finish_pairing)
+		// Signed in: the account's paired phones, and signing one out.
+		.get("/auth/phones", handlers::phones)
+		.delete("/auth/phones/:id", handlers::sign_out_phone)
 		// Is this browser (or paired phone) signed in? Also where a session slides.
 		.get("/auth/session", handlers::session)
 		.post("/auth/sign-out", handlers::sign_out)

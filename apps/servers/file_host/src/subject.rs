@@ -44,7 +44,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"the owner's aph log (paulgsc/some-ui `packages/ui/aph`), every revision of every entry: the figures, labels and note as written, and when each revision was written; see docs/identity.md",
 	),
 	("aph_settings", "the checkpoints, goals and labels the aph log is read against, every revision"),
-	("auth_session", "hashes of the account's sign-in sessions, and when they expire"),
+	("auth_session", "hashes of the account's sign-in sessions, when they expire, and which are paired phones"),
 	(
 		"bite_mapping",
 		"the scenario home accepted for each of the owner's game bites said first and left for later (paulgsc/some-ui#2081, GWB7): the bite by id, the scenario, what proposed it, the versions it was checked under, and when; see docs/identity.md invariant 23",
