@@ -260,6 +260,9 @@ way; CI runs it on every PR.
   the speaker's room, as the declared peak counts it.
   An unreadable `memory.peak` writes none, and the lane keeps the declared
   one.
+- **Each job's length cap is its own** (`max_minutes`): a Rust Rounds
+  essay may run 30 minutes, the owner's (2026-11-17, #927); every other
+  job, a mock interview's essay too, 15. The other caps are every job's.
 - **A restart keeps the job.** `job.state` names it, it runs before any
   other, under the same id, and its work is never removed for the
   `WORK_MAX_MB` cap while it waits. Docker stopping the container kills the
