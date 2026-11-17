@@ -4,22 +4,19 @@
 // not happen to call — the route inventory, for one — tripped `dead_code` under
 // `-D warnings` despite being used by the library's other consumers.
 use anyhow::Result;
-use axum::{
-	error_handling::HandleErrorLayer, extract::Request as AxumRequest, http::StatusCode, middleware::from_fn, middleware::from_fn_with_state, middleware::Next,
-	response::Response, Router,
-};
+use axum::{extract::Request as AxumRequest, http::StatusCode, middleware::from_fn, middleware::from_fn_with_state, middleware::Next, response::Response, Router};
 use file_host::metrics::http::{track_http_metrics, unmatched, HTTP_DURATION_BUCKETS, HTTP_DURATION_METRIC};
 use file_host::metrics::refusals;
 use file_host::rate_limiter::{rate_limit_middleware, HttpLimiter};
 use file_host::routes::{inventory, metrics::get_metrics};
 use file_host::trace::RouteSpan;
-use file_host::{error::FileHostError, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
+use file_host::{admission, nudge, perform_health_check, AppState, Config, API_V1_BASE_PATH};
 use some_services::rate_limiter::{MonotonicClock, Quota};
 use sqlx::sqlite::SqlitePoolOptions;
 use std::{net::SocketAddr, num::NonZeroU32, sync::Arc};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tower::{limit::ConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, BoxError, ServiceBuilder};
+use tower::ServiceBuilder;
 use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 
 /// The largest request body any route takes, in bytes: 10 MiB. A voice
@@ -27,31 +24,8 @@ use tower_http::{add_extension::AddExtensionLayer, limit::RequestBodyLimitLayer,
 /// (#617), as `MAX_REQUEST_SIZE_MB` was by default.
 const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
 
-/// How many requests are served at once before more are shed. A source
-/// constant (#617), as `MAX_CONCURRENT_REQUESTS` was by default.
-const MAX_CONCURRENT_REQUESTS: usize = 100;
-
-/// The hard timeout on any request. A source constant (#617), as
-/// `TASK_TIMEOUT_MS` was by default.
-const REQUEST_TIMEOUT: Duration = Duration::from_millis(15_000);
-
-async fn handle_tower_error(error: BoxError) -> FileHostError {
-	if error.is::<tower::timeout::error::Elapsed>() {
-		tracing::warn!("Request timeout: {}", error);
-		refusals::record_http("timeout");
-		FileHostError::RequestTimeout
-	} else if error.is::<tower::load_shed::error::Overloaded>() {
-		tracing::warn!("Service overloaded: {}", error);
-		refusals::record_http("load_shed");
-		FileHostError::ServiceOverloaded
-	} else {
-		tracing::error!("Unhandled tower error: {}", error);
-		FileHostError::TowerError(error)
-	}
-}
-
 /// `RequestBodyLimitLayer` answers an over-limit request directly — a `413`
-/// built inside the layer itself, never routed through `handle_tower_error`
+/// built inside the layer itself, never routed through `admission`'s errors
 /// (see #223/F3). This wraps it from the outside instead, watching for that
 /// status on the way back out. Placed as the first layer inside
 /// `ServiceBuilder`'s chain so it sees everything `RequestBodyLimitLayer`
@@ -125,7 +99,7 @@ async fn main() -> Result<()> {
 	// on; the handle below is what turns its state into a scrape payload.
 	//
 	// `install_with` rather than `install`: the request-duration histogram
-	// (#213/F2) needs a bucket above `main.rs's REQUEST_TIMEOUT`'s 15s, and the
+	// (#213/F2) needs a bucket above `admission::ANSWER_WITHIN`'s 8 s, and the
 	// exporter's default buckets top out at 10s — see
 	// `metrics::http::HTTP_DURATION_BUCKETS`'s own doc comment.
 	let metrics_builder = some_metrics::PrometheusBuilder::new().set_buckets_for_metric(some_metrics::Matcher::Full(HTTP_DURATION_METRIC.to_string()), HTTP_DURATION_BUCKETS)?;
@@ -157,8 +131,11 @@ async fn main() -> Result<()> {
 	let config = Arc::new(config);
 	let connection_options = file_host::db::connect_options(&config.database_url)?.create_if_missing(true);
 
+	// The acquire is bounded, so a request with no connection free is
+	// answered busy rather than kept waiting (AD4, `file_host::admission`).
 	let pool = SqlitePoolOptions::new()
-		.max_connections(5) // Don't go too high with SQLite
+		.max_connections(admission::POOL_CONNECTIONS)
+		.acquire_timeout(admission::POOL_ACQUIRE_TIMEOUT)
 		.connect_with(connection_options)
 		.await?;
 	let shutdown_token = CancellationToken::new();
@@ -221,16 +198,16 @@ async fn main() -> Result<()> {
 	// never grow this metric's cardinality.
 	let app = app.layer(from_fn(track_http_metrics)).fallback(unmatched);
 
+	// AD4: every request answered within `ANSWER_WITHIN`, the ones home has
+	// no room for at once (`file_host::admission`).
+	let app = admission::bounded(app, admission::MAX_CONCURRENT_REQUESTS, admission::ANSWER_WITHIN);
+
 	let app = app.layer(
 		ServiceBuilder::new()
 			// `RouteSpan`, not the default span: that one records the whole URI, query
 			// string included (docs/identity.md, invariant 13).
 			.layer(TraceLayer::new_for_http().make_span_with(RouteSpan))
-			.layer(HandleErrorLayer::new(|error: BoxError| async move { handle_tower_error(error).await }))
 			.layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES))
-			.layer(ConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
-			.layer(TimeoutLayer::new(REQUEST_TIMEOUT))
-			.layer(LoadShedLayer::new())
 			.layer(AddExtensionLayer::new(config.clone()))
 			// Read by `net::Peer`: which peers' `X-Forwarded-For` names the client.
 			.layer(AddExtensionLayer::new(file_host::net::TrustedProxies::from_config(&config.trusted_proxies))),
@@ -239,7 +216,7 @@ async fn main() -> Result<()> {
 	// #223 (F3): outermost, so it wraps `RequestBodyLimitLayer` above (and
 	// everything else) from the outside — see `track_body_limit_refusals`'s
 	// own doc comment for why that layer's own rejection can't be caught via
-	// `handle_tower_error`. `axum::middleware::from_fn` doesn't compose
+	// `admission`'s errors. `axum::middleware::from_fn` doesn't compose
 	// cleanly with `HandleErrorLayer` from inside the same `ServiceBuilder`
 	// chain (ambiguous `Service` inference), hence applying it as a separate
 	// `Router::layer` call rather than folding it into the chain above.
