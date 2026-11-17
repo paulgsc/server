@@ -1300,7 +1300,10 @@ nowhere is marked as such and belongs to review.
     `voice_transcript_verdict`), may be deleted too: the owner, 2026-11-16,
     paulgsc/some-ui#3076, "allow delete for any kind home couldn't hear"
     (`Deletable::Unheard`). Every other kind is the work and is kept, and so
-    is a note home heard or has not judged yet. Deleting a note home could
+    is a note home heard or has not judged yet. My data offers exactly the
+    notes this route deletes: `GET /voice-notes/kept`'s `deletable` and the
+    delete read one rule (`voice_repo::delete::allows`; the owner,
+    2026-11-17, paulgsc/server#919). Deleting a note home could
     not hear keeps every record that names it by id (a game bite's
     description, which its receipt names, a week's paste, an episode note),
     and a Rust Rounds or interview take deleted so withdraws its week's
@@ -1406,8 +1409,12 @@ nowhere is marked as such and belongs to review.
     ending `GET /voice-notes/:id/heard` answers (the same choice of hearing),
     the note's `duration_ms` once heard or found silent and the first words
     heard, cut at the last space within about 80 characters
-    (`voice_repo::kept::HEARD_CHARS`), with whether they were cut, and
-    whether its kind plays back (`PLAYED_BACK`), so the
+    (`voice_repo::kept::HEARD_CHARS`), with whether they were cut,
+    whether its kind plays back (`PLAYED_BACK`), and whether
+    `DELETE /voice-notes/:id` would take it (`deletable`, by the one rule
+    the delete reads, `voice_repo::delete::allows`, so it offers a note home
+    could not hear by the kind of its newest verdict, never its reasons or
+    signals; paulgsc/server#919), so the
     owner can tell what they would delete (MY-DATA, paulgsc/some-ui#2473,
     2026-11-13) (`voice_repo::kept`, its one caller `handlers::voice`). What
     was said goes only to the caller's own paired phone, as `/heard` already
@@ -1673,6 +1680,7 @@ nowhere is marked as such and belongs to review.
     `what_reached_home_is_summed_by_the_week_it_arrived` and
     `a_kinds_newest_notes_come_first_and_stop_at_the_cap` and
     `a_note_is_listed_as_deletable_only_when_its_kind_is_switched_on`,
+    `every_note_marked_deletable_is_one_delete_takes_and_no_other`,
     `what_was_heard_is_cut_at_the_last_space_within_the_limit` and
     `each_note_says_how_long_it_ran_and_what_home_heard_first`, and
     `handlers::voice`'s `a_paired_phone_reads_what_home_keeps_of_its_own_notes`,

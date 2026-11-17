@@ -53,7 +53,8 @@ impl Kind {
 	/// Every kind, in [`Self::as_str`]'s order.
 	pub const ALL: [Self; 4] = [Self::Heard, Self::Garbled, Self::NothingSaid, Self::Failed];
 
-	fn parse(stored: &str) -> Option<Self> {
+	/// The kind stored as `stored`, if this build knows it.
+	pub(crate) fn parse(stored: &str) -> Option<Self> {
 		Self::ALL.into_iter().find(|kind| kind.as_str() == stored)
 	}
 
