@@ -27,7 +27,8 @@ fn repo(state: &AppState) -> ActivityRepository {
 fn to_http(err: &ActivityRepoError) -> FileHostError {
 	match err {
 		ActivityRepoError::CatalogTooLarge { .. } => FileHostError::MaxRecordLimitExceeded,
-		other @ (ActivityRepoError::Sqlx(_) | ActivityRepoError::Row(_)) => FileHostError::OperationError(other.to_string()),
+		ActivityRepoError::Sqlx(cause) => FileHostError::operation(err, Some(cause)),
+		ActivityRepoError::Row(_) => FileHostError::operation(err, None),
 	}
 }
 

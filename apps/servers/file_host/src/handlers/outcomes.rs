@@ -116,7 +116,7 @@ pub(crate) async fn record_outcome(db: &SqlitePool, subject_id: &str, request: O
 	let session = SessionRepository::new(db.clone())
 		.get(subject_id, &record.session_id)
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?
+		.map_err(|err| crate::handlers::db::session::to_http(&err))?
 		.ok_or(FileHostError::NotFound)?;
 	validate_against_session(&record, &session)?;
 

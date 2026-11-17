@@ -105,7 +105,7 @@ pub async fn subscribe(State(state): State<AppState>, subject: SubjectId, Json(r
 	PushSubscriptionRepository::new(state.core.shared_db.clone())
 		.upsert(&request.subscription, &consent, &now)
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+		.map_err(|err| FileHostError::operation(&err, Some(&err)))?;
 
 	// First contact: this is the event that says a subject exists at all —
 	// see `waker::first_contact` for why this route, and not a signal, is the
@@ -115,7 +115,7 @@ pub async fn subscribe(State(state): State<AppState>, subject: SubjectId, Json(r
 	// client retry after a `500` is harmless.
 	crate::nudge::waker::first_contact(&state.core.shared_db, subject.as_str())
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+		.map_err(|err| FileHostError::operation(&err, Some(&err)))?;
 
 	// A recognised push service or `other`, never the endpoint or its host: both
 	// are the client's to choose (docs/identity.md, invariant 14).
@@ -139,7 +139,7 @@ pub async fn unsubscribe(State(state): State<AppState>, Json(request): Json<Unsu
 	let removed = PushSubscriptionRepository::new(state.core.shared_db)
 		.delete_by_endpoint(&request.endpoint)
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+		.map_err(|err| FileHostError::operation(&err, Some(&err)))?;
 
 	Ok(Json(DeleteResponse { removed: removed > 0 }))
 }
@@ -159,7 +159,7 @@ pub async fn send_test(State(state): State<AppState>, subject: SubjectId) -> Res
 	let subscriptions = PushSubscriptionRepository::new(state.core.shared_db.clone())
 		.for_subject(subject.as_str())
 		.await
-		.map_err(|err| FileHostError::OperationError(err.to_string()))?;
+		.map_err(|err| FileHostError::operation(&err, Some(&err)))?;
 
 	let payload = crate::nudge::payload::NudgePayload::for_session(
 		&nudge.base_url,

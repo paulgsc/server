@@ -170,8 +170,11 @@ where
 /// [`API_V1_BASE_PATH`] after adding its own layers, and the unversioned
 /// half, which it merges at the root. `versioned` wraps each versioned
 /// module's table inside that module's CORS (`main.rs` passes the rate
-/// limiter), so what it answers on its own still carries CORS headers.
-pub fn routers<S>(config: &Config, versioned: impl Fn(Router<S>) -> Router<S>) -> (Router<S>, Router<S>)
+/// limiter and AD4's admission), so what it answers on its own still carries
+/// CORS headers; `unversioned` does the same for each unversioned module,
+/// told the module's name (`main.rs` leaves the health checks out of AD4's
+/// admission).
+pub fn routers<S>(config: &Config, versioned: impl Fn(Router<S>) -> Router<S>, unversioned: impl Fn(&'static str, Router<S>) -> Router<S>) -> (Router<S>, Router<S>)
 where
 	S: Clone + Send + Sync + 'static,
 	AppState: FromRef<S>,
@@ -185,7 +188,8 @@ where
 		if module.is_versioned() {
 			module.into_router(config, &versioned)
 		} else {
-			module.into_router(config, |router| router)
+			let name = module.name();
+			module.into_router(config, |router| unversioned(name, router))
 		}
 	})
 }
