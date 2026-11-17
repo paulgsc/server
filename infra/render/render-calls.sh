@@ -182,7 +182,9 @@ RETRY_AFTER=3600
 # RETRY_AFTER's clock: <status>/<key>.refused keeps what it was refused for
 # (`held_by`), and it is tried again once that changes. Every other failure
 # keeps RETRY_AFTER.
-REFUSED_LONG="the video would run ([0-9]+(\.[0-9]+)?) min, past the policy's ([0-9]+(\.[0-9]+)?) min"
+# The recorder says minutes to one decimal (`toFixed(1)`) and MB whole
+# (`toFixed(0)`); file_host's board reads exactly those (`feeds::renders::Over`).
+REFUSED_LONG="the video would run ([0-9]+(\.[0-9])?) min, past the policy's ([0-9]+(\.[0-9])?) min"
 REFUSED_LARGE="the video is ([0-9]+) MB, past the policy's ([0-9]+) MB"
 # The image the recorders are (deploy/home/release.json's render pin, which
 # call-render.yml hands in): a new image may say another length or size.
@@ -1255,10 +1257,12 @@ render_one() {
       rm -f "${STATUS:?}/.$key.log" "${STATUS:?}/$key.refused"
       echo "the $job of $key was let go before it rendered" ;;
     *)
+      # The last attempt's refusal first: a failed.log is never read beside
+      # another attempt's.
+      rm -f "${STATUS:?}/$key.refused"
       mv -f "$STATUS/.$key.log" "$STATUS/$key.failed.log"
       # Its time is the failure's, which RETRY_AFTER counts from.
       touch "$STATUS/$key.failed.log"
-      rm -f "${STATUS:?}/$key.refused"
       # A refusal by the policy is kept as its reason, a preview's too: the
       # phone says why (#929).
       if refusal "$STATUS/$key.failed.log" "$held" > "$STATUS/.$key.refused"; then
