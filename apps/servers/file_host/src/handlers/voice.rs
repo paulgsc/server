@@ -1990,7 +1990,7 @@ mod tests {
 			listed,
 			json!({
 				"id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null, "deletable": false,
-				"durationMs": null, "heard": null, "heardCut": false, "playsBack": true
+				"durationMs": null, "heard": null, "heardCut": false, "playsBack": true, "recordingLetGoAt": null
 			})
 		);
 		hear(&pool, A, "n1", "ggml-small-q5_1.bin", said("a small idea", "en"), "2026-10-25T16:05:00.000Z").await;

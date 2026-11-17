@@ -71,16 +71,29 @@ pub enum Deletable {
 	/// home couldn't hear". A note whose newest verdict is `heard`, or that
 	/// has none, keeps its kind's rule.
 	Unheard,
+	/// A week of mock interview's middle take, whose **audio only** goes
+	/// when the week closes ([`let_go_audio`], driven by
+	/// `crate::interview::let_go_retakes`): neither a question's earliest
+	/// note, nor its newest, nor the one the week's final names. The note,
+	/// its words and every count home made of it stay. The owner's ruling
+	/// (paulgsc/some-ui#3175, 2026-11-17): "keep first and latest, go with
+	/// your proposal". Never what [`deletable`] answers, so the owner's own
+	/// `DELETE` never takes a note by it.
+	InterviewRetake,
 }
 
 /// The kinds the owner has switched on (paulgsc/some-ui#2473, and #3076 for
 /// [`Deletable::Unheard`]).
-pub const SWITCHED_ON: &[Deletable] = &[Deletable::StudioTake, Deletable::IdeaAnswer, Deletable::Unheard];
+pub const SWITCHED_ON: &[Deletable] = &[Deletable::StudioTake, Deletable::IdeaAnswer, Deletable::Unheard, Deletable::InterviewRetake];
 
 /// What went with a deleted note, in fixed words.
 pub const RECORDING: &str = "recording";
 /// What home heard in it.
 pub const WORDS: &str = "words";
+/// The note's description (what it was said for, when it was recorded and
+/// reached home, its size): it stays when only its recording is let go
+/// ([`let_go_audio`]).
+pub const NOTE: &str = "note";
 /// The owner's Let go mark on it.
 pub const SET_ASIDE_MARK: &str = "set-aside mark";
 /// Every move the owner made of it along the conveyor ([`crate::conveyor`]).
@@ -375,6 +388,11 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 	else {
 		return Ok(receipt(conn, subject, note_id).await?.map_or(Deleted::NotHeld, Deleted::Gone));
 	};
+	// A note whose recording was let go ([`let_go_audio`]) is held still, and
+	// answered from its receipt: a note has one receipt, never a second.
+	if let Some(receipt) = receipt(conn, subject, note_id).await? {
+		return Ok(Deleted::Gone(receipt));
+	}
 	let answers = sqlx::query_scalar!(
 		r#"SELECT EXISTS (SELECT 1 FROM idea_answer WHERE subject_id = ?1 AND note_id = ?2) AS "answers!: bool""#,
 		subject,
@@ -418,6 +436,12 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 		went,
 		stayed,
 	};
+	keep_receipt(conn, subject, &receipt).await?;
+	Ok(Deleted::Gone(receipt))
+}
+
+/// Keeps `receipt` for `subject`: never updated, and only one per note.
+async fn keep_receipt(conn: &mut SqliteConnection, subject: &str, receipt: &Receipt) -> Result<(), VoiceError> {
 	let went_json = serde_json::Value::from(receipt.went.clone()).to_string();
 	let stayed_json = serde_json::Value::from(receipt.stayed.clone()).to_string();
 	sqlx::query!(
@@ -435,14 +459,90 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 	)
 	.execute(&mut *conn)
 	.await?;
+	Ok(())
+}
+
+/// Lets go of `subject`'s note `note_id`'s **recording only**, with a receipt.
+///
+/// The one delete path's audio-only act at `now`, if
+/// [`Deletable::InterviewRetake`] is in `on`, for a week of mock interview's
+/// middle takes (`crate::interview::let_go_retakes` chooses them).
+///
+/// Only `voice_note_audio`'s row goes. The note's description, every
+/// transcript and word of it, its meaning, its verdicts, its marks and its
+/// moves stay, and so does any copy of its words filed for the mailbox; the
+/// receipt says so (`went` is the recording alone). A note let go before is
+/// answered from its receipt, and nothing is written again.
+///
+/// Run it in a `BEGIN IMMEDIATE` transaction, as [`delete`].
+///
+/// # Errors
+/// [`VoiceError::Storage`] for any `sqlx` failure, and
+/// [`VoiceError::Unreadable`] for a receipt that does not read back.
+pub async fn let_go_audio(conn: &mut SqliteConnection, subject: &str, note_id: &str, on: &[Deletable], now: &str) -> Result<Deleted, VoiceError> {
+	if let Some(receipt) = receipt(conn, subject, note_id).await? {
+		return Ok(Deleted::Gone(receipt));
+	}
+	let Some(note) = sqlx::query!(
+		"SELECT of_kind, recorded_at, size, stored_at FROM voice_note WHERE subject_id = ?1 AND note_id = ?2",
+		subject,
+		note_id
+	)
+	.fetch_optional(&mut *conn)
+	.await?
+	else {
+		return Ok(Deleted::NotHeld);
+	};
+	if !on.contains(&Deletable::InterviewRetake) {
+		return Ok(Deleted::Kept(Kept::SwitchedOff));
+	}
+	sqlx::query!("DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.execute(&mut *conn)
+		.await?;
+	let stays = sqlx::query!(
+		r#"SELECT EXISTS (SELECT 1 FROM voice_transcript WHERE subject_id = ?1 AND note_id = ?2 AND outcome = 'heard') AS "heard!: bool",
+		          EXISTS (SELECT 1 FROM voice_transcript_verdict WHERE subject_id = ?1 AND note_id = ?2) AS "judged!: bool",
+		          EXISTS (SELECT 1 FROM mailbox_transcript WHERE subject_id = ?1 AND note_id = ?2) AS "filed!: bool",
+		          EXISTS (SELECT 1 FROM voice_note_attention WHERE subject_id = ?1 AND note_id = ?2) AS "reconciled!: bool",
+		          EXISTS (SELECT 1 FROM voice_note_set_aside WHERE subject_id = ?1 AND note_id = ?2) AS "marked!: bool",
+		          EXISTS (SELECT 1 FROM studio_take_move WHERE subject_id = ?1 AND note_id = ?2) AS "moved!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	let mut stayed = vec![NOTE.to_owned()];
+	for (held, what) in [
+		(stays.heard, WORDS),
+		(stays.marked, SET_ASIDE_MARK),
+		(stays.moved, CONVEYOR_HISTORY),
+		(stays.filed, MAILBOX_COPY),
+		(stays.judged, VERDICT),
+		(stays.reconciled, RECONCILIATION),
+	] {
+		if held {
+			stayed.push(what.to_owned());
+		}
+	}
+	let receipt = Receipt {
+		id: note_id.to_owned(),
+		of: note.of_kind,
+		recorded_at: note.recorded_at,
+		size: note.size,
+		stored_at: note.stored_at,
+		deleted_at: now.to_owned(),
+		went: vec![RECORDING.to_owned()],
+		stayed,
+	};
+	keep_receipt(conn, subject, &receipt).await?;
 	Ok(Deleted::Gone(receipt))
 }
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		delete, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, GAME_BITE, IDEA, MAILBOX_COPY, RECEIPTS, RECONCILIATION, RECORDING, SET_ASIDE_MARK,
-		SWITCHED_ON, VERDICT, WORDS,
+		delete, let_go_audio, receipt, receipts, Deletable, Deleted, Kept, CONVEYOR_HISTORY, DRIVE_COPY, GAME_BITE, IDEA, MAILBOX_COPY, NOTE, RECEIPTS, RECONCILIATION, RECORDING,
+		SET_ASIDE_MARK, SWITCHED_ON, VERDICT, WORDS,
 	};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -509,6 +609,66 @@ mod tests {
 	async fn gone(pool: &SqlitePool, subject: &str, id: &str, on: &[Deletable]) -> Deleted {
 		let mut conn = pool.acquire().await.unwrap();
 		delete(&mut conn, subject, id, on, NOW).await.unwrap()
+	}
+
+	/// IW8: letting go of a note's recording takes its audio alone, with a
+	/// receipt that says so; the note, its words, verdict, meaning and mailbox
+	/// copy stay. A repeat, and the owner's own delete after it, answer from
+	/// that receipt and write nothing; switched off, nothing goes; a note not
+	/// held is not one.
+	#[tokio::test]
+	async fn letting_go_of_a_recording_takes_the_audio_alone() {
+		let pool = pool().await;
+		note(&pool, A, "retake", "interview").await;
+		everything_beside(&pool, A, "retake").await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			let_go_audio(&mut conn, A, "retake", &[Deletable::Unheard], NOW).await.unwrap(),
+			Deleted::Kept(Kept::SwitchedOff)
+		);
+		assert_eq!(let_go_audio(&mut conn, A, "nope", SWITCHED_ON, NOW).await.unwrap(), Deleted::NotHeld);
+		let Deleted::Gone(kept) = let_go_audio(&mut conn, A, "retake", SWITCHED_ON, NOW).await.unwrap() else {
+			panic!("let go");
+		};
+		assert_eq!(kept.went, [RECORDING]);
+		assert_eq!(
+			kept.stayed,
+			[NOTE, WORDS, SET_ASIDE_MARK, MAILBOX_COPY, VERDICT],
+			"words include its meaning, made from them"
+		);
+		assert_eq!((kept.of.as_str(), kept.size, kept.deleted_at.as_str()), ("interview", 120, NOW));
+		drop(conn);
+		assert_eq!(rows(&pool, "voice_note_audio", A, "retake").await, 0, "the recording went");
+		for table in [
+			"voice_note",
+			"voice_transcript",
+			"voice_transcript_word",
+			"voice_transcript_verdict",
+			"voice_note_meaning",
+			"mailbox_transcript",
+		] {
+			assert_eq!(rows(&pool, table, A, "retake").await, 1, "{table} stays");
+		}
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			let_go_audio(&mut conn, A, "retake", SWITCHED_ON, "later").await.unwrap(),
+			Deleted::Gone(kept.clone()),
+			"a repeat is answered from the receipt"
+		);
+		assert_eq!(delete(&mut conn, A, "retake", SWITCHED_ON, "later").await.unwrap(), Deleted::Gone(kept));
+		drop(conn);
+		assert_eq!(rows(&pool, "voice_note_deletion", A, "retake").await, 1, "one receipt");
+		assert_eq!(rows(&pool, "voice_transcript", A, "retake").await, 1, "the owner's delete took nothing more");
+		// A new model would hear every note again, but there is nothing left to hear in this one.
+		let keys = crate::transcript::Keys {
+			plain: "a-new-model",
+			verbatim: "a-new-model+verbatim",
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		assert!(
+			crate::transcript::waiting(&mut conn, keys, 3, 10).await.unwrap().is_empty(),
+			"the transcriber never waits on it"
+		);
 	}
 
 	/// A take home could not hear, deleted from My data, is a `deleted` act

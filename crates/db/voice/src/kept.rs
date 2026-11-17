@@ -6,7 +6,8 @@
 //!
 //! - **Descriptions, and the start of what home heard.** Every read here is
 //!   of `voice_note`, `voice_note_set_aside` and, for [`weeks`], the receipts
-//!   in `voice_note_deletion`. [`newest`] also reads whether an idea's answer
+//!   in `voice_note_deletion` (which every read here also takes as saying a
+//!   held note's recording was let go, IW8). [`newest`] also reads whether an idea's answer
 //!   names a note (`idea_answer`) and the kind of its newest verdict
 //!   (`voice_transcript_verdict`, never its reasons or signals), to say
 //!   whether My data may offer to delete it, and each note's chosen ending in `voice_transcript`, to say how long
@@ -50,7 +51,8 @@ pub struct KindKept {
 	pub of: Of,
 	/// How many home holds.
 	pub notes: i64,
-	/// Their audio's bytes, summed from each note's `size`.
+	/// Their audio's bytes, summed from each note's `size`, but for a note
+	/// whose recording was let go ([`crate::delete::let_go_audio`]).
 	pub bytes: i64,
 	/// How many of them the owner set aside (they are kept too).
 	pub set_aside: i64,
@@ -108,8 +110,13 @@ pub struct NoteKept {
 	/// Whether [`NoteKept::heard`] stops short of what home heard.
 	pub heard_cut: bool,
 	/// Whether `GET /voice-notes/:id/audio` plays it back: its kind is in
-	/// [`crate::PLAYED_BACK`].
+	/// [`crate::PLAYED_BACK`] and its recording is held.
 	pub plays_back: bool,
+	/// When its recording was let go ([`crate::delete::let_go_audio`], a
+	/// week of mock interview's middle take, IW8), as its receipt says; null
+	/// while home holds it. The receipt is in My data's list of what was
+	/// deleted, while the note, its words and its counts stay here.
+	pub recording_let_go_at: Option<String>,
 }
 
 /// One `voice_note` row as [`newest`] reads it, with its chosen ending.
@@ -126,6 +133,8 @@ struct Row {
 	text: Option<String>,
 	/// Its newest verdict's stored kind, [`crate::verdict::newest`]'s choice.
 	verdict: Option<String>,
+	/// When its recording was let go: the receipt home keeps for it.
+	let_go_at: Option<String>,
 }
 
 impl Row {
@@ -140,7 +149,8 @@ impl Row {
 		};
 		let newest = self.verdict.as_deref().map(|stored| Kind::parse(stored).ok_or(VoiceError::Unreadable)).transpose()?;
 		Ok(NoteKept {
-			deletable: allows(on, deletable(of.as_str(), &self.of_ref, self.answers), newest),
+			// A delete of a note with a receipt answers from it ([`crate::delete::delete`]).
+			deletable: self.let_go_at.is_none() && allows(on, deletable(of.as_str(), &self.of_ref, self.answers), newest),
 			id: self.note_id,
 			recorded_at: self.recorded_at,
 			stored_at: self.stored_at,
@@ -149,7 +159,8 @@ impl Row {
 			duration_ms: self.duration_ms,
 			heard,
 			heard_cut,
-			plays_back: PLAYED_BACK.contains(&of),
+			plays_back: self.let_go_at.is_none() && PLAYED_BACK.contains(&of),
+			recording_let_go_at: self.let_go_at,
 		})
 	}
 }
@@ -183,7 +194,9 @@ pub async fn kinds(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Kin
 	let rows = sqlx::query!(
 		r#"SELECT note.of_kind AS "of_kind!: String",
 		          COUNT(*) AS "notes!: i64",
-		          SUM(note.size) AS "bytes!: i64",
+		          SUM(CASE WHEN EXISTS (SELECT 1 FROM voice_note_deletion AS gone
+		                                WHERE gone.subject_id = note.subject_id AND gone.note_id = note.note_id)
+		              THEN 0 ELSE note.size END) AS "bytes!: i64",
 		          COUNT(aside.note_id) AS "set_aside!: i64",
 		          MIN(note.recorded_at) AS "since!: String"
 		   FROM voice_note AS note
@@ -216,7 +229,10 @@ pub async fn kinds(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Kin
 /// A note the owner later deleted still counts in the week it reached home,
 /// and leaves in the week it was deleted, both read from its receipt, so a
 /// delete never rewrites a past week (the owner, paulgsc/some-ui#2477) and
-/// the weeks' running total is what home holds. A week nothing reached home
+/// the weeks' running total is what home holds. A note whose recording alone
+/// was let go ([`crate::delete::let_go_audio`], IW8) is still held: it
+/// counts in the week it reached home, and only its bytes leave, in the week
+/// of its receipt. A week nothing reached home
 /// and nothing left it is not listed.
 ///
 /// # Errors
@@ -226,15 +242,21 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 	// back is that week's Monday.
 	let rows = sqlx::query!(
 		r#"SELECT date(at, 'weekday 0', '-6 days') AS "week!: String",
-		          SUM(arrived) AS "notes!: i64",
-		          SUM(arrived * size) AS "bytes!: i64",
-		          SUM(1 - arrived) AS "left_notes!: i64",
-		          SUM((1 - arrived) * size) AS "left_bytes!: i64"
-		   FROM (SELECT stored_at AS at, size, 1 AS arrived FROM voice_note WHERE subject_id = ?1
+		          SUM(notes_in) AS "notes!: i64",
+		          SUM(bytes_in) AS "bytes!: i64",
+		          SUM(notes_out) AS "left_notes!: i64",
+		          SUM(bytes_out) AS "left_bytes!: i64"
+		   FROM (SELECT stored_at AS at, 1 AS notes_in, size AS bytes_in, 0 AS notes_out, 0 AS bytes_out
+		         FROM voice_note WHERE subject_id = ?1
 		         UNION ALL
-		         SELECT stored_at, size, 1 FROM voice_note_deletion WHERE subject_id = ?1
+		         SELECT gone.stored_at, 1, gone.size, 0, 0 FROM voice_note_deletion AS gone
+		         WHERE gone.subject_id = ?1
+		           AND NOT EXISTS (SELECT 1 FROM voice_note AS note WHERE note.subject_id = gone.subject_id AND note.note_id = gone.note_id)
 		         UNION ALL
-		         SELECT deleted_at, size, 0 FROM voice_note_deletion WHERE subject_id = ?1)
+		         SELECT gone.deleted_at, 0, 0,
+		                NOT EXISTS (SELECT 1 FROM voice_note AS note WHERE note.subject_id = gone.subject_id AND note.note_id = gone.note_id),
+		                gone.size
+		         FROM voice_note_deletion AS gone WHERE gone.subject_id = ?1)
 		   GROUP BY 1
 		   ORDER BY 1"#,
 		subject
@@ -284,7 +306,9 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 		           WHERE v.subject_id = note.subject_id AND v.note_id = note.note_id
 		             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed'))
 		           ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
-		           LIMIT 1) AS "verdict?: String"
+		           LIMIT 1) AS "verdict?: String",
+		          (SELECT gone.deleted_at FROM voice_note_deletion AS gone WHERE gone.subject_id = note.subject_id AND gone.note_id = note.note_id)
+		            AS "let_go_at?: String"
 		   FROM voice_note AS note
 		   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
 		   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
@@ -316,7 +340,9 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 			           WHERE v.subject_id = note.subject_id AND v.note_id = note.note_id
 			             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed'))
 			           ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
-			           LIMIT 1) AS "verdict?: String"
+			           LIMIT 1) AS "verdict?: String",
+			          (SELECT gone.deleted_at FROM voice_note_deletion AS gone WHERE gone.subject_id = note.subject_id AND gone.note_id = note.note_id)
+			            AS "let_go_at?: String"
 			   FROM voice_note AS note
 			   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
 			   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
@@ -344,7 +370,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 mod tests {
 	use super::{first_words, kinds, newest, weeks, KindKept, WeekKept, HEARD_CHARS, NEWEST};
 	use crate::{
-		delete::{delete, Deletable, Deleted, SWITCHED_ON},
+		delete::{delete, let_go_audio, Deletable, Deleted, SWITCHED_ON},
 		set_aside::set_aside,
 		transcript::{heard, Hearing},
 		Of,
@@ -755,5 +781,36 @@ mod tests {
 		} else {
 			digits
 		}
+	}
+
+	/// IW8: a note whose recording was let go is still a note of its kind,
+	/// listed with its words, but its bytes leave the kind's room and leave
+	/// the week by its receipt, it plays back no more, and My data offers no
+	/// delete of it.
+	#[tokio::test]
+	async fn a_note_whose_recording_was_let_go_holds_no_room() {
+		let pool = pool().await;
+		note(&pool, A, "kept", "interview", "2026-11-17T10:00:00.000Z", 100, "2026-11-17T10:00:00.000Z").await;
+		note(&pool, A, "retake", "interview", "2026-11-17T11:00:00.000Z", 40, "2026-11-17T11:00:00.000Z").await;
+		let mut conn = pool.acquire().await.unwrap();
+		assert!(matches!(
+			let_go_audio(&mut conn, A, "retake", SWITCHED_ON, "2026-11-24T10:00:00.000Z").await.unwrap(),
+			Deleted::Gone(_)
+		));
+		let kinds = kinds(&mut conn, A).await.unwrap();
+		assert_eq!((kinds[0].notes, kinds[0].bytes), (2, 100));
+		let weeks = weeks(&mut conn, A).await.unwrap();
+		let held: i64 = weeks.iter().map(|week| week.bytes - week.left_bytes).sum();
+		let notes: i64 = weeks.iter().map(|week| week.notes - week.left_notes).sum();
+		assert_eq!((weeks[0].notes, weeks[0].bytes, held), (2, 140, 100), "arrived in its week, its bytes left in the next");
+		assert_eq!(notes, kinds[0].notes, "still a note home holds: the running total agrees with the kind's");
+		let listed = newest(&mut conn, A, Of::Interview, SWITCHED_ON, None).await.unwrap();
+		let retake = listed.iter().find(|kept| kept.id == "retake").unwrap();
+		assert_eq!(
+			(retake.recording_let_go_at.as_deref(), retake.plays_back, retake.deletable),
+			(Some("2026-11-24T10:00:00.000Z"), false, false)
+		);
+		let kept = listed.iter().find(|kept| kept.id == "kept").unwrap();
+		assert_eq!((kept.recording_let_go_at.as_deref(), kept.plays_back), (None, true));
 	}
 }

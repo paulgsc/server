@@ -167,6 +167,11 @@ pub struct Waiting {
 /// scouts file naming it is what puts it in front of the routine, and a mark
 /// does not unname it (`mailbox_repo::unfiled_transcripts` files it too).
 ///
+/// Nor is a note whose recording was let go
+/// ([`crate::delete::let_go_audio`]): there is nothing left to hear, and a
+/// note that stayed listed would take a place in every batch for good, say
+/// after a new model makes every note wait again.
+///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64, limit: i64) -> Result<Vec<Waiting>, VoiceError> {
@@ -183,6 +188,7 @@ pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64,
 		          AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) < ?2
 		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
 		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
+		   AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id)
 		 ORDER BY n.stored_at, n.subject_id, n.note_id
 		 LIMIT ?3"#,
 		keys.plain,

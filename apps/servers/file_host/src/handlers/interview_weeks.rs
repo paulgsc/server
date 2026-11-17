@@ -51,6 +51,7 @@ use serde_json::value::RawValue;
 use sqlx::{Connection, SqliteConnection, SqlitePool};
 use std::cmp::Ordering;
 use tracing::instrument;
+use voice_repo::{delete::SWITCHED_ON, VoiceError};
 
 /// `GET /interview-weeks/:id`
 #[derive(Debug, Serialize)]
@@ -177,11 +178,40 @@ pub(crate) fn is_closed(week: &Week, now: &str) -> bool {
 }
 
 /// Make `week` final for `subject` when home's clock is past its deadline,
-/// in the caller's transaction.
+/// in the caller's transaction, and as it becomes final let go of its middle
+/// takes' recordings ([`finalize_at`]).
+///
+/// The handlers and the mailbox's interview index call it; the essay pass
+/// (`rust_essays`) calls [`finalize_at`] with the deadline it read.
 pub(crate) async fn finalize(conn: &mut SqliteConnection, subject: &str, week: &Week, now: &str) -> Result<(), sqlx::Error> {
-	if let Some(window) = &week.window {
-		draft::finalize(conn, Kind::Interview, subject, &week.id, &window.due, now).await?;
+	match &week.window {
+		Some(window) => finalize_at(conn, subject, &week.id, &window.due, now).await,
+		None => Ok(()),
 	}
+}
+
+/// Make the interview week `week`, due at `due`, final for `subject` when
+/// home's clock is past its deadline, in the caller's transaction, and as it
+/// becomes final let go of its middle takes' recordings
+/// (`voice_repo::interview::let_go_retakes`, IW8: each question keeps its
+/// earliest, its newest and the take the final names).
+///
+/// Every place an interview week is made final goes through here, so the
+/// let-go runs with it, once: only the call that writes the final lets go.
+pub(crate) async fn finalize_at(conn: &mut SqliteConnection, subject: &str, week: &str, due: &str, now: &str) -> Result<(), sqlx::Error> {
+	if !draft::finalize(&mut *conn, Kind::Interview, subject, week, due, now).await? {
+		return Ok(());
+	}
+	let Some(held) = draft::standing::<Sent>(&mut *conn, subject, week).await? else {
+		return Ok(());
+	};
+	let sent: Vec<(&str, &str)> = held.sent.answers.iter().map(|answer| (answer.question.as_str(), answer.take.as_str())).collect();
+	voice_repo::interview::let_go_retakes(&mut *conn, subject, week, &sent, SWITCHED_ON, now)
+		.await
+		.map_err(|err| match err {
+			VoiceError::Storage(err) => err,
+			other @ (VoiceError::Rewritten | VoiceError::Unreadable) => sqlx::Error::Protocol(other.to_string()),
+		})?;
 	Ok(())
 }
 
@@ -739,5 +769,67 @@ mod tests {
 		assert_eq!(status, StatusCode::CREATED);
 		let (_, _, record) = call(&app, Method::GET, "/interview-weeks/2026-w47/record", Some(&phone), None, b"").await;
 		assert_eq!((&record["questions"][0]["take"], &record["questions"][0]["first"]), (&json!("n1"), &first));
+	}
+
+	/// IW8: the week becoming final lets go of each question's middle takes'
+	/// recordings, keeping its earliest, its newest and the one the final
+	/// names, each let go with a receipt, the note and its words staying; a
+	/// week still open lets go of nothing.
+	#[tokio::test]
+	async fn the_week_becoming_final_lets_go_of_its_middle_takes_recordings() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		hold_week(&state.pool, A, 1, "2026-w46", (&days(-9), &days(-2))).await;
+		let week = rust_round_repo::interview::read(
+			&mailbox_repo::rust_week(&mut state.pool.acquire().await.unwrap(), A, "interview-week-2026-w46.json")
+				.await
+				.unwrap()
+				.unwrap()
+				.body,
+		)
+		.unwrap();
+		for (id, back) in [("t1", -8), ("t2", -7), ("t3", -6), ("t4", -5)] {
+			for statement in [
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'interview', '2026-w46:about-you', ?3, 'audio/webm', 1, 's', 'now')",
+				"INSERT INTO voice_note_audio (subject_id, note_id, body) SELECT ?1, ?2, x'00' WHERE ?3 IS NOT NULL",
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+				 SELECT ?1, ?2, 'm', 'e', 1, 'heard', 'en', 0.9, 1, 'w', 1, ?3",
+				// Judged heard: only such a take is let go.
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+				 SELECT ?1, ?2, 'm', 1, 'r', 'heard', '', 1, ?3",
+			] {
+				sqlx::query(statement).bind(A).bind(id).bind(days(back)).execute(&state.pool).await.unwrap();
+			}
+		}
+		// Sent while the week was open, naming t2.
+		let at = days(-3);
+		let mut body: Value = serde_json::from_slice(&sent("2026-w46", &at, &days(-7))).unwrap();
+		body["answers"][0]["take"] = json!("t2");
+		let held = rust_round_repo::interview::read_sent(body.to_string().as_bytes(), &week, &at).unwrap();
+		rust_round_repo::draft::put_draft(&mut state.pool.acquire().await.unwrap(), A, &held, &at).await.unwrap();
+		let pool = state.pool.clone();
+		let audio = |id: &'static str| {
+			let pool = pool.clone();
+			async move {
+				sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM voice_note_audio WHERE note_id = ?1")
+					.bind(id)
+					.fetch_one(&pool)
+					.await
+					.unwrap()
+			}
+		};
+		let app = module().into_table_router().with_state(state);
+		let (status, _, record) = call(&app, Method::GET, "/interview-weeks/2026-w46/record", Some(&phone), None, b"").await;
+		assert_eq!((status, &record["closed"]), (StatusCode::OK, &json!(true)));
+		assert_eq!(record["questions"][0]["first"]["take"], json!("t1"), "the earliest is still the first");
+		assert_eq!((audio("t1").await, audio("t2").await, audio("t3").await, audio("t4").await), (1, 1, 0, 1));
+		let receipt: (String, String) = sqlx::query_as("SELECT note_id, went FROM voice_note_deletion").fetch_one(&pool).await.unwrap();
+		assert_eq!(receipt, (String::from("t3"), String::from(r#"["recording"]"#)));
+		let words: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_transcript WHERE note_id = 't3'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(words, 1, "its words stay");
 	}
 }
