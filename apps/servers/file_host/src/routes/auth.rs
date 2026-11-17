@@ -40,6 +40,10 @@ where
 		// sent as `Authorization: Bearer` (`auth::pairing`).
 		.post("/auth/pairing/start", handlers::start_pairing)
 		.post("/auth/pairing/finish", handlers::finish_pairing)
+		// Signed in: the account's paired phones, naming one, and signing one out.
+		.get("/auth/phones", handlers::phones)
+		.patch("/auth/phones/:id", handlers::rename_phone)
+		.delete("/auth/phones/:id", handlers::sign_out_phone)
 		// Is this browser (or paired phone) signed in? Also where a session slides.
 		.get("/auth/session", handlers::session)
 		.post("/auth/sign-out", handlers::sign_out)
@@ -51,5 +55,5 @@ where
 }
 
 fn cors(config: &Config) -> CorsLayer {
-	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::POST, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE])
+	allowlisted_cors_with_credentials(config, vec![Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS], vec![CONTENT_TYPE])
 }

@@ -42,6 +42,15 @@ pub const PAIRING_TTL_SECONDS: i64 = 600;
 /// How many codes may be open at once, across every subject.
 pub const MAX_OPEN_PAIRINGS: usize = 10_000;
 
+/// A paired phone's id, as its owner sees it in the list of phones: 16
+/// random bytes, never derived from the phone's token or its hash, so it
+/// opens nothing and says nothing about the token.
+pub(crate) fn new_pairing_id() -> [u8; 16] {
+	let mut id = [0_u8; 16];
+	rand::RngCore::fill_bytes(&mut rand::rng(), &mut id);
+	id
+}
+
 /// Crockford base32: no I, L, O or U, so nothing typed reads two ways.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
