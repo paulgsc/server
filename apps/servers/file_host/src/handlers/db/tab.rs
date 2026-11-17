@@ -93,26 +93,26 @@ impl From<TabError> for FileHostError {
 // A failure of the tab store's database: a pool with no connection free in
 // time is home being busy, answered `503 service_overloaded` with
 // `Retry-After` (AD4, `crate::admission`), anything else a `500` (#946).
-fn db(err: sqlx::Error) -> FileHostError {
-	FileHostError::operation(&err, Some(&err))
+fn db(err: &sqlx::Error) -> FileHostError {
+	FileHostError::operation(err, Some(err))
 }
 
 // Each write handler's database step, its error as the handler answers it.
 
 async fn delete_row(repo: &TabRepository, tab_id: String) -> Result<bool, FileHostError> {
-	repo.delete_by_tab_id(tab_id).await.map_err(db)
+	repo.delete_by_tab_id(tab_id).await.map_err(|e| db(&e))
 }
 
 async fn delete_rows(repo: &TabRepository, urls_hash: Vec<String>) -> Result<u64, FileHostError> {
-	repo.batch_delete(urls_hash).await.map_err(db)
+	repo.batch_delete(urls_hash).await.map_err(|e| db(&e))
 }
 
 async fn prune_rows(repo: &TabRepository, older_than_days: i64) -> Result<u64, FileHostError> {
-	repo.prune_stale(older_than_days).await.map_err(db)
+	repo.prune_stale(older_than_days).await.map_err(|e| db(&e))
 }
 
 async fn absent_rows(repo: &TabRepository, active_tab_ids: &[i64]) -> Result<Vec<i64>, FileHostError> {
-	repo.find_absent(active_tab_ids).await.map_err(db)
+	repo.find_absent(active_tab_ids).await.map_err(|e| db(&e))
 }
 
 // ── Cache key helpers ─────────────────────────────────────────────────────────
@@ -475,7 +475,7 @@ mod tests {
 
 	/// #946 (AD4): the step's error as the client hears it is busy, with
 	/// `Retry-After`, never a `500`.
-	fn answered_busy(response: Response, step: &str) {
+	fn answered_busy(response: &Response, step: &str) {
 		assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{step}: a pool timeout is busy");
 		assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "5", "{step}: busy says when to come back");
 	}
@@ -483,25 +483,25 @@ mod tests {
 	#[tokio::test]
 	async fn delete_tab_answers_a_pool_timeout_busy() {
 		let (repo, _held) = exhausted().await;
-		answered_busy(delete_row(&repo, "a".into()).await.unwrap_err().into_response(), "delete_tab");
+		answered_busy(&delete_row(&repo, "a".into()).await.unwrap_err().into_response(), "delete_tab");
 	}
 
 	#[tokio::test]
 	async fn batch_delete_tabs_answers_a_pool_timeout_busy() {
 		let (repo, _held) = exhausted().await;
-		answered_busy(delete_rows(&repo, vec!["a".into()]).await.unwrap_err().into_response(), "batch_delete_tabs");
+		answered_busy(&delete_rows(&repo, vec!["a".into()]).await.unwrap_err().into_response(), "batch_delete_tabs");
 	}
 
 	#[tokio::test]
 	async fn prune_tabs_answers_a_pool_timeout_busy() {
 		let (repo, _held) = exhausted().await;
-		answered_busy(prune_rows(&repo, 30).await.unwrap_err().into_response(), "prune_tabs");
+		answered_busy(&prune_rows(&repo, 30).await.unwrap_err().into_response(), "prune_tabs");
 	}
 
 	#[tokio::test]
 	async fn reconcile_tabs_answers_a_pool_timeout_busy() {
 		let (repo, _held) = exhausted().await;
-		answered_busy(absent_rows(&repo, &[1]).await.unwrap_err().into_response(), "reconcile_tabs");
+		answered_busy(&absent_rows(&repo, &[1]).await.unwrap_err().into_response(), "reconcile_tabs");
 	}
 
 	/// Any other database failure stays a `500`: only a pool timeout is busy.
