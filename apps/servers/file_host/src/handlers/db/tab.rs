@@ -90,6 +90,31 @@ impl From<TabError> for FileHostError {
 	}
 }
 
+// A failure of the tab store's database: a pool with no connection free in
+// time is home being busy, answered `503 service_overloaded` with
+// `Retry-After` (AD4, `crate::admission`), anything else a `500` (#946).
+fn db(err: &sqlx::Error) -> FileHostError {
+	FileHostError::operation(err, Some(err))
+}
+
+// Each write handler's database step, its error as the handler answers it.
+
+async fn delete_row(repo: &TabRepository, tab_id: String) -> Result<bool, FileHostError> {
+	repo.delete_by_tab_id(tab_id).await.map_err(|e| db(&e))
+}
+
+async fn delete_rows(repo: &TabRepository, urls_hash: Vec<String>) -> Result<u64, FileHostError> {
+	repo.batch_delete(urls_hash).await.map_err(|e| db(&e))
+}
+
+async fn prune_rows(repo: &TabRepository, older_than_days: i64) -> Result<u64, FileHostError> {
+	repo.prune_stale(older_than_days).await.map_err(|e| db(&e))
+}
+
+async fn absent_rows(repo: &TabRepository, active_tab_ids: &[i64]) -> Result<Vec<i64>, FileHostError> {
+	repo.find_absent(active_tab_ids).await.map_err(|e| db(&e))
+}
+
 // ── Cache key helpers ─────────────────────────────────────────────────────────
 
 fn all_key() -> &'static str {
@@ -205,9 +230,8 @@ pub async fn delete_tab(State(state): State<AppState>, Path(tab_id): Path<String
 
 	let deleted = {
 		let _db = OperationTimer::new("delete_tab", "database_delete");
-		repo.delete_by_tab_id(tab_id.clone()).await
-	}
-	.map_err(|e| FileHostError::OperationError(e.to_string()))?;
+		delete_row(&repo, tab_id.clone()).await
+	}?;
 
 	if deleted {
 		{
@@ -286,9 +310,8 @@ pub async fn batch_delete_tabs(State(state): State<AppState>, Json(request): Jso
 
 	let deleted_count = {
 		let _db = OperationTimer::new("batch_delete_tabs", "database_batch_delete");
-		repo.batch_delete(request.urls_hash.clone()).await
-	}
-	.map_err(|e| FileHostError::OperationError(e.to_string()))?;
+		delete_rows(&repo, request.urls_hash.clone()).await
+	}?;
 
 	{
 		let _ct = OperationTimer::new("batch_delete_tabs", "cache_invalidation");
@@ -322,9 +345,8 @@ pub async fn prune_tabs(State(state): State<AppState>, Json(request): Json<Prune
 
 	let pruned_count = {
 		let _db = OperationTimer::new("prune_tabs", "database_delete");
-		repo.prune_stale(older_than_days).await
-	}
-	.map_err(|e| FileHostError::OperationError(e.to_string()))?;
+		prune_rows(&repo, older_than_days).await
+	}?;
 
 	if pruned_count > 0 {
 		// Stale cache can't know which tab keys to drop; nuke list caches.
@@ -346,7 +368,7 @@ pub async fn reconcile_tabs(State(state): State<AppState>, Json(request): Json<R
 
 	let repo = Arc::new(TabRepository::new(state.core.shared_db));
 
-	let absent_tab_ids = repo.find_absent(&request.active_tab_ids).await.map_err(|e| FileHostError::OperationError(e.to_string()))?;
+	let absent_tab_ids = absent_rows(&repo, &request.active_tab_ids).await?;
 
 	Ok(Json(ReconcileResponse { absent_tab_ids }))
 }
@@ -426,4 +448,72 @@ pub async fn trigger_pipeline(State(state): State<AppState>) -> Result<Json<Pipe
 	})?;
 
 	Ok(Json(PipelineResponse { session_id }))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use axum::{
+		http::header::RETRY_AFTER,
+		response::{IntoResponse, Response},
+	};
+	use sqlx::sqlite::SqlitePoolOptions;
+	use std::time::Duration;
+
+	/// A repository whose pool has its one connection held, so each step
+	/// times out waiting for one, as under load; and the connection. The
+	/// timeout also bounds opening that connection, so it leaves a loaded
+	/// runner room: the step times out however long it is, since the one
+	/// connection is held throughout.
+	async fn exhausted() -> (TabRepository, sqlx::pool::PoolConnection<sqlx::Sqlite>) {
+		let pool = SqlitePoolOptions::new()
+			.max_connections(1)
+			.acquire_timeout(Duration::from_millis(500))
+			.connect("sqlite::memory:")
+			.await
+			.unwrap();
+		let held = pool.acquire().await.unwrap();
+		(TabRepository::new(pool), held)
+	}
+
+	/// #946 (AD4): the step's error as the client hears it is busy, with
+	/// `Retry-After`, never a `500`.
+	fn answered_busy(response: &Response, step: &str) {
+		assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{step}: a pool timeout is busy");
+		assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "5", "{step}: busy says when to come back");
+	}
+
+	#[tokio::test]
+	async fn delete_tab_answers_a_pool_timeout_busy() {
+		let (repo, _held) = exhausted().await;
+		answered_busy(&delete_row(&repo, "a".into()).await.unwrap_err().into_response(), "delete_tab");
+	}
+
+	#[tokio::test]
+	async fn batch_delete_tabs_answers_a_pool_timeout_busy() {
+		let (repo, _held) = exhausted().await;
+		answered_busy(&delete_rows(&repo, vec!["a".into()]).await.unwrap_err().into_response(), "batch_delete_tabs");
+	}
+
+	#[tokio::test]
+	async fn prune_tabs_answers_a_pool_timeout_busy() {
+		let (repo, _held) = exhausted().await;
+		answered_busy(&prune_rows(&repo, 30).await.unwrap_err().into_response(), "prune_tabs");
+	}
+
+	#[tokio::test]
+	async fn reconcile_tabs_answers_a_pool_timeout_busy() {
+		let (repo, _held) = exhausted().await;
+		answered_busy(&absent_rows(&repo, &[1]).await.unwrap_err().into_response(), "reconcile_tabs");
+	}
+
+	/// Any other database failure stays a `500`: only a pool timeout is busy.
+	#[tokio::test]
+	async fn another_database_failure_is_still_a_500() {
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		let repo = TabRepository::new(pool);
+		let response = delete_row(&repo, "a".into()).await.unwrap_err().into_response();
+		assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "no tabs table: a fault, not busy");
+		assert!(response.headers().get(RETRY_AFTER).is_none());
+	}
 }
