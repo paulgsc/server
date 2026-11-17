@@ -177,18 +177,25 @@ EVERY=60
 RETRY_AFTER=3600
 # A refusal by the policy (#928): the recorder's own words for a video
 # past its length or size (paulgsc/some-ui packages/video-render/src/policy.ts,
-# `overLength`, `overSize`). The same input against the same cap in the same
-# image is refused the same way, so such a failure is not tried again on
+# `overLength`, `overSize`). The same input, recorded with the same flags by
+# the same recorders and the same speaker over the same brand files, is
+# refused the same way, so such a failure is not tried again on
 # RETRY_AFTER's clock: <status>/<key>.refused keeps what it was refused for
 # (`held_by`), and it is tried again once that changes. Every other failure
 # keeps RETRY_AFTER.
 # The recorder says minutes to one decimal (`toFixed(1)`) and MB whole
-# (`toFixed(0)`); file_host's board reads exactly those (`feeds::renders::Over`).
+# (`toFixed(0)`); .refused keeps exactly those, for file_host's board (#929).
 REFUSED_LONG="the video would run ([0-9]+(\.[0-9])?) min, past the policy's ([0-9]+(\.[0-9])?) min"
 REFUSED_LARGE="the video is ([0-9]+) MB, past the policy's ([0-9]+) MB"
 # The image the recorders are (deploy/home/release.json's render pin, which
 # call-render.yml hands in): a new image may say another length or size.
 RENDER_IMAGE=${RENDER_IMAGE:-}
+# The speaker's image (its pin, likewise): a take's length, so a video's, is
+# the speaker's.
+KOKORO_IMAGE=${KOKORO_IMAGE:-}
+# home's brand files, the music bed a series names (COMMON's --brand): a
+# video's sound, so its size.
+BRAND_DIR=/brand
 # How often the worker reads the lane's decision while a job waits or runs.
 # The lane decides every 5 s (`call_weeks::lane::TICK`).
 LANE_POLL=2
@@ -1029,6 +1036,7 @@ render_episode() {
         return 2 ;;
     esac
     rev=$(revision "$job" "$key")
+    HELD=$(held_by "$job" "$key")
     attempt "$job" "$key" "$log"
     # An essay corrected while it rendered (file_host gave a newer
     # revision, C72): what was made is of the old one, so it is never kept.
@@ -1165,21 +1173,27 @@ inputs_of() {
   case $1 in
     call)
       from=$(week_of "$2")
-      printf '%s\n' "$INPUT/$from.json" "$INPUT/$from.next" "$INPUT/$2.let-go" "$RENDERS/.taken/$from.json" ;;
+      printf '%s\n' "$INPUT/$from.json" "$INPUT/$2.let-go" "$RENDERS/.taken/$from.json"
+      # A newer revision is taken in only while no part is made (`promote`):
+      # one given for a frozen week changes nothing it is made from.
+      week_made "$from" || echo "$INPUT/$from.next" ;;
     playoff-delta | rust-essay | interview-essay | clip-walk) echo "$INPUT/$2" ;;
     preview | cards-essay) echo "$INPUT/$2.json" ;;
   esac
 }
 
-# What a refusal of `job`'s `key` holds for, as one sum: the job's caps, the
-# image, and each of its inputs' name, size and time. Never their bytes: a
-# held essay's takes are not read every pass. file_host writes an input whole
-# and new (a revision is a new file), so a changed one has a new time.
+# What a refusal of `job`'s `key` holds for, as one sum: every flag its
+# recorder is handed (COMMON, the job's caps among them), the recorders' and
+# the speaker's images, and each of its inputs' and the brand files' name,
+# size and time. Never their bytes: a held essay's takes are not read every
+# pass. file_host writes an input whole and new (a revision is a new file),
+# so a changed one has a new time. Called after `use_job`.
 held_by() {
   local path
   {
-    printf 'minutes=%s\nmb=%s\nimage=%s\n' "$(max_minutes "$1")" "$MAX_VIDEO_MB" "$RENDER_IMAGE"
-    inputs_of "$1" "$2" | while IFS= read -r path; do
+    printf '%s\n' "${COMMON[@]}"
+    printf 'image=%s\nspeaker=%s\n' "$RENDER_IMAGE" "$KOKORO_IMAGE"
+    { inputs_of "$1" "$2"; echo "$BRAND_DIR"; } | while IFS= read -r path; do
       [ -e "$path" ] && find "$path" -printf '%p %s %T@\n'
     done | LC_ALL=C sort
   } | sha256sum | cut -d' ' -f1
@@ -1220,7 +1234,7 @@ failed_recently() {
 
 # `key` of `job`, unless it has its video or failed lately.
 render_one() {
-  local job=$1 key=$2 outcome held
+  local job=$1 key=$2 outcome
   [ -e "$RENDERS/$key/$VIDEO" ] && return 0
   # Let go (a part of a call's week marked so) or no longer given: no job is
   # named for it, so the lane never sees one it will not admit.
@@ -1240,12 +1254,18 @@ render_one() {
     end_job
     return 0
   fi
-  failed_recently "$job" "$key" && return 0
+  if failed_recently "$job" "$key"; then
+    # A job a restart left of it is over: a refusal held again (the image it
+    # was released for rolled back, say) never runs it.
+    if left_job && [ "$LEFT_KIND" = "$job" ] && [ "$LEFT_KEY" = "$key" ]; then end_job; fi
+    return 0
+  fi
   echo "rendering the $job of $key"
   mkdir -p "$WORK" && prune_work "$job" "$key"
-  # What a refusal would hold for, before the attempt: an input that changes
-  # while it runs is then a change, and the refusal is not held.
-  held=$(held_by "$job" "$key")
+  # What a refusal holds for is taken before each attempt (`render_episode`),
+  # after its wait for room: an input that changes while one runs is then a
+  # change, and the refusal is not held. None before any attempt.
+  HELD=
   render_episode "$job" "$key"
   outcome=$?
   keep_cache_warnings "$key"
@@ -1265,7 +1285,7 @@ render_one() {
       touch "$STATUS/$key.failed.log"
       # A refusal by the policy is kept as its reason, a preview's too: the
       # phone says why (#929).
-      if refusal "$STATUS/$key.failed.log" "$held" > "$STATUS/.$key.refused"; then
+      if [ -n "$HELD" ] && refusal "$STATUS/$key.failed.log" "$HELD" > "$STATUS/.$key.refused"; then
         mv -f "$STATUS/.$key.refused" "$STATUS/$key.refused"
       else
         rm -f "${STATUS:?}/.$key.refused"

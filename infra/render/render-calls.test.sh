@@ -1197,7 +1197,7 @@ check "and the same essay is made at 30, with no new one" test -e "$ROOT/renders
 # RF1: a refusal by the policy is not tried again until what it was refused for
 # changes (#928): its input, its cap or the image. Week 46's essay, whose
 # words run 24.4 minutes, refused at 15: held on every pass, RETRY_AFTER or
-# not, with its reason kept where file_host reads it; tried again once the
+# not, with its reason kept for file_host to read (#929); tried again once the
 # image changes, and rendered once the cap is 30, with no new essay.
 fresh refused
 RETRY_AFTER=0
@@ -1224,10 +1224,23 @@ run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a new image is tried once" test "$(essay_runs)" -eq 2
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "and, refused again, held again" test "$(essay_runs)" -eq 2
+KOKORO_IMAGE=pgathondu/kokoro@sha256:next
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a new speaker is tried once too: a take's length is its" test "$(essay_runs)" -eq 3
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and held again" test "$(essay_runs)" -eq 3
+# A job a restart left of a refusal held again (the image it was released
+# for rolled back) never runs, and is over.
+mkdir -p "$ROOT/renders/call-worker"
+echo 81 > "$ROOT/renders/call-worker/job"
+printf 'id=81\nkind=rust-essay\nkey=2026-w46\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0' > "$ROOT/renders/call-worker/job.state"
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "a job a restart left of a held refusal is over, not run" \
+  test "$(essay_runs)" -eq 3 -a ! -e "$ROOT/renders/call-worker/job" -a ! -e "$ROOT/renders/call-worker/job.state"
 ESSAY_MAX_VIDEO_MINUTES=30
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "once the cap is 30 the same essay renders, with no new one" \
-  test "$(essay_runs)" -eq 3 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
+  test "$(essay_runs)" -eq 4 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
 check "and its failed.log and its refusal are gone" \
   test ! -e "$ROOT/renders/rust-essay-worker/2026-w46.failed.log" -a ! -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
 # A new revision of a held essay is tried at once.
@@ -1237,14 +1250,14 @@ echo 1 > "$ROOT/essays/2026-w47/revision"
 echo 400 > "$FAKE/minutes-2026-w47"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
-check "an essay of 40 minutes is held at 30" test "$(essay_runs)" -eq 4
+check "an essay of 40 minutes is held at 30" test "$(essay_runs)" -eq 5
 echo 290 > "$FAKE/minutes-2026-w47"
 sleep 0.01
 echo '{"r":2}' > "$ROOT/essays/2026-w47/.essay.json" && mv "$ROOT/essays/2026-w47/.essay.json" "$ROOT/essays/2026-w47/essay.json"
 echo 2 > "$ROOT/essays/2026-w47/revision"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "and its newer revision is tried at once, and renders" \
-  test "$(essay_runs)" -eq 5 -a -e "$ROOT/renders/rust-essay/2026-w47/essay.mp4"
+  test "$(essay_runs)" -eq 6 -a -e "$ROOT/renders/rust-essay/2026-w47/essay.mp4"
 # Any other failure keeps RETRY_AFTER, and keeps no refusal.
 RETRY_AFTER=3600
 mkdir -p "$ROOT/essays/2026-w48/takes"
@@ -1259,6 +1272,7 @@ check "and is not tried again within RETRY_AFTER" test ! -e "$ROOT/renders/rust-
 RETRY_AFTER=0
 ESSAY_MAX_VIDEO_MINUTES=30
 RENDER_IMAGE=
+KOKORO_IMAGE=
 
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
 # made and removes it, and the worker takes that as any failed attempt. A

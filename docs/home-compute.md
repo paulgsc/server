@@ -46,10 +46,11 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    missing or stale decision" cases.
 7. **Nothing does work it does not need: a failure that would come out the
    same is not tried again.** A video the render policy refused (too long,
-   too large: the recorder's own refusal, for the same input, cap and
-   image, is the same refusal) is held in `<status>/<key>.refused` with what
-   it was refused for, and tried again only once its input, its job's cap
-   or the render image changes, never on the hourly clock. Every other
+   too large: the recorder's own refusal, for the same input recorded with
+   the same flags by the same recorders and speaker over the same brand
+   files, is the same refusal) is held in `<status>/<key>.refused` with what
+   it was refused for, and tried again only once one of those changes, never
+   on the hourly clock. Every other
    failure may clear on its own and is tried again an hour after it.
    Held by `render-calls.test.sh`'s refusal cases (RF1, #928).
 
@@ -272,9 +273,11 @@ way; CI runs it on every PR.
   what it was refused for changes** (invariant 7). A refusal keeps
   `<key>.refused` beside its `failed.log`: its reason (`too-long` with the
   minutes and the cap, or `too-large` with the MB and the cap; the
-  recorder's numbers, never its words) and `held`, one sum of the job's
-  caps, the image (`RENDER_IMAGE`, the release's pin) and each input's
-  name, size and time. A pass whose sum differs tries it at once; so a cap
+  recorder's numbers, never its words) and `held`, one sum, taken before
+  each attempt, of every flag the recorder is handed (the job's caps among
+  them), the render and speaker images (`RENDER_IMAGE`, `KOKORO_IMAGE`, the
+  release's pins), and each input's and brand file's name, size and time. A
+  pass whose sum differs tries it at once; so a cap
   raised and deployed renders the refused episode on its next pass, with no
   new input.
 - **Each job's length cap is its own** (`max_minutes`): a Rust Rounds

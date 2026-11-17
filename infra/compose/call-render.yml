@@ -113,6 +113,8 @@ services:
     # (render-calls.sh, `held_by`).
     environment:
       RENDER_IMAGE: ${IMAGE_RENDER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
+      # The speaker's pin, for the same reason: a take's length is its.
+      KOKORO_IMAGE: ${IMAGE_KOKORO:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").
     oom_score_adj: 800
