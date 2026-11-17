@@ -168,6 +168,21 @@ pub fn deletable(of_kind: &str, of_ref: &str, answers: bool) -> Option<Deletable
 	})
 }
 
+/// Whether a note may be deleted while `on` is switched on.
+///
+/// The one rule `DELETE /voice-notes/:id` ([`delete`]) applies and My data's
+/// `deletable` flag ([`crate::kept::newest`]) shows, so the two never
+/// disagree (paulgsc/server#919).
+///
+/// `by_kind` is the note's kind as [`deletable`] sees it, and `newest` the
+/// kind of its newest verdict ([`crate::verdict::newest`]), if it has one. A
+/// note may go when its kind is switched on, or when [`Deletable::Unheard`] is
+/// and its newest verdict asks the owner to act ([`crate::attention::asks`]).
+#[must_use]
+pub fn allows(on: &[Deletable], by_kind: Option<Deletable>, newest: Option<crate::verdict::Kind>) -> bool {
+	by_kind.is_some_and(|kind| on.contains(&kind)) || (on.contains(&Deletable::Unheard) && newest.is_some_and(crate::attention::asks))
+}
+
 /// The receipt home keeps for `subject`'s note `note_id`, if it deleted it.
 ///
 /// # Errors
@@ -368,15 +383,15 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 	.fetch_one(&mut *conn)
 	.await?;
 	let by_kind = deletable(&note.of_kind, &note.of_ref, answers);
-	if !by_kind.is_some_and(|kind| on.contains(&kind)) {
-		// Any kind home could not hear may go (the owner, paulgsc/some-ui#3076).
-		let unheard = on.contains(&Deletable::Unheard)
-			&& crate::verdict::newest(conn, subject, note_id)
-				.await?
-				.is_some_and(|newest| crate::attention::asks(newest.verdict.kind));
-		if !unheard {
-			return Ok(Deleted::Kept(if by_kind.is_some() { Kept::SwitchedOff } else { Kept::ForGood }));
-		}
+	// Any kind home could not hear may go (the owner, paulgsc/some-ui#3076):
+	// its newest verdict is read only when its kind alone does not decide.
+	let newest = if by_kind.is_some_and(|kind| on.contains(&kind)) || !on.contains(&Deletable::Unheard) {
+		None
+	} else {
+		crate::verdict::newest(conn, subject, note_id).await?.map(|newest| newest.verdict.kind)
+	};
+	if !allows(on, by_kind, newest) {
+		return Ok(Deleted::Kept(if by_kind.is_some() { Kept::SwitchedOff } else { Kept::ForGood }));
 	}
 
 	// The owner's delete answers a verdict that asked them to act (HEARD3),

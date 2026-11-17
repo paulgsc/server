@@ -7,8 +7,9 @@
 //! - **Descriptions, and the start of what home heard.** Every read here is
 //!   of `voice_note`, `voice_note_set_aside` and, for [`weeks`], the receipts
 //!   in `voice_note_deletion`. [`newest`] also reads whether an idea's answer
-//!   names a note (`idea_answer`), to say whether My data may offer to delete
-//!   it, and each note's chosen ending in `voice_transcript`, to say how long
+//!   names a note (`idea_answer`) and the kind of its newest verdict
+//!   (`voice_transcript_verdict`, never its reasons or signals), to say
+//!   whether My data may offer to delete it, and each note's chosen ending in `voice_transcript`, to say how long
 //!   it is and its first words ([`HEARD_CHARS`] or so), so the owner can tell
 //!   what they would delete (the owner, MY-DATA, paulgsc/some-ui#2473,
 //!   2026-11-13).
@@ -26,7 +27,8 @@
 //!   (`GET /api/v1/voice-notes/kept`).
 
 use crate::{
-	delete::{deletable, Deletable},
+	delete::{allows, deletable, Deletable},
+	verdict::Kind,
 	Of, VoiceError, PLAYED_BACK,
 };
 use serde::Serialize;
@@ -87,11 +89,13 @@ pub struct NoteKept {
 	pub size: i64,
 	/// When the owner set it aside, if they did.
 	pub set_aside_at: Option<String>,
-	/// My data may offer to delete it: its kind is one the owner switched on
-	/// ([`crate::delete::SWITCHED_ON`]). By kind alone: a note of another
-	/// kind home could not hear ([`crate::delete::Deletable::Unheard`]) is
-	/// deletable too, but only the reconciliation page offers it
-	/// (paulgsc/server#912, left as a follow-up).
+	/// My data may offer to delete it: `DELETE /voice-notes/:id` would take
+	/// it, by the one rule both read ([`crate::delete::allows`]). Its kind is
+	/// one the owner switched on ([`crate::delete::SWITCHED_ON`]), or home
+	/// could not hear it ([`crate::delete::Deletable::Unheard`]): its newest
+	/// verdict is `garbled`, `failed` or `nothing_said` (the owner,
+	/// paulgsc/server#919: "yes, My data should offer the unheard delete
+	/// too").
 	pub deletable: bool,
 	/// How long it runs, in milliseconds, as home heard it, words or silence;
 	/// null while home has heard it neither as words nor as silence, and when
@@ -120,6 +124,8 @@ struct Row {
 	outcome: Option<String>,
 	duration_ms: Option<i64>,
 	text: Option<String>,
+	/// Its newest verdict's stored kind, [`crate::verdict::newest`]'s choice.
+	verdict: Option<String>,
 }
 
 impl Row {
@@ -132,8 +138,9 @@ impl Row {
 			}
 			_ => (None, false),
 		};
+		let newest = self.verdict.as_deref().map(|stored| Kind::parse(stored).ok_or(VoiceError::Unreadable)).transpose()?;
 		Ok(NoteKept {
-			deletable: deletable(of.as_str(), &self.of_ref, self.answers).is_some_and(|kind| on.contains(&kind)),
+			deletable: allows(on, deletable(of.as_str(), &self.of_ref, self.answers), newest),
 			id: self.note_id,
 			recorded_at: self.recorded_at,
 			stored_at: self.stored_at,
@@ -261,14 +268,23 @@ pub async fn weeks(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Wee
 pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[Deletable], also: Option<&str>) -> Result<Vec<NoteKept>, VoiceError> {
 	let kind = of;
 	let of = of.as_str();
-	// The ending is `transcript::heard`'s choice, as `takes::library`'s is.
+	// The ending is `transcript::heard`'s choice, as `takes::library`'s is,
+	// and the verdict `verdict::newest`'s: that ending's, else, with no
+	// ending, the newest failure; the newest judged, then the newest rule. It
+	// is read in this one statement, never once per note. Keep the three in
+	// step.
 	let rows = sqlx::query_as!(
 		Row,
 		r#"SELECT note.note_id, note.of_ref, note.recorded_at, note.stored_at, note.size,
 		          aside.set_aside_at AS "set_aside_at?: String",
 		          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
 		            AS "answers!: bool",
-		          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String"
+		          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String",
+		          (SELECT v.verdict FROM voice_transcript_verdict AS v
+		           WHERE v.subject_id = note.subject_id AND v.note_id = note.note_id
+		             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed'))
+		           ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
+		           LIMIT 1) AS "verdict?: String"
 		   FROM voice_note AS note
 		   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
 		   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
@@ -295,7 +311,12 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 			          aside.set_aside_at AS "set_aside_at?: String",
 			          EXISTS (SELECT 1 FROM idea_answer AS answer WHERE answer.subject_id = note.subject_id AND answer.note_id = note.note_id)
 			            AS "answers!: bool",
-			          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String"
+			          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String",
+			          (SELECT v.verdict FROM voice_transcript_verdict AS v
+			           WHERE v.subject_id = note.subject_id AND v.note_id = note.note_id
+			             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed'))
+			           ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
+			           LIMIT 1) AS "verdict?: String"
 			   FROM voice_note AS note
 			   LEFT JOIN voice_note_set_aside AS aside ON aside.subject_id = note.subject_id AND aside.note_id = note.note_id
 			   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
@@ -504,6 +525,107 @@ mod tests {
 		assert_eq!(marked, [("answer", false), ("take", true), ("spoken", false)]);
 		let listed = newest(&mut conn, A, Of::Studio, SWITCHED_ON, None).await.unwrap();
 		assert!(listed.iter().all(|kept| kept.deletable), "with answers on too, every studio note is");
+	}
+
+	/// Keeps a `verdict` of `subject`'s note `id`'s attempt by `model`,
+	/// judged at `at`, as the judge would.
+	async fn verdict(pool: &SqlitePool, (subject, id): (&str, &str), model: &str, verdict: &str, at: &str) {
+		let speech_ms = matches!(verdict, "heard" | "garbled").then_some(1000);
+		sqlx::query(
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, ?2, ?3, 1, 'heard-1', ?4, '[]', ?5, ?6)",
+		)
+		.bind(subject)
+		.bind(id)
+		.bind(model)
+		.bind(verdict)
+		.bind(speech_ms)
+		.bind(at)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// The flag and the delete never disagree (paulgsc/server#919): under
+	/// every set of switches, every note My data marks deletable is one
+	/// `DELETE` takes, and every note it takes is marked. An unheard note of
+	/// any kind is marked while [`Deletable::Unheard`] is on; a heard one, or
+	/// one never judged, keeps its kind's rule.
+	#[tokio::test]
+	async fn every_note_marked_deletable_is_one_delete_takes_and_no_other() {
+		let pool = pool().await;
+		let at = "2026-10-02T00:00:00.000Z";
+		for (id, of, minute) in [
+			("take", "studio", "01"),
+			("heard-take", "studio", "02"),
+			("garbled-take", "studio", "03"),
+			("heard", "reflection", "04"),
+			("garbled", "reflection", "05"),
+			("silent", "reflection", "06"),
+			("failed", "reflection", "07"),
+			("unjudged", "reflection", "08"),
+			("heard-now", "rust-round", "09"),
+			("garbled-now", "rust-round", "10"),
+			("failed-then-heard", "rust-round", "11"),
+		] {
+			note(&pool, A, id, of, &(String::from("2026-10-01T10:") + minute + ":00Z"), 10, at).await;
+		}
+		// B's verdict on its own note of A's id says nothing of A's.
+		note(&pool, B, "heard", "reflection", "2026-10-01T10:04:00Z", 10, at).await;
+		verdict(&pool, (B, "heard"), "small", "garbled", at).await;
+		for (id, outcome, judged) in [
+			("heard-take", "heard", "heard"),
+			("garbled-take", "heard", "garbled"),
+			("heard", "heard", "heard"),
+			("garbled", "heard", "garbled"),
+			("silent", "silent", "nothing_said"),
+			("heard-now", "heard", "heard"),
+		] {
+			let text = (outcome == "heard").then_some("words");
+			ending(&pool, (A, id), "small", outcome, Some(1000), text, at).await;
+			verdict(&pool, (A, id), "small", judged, at).await;
+		}
+		// Failed with no ending: the newest failure is the verdict.
+		verdict(&pool, (A, "failed"), "small", "failed", at).await;
+		// Garbled by one model, then heard by a newer ending: the ending's.
+		ending(&pool, (A, "garbled-now"), "small", "heard", Some(1000), Some("words"), "2026-10-02T00:00:00.000Z").await;
+		verdict(&pool, (A, "garbled-now"), "small", "heard", "2026-10-02T00:00:00.000Z").await;
+		ending(&pool, (A, "garbled-now"), "large", "heard", Some(1000), Some("other words"), "2026-10-03T00:00:00.000Z").await;
+		verdict(&pool, (A, "garbled-now"), "large", "garbled", "2026-10-03T00:00:00.000Z").await;
+		// A failure before an ending no longer speaks for the note.
+		verdict(&pool, (A, "failed-then-heard"), "small", "failed", "2026-10-02T00:00:00.000Z").await;
+		ending(&pool, (A, "failed-then-heard"), "large", "heard", Some(1000), Some("words"), "2026-10-03T00:00:00.000Z").await;
+		verdict(&pool, (A, "failed-then-heard"), "large", "heard", "2026-10-03T00:00:00.000Z").await;
+
+		let unheard = ["garbled-take", "garbled", "silent", "failed", "garbled-now"];
+		let switches: [&[Deletable]; 5] = [
+			&[],
+			&[Deletable::StudioTake],
+			&[Deletable::Unheard],
+			&[Deletable::IdeaAnswer, Deletable::Unheard],
+			SWITCHED_ON,
+		];
+		for on in switches {
+			let mut conn = pool.acquire().await.unwrap();
+			let mut listed = Vec::new();
+			for of in [Of::Studio, Of::Reflection, Of::RustRound] {
+				listed.extend(newest(&mut conn, A, of, on, None).await.unwrap());
+			}
+			assert_eq!(listed.len(), 11, "{on:?}");
+			for kept in &listed {
+				let expected = (on.contains(&Deletable::StudioTake) && kept.id.ends_with("take")) || (on.contains(&Deletable::Unheard) && unheard.contains(&kept.id.as_str()));
+				assert_eq!(kept.deletable, expected, "{on:?}: {}", kept.id);
+				let mut tx = sqlx::Connection::begin(&mut *conn).await.unwrap();
+				let deleted = delete(&mut tx, A, &kept.id, on, "2026-11-17T00:00:00.000Z").await.unwrap();
+				tx.rollback().await.unwrap();
+				assert_eq!(
+					kept.deletable,
+					matches!(deleted, Deleted::Gone(_)),
+					"{on:?}: {} flagged one way, deleted the other",
+					kept.id
+				);
+			}
+		}
 	}
 
 	/// Keeps `model`'s ending of `subject`'s note `id`, as the transcriber
