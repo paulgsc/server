@@ -933,8 +933,12 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	};
 	let read = read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(read.now, None, "the worker lets an overdue preview go");
+	// By key: each row's time is its marker's, which may fall either side
+	// of a second.
+	let mut rows = read.failed.iter().map(|f| (f.key.as_str(), f.reason, f.over)).collect::<Vec<_>>();
+	rows.sort_by_key(|row| row.0);
 	assert_eq!(
-		read.failed.iter().map(|f| (f.key.as_str(), f.reason, f.over)).collect::<Vec<_>>(),
+		rows,
 		[(overdue, Some("overdue"), None), (refused, Some("overdue"), None)],
 		"an overdue preview carries no refusal's numbers"
 	);
