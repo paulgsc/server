@@ -1236,6 +1236,14 @@ run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a new speaker is tried once too: a take's length is its" test "$(essay_runs)" -eq 3
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "and held again" test "$(essay_runs)" -eq 3
+# This worker's own text is what it holds for too: it is mounted, not
+# imaged, and `record` decides a video as the image does.
+SCRIPT_SUM_WAS=$SCRIPT_SUM # put back where this case ends
+SCRIPT_SUM=changed
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a changed worker script is tried once" test "$(essay_runs)" -eq 4
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "and held again" test "$(essay_runs)" -eq 4
 # A job a restart left of a refusal held again (the image it was released
 # for rolled back) never runs, and is over.
 mkdir -p "$ROOT/renders/call-worker"
@@ -1243,11 +1251,11 @@ echo 81 > "$ROOT/renders/call-worker/job"
 printf 'id=81\nkind=rust-essay\nkey=2026-w46\nsince=1\nstate=rendering\nstate_since=1\nyields=0\nran=0' > "$ROOT/renders/call-worker/job.state"
 resume_left > "$SCRATCH/pass.out" 2>&1
 check "a job a restart left of a held refusal is over, not run" \
-  test "$(essay_runs)" -eq 3 -a ! -e "$ROOT/renders/call-worker/job" -a ! -e "$ROOT/renders/call-worker/job.state"
+  test "$(essay_runs)" -eq 4 -a ! -e "$ROOT/renders/call-worker/job" -a ! -e "$ROOT/renders/call-worker/job.state"
 ESSAY_MAX_VIDEO_MINUTES=30
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "once the cap is 30 the same essay renders, with no new one" \
-  test "$(essay_runs)" -eq 4 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
+  test "$(essay_runs)" -eq 5 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
 check "and its failed.log and its refusal are gone" \
   test ! -e "$ROOT/renders/rust-essay-worker/2026-w46.failed.log" -a ! -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
 # A new revision of a held essay is tried at once.
@@ -1257,14 +1265,14 @@ echo 1 > "$ROOT/essays/2026-w47/revision"
 echo 400 > "$FAKE/minutes-2026-w47"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
-check "an essay of 40 minutes is held at 30" test "$(essay_runs)" -eq 5
+check "an essay of 40 minutes is held at 30" test "$(essay_runs)" -eq 6
 echo 290 > "$FAKE/minutes-2026-w47"
 sleep 0.01
 echo '{"r":2}' > "$ROOT/essays/2026-w47/.essay.json" && mv "$ROOT/essays/2026-w47/.essay.json" "$ROOT/essays/2026-w47/essay.json"
 echo 2 > "$ROOT/essays/2026-w47/revision"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "and its newer revision is tried at once, and renders" \
-  test "$(essay_runs)" -eq 6 -a -e "$ROOT/renders/rust-essay/2026-w47/essay.mp4"
+  test "$(essay_runs)" -eq 7 -a -e "$ROOT/renders/rust-essay/2026-w47/essay.mp4"
 # Any other failure keeps RETRY_AFTER, and keeps no refusal.
 RETRY_AFTER=3600
 mkdir -p "$ROOT/essays/2026-w48/takes"
@@ -1280,6 +1288,7 @@ RETRY_AFTER=0
 ESSAY_MAX_VIDEO_MINUTES=30
 RENDER_IMAGE=
 KOKORO_IMAGE=
+SCRIPT_SUM=$SCRIPT_SUM_WAS
 
 # RF1, what a refusal is and holds for, attempt by attempt (#928).
 # - The brand files are what it holds for too: a new one is tried once.

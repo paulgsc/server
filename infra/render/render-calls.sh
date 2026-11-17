@@ -196,6 +196,10 @@ KOKORO_IMAGE=${KOKORO_IMAGE:-}
 # home's brand files, the music bed a series names (COMMON's --brand): a
 # video's sound, so its size.
 BRAND_DIR=/brand
+# This worker's own text: it is mounted, not in the image, and how it calls
+# the recorders (`record`) decides a video as the image does. Taken once: a
+# changed script runs only once the container restarts.
+SCRIPT_SUM=$(sha256sum < "${BASH_SOURCE[0]}" | cut -d' ' -f1)
 # How often the worker reads the lane's decision while a job waits or runs.
 # The lane decides every 5 s (`call_weeks::lane::TICK`).
 LANE_POLL=2
@@ -1186,7 +1190,7 @@ inputs_of() {
 
 # What a refusal of `job`'s `key` holds for, as one sum: every flag its
 # recorder is handed (COMMON, the job's caps among them), the recorders' and
-# the speaker's images, and each of its inputs' and the brand files' name,
+# the speaker's images, this worker's own text, and each of its inputs' and the brand files' name,
 # size and time. Never their bytes: a held essay's takes are not read every
 # pass. file_host writes an input whole and new (a revision is a new file),
 # so a changed one has a new time. Called after `use_job`.
@@ -1194,7 +1198,7 @@ held_by() {
   local path
   {
     printf '%s\n' "${COMMON[@]}"
-    printf 'image=%s\nspeaker=%s\n' "$RENDER_IMAGE" "$KOKORO_IMAGE"
+    printf 'image=%s\nspeaker=%s\nscript=%s\n' "$RENDER_IMAGE" "$KOKORO_IMAGE" "$SCRIPT_SUM"
     { inputs_of "$1" "$2"; echo "$BRAND_DIR"; } | while IFS= read -r path; do
       [ -e "$path" ] && find "$path" -printf '%p %s %T@\n'
     done | LC_ALL=C sort
