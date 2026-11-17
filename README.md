@@ -511,8 +511,10 @@ home, home sends no request anywhere (the owner's ask, 2026-11-10):
    runs; nothing new runs in CI.
 2. **The ask.** A client asks `GET /compat?needs=<its epoch>`, unversioned
    like `/health`. The answer is `{running: {epoch, oldest_supported,
-   version}, needs, supported, deploy, latest_seen_epoch?, retry_after_s?}`,
-   where `supported` is `oldest_supported <= needs <= epoch` and `deploy` is
+   version}, needs, supported, deploy, latest_seen_epoch?, retry_after_s?,
+   rate_limit}`. `rate_limit` is `{per_minute, burst}`, what home's limiter
+   lets each client send (from epoch 14), so a client paces itself to it.
+   `supported` is `oldest_supported <= needs <= epoch` and `deploy` is
    one of: `none` (served), `client_behind` (the client is older than home
    serves: it must update; pulling cannot help), `wanted` (a deploy was asked
    for now), `in_flight`, `cooldown` and `unavailable` (ask again after
