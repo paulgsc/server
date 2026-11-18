@@ -28,7 +28,7 @@
 //! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 17;
+pub const CONTRACT_EPOCH: u32 = 19;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
