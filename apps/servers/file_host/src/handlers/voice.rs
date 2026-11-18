@@ -345,12 +345,10 @@ pub async fn get_audio(paired: Paired, State(db): State<SqlitePool>, headers: He
 	if if_none_match_hits(&headers, &etag) {
 		return Ok(not_modified(etag));
 	}
-	// The note is append-only, so a body missing here is a store that does
-	// not read back, not a race.
-	let body = voice_repo::audio_body(&mut conn, subject, &id, of)
-		.await
-		.map_err(refusal)?
-		.ok_or(FileHostError::OperationError("a stored voice note does not read back".to_owned()))?;
+	// The head reads only a note whose recording is held, so a body missing
+	// here was let go since (`voice_repo::delete::let_go_audio`, IW8): there
+	// is nothing to play.
+	let body = voice_repo::audio_body(&mut conn, subject, &id, of).await.map_err(refusal)?.ok_or(FileHostError::NotFound)?;
 	let mut response = Json(NoteAudio {
 		id,
 		content_type: head.content_type,
@@ -1668,6 +1666,7 @@ mod tests {
 		use base64::{engine::general_purpose::STANDARD, Engine};
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
+		let pool = state.pool.clone();
 		let app = app(state);
 		for (id, path, audio) in [
 			("i1", "/voice-notes/i1?of=interview&ref=2026-w47:about-you&at=2026-11-13T18:20:00Z", "/voice-notes/i1/audio"),
@@ -1688,6 +1687,12 @@ mod tests {
 		}
 		let (status, refused) = put(&app, "/voice-notes/i3?of=interview&ref=about-you&at=2026-11-13T18:20:00Z", Some(&phone), "audio/webm", TAKE).await;
 		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+		// IW8: a middle take whose recording was let go has nothing to play.
+		let gone = voice_repo::delete::let_go_audio(&mut pool.acquire().await.unwrap(), A, "i1", voice_repo::delete::SWITCHED_ON, "2026-11-23T09:00:00.000Z")
+			.await
+			.unwrap();
+		assert!(matches!(gone, voice_repo::delete::Deleted::Gone(_)));
+		assert_eq!(get(&app, "/voice-notes/i1/audio", Some(&phone)).await.0, StatusCode::NOT_FOUND, "a 404, never a 500");
 	}
 
 	/// ST32 (paulgsc/some-ui#2590): the take library lists the caller's

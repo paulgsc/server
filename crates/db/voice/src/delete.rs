@@ -639,6 +639,13 @@ mod tests {
 		assert_eq!((kept.of.as_str(), kept.size, kept.deleted_at.as_str()), ("interview", 120, NOW));
 		drop(conn);
 		assert_eq!(rows(&pool, "voice_note_audio", A, "retake").await, 0, "the recording went");
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			crate::audio_head(&mut conn, A, "retake", crate::Of::Interview).await.unwrap(),
+			None,
+			"nothing to play: GET …/audio is a 404, never a 500"
+		);
+		drop(conn);
 		for table in [
 			"voice_note",
 			"voice_transcript",

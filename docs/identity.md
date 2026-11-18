@@ -1382,7 +1382,8 @@ nowhere is marked as such and belongs to review.
     transcript and word of it, its meaning, its verdicts, its marks and any
     copy filed for the mailbox stay, and it stays in My data's list
     (`recordingLetGoAt` the receipt's time, its bytes out of the kind's room
-    and the week's, while it still counts as a note). Only a note home has
+    and the week's, while it still counts as a note); `GET
+    /voice-notes/:id/audio` answers it `404`, nothing to play. Only a note home has
     heard and judged `heard` is let go: one no model has ended, or not yet
     judged, keeps its recording, so what home hears of it is never lost, and
     so does one whose newest verdict asks the owner to act, which is theirs
