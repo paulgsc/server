@@ -155,6 +155,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"a browser's push endpoint — stable per browser, and known to its push service; see docs/identity.md",
 	),
 	(
+		"report_week",
+		"each ended week's engagement report as home first wrote it for its render worker (paulgsc/some-ui ENG12, #2700): the owner's counts per pipeline, affordance and surface for the week and the three it is compared with, and the days each was first seen and last taken; no time of day, answer or content. See docs/identity.md invariant 34",
+	),
+	(
 		"rust_round",
 		"each Rust Rounds round the owner's phone put (paulgsc/some-ui#2234), as the tutor wrote it: its cards and programs, and a refine card's voice-note id and the tutor's nudge, which can paraphrase what the owner said; and when it reached home. See docs/identity.md invariant 28",
 	),

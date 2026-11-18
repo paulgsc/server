@@ -366,6 +366,33 @@ local count(title, description, expr, steps) =
     options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
   },
 
+  // ---- The weekly engagement report (ENG12, some-ui#2700; #821): file_host's
+  // report_weeks worker (metrics/report_weeks.rs) keeps each ended week's
+  // report from home's own records and gives it to the render worker.
+
+  reportWeeks: {
+    title: 'Engagement report: weeks held, a week with no records, and writing failing',
+    description: "Over time: the weeks of the engagement report home holds (report_week, each written once, a day after its week ends, to report-weeks/<week>.json on the database drive), whether the last whole week had no engagement record before its end (no data, so no report), and whether home's last pass, or its minute's removal of a week no longer the owner's, failed. ReportWeeksFailing fires after 3 hours failing, ReportWeeksStale after 2 hours with no pass.",
+    type: 'timeseries',
+    datasource: ds,
+    targets: [
+      { expr: 'report_weeks_held', legendFormat: 'weeks held', refId: 'A' },
+      { expr: 'report_weeks_unmeasured', legendFormat: 'last week had no records', refId: 'B' },
+      { expr: 'report_weeks_pass_failing', legendFormat: 'writing failing', refId: 'C' },
+      { expr: 'report_weeks_tidy_failing', legendFormat: 'removing failing', refId: 'D' },
+      { expr: 'time() - report_weeks_last_attempt_timestamp_seconds', legendFormat: 'seconds since a pass', refId: 'E', hide: true },
+    ],
+    fieldConfig: {
+      defaults: {
+        unit: 'none',
+        decimals: 0,
+        custom: { drawStyle: 'line', lineInterpolation: 'stepAfter', lineWidth: 1, fillOpacity: 10, spanNulls: false },
+      },
+      overrides: [],
+    },
+    options: { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi' } },
+  },
+
   essays: {
     title: 'Essays waiting for the deadline, refused, given, waiting for a video and failed',
     description: "Over time: an essay waits for its week's deadline, is given to the render worker from the week's final record (or refused), and leaves waiting once its video is kept.",

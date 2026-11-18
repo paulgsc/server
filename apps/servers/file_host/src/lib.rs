@@ -39,6 +39,7 @@ mod privacy;
 pub mod rate_limiter;
 pub mod reconcile;
 pub mod redacted;
+pub mod report_weeks;
 pub mod routes;
 pub mod routine_watch;
 pub mod rust_essays;
@@ -319,7 +320,9 @@ impl AppState {
 /// - the clips' frames (`clips`), read hourly from `paulgsc/testing`'s
 ///   index, a walk rendered on home's render lane; always on;
 /// - the cards essays (`cards_essays`), read hourly from `paulgsc/testing`'s
-///   `cards/` index and given to the render worker; always on.
+///   `cards/` index and given to the render worker; always on;
+/// - each ended week's engagement report (`report_weeks`), read hourly from
+///   home's own records and given to the render worker; always on.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
@@ -332,6 +335,7 @@ pub fn start_polls(state: &AppState) {
 	rust_essays::start(state);
 	clips::start(state);
 	cards_essays::start(state);
+	report_weeks::start(state);
 }
 
 // TODO: Ask eh eye! do we need this?!

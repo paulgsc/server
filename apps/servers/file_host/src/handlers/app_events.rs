@@ -113,8 +113,9 @@ pub async fn get_summary(subject: SubjectId, State(db): State<SqlitePool>, Query
 /// engagement report (paulgsc/some-ui ENG12, #2700).
 ///
 /// The caller's engagement over ISO week `:week` (`2026-W46`, Monday midnight
-/// to the next on the owner's clock, `app_event_repo::ZONE`), the week before, the same week a quarter ago and a year
-/// ago, with each affordance's first day and last day taken. Raw counts and
+/// to the next on the owner's clock, `app_event_repo::ZONE`), the week
+/// before, the same week a quarter ago and a year ago, with each
+/// affordance's first day and last day taken. Raw counts and
 /// days only: the report's public-safety rule (#2701) is its writer's,
 /// applied after this.
 ///

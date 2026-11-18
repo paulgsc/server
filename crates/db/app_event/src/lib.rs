@@ -24,8 +24,12 @@
 //! - **No background writer.** The one caller is `file_host`'s
 //!   `handlers::app_events` (`PUT /api/v1/app-events/:id`). A
 //!   `git grep -n app_event -- '*.rs'` shows no other writer.
+//! - **Each week's report, kept once.** [`report`] keeps the [`weekly`] read
+//!   of each ended week as `file_host`'s `report_weeks` worker gave it to the
+//!   render worker, in its own table (`report_week`), never in `app_event`.
 
 mod model;
+pub mod report;
 mod weeks;
 
 use std::collections::BTreeMap;
@@ -665,7 +669,7 @@ mod tests {
 			engaged("w3", "2026-11-09T07:59:59.999Z", "routine-lens", "offered"),
 			engaged("w4", "2026-11-09T08:00:00.000Z", "routine-lens", "offered"),
 			engaged("w5", "2026-11-09T08:00:01.000Z", "routine-lens", "taken"),
-			engaged("w6", "2026-11-16T07:59:59.999Z", "routine-read-aloud", "passed-over"),
+			engaged("w6", "2026-11-16T07:59:59.999Z", "routine-read-aloud", "taken"),
 			engaged("w7", "2026-11-12T09:00:00.000Z", "routine-read-aloud", "left"),
 			engaged("w8", "2026-11-12T09:00:00.000Z", "sentence-feedback", "said"),
 			engaged("w9", "2026-11-16T08:00:00.000Z", "routine-drama", "taken"),
@@ -688,7 +692,7 @@ mod tests {
 					{ "role": "this", "week": "2026-W46", "from": "2026-11-09T08:00:00.000Z", "to": "2026-11-16T08:00:00.000Z",
 						"complete": false, "measured": true, "affordances": [
 						{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "offered": 1, "taken": 1, "passedOver": 0, "left": 0 },
-						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "offered": 0, "taken": 0, "passedOver": 1, "left": 1 }
+						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "offered": 0, "taken": 1, "passedOver": 0, "left": 1 }
 					] },
 					{ "role": "last", "week": "2026-W45", "from": "2026-11-02T08:00:00.000Z", "to": "2026-11-09T08:00:00.000Z",
 						"complete": true, "measured": true, "affordances": [
@@ -703,11 +707,11 @@ mod tests {
 				],
 				"seen": [
 					{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "firstDay": "2026-08-12", "lastTakenDay": "2026-11-09" },
-					{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": null },
+					{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": "2026-11-15" },
 					{ "pipeline": "topik", "affordance": "sentence-feedback", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": null }
 				]
 			}),
-			"Sunday evening Pacific is last week's, the said answer is seen but never counted, w9 is the next week's, and B's drama is B's"
+			"Sunday evening Pacific is last week's, a take late on Sunday Pacific is Sunday's though Monday in UTC, the said answer is seen but never counted, w9 is the next week's, and B's drama is B's"
 		);
 		let later = read("2027-01-01T00:00:00.000Z").await;
 		assert!(later.weeks[0].complete);
