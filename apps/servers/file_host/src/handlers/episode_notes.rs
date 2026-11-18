@@ -2,9 +2,10 @@
 //! episodes (SFEED6: paulgsc/some-ui#2745).
 //!
 //! `PUT /feeds/:feed/notes/:id` keeps each note the phone sends home
-//! (`episode_note_repo`, docs/identity.md invariant 38), append-only, and in
+//! (`episode_note_repo`, docs/identity.md invariant 38), append-only, on any
+//! feed (paulgsc/server#983), and, for the call's and Playoff Delta's, in
 //! the same transaction files it for the mailbox's `feedback` folder
-//! (`mailbox::pass::feedback_file`), where the routine reads it. Home files
+//! (`mailbox::pass::feedback_file`, [`files_for_the_mailbox`]). Home files
 //! no issue from a note (SFEED decision 6). A spoken note names its take by
 //! voice note id only, and what home heard in that take reaches the routine
 //! as its transcript (`transcript`), never through here.
@@ -26,11 +27,24 @@ use sqlx::SqlitePool;
 use tracing::instrument;
 
 fn feed(name: &str) -> Result<Feed, FileHostError> {
-	// Notes are on the call's and Playoff Delta's episodes only
-	// (`episode_note`'s CHECK): an essay's feed and a cards essay's have none.
-	Feed::parse(name)
-		.filter(|feed| matches!(feed, Feed::Call | Feed::PlayoffDelta))
-		.ok_or(FileHostError::NotFound)
+	// A note is taken on any feed's episodes, by its being a feed
+	// (paulgsc/server#983: "the note is generic over the video"): there is no
+	// list of feeds that take notes, so a feed added to `Feed` takes them.
+	Feed::parse(name).ok_or(FileHostError::NotFound)
+}
+
+/// Whether a note on `feed` is filed for the mailbox's `feedback` folder:
+/// the call's and Playoff Delta's only, as before paulgsc/server#983.
+///
+/// The Jobs mailbox refuses a `feedback` note on any other feed
+/// (paulgsc/some-ui `apps/mailbox/src/core.ts`), and the routine reads only
+/// those two; the owner's direction (paulgsc/some-ui#3029, 2026-11-18) is
+/// that no routine files notes from now on, and home's own issue (TAKES4)
+/// replaces that path. So a note on another feed is kept on home and filed
+/// nowhere: nothing is put that the mailbox would refuse, so nothing retries
+/// or alerts (call C576).
+const fn files_for_the_mailbox(feed: Feed) -> bool {
+	matches!(feed, Feed::Call | Feed::PlayoffDelta)
 }
 
 /// `GET /feeds/:feed/notes`
@@ -44,7 +58,7 @@ pub struct Notes {
 /// episodes, oldest written first.
 ///
 /// # Errors
-/// 401 without a session, 404 for a feed home does not render, and 500 for
+/// 401 without a session, 404 for a name that is no feed, and 500 for
 /// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "episode_notes_get", skip_all, fields(otel.kind = "server"))]
@@ -80,14 +94,16 @@ fn refusal(err: episode_note_repo::NoteError) -> FileHostError {
 /// the phone's shape, with `take` (a voice note id, or `null`) when it was
 /// said.
 ///
-/// Kept in `episode_note`, and, when it is new, filed in the same
-/// `BEGIN IMMEDIATE` transaction for the mailbox's `feedback` folder, so a
-/// note home holds is always on its way to the routine and none is filed
-/// twice. The same note again changes nothing.
+/// Kept in `episode_note`, and, when it is new and on the call's or Playoff
+/// Delta's episodes ([`files_for_the_mailbox`]), filed in the same
+/// `BEGIN IMMEDIATE` transaction for the mailbox's `feedback` folder, so
+/// such a note home holds is always on its way to the mailbox and none is
+/// filed twice; a note on any other feed is kept and filed nowhere. The same
+/// note again changes nothing.
 ///
 /// # Errors
-/// 401 without a session, 403 from an untrusted origin, 404 for a feed home
-/// does not render, 422 naming each refused field (a category outside the
+/// 401 without a session, 403 from an untrusted origin, 404 for a name that
+/// is no feed, 422 naming each refused field (a category outside the
 /// set or out of its order, a moment or a time that is not one), 409 for a
 /// different note under a held id, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
@@ -105,23 +121,24 @@ pub async fn put_note(
 	let (change, note) = episode_note_repo::put_note(&mut tx, subject.as_str(), feed.as_str(), &id, &body, &now)
 		.await
 		.map_err(refusal)?;
-	if change == episode_note_repo::Change::Added {
+	let filed = change == episode_note_repo::Change::Added && files_for_the_mailbox(feed);
+	if filed {
 		let (name, bytes) = crate::mailbox::pass::feedback_file(&note);
 		let sha256 = hex::encode(Sha256::digest(&bytes));
-		let filed = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), mailbox_repo::FEEDBACK, &name, &sha256, &bytes, &now)
+		let put = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), mailbox_repo::FEEDBACK, &name, &sha256, &bytes, &now)
 			.await
 			.map_err(|err| match err {
 				mailbox_repo::MailboxError::Rewritten => FileHostError::Conflict("the mailbox's copy of this note already holds another"),
 				mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
 			})?;
-		if filed == mailbox_repo::Change::NoAccount {
+		if put == mailbox_repo::Change::NoAccount {
 			// `SubjectId` found the account, so this is not reachable; if it
 			// were, the transaction is dropped and nothing is written.
 			return Err(FileHostError::OperationError("the account is gone".to_owned()));
 		}
 	}
 	tx.commit().await?;
-	if change == episode_note_repo::Change::Added {
+	if filed {
 		outbox.filed();
 	}
 	Ok(Json(NoteKept { change: change.as_str(), note }))
@@ -288,6 +305,70 @@ mod tests {
 		assert_eq!(pd["notes"][0]["id"], "pd");
 	}
 
+	/// paulgsc/server#983: every feed home makes videos of takes a note, by
+	/// one path; only the call's and Playoff Delta's are filed for the
+	/// mailbox (C576).
+	#[tokio::test]
+	async fn every_feed_takes_a_note_by_the_same_path() {
+		use crate::feeds::Feed;
+		let state = state().await;
+		let phone = session(&state, A).await;
+		// Every feed, by a match that fails to compile until a new `Feed` is
+		// named here, so the loop always runs over all of them.
+		let next = |feed: Option<Feed>| match feed {
+			None => Some(Feed::Call),
+			Some(Feed::Call) => Some(Feed::PlayoffDelta),
+			Some(Feed::PlayoffDelta) => Some(Feed::RustEssay),
+			Some(Feed::RustEssay) => Some(Feed::InterviewEssay),
+			Some(Feed::InterviewEssay) => Some(Feed::CardsEssay),
+			Some(Feed::CardsEssay) => Some(Feed::Report),
+			Some(Feed::Report) => None,
+		};
+		let feeds: Vec<Feed> = std::iter::successors(next(None), |feed| next(Some(*feed))).collect();
+		assert_eq!(feeds.len(), 6);
+		for feed in feeds {
+			let name = feed.as_str();
+			let mut sent = note(&(String::from("n-") + name), &["pacing"]);
+			sent["feed"] = json!(name);
+			sent["episode"] = json!("2026-w46");
+			assert_eq!(
+				put(&state, Some(&phone), name, &sent).await,
+				(StatusCode::OK, json!({ "change": "added", "note": sent })),
+				"{name}"
+			);
+			let (status, body) = get(&state, Some(&phone), name).await;
+			assert_eq!(status, StatusCode::OK, "{name}");
+			assert_eq!(body["notes"].as_array().unwrap().len(), 1, "{name}: its own feed's only");
+		}
+		let mut conn = state.pool.acquire().await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		assert_eq!(
+			pending.iter().map(|file| (file.folder.as_str(), file.name.as_str())).collect::<Vec<_>>(),
+			[("feedback", "feedback-n-call.json"), ("feedback", "feedback-n-playoff-delta.json")],
+			"only the call's and Playoff Delta's are filed for the mailbox (C576)"
+		);
+	}
+
+	/// C576: a note on a feed the mailbox does not take is kept on home and
+	/// never reaches the mailbox pass: nothing is filed, so nothing is put,
+	/// refused, retried or alerted on.
+	#[tokio::test]
+	async fn a_rust_essay_note_is_kept_and_never_reaches_the_mailbox_pass() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		let mut sent = note("rr", &["shallow"]);
+		sent["feed"] = json!("rust-essay");
+		sent["episode"] = json!("2026-w46");
+		sent["take"] = json!("take-9");
+		assert_eq!(
+			put(&state, Some(&phone), "rust-essay", &sent).await,
+			(StatusCode::OK, json!({ "change": "added", "note": sent }))
+		);
+		assert_eq!(get(&state, Some(&phone), "rust-essay").await.1["notes"][0]["id"], "rr", "kept on home");
+		let filed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mailbox_outgoing").fetch_one(&state.pool).await.unwrap();
+		assert_eq!(filed, 0, "nothing for the mailbox pass to hand, in any folder");
+	}
+
 	#[tokio::test]
 	async fn a_refused_note_writes_and_files_nothing() {
 		let state = state().await;
@@ -296,7 +377,6 @@ mod tests {
 		assert_eq!(get(&state, None, "call").await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(put(&state, Some(&phone), "podcast", &note("n1", &["shallow"])).await.0, StatusCode::NOT_FOUND);
 		assert_eq!(get(&state, Some(&phone), "podcast").await.0, StatusCode::NOT_FOUND);
-		assert_eq!(get(&state, Some(&phone), "cards-essay").await.0, StatusCode::NOT_FOUND, "a cards essay has no notes");
 		let mut early = note("n3", &["shallow"]);
 		early["atMs"] = json!(-5);
 		let mut no_time = note("n4", &["shallow"]);

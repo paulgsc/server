@@ -1,6 +1,6 @@
 //! The owner's notes on the feeds' episodes (paulgsc/some-ui#2745, SFEED6):
-//! each note the phone's Feedback page left at a moment of a weekly call or
-//! Playoff Delta episode, sent home by its drain.
+//! each note the phone's Feedback page left at a moment of an episode of any
+//! feed home makes videos of (paulgsc/server#983), sent home by its drain.
 //!
 //! `20261108075000_create_episode_note.up.sql` records the design; in short:
 //!
@@ -55,8 +55,12 @@ pub const CATEGORIES: [&str; 14] = [
 	"subtitlesOff",
 ];
 
-/// The feeds a note can be about (`file_host::feeds::Feed`).
-pub const FEEDS: [&str; 2] = ["call", "playoff-delta"];
+/// The most characters of a feed's name. Which feeds there are is
+/// `file_host::feeds::Feed`'s, which `handlers::episode_notes` asks before it
+/// writes; this crate holds a feed's name to its shape only (as the
+/// migration's CHECK does), so a feed added there takes notes with no change
+/// here (paulgsc/server#983).
+const MAX_FEED_CHARS: usize = 32;
 
 /// The most characters of the phone's id for a note.
 const MAX_ID_CHARS: usize = 64;
@@ -131,7 +135,7 @@ pub const REWRITTEN: &str = "this note id already holds a different note: the re
 pub struct Note {
 	/// The phone's id for it: what makes a retried send store nothing.
 	pub id: String,
-	/// `call` or `playoff-delta`.
+	/// The feed whose episode it is about, as the routes name it.
 	pub feed: String,
 	/// The episode's key, as home lists it.
 	pub episode: String,
@@ -184,6 +188,12 @@ fn is_id(text: &str) -> bool {
 /// An episode's key: one plain path segment (`2026-10-30`, `2026-SF-08`).
 fn is_episode(text: &str) -> bool {
 	!text.is_empty() && text.len() <= MAX_EPISODE_CHARS && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// A feed's name, as the routes write one and the migration's CHECK holds it:
+/// 1 to 32 lowercase letters, digits or `-`.
+fn is_feed(text: &str) -> bool {
+	!text.is_empty() && text.len() <= MAX_FEED_CHARS && text.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// A voice note's id, as `voice_repo::is_note_id` reads one and the
@@ -246,7 +256,7 @@ pub fn parse(feed: &str, id: &str, body: &[u8]) -> Result<Note, Vec<Problem>> {
 	} else if wire.id != id {
 		problems.push(("id", "must be the id the path names"));
 	}
-	if !FEEDS.contains(&wire.feed.as_str()) || wire.feed != feed {
+	if !is_feed(&wire.feed) || wire.feed != feed {
 		problems.push(("feed", "must be the feed the path names"));
 	}
 	if !is_episode(&wire.episode) {
@@ -431,6 +441,99 @@ mod tests {
 		put(&pool, A, &note("n1", &["shallow"])).await.unwrap();
 		assert!(MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.is_err(), "down refuses a table holding a note");
 		assert_eq!(rows(&pool).await, 1, "and leaves it as it was");
+	}
+
+	/// Every column of every row, as bytes and storage class, in key order.
+	async fn every_row(pool: &SqlitePool) -> Vec<String> {
+		sqlx::query_scalar(
+			"SELECT
+			 typeof(subject_id) || ':' || hex(subject_id) || '|' ||
+			 typeof(note_id) || ':' || hex(note_id) || '|' ||
+			 typeof(feed) || ':' || hex(feed) || '|' ||
+			 typeof(episode_key) || ':' || hex(episode_key) || '|' ||
+			 typeof(at_ms) || ':' || hex(at_ms) || '|' ||
+			 typeof(categories) || ':' || hex(categories) || '|' ||
+			 typeof(take_id) || ':' || hex(take_id) || '|' ||
+			 typeof(written_at) || ':' || hex(written_at) || '|' ||
+			 typeof(stored_at) || ':' || hex(stored_at)
+			 FROM episode_note ORDER BY subject_id, note_id",
+		)
+		.fetch_all(pool)
+		.await
+		.unwrap()
+	}
+
+	/// A feed's name is held to its shape, by `parse` and by the table: which
+	/// feeds there are is `file_host`'s (paulgsc/server#983).
+	#[tokio::test]
+	async fn a_feed_is_held_to_its_shape() {
+		let long = "a".repeat(33);
+		for bad in ["Call", "rust_essay", "", long.as_str()] {
+			let mut sent = note("n1", &["shallow"]);
+			sent["feed"] = json!(bad);
+			assert_eq!(fields(bad, "n1", &sent), ["feed"], "{bad:?}");
+		}
+		let pool = pool().await;
+		for bad in ["Call", "rust_essay", "", long.as_str()] {
+			let refused = sqlx::query(
+				"INSERT INTO episode_note (subject_id, note_id, feed, episode_key, at_ms, categories, take_id, written_at, stored_at)
+				 VALUES ('s', 'n1', ?1, 'e', 0, '[\"shallow\"]', NULL, 't', 't')",
+			)
+			.bind(bad)
+			.execute(&pool)
+			.await;
+			assert!(refused.is_err(), "the table refuses {bad:?}");
+		}
+		let mut rust = note("n1", &["shallow"]);
+		rust["feed"] = json!("rust-essay");
+		assert_eq!(put(&pool, A, &rust).await.unwrap(), Change::Added, "any feed of the shape");
+	}
+
+	/// paulgsc/server#983: widening `feed` rebuilds the table, and the rebuild
+	/// keeps every row byte for byte, both ways.
+	#[tokio::test]
+	async fn widening_the_feeds_keeps_every_note_byte_for_byte() {
+		const WIDENED: i64 = 20_261_119_000_100;
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		let before = MIGRATOR.iter().filter(|migration| migration.version < WIDENED).cloned().collect::<Vec<_>>();
+		let early = sqlx::migrate::Migrator {
+			migrations: std::borrow::Cow::Owned(before),
+			..sqlx::migrate::Migrator::DEFAULT
+		};
+		early.run(&pool).await.unwrap();
+		for subject in [A, B] {
+			sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+				.bind(subject)
+				.bind(subject.as_bytes())
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let mut spoken = note("n2", &["shallow", "voice", "subtitlesOff"]);
+		spoken["take"] = json!("take-7");
+		let mut pd = note("n3", &["overlap"]);
+		pd["feed"] = json!("playoff-delta");
+		pd["episode"] = json!("2026-SF-08");
+		pd["atMs"] = json!(86_400_000);
+		for (subject, sent) in [(A, note("n1", &["shallow"])), (A, spoken), (A, pd), (B, note("n1", &["pacing"]))] {
+			assert_eq!(put(&pool, subject, &sent).await.unwrap(), Change::Added);
+		}
+		let held = every_row(&pool).await;
+		assert_eq!(held.len(), 4);
+
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(every_row(&pool).await, held, "up keeps every row");
+		let mut rust = note("n4", &["pacing"]);
+		rust["feed"] = json!("rust-essay");
+		assert_eq!(put(&pool, A, &rust).await.unwrap(), Change::Added, "and takes a note on any feed");
+		assert!(MIGRATOR.undo(&pool, WIDENED - 1).await.is_err(), "down refuses a note on a feed it cannot hold");
+		assert_eq!(every_row(&pool).await.len(), 5, "and leaves the table as it was");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		let left = every_row(&pool).await;
+		assert_eq!(left, held[3..], "the account trigger still fires on the rebuilt table");
+		MIGRATOR.undo(&pool, WIDENED - 1).await.unwrap();
+		assert_eq!(every_row(&pool).await, left, "down keeps every row");
 	}
 
 	/// The columns the migration describes and no others: a new one is a
