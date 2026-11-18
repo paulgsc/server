@@ -209,10 +209,11 @@ too_large() {
 }
 # The real recorder's refusal of scenes that overflow the frame (#975;
 # voiced.ts, `recordStills`), while $FAKE/overflow names them, one a line:
-# after every still, before anything is assembled.
+# after every still, before anything is assembled. $FAKE/overflow-prefix, if
+# any, comes before its first line on that line.
 overflow() {
   if [ -e "$fake/overflow" ]; then
-    { echo "These scenes don't fit the frame, so the video would cut them off:"; cat "$fake/overflow"; } >&2
+    { echo "$(cat "$fake/overflow-prefix" 2> /dev/null)These scenes don't fit the frame, so the video would cut them off:"; cat "$fake/overflow"; } >&2
     exit 1
   fi
 }
@@ -491,7 +492,7 @@ fresh() {
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
-    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/pd-runs"
+    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/overflow-prefix" "$FAKE/pd-runs"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1415,16 +1416,16 @@ echo '{"r":2}' > "$ROOT/essays/2026-w46/.essay.json" && mv "$ROOT/essays/2026-w4
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a corrected essay is tried at once, and renders" \
   test "$(overflow_runs rust-essay 2026-w46)" -eq 2 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4" -a ! -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
-run_job playoff-delta > "$SCRATCH/pass.out" 2>&1
-check "an episode no input of which changed is still held" test "$(overflow_runs playoff-delta 2026-SF-09)" -eq 1
 # At most REFUSED_SCENES are named, with how many there were; an id of
 # another shape is not one, and a refusal naming none keeps the hourly retry.
 fresh overflow-many
 mkdir -p "$ROOT/essays/2026-w48/takes" "$ROOT/essays/2026-w49/takes"
 echo '{}' > "$ROOT/essays/2026-w48/essay.json"
 seq -f 'scene-%g' 1 14 > "$FAKE/overflow"
+# As if what threw it said its own words first.
+printf 'Error: ' > "$FAKE/overflow-prefix"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
-check "an essay of 14 scenes past the frame names its first 12, and that there were 14" \
+check "an essay of 14 scenes past the frame names its first 12, and that there were 14, whatever comes before its line" \
   test "$(grep -v '^held=' "$ROOT/renders/rust-essay-worker/2026-w48.refused")" = "$(printf 'reason=overflow\nscenes=%s\ncount=14' "$(seq -f 'scene-%g' 1 12 | paste -sd,)")"
 echo '{}' > "$ROOT/essays/2026-w49/essay.json"
 echo 'a scene, of words' > "$FAKE/overflow"

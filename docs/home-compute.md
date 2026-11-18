@@ -46,8 +46,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    missing or stale decision" cases.
 7. **Nothing does work it does not need: a failure that would come out the
    same is not tried again.** A video the render policy refused (too long,
-   too large, or scenes that don't fit the frame, which the essay's bytes
-   and the image's stage and fonts alone decide, #975: the recorder's own refusal, for the same input recorded with
+   too large, or scenes past the frame, #975: the recorder's own refusal,
+   for the same input recorded with
    the same flags by the same recorders and speaker over the same brand
    files, is the same refusal) is held in `<status>/<key>.refused` with what
    its last attempt was refused for, and tried again only once one of those
@@ -55,8 +55,7 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    counts: an earlier attempt of the same job refused is not what a later
    one failed of. Every other
    failure may clear on its own and is tried again an hour after it.
-   Held by `render-calls.test.sh`'s refusal cases (RF1, #928; its overflow
-   case for every job that records stills, #975).
+   Held by `render-calls.test.sh`'s refusal cases (RF1, #928; #975).
 
 ## Classes: who is low priority, and what that means
 

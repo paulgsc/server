@@ -1229,13 +1229,21 @@ refusal() {
   local log=$1 held=$2 from=${3:-0} line scenes
   line=$(tail -c +"$(( from + 1 ))" "$log" | grep -oE "$REFUSED_LONG|$REFUSED_LARGE|$REFUSED_FIT" | tail -n 1)
   if [ "$line" = "$REFUSED_FIT" ]; then
-    # The ids on the lines after the attempt's last such line, up to the
-    # first that is not one.
-    scenes=$(tail -c +"$(( from + 1 ))" "$log" | awk -v head="$REFUSED_FIT" -v id="$SCENE_ID" '
-      $0 == head { n = 0; on = 1; next }
-      on && $0 ~ id { ids[++n] = $0; next }
-      { on = 0 }
-      END { for (i = 1; i <= n; i++) print ids[i] }')
+    # The ids on the lines after the attempt's last line holding it, up to
+    # the first that is not one. Matched by bash, as the other refusals are,
+    # never by the image's awk.
+    local text listing=0
+    scenes=
+    while IFS= read -r text; do
+      if [[ "$text" == *"$REFUSED_FIT"* ]]; then
+        listing=1 scenes=
+      elif [ "$listing" = 1 ] && [[ "$text" =~ $SCENE_ID ]]; then
+        scenes+=$text$'\n'
+      else
+        listing=0
+      fi
+    done < <(tail -c +"$(( from + 1 ))" "$log")
+    scenes=${scenes%$'\n'}
     [ -n "$scenes" ] || return 1
     printf 'reason=overflow\nscenes=%s\ncount=%s\nheld=%s\n' \
       "$(head -n "$REFUSED_SCENES" <<< "$scenes" | paste -sd,)" "$(wc -l <<< "$scenes")" "$held"
