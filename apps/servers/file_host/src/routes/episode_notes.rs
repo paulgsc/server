@@ -10,7 +10,12 @@
 //!                              take, writtenAt, storedAt }] }: oldest first
 //! ```
 //!
-//! `:feed` is `call` or `playoff-delta` (`feeds::Feed`); any other is `404`.
+//! `:feed` is any feed home makes videos of (`feeds::Feed`: `call`,
+//! `cards-essay`, `interview-essay`, `playoff-delta`, `report`,
+//! `rust-essay`), with no list of feeds that take notes (paulgsc/server#983);
+//! a name that is no feed is `404`. Before contract epoch 18 only `call` and
+//! `playoff-delta` took notes, so a phone built at 18 or later is the one
+//! that offers notes on the rest (`contract::CONTRACT_EPOCH`).
 //!
 //! **Trust model:** a subject route, as `routes::routine`: a paired phone's
 //! or a browser's session. A request without a session is `401`, and a write

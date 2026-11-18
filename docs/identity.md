@@ -2535,8 +2535,9 @@ nowhere is marked as such and belongs to review.
 38. **The owner's notes on the feeds' episodes are append-only, one per id,
     and name a take only by id.** `episode_note` keeps each note the phone's
     Feedback page left at a moment of a feed's episode and sent home
-    (paulgsc/some-ui#2745, SFEED6): the phone's id for it, the feed (`call`
-    or `playoff-delta`), the episode's key, the moment in milliseconds from
+    (paulgsc/some-ui#2745, SFEED6): the phone's id for it, the feed (any feed
+    home makes videos of, `file_host::feeds::Feed`, with no list of feeds
+    that take notes: paulgsc/server#983), the episode's key, the moment in milliseconds from
     its start (at most a day), the categories picked from the fixed set of fourteen (each
     once, in the set's order, at least one: the phone's `NoteSchema`, held
     again by a trigger on the table), the voice note id of the library take

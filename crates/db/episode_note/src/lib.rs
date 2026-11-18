@@ -1,6 +1,6 @@
 //! The owner's notes on the feeds' episodes (paulgsc/some-ui#2745, SFEED6):
-//! each note the phone's Feedback page left at a moment of a weekly call or
-//! Playoff Delta episode, sent home by its drain.
+//! each note the phone's Feedback page left at a moment of an episode of any
+//! feed home makes videos of (paulgsc/server#983), sent home by its drain.
 //!
 //! `20261108075000_create_episode_note.up.sql` records the design; in short:
 //!
@@ -55,8 +55,12 @@ pub const CATEGORIES: [&str; 14] = [
 	"subtitlesOff",
 ];
 
-/// The feeds a note can be about (`file_host::feeds::Feed`).
-pub const FEEDS: [&str; 2] = ["call", "playoff-delta"];
+/// The most characters of a feed's name. Which feeds there are is
+/// `file_host::feeds::Feed`'s, which `handlers::episode_notes` asks before it
+/// writes; this crate holds a feed's name to its shape only (as the
+/// migration's CHECK does), so a feed added there takes notes with no change
+/// here (paulgsc/server#983).
+const MAX_FEED_CHARS: usize = 32;
 
 /// The most characters of the phone's id for a note.
 const MAX_ID_CHARS: usize = 64;
@@ -131,7 +135,7 @@ pub const REWRITTEN: &str = "this note id already holds a different note: the re
 pub struct Note {
 	/// The phone's id for it: what makes a retried send store nothing.
 	pub id: String,
-	/// `call` or `playoff-delta`.
+	/// The feed whose episode it is about, as the routes name it.
 	pub feed: String,
 	/// The episode's key, as home lists it.
 	pub episode: String,
@@ -184,6 +188,12 @@ fn is_id(text: &str) -> bool {
 /// An episode's key: one plain path segment (`2026-10-30`, `2026-SF-08`).
 fn is_episode(text: &str) -> bool {
 	!text.is_empty() && text.len() <= MAX_EPISODE_CHARS && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// A feed's name, as the routes write one and the migration's CHECK holds it:
+/// 1 to 32 lowercase letters, digits or `-`.
+fn is_feed(text: &str) -> bool {
+	!text.is_empty() && text.len() <= MAX_FEED_CHARS && text.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// A voice note's id, as `voice_repo::is_note_id` reads one and the
@@ -246,7 +256,7 @@ pub fn parse(feed: &str, id: &str, body: &[u8]) -> Result<Note, Vec<Problem>> {
 	} else if wire.id != id {
 		problems.push(("id", "must be the id the path names"));
 	}
-	if !FEEDS.contains(&wire.feed.as_str()) || wire.feed != feed {
+	if !is_feed(&wire.feed) || wire.feed != feed {
 		problems.push(("feed", "must be the feed the path names"));
 	}
 	if !is_episode(&wire.episode) {

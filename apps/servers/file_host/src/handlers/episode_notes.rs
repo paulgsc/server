@@ -26,11 +26,10 @@ use sqlx::SqlitePool;
 use tracing::instrument;
 
 fn feed(name: &str) -> Result<Feed, FileHostError> {
-	// Notes are on the call's and Playoff Delta's episodes only
-	// (`episode_note`'s CHECK): an essay's feed and a cards essay's have none.
-	Feed::parse(name)
-		.filter(|feed| matches!(feed, Feed::Call | Feed::PlayoffDelta))
-		.ok_or(FileHostError::NotFound)
+	// A note is taken on any feed's episodes, by its being a feed
+	// (paulgsc/server#983: "the note is generic over the video"): there is no
+	// list of feeds that take notes, so a feed added to `Feed` takes them.
+	Feed::parse(name).ok_or(FileHostError::NotFound)
 }
 
 /// `GET /feeds/:feed/notes`
@@ -44,7 +43,7 @@ pub struct Notes {
 /// episodes, oldest written first.
 ///
 /// # Errors
-/// 401 without a session, 404 for a feed home does not render, and 500 for
+/// 401 without a session, 404 for a name that is no feed, and 500 for
 /// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "episode_notes_get", skip_all, fields(otel.kind = "server"))]
@@ -86,8 +85,8 @@ fn refusal(err: episode_note_repo::NoteError) -> FileHostError {
 /// twice. The same note again changes nothing.
 ///
 /// # Errors
-/// 401 without a session, 403 from an untrusted origin, 404 for a feed home
-/// does not render, 422 naming each refused field (a category outside the
+/// 401 without a session, 403 from an untrusted origin, 404 for a name that
+/// is no feed, 422 naming each refused field (a category outside the
 /// set or out of its order, a moment or a time that is not one), 409 for a
 /// different note under a held id, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
@@ -288,6 +287,49 @@ mod tests {
 		assert_eq!(pd["notes"][0]["id"], "pd");
 	}
 
+	/// paulgsc/server#983: every feed home makes videos of takes a note, by
+	/// one path, and files it for the mailbox as the call's is.
+	#[tokio::test]
+	async fn every_feed_takes_a_note_by_the_same_path() {
+		let state = state().await;
+		let phone = session(&state, A).await;
+		let feeds = [
+			crate::feeds::Feed::Call,
+			crate::feeds::Feed::PlayoffDelta,
+			crate::feeds::Feed::RustEssay,
+			crate::feeds::Feed::InterviewEssay,
+			crate::feeds::Feed::CardsEssay,
+			crate::feeds::Feed::Report,
+		];
+		for feed in feeds {
+			// The match makes a feed added to `Feed` fail here until it is listed.
+			match feed {
+				crate::feeds::Feed::Call
+				| crate::feeds::Feed::PlayoffDelta
+				| crate::feeds::Feed::RustEssay
+				| crate::feeds::Feed::InterviewEssay
+				| crate::feeds::Feed::CardsEssay
+				| crate::feeds::Feed::Report => {}
+			}
+			let name = feed.as_str();
+			let mut sent = note(&(String::from("n-") + name), &["pacing"]);
+			sent["feed"] = json!(name);
+			sent["episode"] = json!("2026-w46");
+			assert_eq!(
+				put(&state, Some(&phone), name, &sent).await,
+				(StatusCode::OK, json!({ "change": "added", "note": sent })),
+				"{name}"
+			);
+			let (status, body) = get(&state, Some(&phone), name).await;
+			assert_eq!(status, StatusCode::OK, "{name}");
+			assert_eq!(body["notes"].as_array().unwrap().len(), 1, "{name}: its own feed's only");
+		}
+		let mut conn = state.pool.acquire().await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		assert_eq!(pending.len(), feeds.len(), "each filed for the mailbox");
+		assert!(pending.iter().all(|file| file.folder == "feedback"));
+	}
+
 	#[tokio::test]
 	async fn a_refused_note_writes_and_files_nothing() {
 		let state = state().await;
@@ -296,7 +338,6 @@ mod tests {
 		assert_eq!(get(&state, None, "call").await.0, StatusCode::UNAUTHORIZED);
 		assert_eq!(put(&state, Some(&phone), "podcast", &note("n1", &["shallow"])).await.0, StatusCode::NOT_FOUND);
 		assert_eq!(get(&state, Some(&phone), "podcast").await.0, StatusCode::NOT_FOUND);
-		assert_eq!(get(&state, Some(&phone), "cards-essay").await.0, StatusCode::NOT_FOUND, "a cards essay has no notes");
 		let mut early = note("n3", &["shallow"]);
 		early["atMs"] = json!(-5);
 		let mut no_time = note("n4", &["shallow"]);
