@@ -527,7 +527,7 @@ nowhere is marked as such and belongs to review.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
    exists and its write.** A deletion, or a sign-out everywhere, holds it
-   exclusively for its one transaction. There are four such writers today:
+   exclusively for its one transaction. There are six such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
@@ -549,6 +549,12 @@ nowhere is marked as such and belongs to review.
      subject's `account` row (`nothing_is_written_for_a_deleted_subject`,
      `a_write_waits_out_a_deletion_in_flight`). It never holds the lock
      across a request to the mailbox (invariant 19).
+   - the Jobs notice (`jobs_notice`), which takes the lock around each
+     record of a morning run told and each phone it forgets.
+   - the engagement report's writer (`report_weeks`), which takes the lock,
+     then a connection, around keeping each week, in one statement that
+     checks the subject's `account` row (`app_event_repo::report::keep`;
+     `no_owner_writes_nothing_and_a_week_no_longer_the_owners_leaves_the_drive`).
 
    A new writer of subject-scoped rows outside a request must do the same,
    or its rows can outlive a deleted account. Every hold is short, so a
@@ -2357,7 +2363,9 @@ nowhere is marked as such and belongs to review.
     is written once a week has ended, never updated (a trigger aborts an
     `UPDATE`), and deleted only with the account; its file on the drive,
     `report-weeks/<week>.json`, and the video and work made from it, leave
-    within the minute once the account has gone (`report_weeks::tidy`). Only
+    within the minute once the account has gone (`report_weeks::tidy`), the
+    render worker's logs of it included; with several accounts, once no
+    account holds the week. Only
     `report_weeks` writes it, holding the deletion lock across a statement
     that checks the account stands (invariant 9).
     *Enforced by* `app_event_repo::report`'s

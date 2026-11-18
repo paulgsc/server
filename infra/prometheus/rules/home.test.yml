@@ -1021,7 +1021,36 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: RW1
-              says: "Every pass writing the weekly engagement report for the render worker has failed for 3 hours; file-host-server's log names what failed."
+              says: "Writing the weekly engagement report for the render worker, or removing a week no longer the owner's from home's drive, has failed for 3 hours; file-host-server's log names what failed."
+
+  - name: the engagement report's tidy failing for 3 hours alerts, and its worker silent for 2 hours is stale (RW1)
+    interval: 1m
+    input_series:
+      - series: 'report_weeks_pass_failing{job="file_host"}'
+        values: '0x300'
+      - series: 'report_weeks_tidy_failing{job="file_host"}'
+        values: '1x300'
+      - series: 'report_weeks_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x300'
+    alert_rule_test:
+      - eval_time: 1h55m
+        alertname: ReportWeeksStale
+        exp_alerts: []
+      - eval_time: 2h05m
+        alertname: ReportWeeksStale
+        exp_alerts:
+          - exp_labels:
+              objective: RW1
+              says: "Home has not looked for a week of the engagement report to write for 2 hours (it looks hourly)."
+      - eval_time: 2h55m
+        alertname: ReportWeeksFailing
+        exp_alerts: []
+      - eval_time: 3h05m
+        alertname: ReportWeeksFailing
+        exp_alerts:
+          - exp_labels:
+              objective: RW1
+              says: "Writing the weekly engagement report for the render worker, or removing a week no longer the owner's from home's drive, has failed for 3 hours; file-host-server's log names what failed."
 
   - name: a cards essay whose render failed alerts at once, and one waiting 3 hours unattempted is overdue (CE1)
     interval: 1m

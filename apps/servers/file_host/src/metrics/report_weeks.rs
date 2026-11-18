@@ -2,20 +2,34 @@
 //!
 //! The `report_weeks` worker keeps each ended week's report and gives it to
 //! home's render worker (paulgsc/server#821); these are for the CALL
-//! dashboard's engagement report row and the `ReportWeeksFailing` alert
-//! (`infra/prometheus/rules/home.yml`). No label carries a week: counts and
+//! dashboard's engagement report row and the `ReportWeeksStale` and
+//! `ReportWeeksFailing` alerts (`infra/prometheus/rules/home.yml`). No label carries a week: counts and
 //! flags only.
 
-use crate::report_weeks::{Asked, Pass};
+use crate::report_weeks::{Asked, Pass, Tidied};
 
 #[allow(clippy::cast_precision_loss)] // counts of weeks, far below 2^52
 const fn count(value: usize) -> f64 {
 	value as f64
 }
 
-/// The worker started: its pass reads as not failing until one does.
+/// The worker started: its pass and tidy read as not failing until one does.
 pub fn record_started() {
 	metrics::gauge!("report_weeks_pass_failing").set(0.0);
+	metrics::gauge!("report_weeks_tidy_failing").set(0.0);
+}
+
+/// A pass started: when, for `ReportWeeksStale`.
+#[allow(clippy::cast_precision_loss)] // Unix seconds, far below 2^52
+pub fn record_pass_started() {
+	metrics::gauge!("report_weeks_last_attempt_timestamp_seconds").set(chrono::Utc::now().timestamp() as f64);
+}
+
+/// Whether the minute's tidy failed: storage, or a file of a week no longer
+/// the owner's that the drive would not remove.
+pub fn record_tidy(result: &Result<Tidied, sqlx::Error>) {
+	let failing = !result.as_ref().is_ok_and(|done| done.failed == 0);
+	metrics::gauge!("report_weeks_tidy_failing").set(if failing { 1.0 } else { 0.0 });
 }
 
 /// Whether the pass failed (storage, or a week it could not write to the

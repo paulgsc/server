@@ -7,26 +7,30 @@
 //! `report_week` (`app_event_repo::report`), once. It then gives every week
 //! home holds to the render worker as `<week>.json` in [`REPORTS_FOLDER`],
 //! byte for byte as kept, written in a temporary file and renamed into place
-//! whole. Its `report` job (`infra/render/render-calls.sh`) writes the report
-//! from it by code (`record:report`: `reportWeek` under the owner's
-//! public-safety rule, paulgsc/some-ui#2910, #2915), with no model and no
-//! GitHub leg anywhere, so the same records give the same video.
+//! whole. The render worker's `report` job, which #821's second part adds
+//! to `infra/render/render-calls.sh`, writes the report from it by code
+//! (`record:report`: `reportWeek` under the owner's public-safety rule,
+//! paulgsc/some-ui#2910, #2915), with no model and no GitHub leg anywhere,
+//! so the same records give the same video.
 //!
 //! **Only a week that has ended, and only once** (C191: the recorder refuses
-//! a week still under way). The week asked is the last whole one
-//! ([`last_ended`]), and it is asked only from [`GRACE`] after its end, so
+//! a week still under way). The weeks asked are the last whole one
+//! ([`last_ended`]) and the [`LOOKBACK`] before it that home does not hold
+//! (C573), so a week a down home or a failing pass missed is still written
+//! once home is back; each is asked only from [`GRACE`] after its end, so
 //! what the phone took on Sunday evening and sent home on its next open is
 //! in it. Once a week is kept it is never read again: events that reach home
 //! later are in the next weeks' comparisons, never in this one's report, and
 //! a re-render reads the same bytes. A week with no engagement record before
 //! its end (`measured: false`) is not written: the report needs this week
 //! measured, and an unmeasured week is "no data", never a report of zeros.
-//! It is asked again each pass while it is the last whole week, so records
+//! It is asked again each pass while it is within the lookback, so records
 //! sent home late can still make it.
 //!
 //! **Whose.** The owner's account (`auth::owner`). With no account, every
-//! week on the drive goes, its video and work too ([`tidy`]); with several,
-//! whose is not known, so nothing is written and nothing removed. Each write
+//! week on the drive goes, its video, work and the worker's logs of it too
+//! ([`tidy`]); with several, whose is not known, so nothing is written, and
+//! a week no account holds goes as with none. Each write
 //! of `report_week` holds the deletion lock across its check that the
 //! account stands (docs/identity.md invariant 9), and a week on the drive
 //! that the owner no longer holds leaves within the minute.
@@ -35,14 +39,16 @@
 //! render is the batch work, and it runs on home's lane like every other job
 //! (docs/home-compute.md).
 //!
-//! **What it says.** Each pass, whether it failed, how many weeks home holds
-//! and whether the last whole week had no records to report
-//! (`metrics::report_weeks`): the CALL dashboard's REPORT row and the
-//! `ReportWeeksFailing` alert in `infra/prometheus/rules/home.yml`.
+//! **What it says.** When each pass started, whether it or the minute's tidy
+//! failed, how many weeks home holds and whether the last whole week had no
+//! records to report (`metrics::report_weeks`): the CALL dashboard's "weekly
+//! engagement report" row and the `ReportWeeksStale` and
+//! `ReportWeeksFailing` alerts in `infra/prometheus/rules/home.yml`.
 //!
-//! Cost: every [`INTERVAL`], one read of the weeks held and, while the last
-//! whole week is not held, its weekly read (four range reads of
-//! `app_event_by_family` and one grouped read); one `read_dir` each minute.
+//! Cost: every [`INTERVAL`], one read of the weeks held and, for each of the
+//! [`LOOKBACK`] weeks home does not hold, its weekly read (four range reads
+//! of `app_event_by_family` and one grouped read); three `read_dir`s each
+//! minute.
 
 use crate::auth::owner::Owner;
 use crate::auth::DeletionLock;
@@ -80,6 +86,13 @@ pub const TICK: Duration = Duration::from_secs(60);
 /// Sunday-evening records, sent home when it next opens, are in it.
 pub const GRACE: Duration = Duration::from_secs(24 * 3600);
 
+/// How many whole weeks each pass asks, the last whole week among them.
+///
+/// A week home missed (down, or failing) for up to this many weeks is still
+/// written once it is back (C573). Bounded, so a pass is at most this many
+/// weekly reads, and a week older than this is never asked.
+pub const LOOKBACK: i64 = 4;
+
 const _: () = assert!(TICK.as_secs() <= INTERVAL.as_secs());
 
 /// Start the worker.
@@ -111,19 +124,21 @@ pub fn start(state: &AppState) {
 				}
 				_ = ticker.tick() => {
 					let owner = crate::auth::owner::owner(&db).await;
-					if let Ok(owner) = &owner {
-						match tidy(&db, owner, &folders).await {
-							Ok(tidied) if tidied.failed > 0 => warn!(failed = tidied.failed, "report weeks: files that could not be removed are tried again next minute"),
-							Ok(_) => {}
-							Err(_) => error!(error = "storage", "report weeks tidy failed"),
-						}
-					} else {
-						error!(error = "storage", "report weeks cannot read the owner");
+					let tidied = match &owner {
+						Ok(owner) => tidy(&db, owner, &folders).await,
+						Err(_) => Err(sqlx::Error::Protocol(String::from("the owner does not read"))),
+					};
+					crate::metrics::report_weeks::record_tidy(&tidied);
+					match tidied {
+						Ok(tidied) if tidied.failed > 0 => warn!(failed = tidied.failed, "report weeks: files that could not be removed are tried again next minute"),
+						Ok(_) => {}
+						Err(_) => error!(error = "storage", "report weeks tidy failed"),
 					}
 					if last.is_some_and(|last| last.elapsed() < INTERVAL) {
 						continue;
 					}
 					last = Some(tokio::time::Instant::now());
+					crate::metrics::report_weeks::record_pass_started();
 					let result = match owner {
 						Ok(owner) => run_once(&db, &deletion, &owner, &folders, Utc::now()).await,
 						Err(err) => Err(err),
@@ -146,6 +161,8 @@ pub struct Folders {
 	pub renders: PathBuf,
 	/// [`WORK_FOLDER`]: a waiting week's work and step cache.
 	pub work: PathBuf,
+	/// [`STATUS_FOLDER`]: the worker's logs of each week's attempts.
+	pub status: PathBuf,
 }
 
 impl Folders {
@@ -156,6 +173,7 @@ impl Folders {
 			reports: PathBuf::from(REPORTS_FOLDER),
 			renders: PathBuf::from(RENDERS_FOLDER),
 			work: PathBuf::from(WORK_FOLDER),
+			status: PathBuf::from(STATUS_FOLDER),
 		}
 	}
 }
@@ -181,7 +199,10 @@ pub enum Asked {
 pub struct Pass {
 	/// The last whole week, `2026-W46`.
 	pub week: String,
+	/// What the pass made of it.
 	pub asked: Asked,
+	/// Weeks kept this pass, the last whole one or one before it.
+	pub written: usize,
 	/// Weeks the owner holds.
 	pub held: usize,
 	/// Weeks written to the drive for the render worker this pass.
@@ -209,17 +230,25 @@ pub async fn run_once(db: &SqlitePool, deletion: &DeletionLock, owner: &Owner, f
 		return Ok(Pass {
 			week: week.label(),
 			asked: Asked::NoOwner,
+			written: 0,
 			held: 0,
 			exported: 0,
 			failed: 0,
 		});
 	};
 	let stamp = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-	let asked = ask(db, deletion, subject, week, &stamp).await?;
+	// Oldest first, so the weeks are kept in their order; the last whole
+	// week's answer is the pass's.
+	let (mut asked, mut written) = (Asked::Waiting, 0);
+	for back in (0..LOOKBACK).rev() {
+		asked = ask(db, deletion, subject, week.back(back), &stamp).await?;
+		written += usize::from(asked == Asked::Written);
+	}
 	let (held, exported, failed) = export(db, subject, folders).await?;
 	Ok(Pass {
 		week: week.label(),
 		asked,
+		written,
 		held,
 		exported,
 		failed,
@@ -228,11 +257,13 @@ pub async fn run_once(db: &SqlitePool, deletion: &DeletionLock, owner: &Owner, f
 
 /// Keeps `week` for `subject` if it is whole, measured and not held yet.
 async fn ask(db: &SqlitePool, deletion: &DeletionLock, subject: &str, week: IsoWeek, now: &str) -> Result<Asked, sqlx::Error> {
-	let mut conn = db.acquire().await?;
-	if report::held(&mut conn, subject).await?.contains(&week.label()) {
-		return Ok(Asked::Held);
-	}
-	let weekly = app_event_repo::weekly(&mut conn, subject, week, now).await.map_err(storage)?;
+	let weekly = {
+		let mut conn = db.acquire().await?;
+		if report::holds(&mut conn, subject, &week.label()).await? {
+			return Ok(Asked::Held);
+		}
+		app_event_repo::weekly(&mut conn, subject, week, now).await.map_err(storage)?
+	};
 	let Some(this) = weekly.weeks.first() else {
 		return Err(sqlx::Error::Protocol(String::from("the weekly read has no week")));
 	};
@@ -247,7 +278,11 @@ async fn ask(db: &SqlitePool, deletion: &DeletionLock, subject: &str, week: IsoW
 	let mut body = Vec::new();
 	serde_json::to_writer(&mut body, &weekly).map_err(|_| sqlx::Error::Protocol(String::from("the weekly read does not serialise")))?;
 	let body = String::from_utf8(body).map_err(|_| sqlx::Error::Protocol(String::from("the weekly read is not UTF-8")))?;
+	// The deletion lock first, then a connection, as every writer takes
+	// them (docs/identity.md invariant 9): a deletion waiting for the lock
+	// never waits on a connection this holds.
 	let _hold = deletion.hold().await;
+	let mut conn = db.acquire().await?;
 	Ok(match report::keep(&mut conn, subject, week, &body, now).await? {
 		Kept::Added => Asked::Written,
 		Kept::Held => Asked::Held,
@@ -313,9 +348,11 @@ pub struct Tidied {
 /// Each minute, the drive brought in line with what the owner holds.
 ///
 /// A week on the drive the owner does not hold (their account was deleted,
-/// or none stands) leaves it, its file, its video and its work, and so does a
-/// `.partial` an export left half way. With several accounts, whose is not
-/// known, so nothing is removed on a guess.
+/// or none stands) leaves it: its file, its video, its work and the worker's
+/// logs of it (`<week>.failed.log`, `<week>.refused`, an attempt's
+/// `.<week>.log`), and so does a `.partial` an export left half way. With
+/// several accounts, whose is not known, so a week goes only once no account
+/// holds it.
 ///
 /// # Errors
 /// A storage failure.
@@ -326,7 +363,7 @@ pub async fn tidy(db: &SqlitePool, owner: &Owner, folders: &Folders) -> Result<T
 	let held = match owner {
 		Owner::Subject(subject) => report::held(&mut *db.acquire().await?, subject).await?,
 		Owner::NoAccount => Vec::new(),
-		Owner::Several => return Ok(Tidied::default()),
+		Owner::Several => report::held_by_anyone(&mut *db.acquire().await?).await?,
 	};
 	let mut done = Tidied::default();
 	let mut on_drive = Vec::new();
@@ -350,6 +387,18 @@ pub async fn tidy(db: &SqlitePool, owner: &Owner, folders: &Folders) -> Result<T
 			}
 		}
 	}
+	let mut logs = Vec::new();
+	if let Ok(mut entries) = tokio::fs::read_dir(&folders.status).await {
+		while let Ok(Some(entry)) = entries.next_entry().await {
+			let name = entry.file_name().to_string_lossy().into_owned();
+			if let Some(week) = log_week(&name) {
+				if !on_drive.contains(&week) {
+					on_drive.push(week.clone());
+				}
+				logs.push((week, entry.path()));
+			}
+		}
+	}
 	for week in on_drive {
 		if held.contains(&week) {
 			continue;
@@ -359,8 +408,20 @@ pub async fn tidy(db: &SqlitePool, owner: &Owner, folders: &Folders) -> Result<T
 		for dir in [folders.renders.join(&week), folders.work.join(&week)] {
 			done.failed += usize::from(crate::feeds::videos::remove_dir(&dir).await.is_err());
 		}
+		for (_, log) in logs.iter().filter(|(of, _)| *of == week) {
+			done.failed += usize::from(remove_file(log).await.is_err());
+		}
 	}
 	Ok(done)
+}
+
+/// The week a worker's file in the status folder is of: `<week>.<anything>`
+/// or an attempt's `.<week>.<anything>`; `None` for its own files
+/// (`last-pass`, `work.cache.log`).
+fn log_week(name: &str) -> Option<String> {
+	let name = name.strip_prefix('.').unwrap_or(name);
+	let (week, rest) = (name.get(..8)?, name.get(8..)?);
+	(rest.starts_with('.') && IsoWeek::parse(week).is_some()).then(|| week.to_owned())
 }
 
 /// Removes a file; one already gone is fine.
@@ -406,8 +467,9 @@ mod tests {
 			reports: dir.join("report-weeks"),
 			renders: dir.join("renders/report"),
 			work: dir.join("renders/report-work"),
+			status: dir.join("renders/report-worker"),
 		};
-		for folder in [&folders.reports, &folders.renders, &folders.work] {
+		for folder in [&folders.reports, &folders.renders, &folders.work, &folders.status] {
 			std::fs::create_dir_all(folder).unwrap();
 		}
 		folders
@@ -476,6 +538,41 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_week_a_down_home_missed_is_written_once_it_is_back_within_the_lookback() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		let lock = DeletionLock::default();
+		for (id, at) in [("e1", "2026-10-20T09:00:00.000Z"), ("e2", "2026-10-27T09:00:00.000Z"), ("e3", "2026-11-10T09:00:00.000Z")] {
+			taken(&pool, id, at).await;
+		}
+		// Home was down from W43's end until three weeks later: W43 to W46
+		// are asked, oldest first, and W45, measured but empty, is a report too.
+		let done = run_once(&pool, &lock, &me(), &folders, at("2026-11-17T09:00:00.000Z")).await.unwrap();
+		assert_eq!((done.week.as_str(), done.asked, done.written, done.held), ("2026-W46", Asked::Written, 4, 4));
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(report::held(&mut conn, ME).await.unwrap(), ["2026-W43", "2026-W44", "2026-W45", "2026-W46"]);
+		drop(conn);
+		// A week older than the lookback is never asked.
+		let (pool, dir) = (super::tests::pool().await, tempfile::tempdir().unwrap());
+		let folders = super::tests::folders(dir.path());
+		taken(&pool, "e1", "2026-10-13T09:00:00.000Z").await;
+		let done = run_once(&pool, &lock, &me(), &folders, at("2026-11-17T09:00:00.000Z")).await.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(done.written, 4);
+		assert!(!report::held(&mut conn, ME).await.unwrap().contains(&String::from("2026-W42")), "W42 is past the lookback");
+	}
+
+	#[test]
+	fn a_workers_file_is_of_the_week_its_name_starts_with() {
+		assert_eq!(log_week("2026-W46.failed.log").as_deref(), Some("2026-W46"));
+		assert_eq!(log_week(".2026-W46.log").as_deref(), Some("2026-W46"));
+		assert_eq!(log_week("2026-W46.refused").as_deref(), Some("2026-W46"));
+		for not in ["last-pass", "work.cache.log", "2026-W4.log", "2026-W46", "2026-w46.log", ""] {
+			assert_eq!(log_week(not), None, "{not}");
+		}
+	}
+
+	#[tokio::test]
 	async fn a_week_under_way_or_unmeasured_is_never_written() {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let folders = folders(dir.path());
@@ -515,6 +612,9 @@ mod tests {
 		assert_eq!(tidy(&pool, &Owner::Several, &folders).await.unwrap(), Tidied::default());
 		assert!(file_of(&folders.reports, "2026-W46").exists());
 		// The owner's own week stays; a half-written one goes.
+		std::fs::write(folders.status.join("2026-W46.failed.log"), b"its attempt").unwrap();
+		std::fs::write(folders.status.join(".2026-W46.log"), b"an attempt").unwrap();
+		std::fs::write(folders.status.join("last-pass"), b"1").unwrap();
 		assert_eq!(tidy(&pool, &me(), &folders).await.unwrap(), Tidied::default());
 		assert!(file_of(&folders.reports, "2026-W46").exists() && folders.renders.join("2026-W46").exists());
 		assert!(!folders.reports.join(".2026-W47.json.partial").exists());
@@ -529,6 +629,11 @@ mod tests {
 			"its video and work go too"
 		);
 		assert!(folders.reports.join("notes.txt").exists(), "what is not a week is not touched");
+		assert!(
+			!folders.status.join("2026-W46.failed.log").exists() && !folders.status.join(".2026-W46.log").exists(),
+			"nor its logs"
+		);
+		assert!(folders.status.join("last-pass").exists(), "the worker's own files stay");
 		// A subject whose account went writes nothing, even asked by name
 		// with a record of the week that outlived it.
 		taken(&pool, "e2", "2026-11-11T09:00:00.000Z").await;

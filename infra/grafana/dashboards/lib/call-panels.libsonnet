@@ -372,13 +372,15 @@ local count(title, description, expr, steps) =
 
   reportWeeks: {
     title: 'Engagement report: weeks held, a week with no records, and writing failing',
-    description: "Over time: the weeks of the engagement report home holds (report_week, each written once, a day after its week ends, to report-weeks/<week>.json on the database drive), whether the last whole week had no engagement record before its end (no data, so no report), and whether home's last pass failed. ReportWeeksFailing fires after 3 hours failing.",
+    description: "Over time: the weeks of the engagement report home holds (report_week, each written once, a day after its week ends, to report-weeks/<week>.json on the database drive), whether the last whole week had no engagement record before its end (no data, so no report), and whether home's last pass, or its minute's removal of a week no longer the owner's, failed. ReportWeeksFailing fires after 3 hours failing, ReportWeeksStale after 2 hours with no pass.",
     type: 'timeseries',
     datasource: ds,
     targets: [
       { expr: 'report_weeks_held', legendFormat: 'weeks held', refId: 'A' },
       { expr: 'report_weeks_unmeasured', legendFormat: 'last week had no records', refId: 'B' },
       { expr: 'report_weeks_pass_failing', legendFormat: 'writing failing', refId: 'C' },
+      { expr: 'report_weeks_tidy_failing', legendFormat: 'removing failing', refId: 'D' },
+      { expr: 'time() - report_weeks_last_attempt_timestamp_seconds', legendFormat: 'seconds since a pass', refId: 'E', hide: true },
     ],
     fieldConfig: {
       defaults: {

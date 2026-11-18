@@ -72,6 +72,30 @@ pub async fn held(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Stri
 		.await
 }
 
+/// Whether `subject` holds a report of `week`, without reading its body.
+///
+/// # Errors
+/// A storage failure.
+pub async fn holds(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<bool, sqlx::Error> {
+	Ok(
+		sqlx::query_scalar!(r#"SELECT 1 AS "held!: i64" FROM report_week WHERE subject_id = ?1 AND week = ?2"#, subject, week)
+			.fetch_optional(&mut *conn)
+			.await?
+			.is_some(),
+	)
+}
+
+/// Every week any subject holds a report of, oldest first: what the drive
+/// may keep while whose a week is is not known (several accounts).
+///
+/// # Errors
+/// A storage failure.
+pub async fn held_by_anyone(conn: &mut SqliteConnection) -> Result<Vec<String>, sqlx::Error> {
+	sqlx::query_scalar!(r#"SELECT DISTINCT week AS "week!: String" FROM report_week ORDER BY week"#)
+		.fetch_all(&mut *conn)
+		.await
+}
+
 /// `subject`'s report of `week`, as written, if home holds one.
 ///
 /// # Errors
