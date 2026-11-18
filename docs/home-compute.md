@@ -46,7 +46,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    missing or stale decision" cases.
 7. **Nothing does work it does not need: a failure that would come out the
    same is not tried again.** A video the render policy refused (too long,
-   too large: the recorder's own refusal, for the same input recorded with
+   too large, or scenes past the frame, #975: the recorder's own refusal,
+   for the same input recorded with
    the same flags by the same recorders and speaker over the same brand
    files, is the same refusal) is held in `<status>/<key>.refused` with what
    its last attempt was refused for, and tried again only once one of those
@@ -54,7 +55,7 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    counts: an earlier attempt of the same job refused is not what a later
    one failed of. Every other
    failure may clear on its own and is tried again an hour after it.
-   Held by `render-calls.test.sh`'s refusal cases (RF1, #928).
+   Held by `render-calls.test.sh`'s refusal cases (RF1, #928; #975).
 
 ## Classes: who is low priority, and what that means
 
@@ -274,8 +275,9 @@ way; CI runs it on every PR.
 - **A failure is tried again an hour later; a refusal by the policy once
   what it was refused for changes** (invariant 7). A refusal keeps
   `<key>.refused` beside its `failed.log`: its reason (`too-long` with the
-  minutes and the cap, or `too-large` with the MB and the cap; the
-  recorder's numbers, never its words) and `held`, one sum, taken before
+  minutes and the cap, `too-large` with the MB and the cap, or `overflow`
+  with the scenes past the frame, at most twelve by id, and how many; the
+  recorder's numbers and ids, never its words) and `held`, one sum, taken before
   each attempt, of every flag the recorder is handed (the job's caps among
   them), the render and speaker images (`RENDER_IMAGE`, `KOKORO_IMAGE`, the
   release's pins), and each input's and brand file's name, size and time. A
