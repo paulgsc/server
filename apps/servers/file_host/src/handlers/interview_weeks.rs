@@ -18,7 +18,9 @@
 //!
 //! **A week's record, silence included**: each question answered or not and
 //! each card read or not, with its take (a voice note, by id, never audio),
-//! read from the week and the send that stands. Not answering is an answer,
+//! read from the week and the send that stands, and each question's first
+//! take, the earliest note said for it, which the phone sends home on its own
+//! and no send need name (IW8, `voice_repo::interview`). Not answering is an answer,
 //! so the record names every question and card no take answered whether or
 //! not the phone ever sent anything.
 //!
@@ -114,6 +116,20 @@ pub struct QuestionRecord {
 	/// (`rust_round_repo::interview::Rung`, paulgsc/some-ui#3175, IW8):
 	/// passed through for the essay, never a score.
 	pub rung: Option<Rung>,
+	/// Its first take, the earliest `interview` note said for it
+	/// (`voice_repo::interview::firsts`, IW8), sent home on its own whether
+	/// or not a send names it; null when home holds none.
+	pub first: Option<FirstTake>,
+}
+
+/// A question's first take, in a week's record.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstTake {
+	/// The note's id.
+	pub take: String,
+	/// When the phone recorded it.
+	pub recorded_at: String,
 }
 
 /// One teleprompter card of a week's record.
@@ -303,6 +319,7 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 		return Ok(None);
 	};
 	let sent = draft::standing::<Sent>(&mut *conn, subject, &week.id).await?;
+	let mut firsts = voice_repo::interview::firsts(&mut *conn, subject, &week.id).await?;
 	let (answers, reads) = sent.as_ref().map_or((&[][..], &[][..]), |held| (held.sent.answers.as_slice(), held.sent.reads.as_slice()));
 	let mut unanswered = Vec::new();
 	let questions = week
@@ -314,6 +331,13 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 			if answer.is_none() {
 				unanswered.push(question.clone());
 			}
+			let first = firsts.iter().position(|first| first.question == question).map(|at| {
+				let first = firsts.swap_remove(at);
+				FirstTake {
+					take: first.take,
+					recorded_at: first.recorded_at,
+				}
+			});
 			QuestionRecord {
 				question,
 				ground,
@@ -321,6 +345,7 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 				take: answer.map(|answer| answer.take.clone()),
 				recorded_at: answer.map(|answer| answer.recorded_at.clone()),
 				rung: answer.and_then(|answer| answer.rung),
+				first,
 			}
 		})
 		.collect();
@@ -625,8 +650,8 @@ mod tests {
 		assert_eq!(
 			record["questions"],
 			json!([
-				{ "question": "about-you", "ground": "open", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"], "rung": "cues" },
-				{ "question": "a-conflict", "ground": null, "answered": false, "take": null, "recordedAt": null, "rung": null },
+				{ "question": "about-you", "ground": "open", "answered": true, "take": "n1", "recordedAt": record["questions"][0]["recordedAt"], "rung": "cues", "first": null },
+				{ "question": "a-conflict", "ground": null, "answered": false, "take": null, "recordedAt": null, "rung": null, "first": null },
 			])
 		);
 		assert_eq!((&record["unanswered"], &record["unread"]), (&json!(["a-conflict"]), &json!(["home-first"])));
@@ -669,5 +694,50 @@ mod tests {
 		assert_eq!(again.0, StatusCode::UNPROCESSABLE_ENTITY, "a final week takes no send");
 		let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM interview_week_final").fetch_one(&pool).await.unwrap();
 		assert_eq!(kept, 1);
+	}
+
+	/// IW8: a question's first take goes home on its own, before any send
+	/// names it, and is no error: the record names it as the question's
+	/// `first` while the question stays unanswered, and keeps naming it once
+	/// a send stands on a later take. Another subject's note is not theirs.
+	#[tokio::test]
+	async fn the_record_names_each_questions_first_take_sent_or_not() {
+		let state = state().await;
+		let phone = session(&state, A, Carrier::Bearer).await;
+		hold_week(&state.pool, A, 1, "2026-w47", (&days(-2), &days(5))).await;
+		let first_at = days(-2);
+		for (subject, id, recorded_at) in [(A, "n0", first_at.as_str()), (B, "theirs", &days(-3)), (A, "n1", &days(-1))] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'interview', '2026-w47:about-you', ?3, 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(subject)
+			.bind(id)
+			.bind(recorded_at)
+			.execute(&state.pool)
+			.await
+			.unwrap();
+		}
+		let app = module().into_table_router().with_state(state);
+		let (status, _, record) = call(&app, Method::GET, "/interview-weeks/2026-w47/record", Some(&phone), None, b"").await;
+		assert_eq!(status, StatusCode::OK, "{record}");
+		assert_eq!(record["sent"], json!(null));
+		let first = json!({ "take": "n0", "recordedAt": first_at });
+		assert_eq!(
+			(&record["questions"][0]["answered"], &record["questions"][0]["first"], &record["questions"][1]["first"]),
+			(&json!(false), &first, &json!(null))
+		);
+		let (status, _, _) = call(
+			&app,
+			Method::PUT,
+			"/interview-weeks/2026-w47/sent",
+			Some(&phone),
+			None,
+			&sent("2026-w47", &days(0), &days(-1)),
+		)
+		.await;
+		assert_eq!(status, StatusCode::CREATED);
+		let (_, _, record) = call(&app, Method::GET, "/interview-weeks/2026-w47/record", Some(&phone), None, b"").await;
+		assert_eq!((&record["questions"][0]["take"], &record["questions"][0]["first"]), (&json!("n1"), &first));
 	}
 }
