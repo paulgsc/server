@@ -14,8 +14,8 @@
 //! so the same records give the same video.
 //!
 //! **Only a week that has ended, and only once** (C191: the recorder refuses
-//! a week still under way). The weeks asked are the last whole one
-//! ([`last_ended`]) and the [`LOOKBACK`] before it that home does not hold
+//! a week still under way). The weeks asked are the [`LOOKBACK`] whole
+//! weeks ending with the last one ([`last_ended`]) that home does not hold
 //! (C573), so a week a down home or a failing pass missed is still written
 //! once home is back; each is asked only from [`GRACE`] after its end, so
 //! what the phone took on Sunday evening and sent home on its next open is
@@ -47,8 +47,8 @@
 //!
 //! Cost: every [`INTERVAL`], one read of the weeks held and, for each of the
 //! [`LOOKBACK`] weeks home does not hold, its weekly read (four range reads
-//! of `app_event_by_family` and one grouped read); three `read_dir`s each
-//! minute.
+//! of `app_event_by_family` and one grouped read), after one indexed read
+//! of whether it is held; four `read_dir`s each minute.
 
 use crate::auth::owner::Owner;
 use crate::auth::DeletionLock;
@@ -124,14 +124,17 @@ pub fn start(state: &AppState) {
 				}
 				_ = ticker.tick() => {
 					let owner = crate::auth::owner::owner(&db).await;
-					let tidied = match &owner {
-						Ok(owner) => tidy(&db, owner, &folders).await,
-						Err(_) => Err(sqlx::Error::Protocol(String::from("the owner does not read"))),
+					let tidied = if let Ok(owner) = &owner {
+						tidy(&db, owner, &folders).await
+					} else {
+						error!(error = "storage", "report weeks cannot read the owner");
+						Err(sqlx::Error::Protocol(String::from("the owner does not read")))
 					};
 					crate::metrics::report_weeks::record_tidy(&tidied);
 					match tidied {
 						Ok(tidied) if tidied.failed > 0 => warn!(failed = tidied.failed, "report weeks: files that could not be removed are tried again next minute"),
 						Ok(_) => {}
+						Err(_) if owner.is_err() => {}
 						Err(_) => error!(error = "storage", "report weeks tidy failed"),
 					}
 					if last.is_some_and(|last| last.elapsed() < INTERVAL) {
@@ -219,8 +222,11 @@ pub fn last_ended(now: DateTime<Utc>) -> IsoWeek {
 	IsoWeek::containing(asked.with_timezone(&ZONE).date_naive()).back(1)
 }
 
-/// One pass: keeps the last whole week if home does not hold it, then writes
-/// every week the owner holds that is not on the drive (the module doc).
+/// One pass of the worker (the module doc).
+///
+/// It keeps each of the [`LOOKBACK`] whole weeks ending with the last one
+/// that home does not hold and can (ended, measured), then writes
+/// every week the owner holds that is not on the drive.
 ///
 /// # Errors
 /// A storage failure.
@@ -436,9 +442,9 @@ async fn remove_file(path: &Path) -> std::io::Result<()> {
 /// It names the week, never what it counts.
 fn log_pass(result: &Result<Pass, sqlx::Error>) {
 	match result {
-		Ok(done) if done.asked != Asked::Written && done.exported == 0 && done.failed == 0 => {}
-		Ok(done) if done.failed == 0 => info!(week = %done.week, asked = ?done.asked, held = done.held, exported = done.exported, "report weeks pass"),
-		Ok(done) => warn!(week = %done.week, asked = ?done.asked, held = done.held, exported = done.exported, failed = done.failed, "report weeks pass"),
+		Ok(done) if done.written == 0 && done.exported == 0 && done.failed == 0 => {}
+		Ok(done) if done.failed == 0 => info!(week = %done.week, asked = ?done.asked, written = done.written, held = done.held, exported = done.exported, "report weeks pass"),
+		Ok(done) => warn!(week = %done.week, asked = ?done.asked, written = done.written, held = done.held, exported = done.exported, failed = done.failed, "report weeks pass"),
 		Err(_) => error!(error = "storage", "report weeks pass failed"),
 	}
 }
@@ -608,9 +614,14 @@ mod tests {
 		std::fs::write(folders.reports.join(".2026-W47.json.partial"), b"{").unwrap();
 		std::fs::write(folders.reports.join("notes.txt"), b"not a week").unwrap();
 
-		// Several accounts: whose is not known, so nothing goes.
-		assert_eq!(tidy(&pool, &Owner::Several, &folders).await.unwrap(), Tidied::default());
-		assert!(file_of(&folders.reports, "2026-W46").exists());
+		// Several accounts: whose is not known, so a week goes only once no
+		// account holds it. ME's W46 stays; W45, held by nobody, goes, and so
+		// does a half-written file.
+		std::fs::write(file_of(&folders.reports, "2026-W45"), b"{}").unwrap();
+		assert_eq!(tidy(&pool, &Owner::Several, &folders).await.unwrap(), Tidied { weeks_removed: 1, failed: 0 });
+		assert!(file_of(&folders.reports, "2026-W46").exists() && !file_of(&folders.reports, "2026-W45").exists());
+		assert!(!folders.reports.join(".2026-W47.json.partial").exists());
+		std::fs::write(folders.reports.join(".2026-W47.json.partial"), b"{").unwrap();
 		// The owner's own week stays; a half-written one goes.
 		std::fs::write(folders.status.join("2026-W46.failed.log"), b"its attempt").unwrap();
 		std::fs::write(folders.status.join(".2026-W46.log"), b"an attempt").unwrap();

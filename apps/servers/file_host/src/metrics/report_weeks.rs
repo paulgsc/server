@@ -3,8 +3,8 @@
 //! The `report_weeks` worker keeps each ended week's report and gives it to
 //! home's render worker (paulgsc/server#821); these are for the CALL
 //! dashboard's engagement report row and the `ReportWeeksStale` and
-//! `ReportWeeksFailing` alerts (`infra/prometheus/rules/home.yml`). No label carries a week: counts and
-//! flags only.
+//! `ReportWeeksFailing` alerts (`infra/prometheus/rules/home.yml`). No label
+//! carries a week: counts and flags only.
 
 use crate::report_weeks::{Asked, Pass, Tidied};
 
