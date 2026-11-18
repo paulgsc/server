@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Home's render worker (GWB10, paulgsc/some-ui#2084), with seven jobs, one
+# Home's render worker (GWB10, paulgsc/some-ui#2084), with eight jobs, one
 # loop: the weekly call's (paulgsc/some-ui#2635, ST36), Playoff Delta's
 # (FEED4, paulgsc/some-ui#2647), a template's preview (SFEED12,
 # paulgsc/some-ui#2757), a Rust Rounds essay's (RR16, paulgsc/some-ui#2691),
 # a clip's walk (paulgsc/some-ui#2670's clips, C125), a cards essay's
-# (CARDS7, #854, paulgsc/some-ui#2979, C327) and a week of mock interview's
-# essay (IW6, paulgsc/some-ui#2937, #899).
+# (CARDS7, #854, paulgsc/some-ui#2979, C327), a week of mock interview's
+# essay (IW6, paulgsc/some-ui#2937, #899) and a week's engagement report
+# (ENG12, paulgsc/some-ui#2700, #821).
 # infra/compose/call-render.yml runs it.
 #
 # Each pass, for each job, for each episode file_host has written for it with
@@ -24,6 +25,7 @@
 # | clip-walk     | /clip-walks/<clip>-<side>/{sample.json,app} (clips) | /renders/clip-walk/<clip>-<side>/ | walk.json |
 # | cards-essay   | /cards-essays/<key>.json (cards_essays) | /renders/cards-essay/<key>/ | cards.mp4   |
 # | interview-essay | /interview-essays/<week>/essay.json (essays) | /renders/interview-essay/<week>/ | essay.mp4 |
+# | report        | /report-weeks/<week>.json (report_weeks) | /renders/report/<week>/   | report.mp4  |
 #
 # A week of the call is one video or a series of parts (template version 5,
 # paulgsc/some-ui#2918): each part a video of at most ten minutes, cut at a
@@ -82,6 +84,14 @@
 # screen, its words mattering more than its picture. An older, silent one
 # (v1) still renders, silent. Essays go by their day, oldest first, not by
 # name.
+# A week's engagement report is keyed by its ISO week (2026-W46): file_host
+# gives the worker home's own engagement counts for the week and the three it
+# is compared with, once the week has ended (`report_weeks`), and the
+# recorder writes the report from them by code under the owner's
+# public-safety rule (`record:report`: `reportWeek`, no model), records the
+# report's stage with each scene said by home's speaker and renders it. It
+# refuses, before anything is drawn, a week still under way or edges other
+# than the owner's week. The same file gives the same video.
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -269,12 +279,12 @@ max_minutes() {
   esac
 }
 
-JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay)
+JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay report)
 
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
 # `previews::TEMPLATES`).
-PREVIEW_ID='^(conference-call|playoff-delta-legend|playoff-delta-week|rust-essay)-[0-9]{8}T[0-9]{6}Z$'
+PREVIEW_ID='^(conference-call|engagement-report|playoff-delta-legend|playoff-delta-week|rust-essay)-[0-9]{8}T[0-9]{6}Z$'
 
 # A clip's walk: <clip>-<side>, the clip's id plain (file_host's
 # `clips::pass`), and the app it walks, plain too.
@@ -284,6 +294,9 @@ WALK_APP='^[a-z0-9]+(-[a-z0-9]+)*$'
 # A cards essay: a slug of plain words, then its stamp's day (file_host's
 # `cards_essays::pass::is_key`, some-ui's CARDS_KEY).
 CARDS_KEY='^[a-z0-9]+(-[a-z0-9]+)*-[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+
+# A week's engagement report: its ISO week (file_host's `IsoWeek`).
+REPORT_KEY='^[0-9]{4}-W[0-9]{2}$'
 
 # The job's folders and video's name, as globals: INPUT, RENDERS, STATUS,
 # WORK, VIDEO. The work folder is on the same drive as the videos, not the
@@ -313,6 +326,9 @@ use_job() {
     interview-essay)
       INPUT=$ROOT/interview-essays RENDERS=$ROOT/renders/interview-essay STATUS=$ROOT/renders/interview-essay-worker
       WORK=$ROOT/renders/interview-essay-work VIDEO=essay.mp4 ;;
+    report)
+      INPUT=$ROOT/report-weeks RENDERS=$ROOT/renders/report STATUS=$ROOT/renders/report-worker
+      WORK=$ROOT/renders/report-work VIDEO=report.mp4 ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -376,6 +392,13 @@ episodes() {
         key=$(basename "$entry" .json)
         [[ "$key" =~ $CARDS_KEY ]] && echo "${key: -10} $key"
       done | LC_ALL=C sort | cut -d' ' -f2 ;;
+    report)
+      # A week's name is its order: oldest first.
+      for entry in "$INPUT"/*.json; do
+        [ -e "$entry" ] || continue
+        key=$(basename "$entry" .json)
+        [[ "$key" =~ $REPORT_KEY ]] && echo "$key"
+      done ;;
   esac
 }
 
@@ -512,7 +535,7 @@ holds() {
     preview) [ -e "$INPUT/$2.json" ] ;;
     rust-essay | interview-essay) [ -e "$INPUT/$2/essay.json" ] ;;
     clip-walk) [ -e "$INPUT/$2/sample.json" ] ;;
-    cards-essay) [ -e "$INPUT/$2.json" ] ;;
+    cards-essay | report) [ -e "$INPUT/$2.json" ] ;;
   esac
 }
 
@@ -575,6 +598,13 @@ record() {
       # enough of them (`record:cards`).
       (cd "$APP_DIR" && "$TSX" tests/record/cards.ts "${COMMON[@]}" \
         --cut-list-file "$INPUT/$key.json" --out "$WORK") ;;
+    report)
+      # The report is written from home's counts by the recorder itself
+      # (`reportWeek`); it names the finished folder for the week in --out,
+      # with report.json (the report as drawn) and description.txt (its
+      # chapters) beside the video (`record:report`, paulgsc/some-ui#2915).
+      (cd "$APP_DIR" && "$TSX" tests/record/report.ts "${COMMON[@]}" \
+        --report-file "$INPUT/$key.json" --out "$WORK") ;;
   esac
 }
 
@@ -603,6 +633,7 @@ finished() {
     clip-walk) echo "$WORK/$2" ;;
     cards-essay) echo "$WORK/$2" ;;
     interview-essay) echo "$WORK/$2" ;;
+    report) echo "$WORK/$2" ;;
   esac
 }
 
@@ -714,7 +745,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] && [[ "$LEFT_RESTARTS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay) return 0 ;;
+    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay | report) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1196,7 +1227,7 @@ inputs_of() {
       # one given for a frozen week changes nothing it is made from.
       week_made "$from" || echo "$INPUT/$from.next" ;;
     playoff-delta | rust-essay | interview-essay | clip-walk) echo "$INPUT/$2" ;;
-    preview | cards-essay) echo "$INPUT/$2.json" ;;
+    preview | cards-essay | report) echo "$INPUT/$2.json" ;;
   esac
 }
 

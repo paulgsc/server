@@ -7,8 +7,8 @@
 //! `report_week` (`app_event_repo::report`), once. It then gives every week
 //! home holds to the render worker as `<week>.json` in [`REPORTS_FOLDER`],
 //! byte for byte as kept, written in a temporary file and renamed into place
-//! whole. The render worker's `report` job, which #821's second part adds
-//! to `infra/render/render-calls.sh`, writes the report from it by code
+//! whole. The render worker's `report` job (`infra/render/render-calls.sh`)
+//! writes the report from it by code
 //! (`record:report`: `reportWeek` under the owner's public-safety rule,
 //! paulgsc/some-ui#2910, #2915), with no model and no GitHub leg anywhere,
 //! so the same records give the same video.
@@ -41,9 +41,20 @@
 //!
 //! **What it says.** When each pass started, whether it or the minute's tidy
 //! failed, how many weeks home holds and whether the last whole week had no
-//! records to report (`metrics::report_weeks`): the CALL dashboard's "weekly
-//! engagement report" row and the `ReportWeeksStale` and
-//! `ReportWeeksFailing` alerts in `infra/prometheus/rules/home.yml`.
+//! records to report; each minute, what the render worker has made of the
+//! weeks given ([`observe`], as every job's, `call_weeks::render::tally`)
+//! (`metrics::report_weeks`): the CALL dashboard's "weekly engagement
+//! report" row and the `ReportWeeksStale`, `ReportWeeksFailing`,
+//! `ReportRenderFailed` and `ReportRenderOverdue` alerts in
+//! `infra/prometheus/rules/home.yml`.
+//!
+//! **Kept for the phone, then let go.** The owner watches each week's video
+//! on the phone, records its `YouTube` link and lets home's copy go from My
+//! data, the video first, then the rest of its folder (`feeds::Feed::Report`,
+//! `feeds::videos`), with a receipt each step (`report_video_deletion`). The
+//! video's step takes the week's file out of [`REPORTS_FOLDER`] first, and a
+//! week let go is never written there again, so it is never rendered again;
+//! the week itself stays in `report_week`.
 //!
 //! Cost: every [`INTERVAL`], one read of the weeks held and, for each of the
 //! [`LOOKBACK`] weeks home does not hold, its weekly read (four range reads
@@ -52,6 +63,7 @@
 
 use crate::auth::owner::Owner;
 use crate::auth::DeletionLock;
+use crate::call_weeks::render::{tally, Held, Renders};
 use crate::AppState;
 use app_event_repo::report::{self, Kept};
 use app_event_repo::{IsoWeek, ZONE};
@@ -75,6 +87,9 @@ pub const STATUS_FOLDER: &str = "/app/dbs/renders/report-worker";
 /// Where the worker keeps a waiting week's work and step cache between
 /// attempts, as this server sees it.
 pub const WORK_FOLDER: &str = "/app/dbs/renders/report-work";
+
+/// The video's file in a week's folder under [`RENDERS_FOLDER`].
+pub const VIDEO: &str = "report.mp4";
 
 /// How often home looks for a week to write: one ends a week.
 pub const INTERVAL: Duration = Duration::from_secs(3600);
@@ -123,6 +138,7 @@ pub fn start(state: &AppState) {
 					return;
 				}
 				_ = ticker.tick() => {
+					observe_renders(&db).await;
 					let owner = crate::auth::owner::owner(&db).await;
 					let tidied = if let Ok(owner) = &owner {
 						tidy(&db, owner, &folders).await
@@ -311,8 +327,13 @@ async fn export(db: &SqlitePool, subject: &str, folders: &Folders) -> Result<(us
 	let _folders = crate::feeds::FOLDERS.lock().await;
 	let mut conn = db.acquire().await?;
 	let held = report::held(&mut conn, subject).await?;
+	let let_go = app_event_repo::report_video::let_go(&mut conn, subject).await?;
 	let (mut exported, mut failed) = (0, 0);
 	for week in &held {
+		// A week whose video was let go is never given again.
+		if let_go.contains(week) {
+			continue;
+		}
 		let into = file_of(&folders.reports, week);
 		if tokio::fs::try_exists(&into).await.unwrap_or(false) {
 			continue;
@@ -445,6 +466,62 @@ fn log_week(name: &str) -> Option<String> {
 	let name = name.strip_prefix('.').unwrap_or(name);
 	let (week, rest) = (name.get(..8)?, name.get(8..)?);
 	(rest.starts_with('.') && IsoWeek::parse(week).is_some()).then(|| week.to_owned())
+}
+
+/// What the worker has made of the weeks `owner` holds.
+///
+/// Each is let go, rendered (`<renders>/<week>/report.mp4`) or waiting, and
+/// failed when `<status>/<week>.failed.log` is there. Nothing for no owner,
+/// or several.
+///
+/// # Errors
+/// A storage failure.
+pub async fn observe(db: &SqlitePool, owner: &Owner, renders: &Path, status: &Path) -> Result<Renders, sqlx::Error> {
+	let Owner::Subject(subject) = owner else {
+		return Ok(tally(&[], &[], renders, status, VIDEO).await);
+	};
+	let (held, let_go) = held(db, subject).await?;
+	Ok(tally(&held, &let_go, renders, status, VIDEO).await)
+}
+
+/// The weeks `subject` holds, each with when home wrote it, and those whose
+/// video was let go, for [`observe`] and the phone's Renders page
+/// (`feeds::renders`).
+///
+/// # Errors
+/// A storage failure.
+pub(crate) async fn held(db: &SqlitePool, subject: &str) -> Result<(Vec<Held>, Vec<String>), sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	let held = report::kept(&mut conn, subject)
+		.await?
+		.into_iter()
+		.map(|kept| Held {
+			key: kept.week,
+			taken_at: kept.written_at,
+		})
+		.collect();
+	Ok((held, app_event_repo::report_video::let_go(&mut conn, subject).await?))
+}
+
+/// What the report's job takes of the drive (`call_weeks::render::disk`),
+/// which the call's observation adds to its own, so the drive's numbers and
+/// `CallRenderCacheFull` count every job.
+pub async fn disk() -> crate::call_weeks::render::Disk {
+	crate::call_weeks::render::disk(Path::new(RENDERS_FOLDER), Path::new(WORK_FOLDER), Path::new(STATUS_FOLDER)).await
+}
+
+/// What the render worker has made, as metrics. A failing read leaves the
+/// last values and logs.
+async fn observe_renders(db: &SqlitePool) {
+	let seen = match crate::auth::owner::owner(db).await {
+		Ok(owner) => observe(db, &owner, Path::new(RENDERS_FOLDER), Path::new(STATUS_FOLDER)).await,
+		Err(err) => Err(err),
+	};
+	if let Ok(seen) = seen {
+		crate::metrics::report_weeks::record_renders(&seen);
+	} else {
+		warn!(error = "storage", "report render observation failed");
+	}
 }
 
 /// Removes a file; one already gone is fine.
@@ -628,6 +705,51 @@ mod tests {
 		assert_eq!((done.week.as_str(), done.asked, done.held), ("2026-W46", Asked::Written, 1));
 		let body: Value = serde_json::from_slice(&std::fs::read(file_of(&folders.reports, "2026-W46")).unwrap()).unwrap();
 		assert_eq!(body["weeks"][0]["affordances"][0]["taken"], 1, "W47's record is not in W46");
+	}
+
+	#[tokio::test]
+	async fn a_week_let_go_is_never_given_again_and_the_worker_is_read_by_its_files() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		let status = dir.path().join("renders/report-worker");
+		std::fs::create_dir_all(&status).unwrap();
+		let lock = DeletionLock::default();
+		taken(&pool, "e1", "2026-11-03T09:00:00.000Z").await;
+		run_once(&pool, &lock, &me(), &folders, at("2026-11-10T09:00:00.000Z")).await.unwrap();
+		run_once(&pool, &lock, &me(), &folders, at("2026-11-17T09:00:00.000Z")).await.unwrap();
+		let seen = observe(&pool, &me(), &folders.renders, &status).await.unwrap();
+		assert_eq!((seen.held, seen.waiting, seen.failed, seen.let_go), (2, 2, 0, 0), "W45 and W46 wait for their videos");
+		assert!(seen.oldest_waiting_taken.is_some());
+
+		// W45 is made; W46's last attempt failed.
+		std::fs::create_dir_all(folders.renders.join("2026-W45")).unwrap();
+		std::fs::write(folders.renders.join("2026-W45").join(VIDEO), b"video").unwrap();
+		std::fs::write(status.join("2026-W46.failed.log"), b"refused").unwrap();
+		std::fs::write(status.join("last-pass"), b"1795400000\n").unwrap();
+		let seen = observe(&pool, &me(), &folders.renders, &status).await.unwrap();
+		assert_eq!((seen.waiting, seen.failed, seen.worker_last_pass), (1, 1, Some(1_795_400_000)));
+
+		// The owner lets W45's video go: its file leaves the input, and no
+		// later pass writes it back.
+		let mut conn = pool.acquire().await.unwrap();
+		app_event_repo::report_video::record_link(&mut conn, ME, "2026-W45", "dQw4w9WgXcQ", "now").await.unwrap();
+		let receipt = call_week_repo::video::Receipt {
+			from: String::from("2026-W45"),
+			step: call_week_repo::video::Step::Video,
+			youtube_id: String::from("dQw4w9WgXcQ"),
+			size: 5,
+			deleted_at: String::from("now"),
+		};
+		app_event_repo::report_video::write_receipt(&mut conn, ME, &receipt).await.unwrap();
+		drop(conn);
+		std::fs::remove_file(file_of(&folders.reports, "2026-W45")).unwrap();
+		let again = run_once(&pool, &lock, &me(), &folders, at("2026-11-17T10:00:00.000Z")).await.unwrap();
+		assert_eq!((again.held, again.exported), (2, 0));
+		assert!(!file_of(&folders.reports, "2026-W45").exists(), "never given again");
+		let seen = observe(&pool, &me(), &folders.renders, &status).await.unwrap();
+		assert_eq!((seen.held, seen.let_go, seen.waiting), (2, 1, 1));
+		// No owner: nothing is counted as held.
+		assert_eq!(observe(&pool, &Owner::NoAccount, &folders.renders, &status).await.unwrap().held, 0);
 	}
 
 	#[tokio::test]

@@ -18,7 +18,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
 1. **At most one batch job runs on home at a time, across every kind.** The
    render worker is the one batch worker. It runs one job at a time and
    names it in `<lane>/job`, one file for every kind (the call, Playoff
-   Delta, previews, essays, clip walks, cards essays), and the lane admits
+   Delta, previews, essays, clip walks, cards essays, engagement reports),
+   and the lane admits
    one job per run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
    second batch worker joins this lane, never one of its own (L5,
    some-ui#2084).
@@ -212,7 +213,14 @@ stage's burn-ins page in Chromium, each scene of a spoken (v2) essay said
 by home's speaker as the call's are (EXPLAIN6, #878; an older v1 essay is
 silent), and renders the video with ffmpeg, measured like
 any other once it has run. Its declared peak is every job's, the speaker's
-room included, so voicing it changed neither its peak nor its class. `infra/render/render-calls.test.sh` holds each
+room included, so voicing it changed neither its peak nor its class. A
+week's engagement report (ENG12, paulgsc/some-ui#2700, #821) is batch class
+too, and needs no class or cap of its own: the recorder writes the report
+from the counts `report_weeks` gave it and records it as the call's
+recorder does, said by home's speaker, under the same lane and the same
+caps. What `report_weeks` does in file_host to give it a week (a few
+indexed reads and one small file an hour) is not batch work and takes no
+room the lane counts. `infra/render/render-calls.test.sh` holds each
 point below with a fake lane and a recorder slow enough to be caught half
 way; CI runs it on every PR.
 
@@ -286,7 +294,7 @@ way; CI runs it on every PR.
   new input.
 - **Each job's length cap is its own** (`max_minutes`): a Rust Rounds
   essay may run 30 minutes, the owner's (2026-11-17, #927); every other
-  job, a mock interview's essay too, 15. The other caps are every job's.
+  job, a mock interview's essay and an engagement report too, 15. The other caps are every job's.
 - **A restart keeps the job.** `job.state` names it, it runs before any
   other, under the same id, and its work is never removed for the
   `WORK_MAX_MB` cap while it waits. Docker stopping the container kills the

@@ -155,6 +155,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"a browser's push endpoint — stable per browser, and known to its push service; see docs/identity.md",
 	),
 	(
+		"report_video_deletion",
+		"each step of a week's engagement report video let go (paulgsc/some-ui ENG12, #2700): the week, video or rest, its YouTube id, the bytes that went and when. See docs/identity.md invariant 34",
+	),
+	(
+		"report_video_link",
+		"each YouTube link the owner recorded for a week's engagement report video (paulgsc/some-ui ENG12, #2700): the week, the video's id and when. See docs/identity.md invariant 34",
+	),
+	(
 		"report_week",
 		"each ended week's engagement report as home first wrote it for its render worker (paulgsc/some-ui ENG12, #2700): the owner's counts per pipeline, affordance and surface for the week and the three it is compared with, and the days each was first seen and last taken; no time of day, answer or content. See docs/identity.md invariant 34",
 	),

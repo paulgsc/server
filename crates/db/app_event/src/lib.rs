@@ -26,10 +26,12 @@
 //!   `git grep -n app_event -- '*.rs'` shows no other writer.
 //! - **Each week's report, kept once.** [`report`] keeps the [`weekly`] read
 //!   of each ended week as `file_host`'s `report_weeks` worker gave it to the
-//!   render worker, in its own table (`report_week`), never in `app_event`.
+//!   render worker, in its own table (`report_week`), never in `app_event`;
+//!   [`report_video`] keeps each week's video link and what was let go.
 
 mod model;
 pub mod report;
+pub mod report_video;
 mod weeks;
 
 use std::collections::BTreeMap;

@@ -115,6 +115,56 @@
         ["home-network", "calls"],
         ["calls", "publish"]
       ]
+    },
+    {
+      "process": "report-weeks",
+      "title": "The weekly engagement report",
+      "nodes": [
+        {
+          "id": "read",
+          "title": "read",
+          "subtitle": "the week's engagement records · home",
+          "dashboard": "call",
+          "alerts": ["alertname=\"FileHostDown\""]
+        },
+        {
+          "id": "given",
+          "title": "given",
+          "subtitle": "keeps and writes each ended week · home",
+          "dashboard": "call",
+          "alerts": [
+            "alertname=\"ReportWeeksFailing\"",
+            "alertname=\"FileHostDown\"",
+            "alertname=\"HomeDriveLow\""
+          ]
+        },
+        {
+          "id": "speaker",
+          "title": "speaker",
+          "subtitle": "Kokoro · home",
+          "dashboard": "call",
+          "alerts": ["alertname=\"CallServiceRestarted\",name=\"kokoro\""]
+        },
+        {
+          "id": "render",
+          "title": "render",
+          "subtitle": "writes the report, records and renders · home",
+          "dashboard": "call",
+          "alerts": [
+            "alertname=\"ReportRenderFailed\"",
+            "alertname=\"ReportRenderOverdue\"",
+            "alertname=\"CallRenderWorkerStale\"",
+            "alertname=\"CallServiceRestarted\",name=\"render\"",
+            "alertname=\"CallRenderCacheFull\"",
+            "alertname=\"HomeDriveLow\""
+          ]
+        }
+      ],
+      "edges": [
+        ["read", "given"],
+        ["given", "render"],
+        ["speaker", "render"]
+      ]
     }
   ]
 }

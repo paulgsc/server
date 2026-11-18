@@ -371,16 +371,20 @@ local count(title, description, expr, steps) =
   // report from home's own records and gives it to the render worker.
 
   reportWeeks: {
-    title: 'Engagement report: weeks held, a week with no records, and writing failing',
-    description: "Over time: the weeks of the engagement report home holds (report_week, each written once, a day after its week ends, to report-weeks/<week>.json on the database drive), whether the last whole week had no engagement record before its end (no data, so no report), and whether home's last pass, or its minute's removal of a week no longer the owner's, failed. ReportWeeksFailing fires after 3 hours failing, ReportWeeksStale after 2 hours with no pass.",
+    title: 'Engagement report: weeks held, a week with no records, waiting for a video, failed, and writing failing',
+    description: "Over time: the weeks of the engagement report home holds (report_week, each written once, a day after its week ends, to report-weeks/<week>.json on the database drive), whether the last whole week had no engagement record before its end (no data, so no report), the weeks given with no video yet in renders/report/<week>/ and those whose last attempt failed (renders/report-worker/<week>.failed.log), and whether home's last pass, or its minute's removal of a week no longer the owner's, failed. ReportRenderFailed fires on a failure, ReportRenderOverdue after 3 hours waiting with none, ReportWeeksFailing after 3 hours failing, ReportWeeksStale after 2 hours with no pass.",
     type: 'timeseries',
     datasource: ds,
     targets: [
       { expr: 'report_weeks_held', legendFormat: 'weeks held', refId: 'A' },
       { expr: 'report_weeks_unmeasured', legendFormat: 'last week had no records', refId: 'B' },
-      { expr: 'report_weeks_pass_failing', legendFormat: 'writing failing', refId: 'C' },
-      { expr: 'report_weeks_tidy_failing', legendFormat: 'removing failing', refId: 'D' },
-      { expr: 'time() - report_weeks_last_attempt_timestamp_seconds', legendFormat: 'seconds since a pass', refId: 'E', hide: true },
+      { expr: 'report_render_weeks_waiting', legendFormat: 'waiting for a video', refId: 'C' },
+      { expr: 'report_render_weeks_failed', legendFormat: 'failed', refId: 'D' },
+      { expr: 'report_weeks_pass_failing', legendFormat: 'writing failing', refId: 'E' },
+      { expr: 'report_weeks_tidy_failing', legendFormat: 'removing failing', refId: 'F' },
+      { expr: 'time() - report_weeks_last_attempt_timestamp_seconds', legendFormat: 'seconds since a pass', refId: 'G', hide: true },
+      { expr: 'time() - report_render_worker_last_pass_timestamp_seconds', legendFormat: 'seconds since the job passed', refId: 'H', hide: true },
+      { expr: '(time() - report_render_oldest_waiting_taken_timestamp_seconds) and report_render_weeks_waiting > 0', legendFormat: 'longest wait, seconds', refId: 'I', hide: true },
     ],
     fieldConfig: {
       defaults: {

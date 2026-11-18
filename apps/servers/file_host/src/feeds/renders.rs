@@ -766,8 +766,9 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 			.min(),
 		// A cards essay comes when a session writes one, and an interview
 		// essay when its routine runs, which promises no day yet: none is
-		// promised.
-		Feed::CardsEssay | Feed::InterviewEssay => None,
+		// promised. Nor is a report's: a week with no engagement record
+		// makes none (`report_weeks`), so its day is not known before.
+		Feed::CardsEssay | Feed::InterviewEssay | Feed::Report => None,
 		Feed::Call | Feed::PlayoffDelta => cadence(feed, seen, now, today),
 	}
 }
@@ -790,7 +791,7 @@ fn cadence(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Na
 			let taken = DateTime::<Utc>::from_timestamp(newest_taken, 0)?.with_timezone(&HOME_ZONE).date_naive();
 			Some(on_or_after((taken + Duration::days(1)).max(today), Weekday::Tue))
 		}
-		Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay => None,
+		Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay | Feed::Report => None,
 	}
 }
 
@@ -987,6 +988,11 @@ impl Folders {
 					PathBuf::from(crate::rust_essays::INTERVIEW_RENDERS_FOLDER),
 					PathBuf::from(crate::rust_essays::INTERVIEW_STATUS_FOLDER),
 				),
+				(
+					Feed::Report,
+					PathBuf::from(crate::report_weeks::RENDERS_FOLDER),
+					PathBuf::from(crate::report_weeks::STATUS_FOLDER),
+				),
 			],
 			clip_walks: Some((
 				PathBuf::from(crate::clips::WALKS_FOLDER),
@@ -1023,6 +1029,7 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 			}
 			Feed::RustEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::RustRounds, subject, Feed::RustEssay.input()).await?,
 			Feed::InterviewEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::Interview, subject, Feed::InterviewEssay.input()).await?,
+			Feed::Report => crate::report_weeks::held(db, subject).await?,
 			// On its own shelf below (`Shelf::CardsEssay`), never in `feeds`.
 			Feed::CardsEssay => continue,
 		};
