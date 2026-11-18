@@ -391,6 +391,7 @@ if [ "$1" = tests/record/report.ts ]; then
     echo "the week $week is still under way" >&2
     exit 1
   fi
+  overflow
   mkdir -p "$out/$week/cache"
   echo intermediate > "$out/$week/cache/frame"
   cp "$file" "$out/$week/report.json"
@@ -1453,7 +1454,7 @@ check "a week a part of which is made is not" bash -c '! grep -qx "$1" "$2"' _ "
 
 # RF1 widened (#975): scenes that don't fit the frame are the policy's
 # refusal too, for every job that records stills (the call, a Rust Rounds
-# essay, a mock interview's essay, Playoff Delta). Each is refused, its scenes
+# essay, a mock interview's essay, Playoff Delta, a week's engagement report). Each is refused, its scenes
 # kept, held past RETRY_AFTER, and tried again once its input changes.
 fresh overflow 2026-10-30
 RETRY_AFTER=0
@@ -1463,6 +1464,8 @@ echo '{}' > "$ROOT/essays/2026-w46/essay.json"
 echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
 echo '{}' > "$ROOT/episodes/2026-SF-09/fill.json"
 echo '{}' > "$ROOT/episodes/2026-SF-09/season.json"
+mkdir -p "$ROOT/report-weeks"
+echo '{}' > "$ROOT/report-weeks/2026-W46.json"
 # job, key, its runs so far
 overflow_runs() {
   case $1 in
@@ -1470,9 +1473,10 @@ overflow_runs() {
     rust-essay) grep -c "/essays/$2/" "$FAKE/essay-runs" ;;
     interview-essay) grep -c "/interview-essays/$2/" "$FAKE/essay-runs" ;;
     playoff-delta) grep -c "/$2\$" "$FAKE/pd-runs" ;;
+    report) grep -c "/report-weeks/$2.json " "$FAKE/report-runs" ;;
   esac
 }
-for job_key in call:2026-10-30 rust-essay:2026-w46 interview-essay:2026-w47 playoff-delta:2026-SF-09; do
+for job_key in call:2026-10-30 rust-essay:2026-w46 interview-essay:2026-w47 playoff-delta:2026-SF-09 report:2026-W46; do
   job=${job_key%%:*} key=${job_key#*:}
   run_job "$job" > "$SCRATCH/pass.out" 2>&1
   use_job "$job"

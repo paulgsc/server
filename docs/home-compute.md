@@ -219,7 +219,8 @@ too, and needs no class or cap of its own: the recorder writes the report
 from the counts `report_weeks` gave it and records it as the call's
 recorder does, said by home's speaker, under the same lane and the same
 caps. What `report_weeks` does in file_host to give it a week (a few
-indexed reads and one small file an hour) is not batch work and takes no
+indexed reads and one small file an hour, and each minute a read of the
+weeks held and a look at each one's files) is not batch work and takes no
 room the lane counts. `infra/render/render-calls.test.sh` holds each
 point below with a fake lane and a recorder slow enough to be caught half
 way; CI runs it on every PR.

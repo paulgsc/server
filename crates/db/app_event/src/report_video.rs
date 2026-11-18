@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 /// # Errors
 /// A storage failure, or an id the table's checks refuse.
 pub async fn record_link(conn: &mut SqliteConnection, subject: &str, week: &str, youtube_id: &str, now: &str) -> Result<Recorded, sqlx::Error> {
-	if crate::report::body(conn, subject, week).await?.is_none() {
+	if !crate::report::holds(conn, subject, week).await? {
 		return Ok(Recorded::NoWeek);
 	}
 	let done = sqlx::query!(

@@ -174,7 +174,9 @@ it, which a test holds equal to the Dockerfile's label:
 `call-weeks`, `playoff-delta-episodes`, `preview-requests`, `rust-essays`
 and `cards-essays` (#854, added at epoch 1: a new folder changes no layout
 an older render reads, and server's `render-calls.sh` names each file), and
-`interview-essays` (#899, likewise without a raise). Its job records with
+`interview-essays` (#899, likewise without a raise), and `report-weeks`
+(#821, likewise: a week's engagement counts, read by the image's
+`record:report`). Its job records with
 the image's `record:essay`, which tells the kinds apart by the essay's
 schema, so, as the call's series is, it is no edge yet: until home's release
 pins a render image whose `record:essay` reads `some-ui.interview-essay/1`,

@@ -233,7 +233,7 @@ impl Feed {
 			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject).await?.iter().any(|week| week == key),
 			Self::InterviewEssay => essays_held(conn, crate::rust_essays::Kind::Interview, subject).await?.iter().any(|week| week == key),
 			Self::CardsEssay => crate::cards_essays::pass::is_key(key) && cards_essay_repo::holds(conn, key).await?,
-			Self::Report => app_event_repo::report::body(conn, subject, key).await?.is_some(),
+			Self::Report => app_event_repo::report::holds(conn, subject, key).await?,
 		})
 	}
 
