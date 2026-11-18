@@ -463,6 +463,32 @@ mod tests {
 		.unwrap()
 	}
 
+	/// A feed's name is held to its shape, by `parse` and by the table: which
+	/// feeds there are is `file_host`'s (paulgsc/server#983).
+	#[tokio::test]
+	async fn a_feed_is_held_to_its_shape() {
+		let long = "a".repeat(33);
+		for bad in ["Call", "rust_essay", "", long.as_str()] {
+			let mut sent = note("n1", &["shallow"]);
+			sent["feed"] = json!(bad);
+			assert_eq!(fields(bad, "n1", &sent), ["feed"], "{bad:?}");
+		}
+		let pool = pool().await;
+		for bad in ["Call", "rust_essay", "", long.as_str()] {
+			let refused = sqlx::query(
+				"INSERT INTO episode_note (subject_id, note_id, feed, episode_key, at_ms, categories, take_id, written_at, stored_at)
+				 VALUES ('s', 'n1', ?1, 'e', 0, '[\"shallow\"]', NULL, 't', 't')",
+			)
+			.bind(bad)
+			.execute(&pool)
+			.await;
+			assert!(refused.is_err(), "the table refuses {bad:?}");
+		}
+		let mut rust = note("n1", &["shallow"]);
+		rust["feed"] = json!("rust-essay");
+		assert_eq!(put(&pool, A, &rust).await.unwrap(), Change::Added, "any feed of the shape");
+	}
+
 	/// paulgsc/server#983: widening `feed` rebuilds the table, and the rebuild
 	/// keeps every row byte for byte, both ways.
 	#[tokio::test]

@@ -96,9 +96,10 @@ fn refusal(err: episode_note_repo::NoteError) -> FileHostError {
 ///
 /// Kept in `episode_note`, and, when it is new and on the call's or Playoff
 /// Delta's episodes ([`files_for_the_mailbox`]), filed in the same
-/// `BEGIN IMMEDIATE` transaction for the mailbox's `feedback` folder, so a
-/// note home holds is always on its way to the routine and none is filed
-/// twice. The same note again changes nothing.
+/// `BEGIN IMMEDIATE` transaction for the mailbox's `feedback` folder, so
+/// such a note home holds is always on its way to the mailbox and none is
+/// filed twice; a note on any other feed is kept and filed nowhere. The same
+/// note again changes nothing.
 ///
 /// # Errors
 /// 401 without a session, 403 from an untrusted origin, 404 for a name that
@@ -124,13 +125,13 @@ pub async fn put_note(
 	if filed {
 		let (name, bytes) = crate::mailbox::pass::feedback_file(&note);
 		let sha256 = hex::encode(Sha256::digest(&bytes));
-		let filed = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), mailbox_repo::FEEDBACK, &name, &sha256, &bytes, &now)
+		let put = mailbox_repo::file_outgoing(&mut tx, subject.as_str(), mailbox_repo::FEEDBACK, &name, &sha256, &bytes, &now)
 			.await
 			.map_err(|err| match err {
 				mailbox_repo::MailboxError::Rewritten => FileHostError::Conflict("the mailbox's copy of this note already holds another"),
 				mailbox_repo::MailboxError::Storage(err) => FileHostError::Sqlite(err),
 			})?;
-		if filed == mailbox_repo::Change::NoAccount {
+		if put == mailbox_repo::Change::NoAccount {
 			// `SubjectId` found the account, so this is not reachable; if it
 			// were, the transaction is dropped and nothing is written.
 			return Err(FileHostError::OperationError("the account is gone".to_owned()));
@@ -305,29 +306,27 @@ mod tests {
 	}
 
 	/// paulgsc/server#983: every feed home makes videos of takes a note, by
-	/// one path, and files it for the mailbox as the call's is.
+	/// one path; only the call's and Playoff Delta's are filed for the
+	/// mailbox (C576).
 	#[tokio::test]
 	async fn every_feed_takes_a_note_by_the_same_path() {
+		use crate::feeds::Feed;
 		let state = state().await;
 		let phone = session(&state, A).await;
-		let feeds = [
-			crate::feeds::Feed::Call,
-			crate::feeds::Feed::PlayoffDelta,
-			crate::feeds::Feed::RustEssay,
-			crate::feeds::Feed::InterviewEssay,
-			crate::feeds::Feed::CardsEssay,
-			crate::feeds::Feed::Report,
-		];
+		// Every feed, by a match that fails to compile until a new `Feed` is
+		// named here, so the loop always runs over all of them.
+		let next = |feed: Option<Feed>| match feed {
+			None => Some(Feed::Call),
+			Some(Feed::Call) => Some(Feed::PlayoffDelta),
+			Some(Feed::PlayoffDelta) => Some(Feed::RustEssay),
+			Some(Feed::RustEssay) => Some(Feed::InterviewEssay),
+			Some(Feed::InterviewEssay) => Some(Feed::CardsEssay),
+			Some(Feed::CardsEssay) => Some(Feed::Report),
+			Some(Feed::Report) => None,
+		};
+		let feeds: Vec<Feed> = std::iter::successors(next(None), |feed| next(Some(*feed))).collect();
+		assert_eq!(feeds.len(), 6);
 		for feed in feeds {
-			// The match makes a feed added to `Feed` fail here until it is listed.
-			match feed {
-				crate::feeds::Feed::Call
-				| crate::feeds::Feed::PlayoffDelta
-				| crate::feeds::Feed::RustEssay
-				| crate::feeds::Feed::InterviewEssay
-				| crate::feeds::Feed::CardsEssay
-				| crate::feeds::Feed::Report => {}
-			}
 			let name = feed.as_str();
 			let mut sent = note(&(String::from("n-") + name), &["pacing"]);
 			sent["feed"] = json!(name);
