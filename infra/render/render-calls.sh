@@ -187,6 +187,18 @@ RETRY_AFTER=3600
 # (`toFixed(0)`); .refused keeps exactly those, for file_host's board (#929).
 REFUSED_LONG="the video would run ([0-9]+(\.[0-9])?) min, past the policy's ([0-9]+(\.[0-9])?) min"
 REFUSED_LARGE="the video is ([0-9]+) MB, past the policy's ([0-9]+) MB"
+# The recorder's refusal of scenes that overflow the frame (#975; some-ui
+# apps/www/tests/record/voiced.ts, `recordStills`): this line, then each
+# scene's id on a line of its own. Whether a scene fits is the essay's bytes
+# and the image's stage and fonts alone, so it is refused the same way on
+# every retry: held as the two above are. .refused names at most
+# REFUSED_SCENES of them (the failed.log has every one) and how many there
+# were. The ids are read up to the first line not of SCENE_ID's shape (the
+# end of the recorder's list, whatever follows it), and a refusal naming
+# none is no refusal, so it keeps the hourly retry.
+REFUSED_FIT="These scenes don't fit the frame, so the video would cut them off:"
+SCENE_ID='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+REFUSED_SCENES=12
 # The image the recorders are (deploy/home/release.json's render pin, which
 # call-render.yml hands in): a new image may say another length or size.
 RENDER_IMAGE=${RENDER_IMAGE:-}
@@ -1207,15 +1219,35 @@ held_by() {
 
 # The policy's refusal in `log`, as <key>.refused's lines: its reason
 # (`too-long` with the minutes and the cap, `too-large` with the MB and the
-# cap; the recorder's numbers, never its words) and `held`, what it holds for.
+# cap, `overflow` with the scenes' ids and how many; the recorder's numbers
+# and ids, never its words) and `held`, what it holds for.
 # Only the last attempt's lines are read, from byte `from` of the job's log:
 # an earlier attempt of the same job (one that gave way to a newer revision,
 # or after a pause) refused may not be what the last one failed of. False
 # when the last attempt was not refused by the policy.
 refusal() {
-  local log=$1 held=$2 from=${3:-0} line
-  line=$(tail -c +"$(( from + 1 ))" "$log" | grep -oE "$REFUSED_LONG|$REFUSED_LARGE" | tail -n 1)
-  if [[ "$line" =~ ^$REFUSED_LONG$ ]]; then
+  local log=$1 held=$2 from=${3:-0} line scenes
+  line=$(tail -c +"$(( from + 1 ))" "$log" | grep -oE "$REFUSED_LONG|$REFUSED_LARGE|$REFUSED_FIT" | tail -n 1)
+  if [ "$line" = "$REFUSED_FIT" ]; then
+    # The ids on the lines after the attempt's last line holding it, up to
+    # the first that is not one. Matched by bash, as the other refusals are,
+    # never by the image's awk.
+    local text listing=0
+    scenes=
+    while IFS= read -r text; do
+      if [[ "$text" == *"$REFUSED_FIT"* ]]; then
+        listing=1 scenes=
+      elif [ "$listing" = 1 ] && [[ "$text" =~ $SCENE_ID ]]; then
+        scenes+=$text$'\n'
+      else
+        listing=0
+      fi
+    done < <(tail -c +"$(( from + 1 ))" "$log")
+    scenes=${scenes%$'\n'}
+    [ -n "$scenes" ] || return 1
+    printf 'reason=overflow\nscenes=%s\ncount=%s\nheld=%s\n' \
+      "$(head -n "$REFUSED_SCENES" <<< "$scenes" | paste -sd,)" "$(wc -l <<< "$scenes")" "$held"
+  elif [[ "$line" =~ ^$REFUSED_LONG$ ]]; then
     printf 'reason=too-long\nminutes=%s\ncap=%s\nheld=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "$held"
   elif [[ "$line" =~ ^$REFUSED_LARGE$ ]]; then
     printf 'reason=too-large\nmb=%s\ncap=%s\nheld=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$held"

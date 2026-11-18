@@ -14,9 +14,9 @@
 # - the recorder is handed the render policy's caps, its job's own length
 #   (`max_minutes`: 30 for a Rust Rounds essay, 15 for every other job,
 #   #927), the pinned stage and home's Kokoro speaker; a video it refuses as
-#   too long or past MAX_VIDEO_MB fails its attempt, and is held, not tried
-#   again on RETRY_AFTER's clock, until what it was refused for changes
-#   (RF1, #928);
+#   too long, past MAX_VIDEO_MB or past the frame (#975) fails its attempt,
+#   and is held, not tried again on RETRY_AFTER's clock, until what it was
+#   refused for changes (RF1, #928);
 # - the worker's own loop (`serve`) tries a failed week again on its own
 #   clock, RETRY_AFTER after the failure, with no pass run by hand;
 # - the stage and the speaker are pinned by digest, the recorders by commit,
@@ -207,6 +207,35 @@ too_large() {
     exit 1
   fi
 }
+# The real recorder's refusal of scenes that overflow the frame (#975;
+# voiced.ts, `recordStills`), while $FAKE/overflow names them, one a line:
+# after every still, before anything is assembled. $FAKE/overflow-prefix, if
+# any, comes before its first line on that line.
+overflow() {
+  if [ -e "$fake/overflow" ]; then
+    { echo "$(cat "$fake/overflow-prefix" 2> /dev/null)These scenes don't fit the frame, so the video would cut them off:"; cat "$fake/overflow"; } >&2
+    exit 1
+  fi
+}
+# Playoff Delta (PK5): `tsx tests/record/playoff-delta.ts … --season-file <f>
+# --narration <f> --week <n> --out <w>/<key>` writes episode.mp4 into
+# <w>/<key>/<season>-week-NN. Each run is counted in $FAKE/pd-runs as <out>.
+if [ "$1" = tests/record/playoff-delta.ts ]; then
+  out= week=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --out) out=$2; shift ;;
+      --week) week=$2; shift ;;
+    esac
+    shift
+  done
+  echo "$out" >> "$fake/pd-runs"
+  overflow
+  key=$(basename "$out")
+  mkdir -p "$out/${key%%-*}-week-$(printf '%02d' "$week")"
+  echo "episode of $key" > "$out/${key%%-*}-week-$(printf '%02d' "$week")/episode.mp4"
+  exit 0
+fi
 # A preview (SFEED12): `tsx tests/record/preview.ts … --template <t> --out
 # <w>/<id>` writes preview.mp4, its sample week (naming the template's
 # version) and a cache into <w>/<id>, or fails as the real one does for a
@@ -290,6 +319,7 @@ if [ "$1" = tests/record/essay.ts ]; then
     echo "QM-311 is answered with a take, and $takes has none for it" >&2
     exit 1
   fi
+  overflow
   week=$(basename "$(dirname "$essay")")
   # $FAKE/minutes-<week>, in tenths: how long its words would run; past
   # --max-video-minutes it is refused in the real recorder's words
@@ -365,6 +395,7 @@ if [ -n "$part" ]; then
 fi
 echo "$week" >> "$fake/runs"
 echo "recording $week: no cache warning here"
+overflow
 # A pid file is written beside and moved into place, so a case reading it
 # meanwhile sees the old pid or the new, never an empty file (#825).
 keep_pid() {
@@ -461,7 +492,7 @@ fresh() {
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
-    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once"
+    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/overflow-prefix" "$FAKE/pd-runs"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1344,6 +1375,65 @@ echo '{"r":2}' > "$ROOT/weeks/2026-11-06.next"
 check "a week with no part made is made from its newer revision" grep -qx "$ROOT/weeks/2026-11-06.next" <(inputs_of call 2026-11-06-p2)
 mkdir -p "$ROOT/renders/call/2026-11-06" && echo video > "$ROOT/renders/call/2026-11-06/call.mp4"
 check "a week a part of which is made is not" bash -c '! grep -qx "$1" "$2"' _ "$ROOT/weeks/2026-11-06.next" <(inputs_of call 2026-11-06-p2)
+
+# RF1 widened (#975): scenes that don't fit the frame are the policy's
+# refusal too, for every job that records stills (the call, a Rust Rounds
+# essay, a mock interview's essay, Playoff Delta). Each is refused, its scenes
+# kept, held past RETRY_AFTER, and tried again once its input changes.
+fresh overflow 2026-10-30
+RETRY_AFTER=0
+printf 'dive-2\nbeside-2\ndive-3\n' > "$FAKE/overflow"
+mkdir -p "$ROOT/essays/2026-w46/takes" "$ROOT/interview-essays/2026-w47/takes" "$ROOT/episodes/2026-SF-09"
+echo '{}' > "$ROOT/essays/2026-w46/essay.json"
+echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
+echo '{}' > "$ROOT/episodes/2026-SF-09/fill.json"
+echo '{}' > "$ROOT/episodes/2026-SF-09/season.json"
+# job, key, its runs so far
+overflow_runs() {
+  case $1 in
+    call) runs_of "$2" ;;
+    rust-essay) grep -c "/essays/$2/" "$FAKE/essay-runs" ;;
+    interview-essay) grep -c "/interview-essays/$2/" "$FAKE/essay-runs" ;;
+    playoff-delta) grep -c "/$2\$" "$FAKE/pd-runs" ;;
+  esac
+}
+for job_key in call:2026-10-30 rust-essay:2026-w46 interview-essay:2026-w47 playoff-delta:2026-SF-09; do
+  job=${job_key%%:*} key=${job_key#*:}
+  run_job "$job" > "$SCRATCH/pass.out" 2>&1
+  use_job "$job"
+  check "the $job of $key, its scenes past the frame, is refused in the recorder's words" \
+    grep -qF "These scenes don't fit the frame" "$STATUS/$key.failed.log"
+  check "and its refusal names its scenes, never its words" \
+    test "$(grep -v '^held=' "$STATUS/$key.refused")" = "$(printf 'reason=overflow\nscenes=dive-2,beside-2,dive-3\ncount=3')"
+  touch -d '2 hours ago' "$STATUS/$key.failed.log"
+  run_job "$job" > "$SCRATCH/pass.out" 2>&1
+  check "and it is held past RETRY_AFTER, not recorded again" test "$(overflow_runs "$job" "$key")" -eq 1
+done
+# Its input changed: tried at once, and made once its scenes fit.
+rm -f "$FAKE/overflow"
+sleep 0.01
+echo '{"r":2}' > "$ROOT/essays/2026-w46/.essay.json" && mv "$ROOT/essays/2026-w46/.essay.json" "$ROOT/essays/2026-w46/essay.json"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a corrected essay is tried at once, and renders" \
+  test "$(overflow_runs rust-essay 2026-w46)" -eq 2 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4" -a ! -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
+# At most REFUSED_SCENES are named, with how many there were; an id of
+# another shape is not one, and a refusal naming none keeps the hourly retry.
+fresh overflow-many
+mkdir -p "$ROOT/essays/2026-w48/takes" "$ROOT/essays/2026-w49/takes"
+echo '{}' > "$ROOT/essays/2026-w48/essay.json"
+seq -f 'scene-%g' 1 14 > "$FAKE/overflow"
+# As if what threw it said its own words first.
+printf 'Error: ' > "$FAKE/overflow-prefix"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay of 14 scenes past the frame names its first 12, and that there were 14, whatever comes before its line" \
+  test "$(grep -v '^held=' "$ROOT/renders/rust-essay-worker/2026-w48.refused")" = "$(printf 'reason=overflow\nscenes=%s\ncount=14' "$(seq -f 'scene-%g' 1 12 | paste -sd,)")"
+echo '{}' > "$ROOT/essays/2026-w49/essay.json"
+echo 'a scene, of words' > "$FAKE/overflow"
+RETRY_AFTER=3600
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a refusal naming no scene of an id's shape keeps no refusal, and the hourly retry" \
+  bash -c 'test -e "$1.failed.log" -a ! -e "$1.refused"' _ "$ROOT/renders/rust-essay-worker/2026-w49"
+RETRY_AFTER=0
 
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
 # made and removes it, and the worker takes that as a refusal by the policy
