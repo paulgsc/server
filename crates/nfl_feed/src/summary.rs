@@ -172,6 +172,10 @@ fn read_play(play: &Value, teams: &HashMap<String, String>, drive_team: Option<&
 
 #[cfg(test)]
 mod tests {
+	use super::*;
+	use crate::GameState;
+	use serde_json::json;
+
 	#[test]
 	fn a_summary_names_its_game_away_at_home() {
 		let body = br#"{"header":{"id":"401","competitions":[{"competitors":[
@@ -181,10 +185,6 @@ mod tests {
 		assert_eq!(super::matchup(br#"{"header":{}}"#).unwrap(), None, "no header, no name");
 		assert!(super::matchup(b"[]").is_err());
 	}
-
-	use super::*;
-	use crate::GameState;
-	use serde_json::json;
 
 	const FINAL: &[u8] = include_bytes!("../testdata/summary-401873010-final.json");
 	const PRE: &[u8] = include_bytes!("../testdata/summary-401873023-pre.json");

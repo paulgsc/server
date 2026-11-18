@@ -398,25 +398,41 @@ async fn latest_play(conn: &mut SqliteConnection, game: &str, play: &str) -> Res
 	}))
 }
 
-/// `about`, an interview take's, with the rung the week's send gave it, if
-/// the send that stands names it: the week's final, or else its draft
-/// (`rust_round_repo::draft::standing`).
+/// Each week's standing send, as [`with_rung`] has read it: `None` for a
+/// week with none, or whose send no longer reads as one.
+pub type Sends = BTreeMap<String, Option<Sent>>;
+
+/// `about`, an interview take's, with the rung its week's send gave it.
+///
+/// The send is the one that stands, the week's final or else its draft
+/// (`rust_round_repo::draft::standing`), when it names the take. `sends`
+/// holds each week's send once read, so a page of one week's takes reads it
+/// once. A stored send that no longer reads as one is no rung, never an
+/// error: the rung is one detail of one take, and the page answers without
+/// it.
 ///
 /// # Errors
-/// [`VoiceError::Storage`] for any `sqlx` failure, a stored send that no
-/// longer reads as one included.
-pub async fn with_rung(conn: &mut SqliteConnection, subject: &str, note_id: &str, about: &mut About) -> Result<(), VoiceError> {
+/// [`VoiceError::Storage`] for any other `sqlx` failure.
+pub async fn with_rung(conn: &mut SqliteConnection, subject: &str, note_id: &str, about: &mut About, sends: &mut Sends) -> Result<(), VoiceError> {
 	let Detail::Interview {
 		week, question: Some(_), rung, ..
 	} = &mut about.detail
 	else {
 		return Ok(());
 	};
-	let week = week.clone();
-	let Some(standing) = rust_round_repo::draft::standing::<Sent>(conn, subject, &week).await? else {
-		return Ok(());
-	};
-	*rung = standing.sent.answers.into_iter().find(|answer| answer.take == note_id).and_then(|answer| answer.rung);
+	if !sends.contains_key(week.as_str()) {
+		let sent = match rust_round_repo::draft::standing::<Sent>(conn, subject, week).await {
+			Ok(standing) => standing.map(|standing| standing.sent),
+			Err(sqlx::Error::Decode(_)) => None,
+			Err(err) => return Err(VoiceError::Storage(err)),
+		};
+		sends.insert(week.clone(), sent);
+	}
+	*rung = sends
+		.get(week.as_str())
+		.and_then(Option::as_ref)
+		.and_then(|sent| sent.answers.iter().find(|answer| answer.take == note_id))
+		.and_then(|answer| answer.rung);
 	Ok(())
 }
 

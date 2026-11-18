@@ -157,12 +157,52 @@ pub struct Ask {
 	asked: Option<String>,
 	search: Option<Search>,
 	sort: Sort,
-	/// The take the page starts after.
-	after: Option<String>,
+	/// The take the page starts after, as [`Cursor::read`] reads `after`.
+	after: Option<Cursor>,
+}
+
+/// Where a page starts: after the take a page ended on, named by when it was
+/// recorded, when it reached home and its id, so the next page continues in
+/// order even if that take has since left the list (deleted, or no longer
+/// found). Said as `<recordedAt>|<storedAt>|<id>`, which [`Library::next`]
+/// answers; a client passes it back as it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Cursor {
+	recorded_at: String,
+	stored_at: String,
+	id: String,
+}
+
+impl Cursor {
+	/// The cursor of the page that ends on `take`.
+	fn of(take: &Take) -> String {
+		take.recorded_at.clone() + "|" + &take.stored_at + "|" + &take.id
+	}
+
+	/// `after` as a cursor, if it is one: three parts, the last a note's id.
+	fn read(after: &str) -> Option<Self> {
+		let mut parts = after.splitn(3, '|');
+		let (Some(recorded_at), Some(stored_at), Some(id)) = (parts.next(), parts.next(), parts.next()) else {
+			return None;
+		};
+		(!recorded_at.is_empty() && !stored_at.is_empty() && crate::is_note_id(id)).then(|| Self {
+			recorded_at: recorded_at.to_owned(),
+			stored_at: stored_at.to_owned(),
+			id: id.to_owned(),
+		})
+	}
+
+	/// The order key [`order`] compares.
+	const fn key(&self) -> (&str, &str, &str) {
+		(self.recorded_at.as_str(), self.stored_at.as_str(), self.id.as_str())
+	}
 }
 
 /// The longest `about` key asked, in characters.
 const MAX_ABOUT_CHARS: usize = 256;
+
+/// The longest cursor asked, in characters: two instants and a note's id.
+const MAX_CURSOR_CHARS: usize = 256;
 
 impl Default for Ask {
 	fn default() -> Self {
@@ -245,8 +285,8 @@ impl Ask {
 		}
 		match once("after") {
 			Ok(None) => {}
-			Ok(Some(id)) if crate::is_note_id(&id) => ask.after = Some(id),
-			_ => problems.push(("after", "a take's id, said once")),
+			Ok(Some(after)) if after.chars().count() <= MAX_CURSOR_CHARS && Cursor::read(&after).is_some() => ask.after = Cursor::read(&after),
+			_ => problems.push(("after", "a page's `next`, said once")),
 		}
 		if problems.is_empty() {
 			Ok(ask)
@@ -378,12 +418,14 @@ pub struct Library {
 	pub matched: Option<usize>,
 	/// How the takes were chosen.
 	pub by: By,
-	/// The id to ask `after` for the next page; null on the last.
+	/// The cursor to ask `after` for the next page, passed back as it is;
+	/// null on the last.
 	pub next: Option<String>,
 }
 
 /// `subject`'s take library, or the part of it `ask` asks for; `None` when
-/// `ask`'s `after` names no take that read lists.
+/// a search ranked by meaning no longer finds the take `ask`'s `after` ended
+/// on.
 ///
 /// In `ask`'s order (newest recorded first by default), or with a search by
 /// meaning, best first and then in that order; at most [`NEWEST`].
@@ -399,6 +441,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> R
 	// Each take answered carries its verdict (HEARD1) and what only another
 	// table says of it: a few reads by key each, of at most [`NEWEST`].
 	let mut labels = std::collections::BTreeMap::new();
+	let mut sends = about::Sends::new();
 	for take in &mut library.takes {
 		if take.status == Status::Deleted {
 			continue;
@@ -406,7 +449,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> R
 		take.verdict = crate::verdict::of_note(conn, subject, &take.id).await?;
 		if let Some(about) = take.about.as_mut() {
 			about::with_game(conn, subject, &take.id, about, &mut labels).await?;
-			about::with_rung(conn, subject, &take.id, about).await?;
+			about::with_rung(conn, subject, &take.id, about, &mut sends).await?;
 		}
 	}
 	Ok(Some(library))
@@ -440,7 +483,8 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 		   LEFT JOIN studio_take_move AS moved ON moved.subject_id = note.subject_id AND moved.note_id = note.note_id
 		     AND moved.seq = (SELECT MAX(later.seq) FROM studio_take_move AS later WHERE later.subject_id = note.subject_id AND later.note_id = note.note_id)
 		   LEFT JOIN idea_answer AS answer ON answer.rowid = (
-		     SELECT first.rowid FROM idea_answer AS first WHERE first.subject_id = note.subject_id AND first.note_id = note.note_id LIMIT 1
+		     SELECT first.rowid FROM idea_answer AS first WHERE first.subject_id = note.subject_id AND first.note_id = note.note_id
+		     ORDER BY first.revision, first.rowid LIMIT 1
 		   )
 		   LEFT JOIN voice_note_deletion AS gone ON gone.subject_id = note.subject_id AND gone.note_id = note.note_id
 		   LEFT JOIN voice_transcript AS heard ON heard.rowid = (
@@ -601,16 +645,26 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 			}
 		}
 	};
-	let start = match ask.after.as_deref() {
-		None => 0,
-		Some(after) => match listed.iter().position(|take| take.id == after) {
+	// Sorted, a page starts at the first take past the cursor's place, whether
+	// or not that take is still listed. Ranked by meaning, there is no place
+	// to compare: it starts after the cursor's take, which must still be found.
+	let start = match (ask.after.as_ref(), by) {
+		(None, _) => 0,
+		(Some(after), By::Meaning) => match listed.iter().position(|take| take.id == after.id) {
 			Some(at) => at + 1,
 			None => return Ok(None),
 		},
+		(Some(after), By::Newest | By::Words) => listed
+			.iter()
+			.position(|take| match ask.sort {
+				Sort::Newest => order(take) < after.key(),
+				Sort::Oldest => order(take) > after.key(),
+			})
+			.unwrap_or(listed.len()),
 	};
 	let rest = listed.len().saturating_sub(start);
 	let takes: Vec<Take> = listed.into_iter().skip(start).take(NEWEST).collect();
-	let next = (rest > NEWEST).then(|| takes.last().map(|take| take.id.clone())).flatten();
+	let next = (rest > NEWEST).then(|| takes.last().map(Cursor::of)).flatten();
 	Ok(Some(Library { takes, total, matched, by, next }))
 }
 
@@ -1129,7 +1183,6 @@ mod tests {
 		assert_eq!(oldest.takes.first().map(|take| take.id.as_str()), Some("gone"));
 		let heard = read(&mut conn, &[("kind", "all"), ("q", "catch")]).await.unwrap();
 		assert_eq!((heard.takes.len(), heard.matched, heard.by), (1, Some(1), By::Words), "what home heard, in any kind");
-		assert!(read(&mut conn, &[("kind", "all"), ("after", "nowhere")]).await.is_none(), "an after the read does not list");
 	}
 
 	#[tokio::test]
@@ -1142,9 +1195,24 @@ mod tests {
 		}
 		let mut conn = pool.acquire().await.unwrap();
 		let first = read(&mut conn, &[("kind", "jobs")]).await.unwrap();
-		assert_eq!((first.takes.len(), first.total, first.next.as_deref()), (NEWEST, NEWEST + 1, Some("t01")));
-		let second = read(&mut conn, &[("kind", "jobs"), ("after", "t01")]).await.unwrap();
+		let next = first.next.clone().unwrap();
+		assert_eq!(
+			(first.takes.len(), first.total, next.as_str()),
+			(NEWEST, NEWEST + 1, "2026-10-01T10:01:00.000Z|2026-11-01T00:00:00.000Z|t01")
+		);
+		// A take recorded since, and the page's last take gone, change nothing.
+		drop(conn);
+		note(&pool, A, "later", "jobs", "pick", "2026-12-01T10:00:00.000Z").await;
+		sqlx::query("DELETE FROM voice_note WHERE subject_id = ?1 AND note_id = 't01'")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		let second = read(&mut conn, &[("kind", "jobs"), ("after", &next)]).await.unwrap();
 		assert_eq!((second.takes.len(), second.takes[0].id.as_str(), second.next), (1, "t00", None));
+		let oldest = read(&mut conn, &[("kind", "jobs"), ("sort", "oldest"), ("after", &next)]).await.unwrap();
+		assert_eq!(oldest.takes.first().map(|take| take.id.as_str()), Some("t02"), "past the place, the other way");
 	}
 
 	#[test]
@@ -1158,6 +1226,7 @@ mod tests {
 		assert_eq!(refused(&[("sort", "best")]), ["sort"]);
 		assert_eq!(refused(&[("sort", "newest"), ("sort", "oldest")]), ["sort"]);
 		assert_eq!(refused(&[("after", "a b")]), ["after"]);
+		assert_eq!(refused(&[("after", "t1")]), ["after"], "a bare id is no cursor");
 		assert_eq!(refused(&[("about", "")]), ["about"]);
 		assert_eq!(refused(&[("q", " ")]), ["q"]);
 		assert!(Ask::parse(&[("kind".into(), "all".into()), ("kind".into(), "game".into()), ("other".into(), "x".into())]).is_ok());

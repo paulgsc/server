@@ -70,15 +70,20 @@ is a take of the library, in one shape.
   bound when a take was recorded; `about` keeps one key's takes; `q`
   searches what home heard, as before; `sort` is `newest` (the default) or
   `oldest`, and a search by meaning ranks best first. At most 50 a page;
-  `next` names the take to ask `after` for the next, which starts the page
-  after that take in the same read, so a take recorded meanwhile never
-  shifts it. An `after` the read does not list is a `422`.
+  `next` is a cursor (`<recordedAt>|<storedAt>|<id>` of the page's last
+  take) to pass back as `after`, and the next page starts at the first take
+  past that place in the read's order, so a take recorded meanwhile, or the
+  last take deleted or no longer found, never shifts it. Ranked by meaning
+  there is no place to compare, so the next page starts after that take,
+  and one the search no longer finds is a `422`.
 - **Reads only.** It writes nothing and needs no migration: no record is
   lost or rewritten. The conveyor is not widened: only a Studio take of a
   scene or of none is on it (docs/conveyor.md, invariant 3), and every other
   take says `onConveyor: false`.
 - **It replaces the planned `GET /voice-notes/bites`** of the paused Game
-  Week Bites work: a game's bites are `?kind=game&about=game:<game>`.
+  Week Bites work: a game's bites are `?kind=game&about=game:<game>`. A bite
+  deleted for good is not among them, as its receipt keeps no `ref` to key
+  it by; `?kind=game` lists it with the others.
 
 ## Where the meaning index lives
 

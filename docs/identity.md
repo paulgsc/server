@@ -1550,10 +1550,13 @@ nowhere is marked as such and belongs to review.
     meaning index is on and holds every heard take listed (invariant 35), or
     else those whose words hold every term, compared in Unicode lowercase,
     and `by` saying which (`voice_repo::takes`, its one caller
-    `handlers::voice`). Each of these the same subject's own paired phone
-    already reads elsewhere (`/heard`, `/kept`, `/deleted`); the owner
-    amended this invariant for TAKES20 to list them in one place (owner,
-    2026-11-18: "go with a for rule 23"). It answers
+    `handlers::voice`). The words, kinds, sizes and receipts the same
+    subject's own paired phone already reads elsewhere (`/heard`, `/kept`,
+    `/deleted`); a game bite's described fields and its matched play no
+    other phone route answers, and they are the owner's own bite beside
+    ESPN's public feed (the game's name and the play). The owner amended this
+    invariant for TAKES20 to list all of it in one place (owner, 2026-11-18:
+    "go with a for rule 23"). It answers
     no audio, no vector and no other subject's note, and its span skips
     every argument, so neither the words nor the search reach a log line.
     Its name, `takes`, is never a note's id either. `GET /voice-notes/deleted`

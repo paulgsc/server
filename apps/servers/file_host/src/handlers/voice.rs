@@ -433,8 +433,8 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 /// `kind` (a kind's name, or `all`, as often as asked) it is those kinds,
 /// takes deleted for good among them by their receipts. `from` and `to`
 /// bound when they were recorded, `about` keeps one key's takes, `sort`
-/// orders them `newest` (the default) or `oldest`, and `after` starts the
-/// page after a take the same read listed (`next`). With `q`, the takes it
+/// orders them `newest` (the default) or `oldest`, and `after` (a page's
+/// `next`) starts the page past the take that page ended on. With `q`, the takes it
 /// finds (`voice_repo::takes`): by meaning when the meaning index is on and
 /// holds every heard take listed, the asked words embedded here, on the
 /// request's path (`crate::meaning`); else the takes whose words hold every
@@ -447,7 +447,7 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 /// # Errors
 /// 401 without a session, 403 for a browser's (only a paired phone reads
 /// it), 422 naming each field refused (`voice_repo::takes::Ask::parse`), an
-/// `after` no take of the read is among them, and 500 for a storage failure.
+/// `after` a search ranked by meaning no longer finds, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_takes_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_takes(
@@ -467,7 +467,7 @@ pub async fn get_takes(
 		.await
 		.map_err(refusal)?
 		.map(Json)
-		.ok_or_else(|| FileHostError::unprocessable_entity([("after", "a take this read lists")]))
+		.ok_or_else(|| FileHostError::unprocessable_entity([("after", "a take this search still finds")]))
 }
 
 /// `PUT /voice-notes/:id/set-aside`'s query: when the owner let the note go.
