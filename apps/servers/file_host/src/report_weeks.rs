@@ -59,7 +59,9 @@
 //! Cost: every [`INTERVAL`], one read of the weeks held and, for each of the
 //! [`LOOKBACK`] weeks home does not hold, its weekly read (four range reads
 //! of `app_event_by_family` and one grouped read), after one indexed read
-//! of whether it is held; four `read_dir`s each minute.
+//! of whether it is held; each minute, four `read_dir`s, and for what the
+//! render worker made, one read of the weeks held and of those let go and up
+//! to two `stat`s per week held.
 
 use crate::auth::owner::Owner;
 use crate::auth::DeletionLock;

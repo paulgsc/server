@@ -398,7 +398,7 @@ episodes() {
         [ -e "$entry" ] || continue
         key=$(basename "$entry" .json)
         [[ "$key" =~ $REPORT_KEY ]] && echo "$key"
-      done ;;
+      done | LC_ALL=C sort ;;
   esac
 }
 

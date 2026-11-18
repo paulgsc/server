@@ -134,6 +134,7 @@
           "dashboard": "call",
           "alerts": [
             "alertname=\"ReportWeeksFailing\"",
+            "alertname=\"ReportWeeksStale\"",
             "alertname=\"FileHostDown\"",
             "alertname=\"HomeDriveLow\""
           ]

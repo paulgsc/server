@@ -1031,7 +1031,7 @@ tests:
         exp_alerts:
           - exp_labels:
               objective: RW1
-              says: "A week's engagement report failed to render: renders/report-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+              says: "A week's engagement report failed to render: renders/report-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
       - eval_time: 3h25m
         alertname: ReportRenderOverdue
         exp_alerts: []
