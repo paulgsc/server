@@ -22,10 +22,10 @@ use rust_round_repo::{
 };
 use serde::Serialize;
 use sqlx::SqliteConnection;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// What a take was said for: its key, and what its kind says of it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct About {
 	/// `<kind or family>:<what>`, the value the library's `about` filter
 	/// matches.
@@ -37,7 +37,7 @@ pub struct About {
 
 /// What a take's kind says of it, one variant per [`Of`] (a Studio take's
 /// three forms apart).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Detail {
 	/// A study session's reflection: the session.
@@ -98,7 +98,7 @@ pub enum StudioForm {
 
 /// A game bite's take: the game, the bite as the screen showed it, and the
 /// play home matched it to.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GameAbout {
 	/// The game's id (ESPN's event id), the note's `ref`.
 	pub game: String,
@@ -303,17 +303,16 @@ fn interview(of_ref: &str) -> About {
 /// # Errors
 /// [`VoiceError::Unreadable`] for a bite or match this crate did not write,
 /// and [`VoiceError::Storage`] for any `sqlx` failure.
-pub async fn with_game(conn: &mut SqliteConnection, subject: &str, note_id: &str, about: &mut About, labels: &mut HashMap<String, Option<String>>) -> Result<(), VoiceError> {
+pub async fn with_game(conn: &mut SqliteConnection, subject: &str, note_id: &str, about: &mut About, labels: &mut BTreeMap<String, Option<String>>) -> Result<(), VoiceError> {
 	let Detail::Game(game) = &mut about.detail else {
 		return Ok(());
 	};
-	game.label = match labels.get(&game.game) {
-		Some(label) => label.clone(),
-		None => {
-			let label = label(conn, &game.game).await?;
-			labels.insert(game.game.clone(), label.clone());
-			label
-		}
+	game.label = if let Some(label) = labels.get(&game.game) {
+		label.clone()
+	} else {
+		let label = label(conn, &game.game).await?;
+		labels.insert(game.game.clone(), label.clone());
+		label
 	};
 	game.bite = bite(conn, subject, note_id).await?;
 	let Some(matched) = crate::bite_match::newest_match(conn, subject, note_id).await? else {

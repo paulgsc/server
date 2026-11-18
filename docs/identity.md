@@ -816,8 +816,9 @@ nowhere is marked as such and belongs to review.
     paulgsc/server#509), `reflection` (each written reflection home
     keeps, as the routine's minimum, invariant 29; paulgsc/some-ui#2178),
     `prompt` (each drama prompt home keeps, as the routine's minimum,
-    invariant 31; paulgsc/some-ui#2179), `feedback` (each note on a
-    feed's episode home keeps, invariant 38; paulgsc/some-ui#2745) and
+    invariant 31; paulgsc/some-ui#2179), `feedback` (each note on the
+    call's or Playoff Delta's episodes home keeps, invariant 38;
+    paulgsc/some-ui#2745, paulgsc/server#985) and
     `pickup` (each Studio take the owner moved to `ready-for-pickup`, once
     heard: its labels and what home heard, never the move's comment and never
     audio; paulgsc/some-ui#2875, CONVEYOR3).
@@ -897,8 +898,9 @@ nowhere is marked as such and belongs to review.
       paulgsc/some-ui#2179). Its scene notes are named in it by id only;
       what home heard in each goes as its transcript. A prompt sent again
       files nothing.
-      The episode notes route files each note it keeps for the first time
-      (invariant 38), in the transaction that keeps it, as
+      The episode notes route files each note on the call's or Playoff
+      Delta's episodes it keeps for the first time (invariant 38; a note on
+      any other feed is filed nowhere, paulgsc/server#985), in the transaction that keeps it, as
       `feedback-<id>.json` in `some-ui.episode-note/1`: the note's id, feed,
       episode, moment, categories, the voice note id of its take or `null`,
       and when it was written, and nothing else (not when it reached home).
@@ -1550,7 +1552,8 @@ nowhere is marked as such and belongs to review.
     and `by` saying which (`voice_repo::takes`, its one caller
     `handlers::voice`). Each of these the same subject's own paired phone
     already reads elsewhere (`/heard`, `/kept`, `/deleted`); the owner
-    amended this invariant for TAKES20 to list them in one place. It answers
+    amended this invariant for TAKES20 to list them in one place (owner,
+    2026-11-18: "go with a for rule 23"). It answers
     no audio, no vector and no other subject's note, and its span skips
     every argument, so neither the words nor the search reach a log line.
     Its name, `takes`, is never a note's id either. `GET /voice-notes/deleted`
@@ -2542,8 +2545,9 @@ nowhere is marked as such and belongs to review.
 38. **The owner's notes on the feeds' episodes are append-only, one per id,
     and name a take only by id.** `episode_note` keeps each note the phone's
     Feedback page left at a moment of a feed's episode and sent home
-    (paulgsc/some-ui#2745, SFEED6): the phone's id for it, the feed (`call`
-    or `playoff-delta`), the episode's key, the moment in milliseconds from
+    (paulgsc/some-ui#2745, SFEED6): the phone's id for it, the feed (any feed
+    home makes videos of, `file_host::feeds::Feed`, with no list of feeds
+    that take notes: paulgsc/server#983), the episode's key, the moment in milliseconds from
     its start (at most a day), the categories picked from the fixed set of fourteen (each
     once, in the set's order, at least one: the phone's `NoteSchema`, held
     again by a trigger on the table), the voice note id of the library take
@@ -2557,8 +2561,13 @@ nowhere is marked as such and belongs to review.
     both a session's for its own subject (a paired phone's or a browser's),
     and deleted with the account by both the sweep and the migration's
     trigger (invariant 12). Rolling back the migration that creates it fails
-    once it holds a row, rather than dropping the record. The same `PUT`
-    files the note, once, for the mailbox's `feedback` folder as
+    once it holds a row, rather than dropping the record, and rolling back
+    the one that widens its feeds fails once it holds a note on a feed other
+    than the call or Playoff Delta. For a note on the
+    call's or Playoff Delta's episodes, the same `PUT` files it, once, for
+    the mailbox's `feedback` folder (a note on any other feed is kept on home
+    and filed nowhere: the mailbox takes no other, and no routine files notes
+    from now on, paulgsc/some-ui#3029) as
     `feedback-<id>.json` (`some-ui.episode-note/1`, invariant 19): all of it
     but when it reached home. A spoken note's words reach the routine only
     as its take's transcript in `transcript`, found by the take's id; its
@@ -2574,10 +2583,14 @@ nowhere is marked as such and belongs to review.
     `categories_are_the_sets_each_once_in_its_order`,
     `the_table_refuses_categories_out_of_the_sets_order`,
     `refusals_name_each_field`,
-    `the_migration_round_trips_and_refuses_to_drop_a_record` and
+    `the_migration_round_trips_and_refuses_to_drop_a_record`,
+    `widening_the_feeds_keeps_every_note_byte_for_byte`,
+    `a_feed_is_held_to_its_shape` and
     `the_record_leaves_with_the_account`; `handlers::episode_notes`'
     `a_note_is_kept_once_and_filed_once_for_the_mailbox`,
-    `notes_answer_the_callers_own_on_one_feed_oldest_first` and
+    `notes_answer_the_callers_own_on_one_feed_oldest_first`,
+    `every_feed_takes_a_note_by_the_same_path`,
+    `a_rust_essay_note_is_kept_and_never_reaches_the_mailbox_pass` and
     `a_refused_note_writes_and_files_nothing`; and `mailbox::pass`'s
     `a_filed_episode_note_is_handed_to_its_folder_naming_its_take_by_id`.
     *Not enforced:* that nothing else writes or reads the table, which

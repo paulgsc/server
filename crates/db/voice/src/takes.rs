@@ -398,7 +398,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> R
 	};
 	// Each take answered carries its verdict (HEARD1) and what only another
 	// table says of it: a few reads by key each, of at most [`NEWEST`].
-	let mut labels = HashMap::new();
+	let mut labels = std::collections::BTreeMap::new();
 	for take in &mut library.takes {
 		if take.status == Status::Deleted {
 			continue;
@@ -413,7 +413,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> R
 }
 
 /// The order key of a take: when recorded, then reached home, then its id.
-fn order(take: &Take) -> (&str, &str, &str) {
+const fn order(take: &Take) -> (&str, &str, &str) {
 	(take.recorded_at.as_str(), take.stored_at.as_str(), take.id.as_str())
 }
 
@@ -584,14 +584,13 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 	let total = all.len();
 	let (listed, matched, by) = match ask.search.as_ref() {
 		None => (all.into_iter().map(|(_, take)| take).collect::<Vec<_>>(), None, By::Newest),
-		Some(search) => match by_meaning(conn, subject, search, &all).await? {
-			Some(ranked) => {
+		Some(search) => {
+			if let Some(ranked) = by_meaning(conn, subject, search, &all).await? {
 				let mut takes: Vec<Option<Take>> = all.into_iter().map(|(_, take)| Some(take)).collect();
 				let found: Vec<Take> = ranked.into_iter().filter_map(|at| takes.get_mut(at).and_then(Option::take)).collect();
 				let matched = found.len();
 				(found, Some(matched), By::Meaning)
-			}
-			None => {
+			} else {
 				let found: Vec<Take> = all
 					.into_iter()
 					.filter(|(_, take)| take.heard.as_ref().is_some_and(|heard| search.finds(&heard.text)))
@@ -600,7 +599,7 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 				let matched = found.len();
 				(found, Some(matched), By::Words)
 			}
-		},
+		}
 	};
 	let start = match ask.after.as_deref() {
 		None => 0,
@@ -973,6 +972,7 @@ mod tests {
 	/// what became of it and where it is kept; the read before TAKES20 still
 	/// answers Studio takes alone.
 	#[tokio::test]
+	#[expect(clippy::too_many_lines, reason = "one fixture of every kind, then each thing a read of it says")]
 	async fn every_kind_is_listed_once_a_kind_is_asked() {
 		use super::Status;
 		use crate::about::Detail;
