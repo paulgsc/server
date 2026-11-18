@@ -443,6 +443,73 @@ mod tests {
 		assert_eq!(rows(&pool).await, 1, "and leaves it as it was");
 	}
 
+	/// Every column of every row, as bytes and storage class, in key order.
+	async fn every_row(pool: &SqlitePool) -> Vec<String> {
+		sqlx::query_scalar(
+			"SELECT
+			 typeof(subject_id) || ':' || hex(subject_id) || '|' ||
+			 typeof(note_id) || ':' || hex(note_id) || '|' ||
+			 typeof(feed) || ':' || hex(feed) || '|' ||
+			 typeof(episode_key) || ':' || hex(episode_key) || '|' ||
+			 typeof(at_ms) || ':' || hex(at_ms) || '|' ||
+			 typeof(categories) || ':' || hex(categories) || '|' ||
+			 typeof(take_id) || ':' || hex(take_id) || '|' ||
+			 typeof(written_at) || ':' || hex(written_at) || '|' ||
+			 typeof(stored_at) || ':' || hex(stored_at)
+			 FROM episode_note ORDER BY subject_id, note_id",
+		)
+		.fetch_all(pool)
+		.await
+		.unwrap()
+	}
+
+	/// paulgsc/server#983: widening `feed` rebuilds the table, and the rebuild
+	/// keeps every row byte for byte, both ways.
+	#[tokio::test]
+	async fn widening_the_feeds_keeps_every_note_byte_for_byte() {
+		const WIDENED: i64 = 20_261_119_000_100;
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		let before = MIGRATOR.iter().filter(|migration| migration.version < WIDENED).cloned().collect::<Vec<_>>();
+		let early = sqlx::migrate::Migrator {
+			migrations: std::borrow::Cow::Owned(before),
+			..sqlx::migrate::Migrator::DEFAULT
+		};
+		early.run(&pool).await.unwrap();
+		for subject in [A, B] {
+			sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+				.bind(subject)
+				.bind(subject.as_bytes())
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let mut spoken = note("n2", &["shallow", "voice", "subtitlesOff"]);
+		spoken["take"] = json!("take-7");
+		let mut pd = note("n3", &["overlap"]);
+		pd["feed"] = json!("playoff-delta");
+		pd["episode"] = json!("2026-SF-08");
+		pd["atMs"] = json!(86_400_000);
+		for (subject, sent) in [(A, note("n1", &["shallow"])), (A, spoken), (A, pd), (B, note("n1", &["pacing"]))] {
+			assert_eq!(put(&pool, subject, &sent).await.unwrap(), Change::Added);
+		}
+		let held = every_row(&pool).await;
+		assert_eq!(held.len(), 4);
+
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(every_row(&pool).await, held, "up keeps every row");
+		let mut rust = note("n4", &["pacing"]);
+		rust["feed"] = json!("rust-essay");
+		assert_eq!(put(&pool, A, &rust).await.unwrap(), Change::Added, "and takes a note on any feed");
+		assert!(MIGRATOR.undo(&pool, WIDENED - 1).await.is_err(), "down refuses a note on a feed it cannot hold");
+		assert_eq!(every_row(&pool).await.len(), 5, "and leaves the table as it was");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		let left = every_row(&pool).await;
+		assert_eq!(left, held[3..], "the account trigger still fires on the rebuilt table");
+		MIGRATOR.undo(&pool, WIDENED - 1).await.unwrap();
+		assert_eq!(every_row(&pool).await, left, "down keeps every row");
+	}
+
 	/// The columns the migration describes and no others: a new one is a
 	/// decision about what home learns from a note.
 	#[tokio::test]

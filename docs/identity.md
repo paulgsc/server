@@ -2551,8 +2551,11 @@ nowhere is marked as such and belongs to review.
     both a session's for its own subject (a paired phone's or a browser's),
     and deleted with the account by both the sweep and the migration's
     trigger (invariant 12). Rolling back the migration that creates it fails
-    once it holds a row, rather than dropping the record. The same `PUT`
-    files the note, once, for the mailbox's `feedback` folder as
+    once it holds a row, rather than dropping the record. For a note on the
+    call's or Playoff Delta's episodes, the same `PUT` files it, once, for
+    the mailbox's `feedback` folder (a note on any other feed is kept on home
+    and filed nowhere: the mailbox takes no other, and no routine files notes
+    from now on, paulgsc/some-ui#3029) as
     `feedback-<id>.json` (`some-ui.episode-note/1`, invariant 19): all of it
     but when it reached home. A spoken note's words reach the routine only
     as its take's transcript in `transcript`, found by the take's id; its
