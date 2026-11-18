@@ -44,7 +44,7 @@ use std::collections::HashSet;
 
 use super::{index_name, put_index, stamp_of, Computed, LastIndex, INDEX_SCHEMA};
 use crate::auth::DeletionLock;
-use crate::handlers::interview_weeks::{is_closed, reads_as_named, week_record, InterviewRecord};
+use crate::handlers::interview_weeks::{finalize, is_closed, reads_as_named, week_record, InterviewRecord};
 use crate::mailbox::pass::{storage, Failure, Outcome, MAILBOX_BODY_CEILING};
 
 /// The routine this index is for, as its name and `routine` say.
@@ -141,12 +141,10 @@ pub(in crate::mailbox) async fn put_interview_index<T: MailboxTransport>(
 		.collect();
 	let mut weeks = Vec::with_capacity(closed.len());
 	for week in closed {
-		if let (true, Some(window)) = (drafted.contains(&week.id), &week.window) {
+		if drafted.contains(&week.id) && week.window.is_some() {
 			let _hold = deletion.hold().await;
 			let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
-			draft::finalize(&mut tx, Kind::Interview, subject, &week.id, &window.due, &at)
-				.await
-				.map_err(Failure::Storage)?;
+			finalize(&mut tx, subject, &week, &at).await.map_err(Failure::Storage)?;
 			tx.commit().await.map_err(Failure::Storage)?;
 		}
 		let Some(record) = week_record(&mut conn, subject, week, &at).await.map_err(Failure::Storage)? else {

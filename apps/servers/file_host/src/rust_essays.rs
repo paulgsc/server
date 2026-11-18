@@ -447,7 +447,14 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 	if rust_round_repo::instant_order(now, &due) != Some(std::cmp::Ordering::Greater) {
 		return Ok(Given::Waiting);
 	}
-	rust_round_repo::draft::finalize(&mut tx, kind, subject, &essay.week, &due, now).await?;
+	match kind {
+		Kind::RustRounds => {
+			rust_round_repo::draft::finalize(&mut tx, kind, subject, &essay.week, &due, now).await?;
+		}
+		// An interview week becoming final lets go of its middle takes'
+		// recordings (IW8), whichever reader makes it final first.
+		Kind::Interview => crate::handlers::interview_weeks::finalize_at(&mut tx, subject, &essay.week, &due, now).await?,
+	}
 	let standing = standing(&mut tx, kind, subject, &essay.week).await?;
 	let unheard = match &standing {
 		Some(standing) => unheard(&mut tx, kind, subject, standing).await?,
@@ -1635,6 +1642,49 @@ mod tests {
 		let (held, _) = held(&pool, Kind::Interview, ME, &folders.essays).await.unwrap();
 		assert_eq!(held.iter().map(|held| held.key.as_str()).collect::<Vec<_>>(), ["2026-w46"]);
 		assert!(held_essays(&mut pool.acquire().await.unwrap(), Kind::RustRounds, ME).await.unwrap().is_empty());
+	}
+
+	/// IW8: when the essay pass is what makes an interview week final, the
+	/// week's middle takes' recordings are let go with it, as any reader
+	/// making it final does: the question keeps its earliest and its newest,
+	/// which here is the take the final names.
+	#[tokio::test]
+	async fn the_essay_pass_making_a_week_final_lets_go_of_its_middle_takes() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		interview_week(&pool, ["take", "silence"]).await;
+		for (note, at) in [
+			("early", "2026-11-10T09:00:00.000Z"),
+			("mid", "2026-11-11T09:00:00.000Z"),
+			("late", "2026-11-12T09:00:00.000Z"),
+		] {
+			for statement in [
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'interview', '2026-w46:about-you', ?3, 'audio/webm', 4, 's', 'now')",
+				"INSERT INTO voice_note_audio (subject_id, note_id, body) SELECT ?1, ?2, x'1a45dfa3' WHERE ?3 IS NOT NULL",
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+				 SELECT ?1, ?2, 'm', 'e', 1, 'heard', 'en', 0.9, 1, 'w', 1, ?3",
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+				 SELECT ?1, ?2, 'm', 1, 'r', 'heard', '', 1, ?3",
+			] {
+				sqlx::query(statement).bind(ME).bind(note).bind(at).execute(&pool).await.unwrap();
+			}
+		}
+		assert_eq!(export(&pool, Kind::Interview, ME, &folders, AFTER).await.unwrap().written, 1);
+		let mut held: Vec<String> = sqlx::query_scalar("SELECT note_id FROM voice_note_audio WHERE subject_id = ?1")
+			.bind(ME)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		held.sort();
+		// `note-iw`, the take the final names, was recorded at `then`, which
+		// sorts after every instant: it is the newest too.
+		assert_eq!(held, ["early", "note-iw", "note-read"], "mid and late let go");
+		let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_deletion WHERE note_id IN ('mid', 'late')")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(receipts, 2);
 	}
 
 	#[tokio::test]

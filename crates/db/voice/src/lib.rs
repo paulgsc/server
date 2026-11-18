@@ -903,7 +903,8 @@ pub struct AudioHead {
 /// The head of `subject`'s note `note_id`'s audio when it is said for `of`.
 ///
 /// `None` for a note the subject does not hold, another subject's included,
-/// and for one said for anything else. It reads no audio: [`audio_body`]
+/// for one said for anything else, and for one whose recording was let go
+/// ([`delete::let_go_audio`]): there is nothing to play. It reads no audio: [`audio_body`]
 /// does, under the same filter, only when the bytes are wanted.
 ///
 /// Reads only. With [`audio_body`], its callers are `file_host`'s
@@ -918,7 +919,9 @@ pub struct AudioHead {
 pub async fn audio_head(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<AudioHead>, VoiceError> {
 	let of = of.as_str();
 	let row = sqlx::query!(
-		"SELECT content_type, sha256 FROM voice_note WHERE subject_id = ?1 AND note_id = ?2 AND of_kind = ?3",
+		"SELECT note.content_type, note.sha256 FROM voice_note AS note
+		 WHERE note.subject_id = ?1 AND note.note_id = ?2 AND note.of_kind = ?3
+		   AND EXISTS (SELECT 1 FROM voice_note_audio AS audio WHERE audio.subject_id = note.subject_id AND audio.note_id = note.note_id)",
 		subject,
 		note_id,
 		of

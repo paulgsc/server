@@ -270,6 +270,12 @@ mod tests {
 		.execute(&pool)
 		.await
 		.unwrap();
+		// Its recording, without which the transcriber has nothing to hear.
+		sqlx::query("INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'a-pick', x'00')")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
 		let queued = |pool: SqlitePool| async move {
 			let mut conn = pool.acquire().await.unwrap();
 			let keys = Keys {

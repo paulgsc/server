@@ -1357,7 +1357,48 @@ nowhere is marked as such and belongs to review.
     newest verdict `garbled`, `failed` or `nothing_said` (invariant 23's
     `voice_transcript_verdict`), may be deleted too: the owner, 2026-11-16,
     paulgsc/some-ui#3076, "allow delete for any kind home couldn't hear"
-    (`Deletable::Unheard`). Every other kind is the work and is kept, and so
+    (`Deletable::Unheard`). **A week of mock interview's middle takes let go
+    of their recordings when the week closes** (`Deletable::InterviewRetake`,
+    IW8): the owner, 2026-11-17, on
+    [paulgsc/some-ui#3175](https://github.com/paulgsc/some-ui/issues/3175),
+    "keep first and latest, go with your proposal", answering this proposal,
+    verbatim: "**First and latest take is kept.** The first shows where you
+    started cold; the latest shows where you got to. That's the growth
+    record. **Every take's transcript and counts are kept.** They're tiny
+    text, and they show how the week went. **Middle takes' audio is let go
+    when the week closes,** each with a receipt." So this widens the
+    interview switch to the recording alone, never the record: as an
+    interview week becomes final (`handlers::interview_weeks::finalize_at`,
+    which every reader that makes one final goes through: the record, the
+    mailbox's interview index and the essay pass), `voice_repo::interview::let_go_retakes` keeps, for
+    each question, the recordings of its earliest note, its newest, and the
+    take the week's final names when that is another (a Claude call, for
+    the coordinator run of 2026-11-17: a send is the owner's own choice, and
+    nothing it names is let go), so a question of two notes or fewer loses
+    none, and a teleprompter read (`<week>:read:<card>`) is never one. Every
+    other note's `voice_note_audio` row goes through
+    `voice_repo::delete::let_go_audio`, the delete path's audio-only act,
+    with a receipt whose `went` is the recording alone; the note, every
+    transcript and word of it, its meaning, its verdicts, its marks and any
+    copy filed for the mailbox stay, and it stays in My data's list
+    (`recordingLetGoAt` the receipt's time, its bytes out of the kind's room
+    and the week's, while it still counts as a note); `GET
+    /voice-notes/:id/audio` answers it `404`, nothing to play. Only a note home has
+    heard and judged `heard` is let go: one no model has ended, or not yet
+    judged, keeps its recording, so what home hears of it is never lost, and
+    so does one whose newest verdict asks the owner to act, which is theirs
+    to reconcile; none of those is let go later. The transcriber never waits
+    on a note with no recording. A delete of a note let go so answers with
+    its receipt, and a `PUT` of its id is refused as deleted for good, as for
+    any note deleted. *Enforced by* `voice_repo::delete`'s
+    `letting_go_of_a_recording_takes_the_audio_alone`,
+    `voice_repo::interview`'s
+    `a_closing_week_keeps_first_newest_and_sent_and_lets_go_the_rest`,
+    `voice_repo::kept`'s `a_note_whose_recording_was_let_go_holds_no_room`
+    and `handlers::interview_weeks`'
+    `the_week_becoming_final_lets_go_of_its_middle_takes_recordings`, and
+    `rust_essays`' `the_essay_pass_making_a_week_final_lets_go_of_its_middle_takes`.
+    Every other kind is the work and is kept, and so
     is a note home heard or has not judged yet. My data offers exactly the
     notes this route deletes: `GET /voice-notes/kept`'s `deletable` and the
     delete read one rule (`voice_repo::delete::allows`; the owner,
@@ -2021,7 +2062,7 @@ nowhere is marked as such and belongs to review.
     as `index-rust-*`. Not yet counted by `GET /subjects/me/kept` (#844).
     *Enforced by* `rust_round_repo::interview`'s
     `a_send_is_a_draft_until_the_deadline_then_final`,
-    `handlers::interview_weeks`' `a_week_reads_back_as_the_routine_put_it_and_only_for_its_subject`
+    `handlers::interview_weeks`' `a_week_reads_back_as_the_routine_put_it_and_only_for_its_subject`,
     `the_draft_standing_at_the_deadline_is_final_at_the_first_read` and
     `the_record_names_each_questions_first_take_sent_or_not`,
     `voice_repo::interview`'s `each_questions_first_is_its_earliest_note`,
