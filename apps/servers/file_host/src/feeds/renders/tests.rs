@@ -471,16 +471,23 @@ fn a_policy_refusal_is_its_reason_and_numbers() {
 		"reason=overflow\nscenes=a scene, of words\ncount=2\n",
 		"reason=overflow\nscenes=-dive\ncount=1\n",
 		"reason=overflow\nscenes=a,b,c,d,e,f,g,h,i,j,k,l,m\ncount=13\n",
+		"reason=overflow\nscenes=a,b,c\ncount=14\n",
 	] {
 		assert_eq!(Over::parse(text), None, "{text:?}");
 	}
-	// #975: scenes past the frame, by id, of how many.
-	let overflow = Over::parse("reason=overflow\nscenes=dive-2,beside-2,dive-3\ncount=14\nheld=ab12\n").unwrap();
+	// #975: scenes past the frame, by id, of how many; past twelve, the first
+	// twelve.
+	let twelve = (1..=12).map(|i| ["s", &i.to_string()].concat()).collect::<Vec<_>>().join(",");
+	assert!(matches!(
+		Over::parse(&["reason=overflow\nscenes=", &twelve, "\ncount=14\n"].concat()),
+		Some(Over::Overflow { scene_count: 14, .. })
+	));
+	let overflow = Over::parse("reason=overflow\nscenes=dive-2,beside-2,dive-3\ncount=3\nheld=ab12\n").unwrap();
 	assert_eq!(
 		overflow,
 		Over::Overflow {
 			scenes: vec![String::from("dive-2"), String::from("beside-2"), String::from("dive-3")],
-			scene_count: 14,
+			scene_count: 3,
 		}
 	);
 	assert_eq!(overflow.reason(), "overflow");
@@ -507,7 +514,7 @@ fn a_policy_refusal_is_its_reason_and_numbers() {
 	);
 	assert_eq!(
 		serde_json::to_value(failed(overflow)).unwrap(),
-		serde_json::json!({ "feed": "rust-essay", "key": "2026-w46", "at": 1, "by": "recorder", "exit": 1, "reason": "overflow", "scenes": ["dive-2", "beside-2", "dive-3"], "sceneCount": 14 })
+		serde_json::json!({ "feed": "rust-essay", "key": "2026-w46", "at": 1, "by": "recorder", "exit": 1, "reason": "overflow", "scenes": ["dive-2", "beside-2", "dive-3"], "sceneCount": 3 })
 	);
 }
 

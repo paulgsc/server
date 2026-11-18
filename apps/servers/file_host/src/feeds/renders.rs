@@ -649,7 +649,8 @@ impl Over {
 			"overflow" => {
 				let scenes: Vec<String> = field("scenes")?.split(',').map(String::from).collect();
 				let scene_count = whole(field("count")?)?;
-				(scenes.len() <= MOST_SCENES && scenes.iter().all(|id| scene_id(id)) && usize::try_from(scene_count).is_ok_and(|count| count >= scenes.len()))
+				// The worker names the first `min(count, MOST_SCENES)`.
+				(scenes.iter().all(|id| scene_id(id)) && usize::try_from(scene_count).is_ok_and(|count| count.min(MOST_SCENES) == scenes.len()))
 					.then_some(Self::Overflow { scenes, scene_count })
 			}
 			_ => None,

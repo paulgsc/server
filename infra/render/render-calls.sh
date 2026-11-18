@@ -193,8 +193,9 @@ REFUSED_LARGE="the video is ([0-9]+) MB, past the policy's ([0-9]+) MB"
 # and the image's stage and fonts alone, so it is refused the same way on
 # every retry: held as the two above are. .refused names at most
 # REFUSED_SCENES of them (the failed.log has every one) and how many there
-# were; an id not of SCENE_ID's shape is never kept, and a refusal naming
-# none of that shape is no refusal, so it keeps the hourly retry.
+# were. The ids are read up to the first line not of SCENE_ID's shape (the
+# end of the recorder's list, whatever follows it), and a refusal naming
+# none is no refusal, so it keeps the hourly retry.
 REFUSED_FIT="These scenes don't fit the frame, so the video would cut them off:"
 SCENE_ID='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 REFUSED_SCENES=12
@@ -1231,7 +1232,7 @@ refusal() {
     # The ids on the lines after the attempt's last such line, up to the
     # first that is not one.
     scenes=$(tail -c +"$(( from + 1 ))" "$log" | awk -v head="$REFUSED_FIT" -v id="$SCENE_ID" '
-      $0 == head { n = 0; on = 1; delete ids; next }
+      $0 == head { n = 0; on = 1; next }
       on && $0 ~ id { ids[++n] = $0; next }
       { on = 0 }
       END { for (i = 1; i <= n; i++) print ids[i] }')
