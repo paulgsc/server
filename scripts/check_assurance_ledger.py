@@ -117,11 +117,6 @@ KNOWN_UNPLACED: dict[str, str] = {
 		"covers it: some-ui's ledger needs a placement the owner chooses (a family whose paths include "
 		"`server:apps/servers/file_host/src/metrics/periodic.rs`)"
 	),
-	"apps/servers/file_host/src/report_weeks.rs": (
-		"the engagement report's weekly writer (paulgsc/some-ui ENG12, #2700; #821). some-ui places it "
-		"in `engagement-report-rendered` and the `report-weeks` process's `given` segment once this file "
-		"is on server main (AL1, some-ui#2924); this entry goes in the next server PR after that"
-	),
 }
 
 PROOF = re.compile(r"^server:([^#\s]+)#(.{3,})$")
