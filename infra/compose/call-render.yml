@@ -4,7 +4,7 @@
 #
 # - `kokoro`, the speaker: Kokoro v1.0, seeded per line
 #   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
-# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with six jobs
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with eight jobs
 #   (infra/render/render-calls.sh): for each week `file_host` writes to
 #   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
 #   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
@@ -37,7 +37,12 @@
 #   interview's essay (IW6, paulgsc/some-ui#2937, #899), by the Rust Rounds
 #   essay's rules (one export over the kind, `rust_essays`): each essay file_host
 #   writes to ${STORAGE}/interview-essays/<week>/, once the week is final, is
-#   made into ${STORAGE}/renders/interview-essay/<week>/. Every job
+#   made into ${STORAGE}/renders/interview-essay/<week>/. Its eighth is a
+#   week's engagement report (ENG12, paulgsc/some-ui#2700, #821): each week
+#   file_host writes to ${STORAGE}/report-weeks/<week>.json
+#   (`report_weeks::REPORTS_FOLDER`), home's own engagement counts once the
+#   week has ended, is written into a report by code and made into
+#   ${STORAGE}/renders/report/<week>/. Every job
 #   waits on the speaker alike: `render` starts only after `kokoro` has.
 #
 #   Its image is published by paulgsc/some-ui's CI, not built here (#718,
@@ -125,10 +130,11 @@ services:
       # file_host makes ${STORAGE}/call-weeks,
       # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests,
       # ${STORAGE}/rust-essays, ${STORAGE}/interview-essays,
-      # ${STORAGE}/clip-walks and ${STORAGE}/cards-essays before it answers
+      # ${STORAGE}/clip-walks, ${STORAGE}/cards-essays and
+      # ${STORAGE}/report-weeks before it answers
       # its health check (call_weeks::start, pd_fills::start,
-      # previews::start, rust_essays::start, clips::start, cards_essays::start),
-      # so each is its own, never Docker's.
+      # previews::start, rust_essays::start, clips::start, cards_essays::start,
+      # report_weeks::start), so each is its own, never Docker's.
       file-host:
         condition: service_healthy
     networks:
@@ -195,6 +201,15 @@ services:
       - type: volume
         source: cards_essay_files
         target: /cards-essays
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`report_weeks::REPORTS_FOLDER`), read here only,
+      # through `report_week_files` (below): one file per ended week, home's
+      # engagement counts as it kept them (ENG12, paulgsc/some-ui#2700, #821).
+      - type: volume
+        source: report_week_files
+        target: /report-weeks
         read_only: true
         volume:
           nocopy: true
@@ -313,6 +328,15 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/cards-essays
+  # ${STORAGE}/report-weeks, where file_host writes each ended week's
+  # engagement counts for the report; bound as call_week_files is, for the
+  # same reason (report_weeks::start makes it).
+  report_week_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/report-weeks
 
 networks:
   # Internal: neither reaches the internet or the rest of the stack. The

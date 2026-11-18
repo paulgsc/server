@@ -10,9 +10,10 @@
 //! DELETE /feeds/:feed/videos/:key/rest        → { receipt }: lets the rest of its folder go, once the video has
 //! ```
 //!
-//! `:feed` is `call`, `playoff-delta`, `rust-essay`, `interview-essay` or `cards-essay`
-//! (`feeds::Feed`; an essay is the caller's own, keyed by its week); any
-//! other is `404`.
+//! `:feed` is `call`, `playoff-delta`, `rust-essay`, `interview-essay`,
+//! `cards-essay` or `report` (`feeds::Feed`; an essay is the caller's own,
+//! keyed by its week, and so is a week's engagement report, keyed by its ISO
+//! week, `2026-W46`: contract epoch 17, #821); any other is `404`.
 //!
 //! **A cards essay** (EXPLAIN6, #878; contract epoch 10) is listed newest
 //! day first, keyed `<slug>-<YYYY-MM-DD>`, with `title` from its cut list

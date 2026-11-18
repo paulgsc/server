@@ -185,7 +185,8 @@ async fn observe_renders(db: &sqlx::SqlitePool) {
 	let essays = crate::rust_essays::disk(crate::rust_essays::Kind::RustRounds).await;
 	let interview = crate::rust_essays::disk(crate::rust_essays::Kind::Interview).await;
 	let cards = crate::cards_essays::disk().await;
-	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await.and(&pd).and(&essays).and(&interview).and(&cards));
+	let report = crate::report_weeks::disk().await;
+	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await.and(&pd).and(&essays).and(&interview).and(&cards).and(&report));
 }
 
 /// The pass's one log line, when it added a week or a revision, or something

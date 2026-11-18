@@ -28,7 +28,7 @@
 //! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 16;
+pub const CONTRACT_EPOCH: u32 = 17;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
@@ -38,9 +38,10 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 ///
 /// RELEASE R3, #790; docs/release.md, "Constraints". The folders are
 /// `call-weeks`, `playoff-delta-episodes`, `preview-requests`,
-/// `rust-essays`, `cards-essays` and `interview-essays`, which `file_host`
-/// writes and the render worker (paulgsc/some-ui) reads. `cards-essays`
-/// (#854) and `interview-essays` (#899) came without a raise: each is a new
+/// `rust-essays`, `cards-essays`, `interview-essays` and `report-weeks`,
+/// which `file_host` writes and the render worker (paulgsc/some-ui) reads.
+/// `cards-essays` (#854), `interview-essays` (#899) and `report-weeks`
+/// (#821) came without a raise: each is a new
 /// folder, so no layout an older render reads changed, and server's own
 /// `render-calls.sh` names each file to its recorder. A
 /// call's part let go (`<key>.let-go`, paulgsc/some-ui#2918) came without

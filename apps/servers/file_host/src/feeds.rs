@@ -3,7 +3,8 @@
 //! FEED4, paulgsc/some-ui#2647: the weekly call (`call_weeks`) and Playoff
 //! Delta (`pd_fills`), Rust Rounds' and mock interview's essays (`rust_essays`, RR16,
 //! paulgsc/some-ui#2691), and cards essays (`cards_essays`, CARDS7 #854;
-//! EXPLAIN6 #878). Each keeps its episodes, links and receipts in its own
+//! EXPLAIN6 #878), and the weekly engagement report (`report_weeks`, ENG12,
+//! paulgsc/some-ui#2700, #821). Each keeps its episodes, links and receipts in its own
 //! tables, so each record is keyed to what it is of; what the phone does with
 //! an episode's video (list it, bring it, record its `YouTube` link, let it
 //! go) is one implementation over them all, [`videos`].
@@ -22,15 +23,17 @@
 //! each its own episode with its own video, link and receipts; Playoff Delta's
 //! by `<season>-<team>-<NN>` (`2026-SF-08`), an essay by its week
 //! (`2026-w46`), a cards essay by its slug and day
-//! (`nixos-upgrade-2026-11-14`).
+//! (`nixos-upgrade-2026-11-14`), an engagement report by its ISO week
+//! (`2026-W46`).
 //!
 //! **Whose.** The call's, Playoff Delta's and the cards essays' episodes are
 //! no one's: what was said by home's speaker about a public week, or about
 //! public repositories at stamped commits. An essay's is its subject's,
 //! since its video plays the owner's own takes (docs/identity.md invariant
-//! 23's one named exception), so every method that reads or writes the
-//! feed's tables takes the caller's subject, and the essay feed answers only
-//! that subject's weeks.
+//! 23's one named exception), and so is an engagement report's, written from
+//! the owner's own records (`report_week`), so every method that reads or
+//! writes the feed's tables takes the caller's subject, and those feeds
+//! answer only that subject's weeks.
 
 pub mod mp4;
 pub mod renders;
@@ -62,6 +65,9 @@ pub enum Feed {
 	/// Cards essays (CARDS7, EXPLAIN6): listed, brought and linked
 	/// (paulgsc/some-ui#2999), never let go ([`Self::lets_go`]).
 	CardsEssay,
+	/// The weekly engagement report (ENG12, #821): the caller's own, by the
+	/// essays' rules over its own tables.
+	Report,
 }
 
 impl Feed {
@@ -74,6 +80,7 @@ impl Feed {
 			Self::RustEssay => "rust-essay",
 			Self::InterviewEssay => "interview-essay",
 			Self::CardsEssay => "cards-essay",
+			Self::Report => "report",
 		}
 	}
 
@@ -86,6 +93,7 @@ impl Feed {
 			"rust-essay" => Some(Self::RustEssay),
 			"interview-essay" => Some(Self::InterviewEssay),
 			"cards-essay" => Some(Self::CardsEssay),
+			"report" => Some(Self::Report),
 			_ => None,
 		}
 	}
@@ -99,6 +107,7 @@ impl Feed {
 			Self::RustEssay => crate::rust_essays::RENDERS_FOLDER,
 			Self::InterviewEssay => crate::rust_essays::INTERVIEW_RENDERS_FOLDER,
 			Self::CardsEssay => crate::cards_essays::RENDERS_FOLDER,
+			Self::Report => crate::report_weeks::RENDERS_FOLDER,
 		})
 	}
 
@@ -111,6 +120,7 @@ impl Feed {
 			Self::RustEssay => crate::rust_essays::ESSAYS_FOLDER,
 			Self::InterviewEssay => crate::rust_essays::INTERVIEW_ESSAYS_FOLDER,
 			Self::CardsEssay => crate::cards_essays::ESSAYS_FOLDER,
+			Self::Report => crate::report_weeks::REPORTS_FOLDER,
 		})
 	}
 
@@ -122,6 +132,7 @@ impl Feed {
 			Self::PlayoffDelta => crate::pd_fills::render::VIDEO,
 			Self::RustEssay | Self::InterviewEssay => crate::rust_essays::VIDEO,
 			Self::CardsEssay => crate::cards_essays::VIDEO,
+			Self::Report => crate::report_weeks::VIDEO,
 		}
 	}
 
@@ -133,12 +144,12 @@ impl Feed {
 		!matches!(self, Self::CardsEssay)
 	}
 
-	/// What an episode's entry in [`Self::input`] is: a week's or a cards
-	/// essay's file, or a fill's or an essay's folder.
+	/// What an episode's entry in [`Self::input`] is: a week's, a cards
+	/// essay's or a report's file, or a fill's or an essay's folder.
 	#[must_use]
 	pub fn input_of(self, input: &Path, episode: &str) -> std::path::PathBuf {
 		match self {
-			Self::Call | Self::CardsEssay => input.join(String::from(episode) + ".json"),
+			Self::Call | Self::CardsEssay | Self::Report => input.join(String::from(episode) + ".json"),
 			Self::PlayoffDelta | Self::RustEssay | Self::InterviewEssay => input.join(episode),
 		}
 	}
@@ -182,6 +193,16 @@ impl Feed {
 				.rev()
 				.map(HeldEpisode::of_iso_week)
 				.collect(),
+			// Newest week first, each by its Monday.
+			Self::Report => app_event_repo::report::held(conn, subject)
+				.await?
+				.into_iter()
+				.rev()
+				.map(|week| HeldEpisode {
+					date: app_event_repo::IsoWeek::parse(&week).map(|week| week.monday().format("%Y-%m-%d").to_string()),
+					key: week,
+				})
+				.collect(),
 			// Newest day first, as the table orders them oldest first.
 			Self::CardsEssay => cards_essay_repo::held(conn)
 				.await?
@@ -212,6 +233,7 @@ impl Feed {
 			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject).await?.iter().any(|week| week == key),
 			Self::InterviewEssay => essays_held(conn, crate::rust_essays::Kind::Interview, subject).await?.iter().any(|week| week == key),
 			Self::CardsEssay => crate::cards_essays::pass::is_key(key) && cards_essay_repo::holds(conn, key).await?,
+			Self::Report => app_event_repo::report::holds(conn, subject, key).await?,
 		})
 	}
 
@@ -225,6 +247,7 @@ impl Feed {
 			Self::PlayoffDelta => pd_fill_repo::video::links(conn).await,
 			Self::RustEssay => rust_round_repo::essay_video::links(conn, crate::rust_essays::Kind::RustRounds, subject).await,
 			Self::InterviewEssay => rust_round_repo::essay_video::links(conn, crate::rust_essays::Kind::Interview, subject).await,
+			Self::Report => app_event_repo::report_video::links(conn, subject).await,
 			// Oldest first within each essay, so the newest is the one left.
 			Self::CardsEssay => Ok(
 				cards_essay_repo::links(conn)
@@ -260,6 +283,7 @@ impl Feed {
 				let held = self.holds(conn, subject, key).await?;
 				rust_round_repo::essay_video::record_link(conn, crate::rust_essays::Kind::Interview, subject, key, held, youtube_id, now).await
 			}
+			Self::Report => app_event_repo::report_video::record_link(conn, subject, key, youtube_id, now).await,
 			Self::CardsEssay => Ok(match cards_essay_repo::record_link(conn, key, youtube_id, now).await? {
 				cards_essay_repo::Linked::Added => Recorded::Added,
 				cards_essay_repo::Linked::Held => Recorded::Held,
@@ -279,6 +303,7 @@ impl Feed {
 			Self::RustEssay => rust_round_repo::essay_video::receipts(conn, crate::rust_essays::Kind::RustRounds, subject).await,
 			Self::InterviewEssay => rust_round_repo::essay_video::receipts(conn, crate::rust_essays::Kind::Interview, subject).await,
 			Self::CardsEssay => Ok(Vec::new()),
+			Self::Report => app_event_repo::report_video::receipts(conn, subject).await,
 		}
 	}
 
@@ -293,6 +318,7 @@ impl Feed {
 			Self::RustEssay => rust_round_repo::essay_video::receipt(conn, crate::rust_essays::Kind::RustRounds, subject, key, step).await,
 			Self::InterviewEssay => rust_round_repo::essay_video::receipt(conn, crate::rust_essays::Kind::Interview, subject, key, step).await,
 			Self::CardsEssay => Ok(None),
+			Self::Report => app_event_repo::report_video::receipt(conn, subject, key, step).await,
 		}
 	}
 
@@ -307,6 +333,7 @@ impl Feed {
 			Self::PlayoffDelta => pd_fill_repo::video::write_receipt(conn, receipt).await,
 			Self::RustEssay => rust_round_repo::essay_video::write_receipt(conn, crate::rust_essays::Kind::RustRounds, subject, receipt).await,
 			Self::InterviewEssay => rust_round_repo::essay_video::write_receipt(conn, crate::rust_essays::Kind::Interview, subject, receipt).await,
+			Self::Report => app_event_repo::report_video::write_receipt(conn, subject, receipt).await,
 			// [`videos::let_go`] never gets this far for it (`lets_go`).
 			Self::CardsEssay => Err(sqlx::Error::Protocol(String::from("a cards essay is never let go"))),
 		}
@@ -320,8 +347,8 @@ pub struct HeldEpisode {
 	pub key: String,
 	/// Its date, `YYYY-MM-DD`, by what its feed knows (server#906): the call's
 	/// week's first day; Playoff Delta's, the day home took its fill, by
-	/// home's clock (`renders::HOME_ZONE`); an essay's, the Monday of the ISO
-	/// week it is of; a cards essay's own day. `None` only for a stamp or an
+	/// home's clock (`renders::HOME_ZONE`); an essay's or a report's, the
+	/// Monday of the ISO week it is of; a cards essay's own day. `None` only for a stamp or an
 	/// essay's week that doesn't read, which the tables never hold.
 	pub date: Option<String>,
 }

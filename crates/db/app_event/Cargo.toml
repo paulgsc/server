@@ -12,6 +12,8 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+# The feeds' video types, which the report's video tables share (`report_video`).
+call_week_repo = { workspace = true }
 chrono = { workspace = true }
 # The owner's clock, which the weekly read's weeks run on (file_host pins the same).
 chrono-tz = "0.10"

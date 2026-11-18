@@ -1004,6 +1004,38 @@ tests:
         alertname: InterviewEssayRenderOverdue
         exp_alerts: []
 
+  - name: a week's engagement report whose render failed alerts at once, and one waiting 3 hours unattempted is overdue (RW1)
+    interval: 1m
+    input_series:
+      - series: 'report_render_weeks_waiting{job="file_host"}'
+        values: '1x400'
+      - series: 'report_render_weeks_failed{job="file_host"}'
+        values: '0x200 1x200'
+      - series: 'report_render_oldest_waiting_taken_timestamp_seconds{job="file_host"}'
+        values: '0x400'
+    alert_rule_test:
+      - eval_time: 2h55m
+        alertname: ReportRenderOverdue
+        exp_alerts: []
+      - eval_time: 3h05m
+        alertname: ReportRenderOverdue
+        exp_alerts:
+          - exp_labels:
+              objective: RW1
+              says: "A week's engagement report has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
+      - eval_time: 3h05m
+        alertname: ReportRenderFailed
+        exp_alerts: []
+      - eval_time: 3h25m
+        alertname: ReportRenderFailed
+        exp_alerts:
+          - exp_labels:
+              objective: RW1
+              says: "A week's engagement report failed to render: renders/report-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+      - eval_time: 3h25m
+        alertname: ReportRenderOverdue
+        exp_alerts: []
+
   - name: the engagement report's weeks failing for 3 hours alerts, and a short failure does not (RW1)
     interval: 1m
     input_series:

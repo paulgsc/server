@@ -398,6 +398,30 @@ groups:
           objective: IW6
           says: "Every pass giving mock interview essays to the render worker has failed for 3 hours; file-host-server's log names what failed."
 
+      - alert: ReportRenderFailed
+        # RW1 (some-ui#2700, #821): a week's engagement report home gave the
+        # render worker has no video and the worker's last attempt at it
+        # failed (render-calls.sh's report job keeps that attempt's whole
+        # output, and removes it once the week renders). file_host reads that
+        # each minute (report_weeks::observe). The worker tries again hourly
+        # (a refusal by the render policy, once what it was refused for changes).
+        expr: |
+          max(report_render_weeks_failed) > 0
+        labels:
+          objective: RW1
+          says: "A week's engagement report failed to render: renders/report-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+
+      - alert: ReportRenderOverdue
+        # RW1: a week's report has waited 3 hours since home gave it, with no
+        # failed attempt, as CallRenderOverdue reads the call's weeks.
+        expr: |
+          max(report_render_weeks_waiting) > 0
+          and on() (time() - max(report_render_oldest_waiting_taken_timestamp_seconds)) > 10800
+          and on() max(report_render_weeks_failed) == 0
+        labels:
+          objective: RW1
+          says: "A week's engagement report has waited 3 hours for its video with no failed attempt: the render worker is not running or is stuck, or home has had no room for it (the CALL dashboard's LANE row; docker logs render)."
+
       - alert: ReportWeeksStale
         # RW1 (some-ui#2700, #821): the report_weeks worker passes every hour
         # (report_weeks::INTERVAL) and stamps each pass it starts, as the

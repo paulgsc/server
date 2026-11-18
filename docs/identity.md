@@ -220,7 +220,7 @@ above the button that deletes (invariant 22):
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
 | A week of mock interview's essay videos: the same, for its essay (IW6; invariant 23) | `interview_essay_video_link`, `interview_essay_video_deletion` |
 | How each recording ended | `app_event` |
-| Each week's engagement report, as written for its video (its file on the drive goes too: invariant 34) | `report_week` |
+| Each week's engagement report, as written for its video, and that video's links and what was let go (its files on the drive go too: invariant 34) | `report_week`, `report_video_link`, `report_video_deletion` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
 A file home archived out of the mailbox goes with the account, and the person
@@ -2372,6 +2372,11 @@ nowhere is marked as such and belongs to review.
     `a_kept_week_is_never_rewritten_and_leaves_only_with_its_account` and
     `report_weeks`'s
     `no_owner_writes_nothing_and_a_week_no_longer_the_owners_leaves_the_drive`.
+    Its video's `YouTube` links and the receipts of each step let go
+    (`report_video_link`, `report_video_deletion`) are kept as the essays'
+    are: append-only, and deleted only with the account
+    (`app_event_repo::report_video`'s
+    `links_and_receipts_are_never_rewritten_and_leave_only_with_their_account`).
 
 35. **A take's meaning is treated as what was said: subject-scoped, never
     logged, never filed, never answered, and it leaves with the take.**

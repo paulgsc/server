@@ -96,6 +96,30 @@ pub async fn held_by_anyone(conn: &mut SqliteConnection) -> Result<Vec<String>, 
 		.await
 }
 
+/// A week home keeps, and when it wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptWeek {
+	/// `2026-W46`.
+	pub week: String,
+	/// ISO-8601 UTC.
+	pub written_at: String,
+}
+
+/// Every week `subject` holds a report of, with when home wrote it, oldest
+/// first.
+///
+/// # Errors
+/// A storage failure.
+pub async fn kept(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<KeptWeek>, sqlx::Error> {
+	sqlx::query_as!(
+		KeptWeek,
+		r#"SELECT week AS "week!: String", written_at AS "written_at!: String" FROM report_week WHERE subject_id = ?1 ORDER BY week"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await
+}
+
 /// `subject`'s report of `week`, as written, if home holds one.
 ///
 /// # Errors

@@ -1642,6 +1642,8 @@ mod tests {
 		"INSERT INTO interview_essay_video_deletion (subject_id, week_id, step, cause, youtube_id, note_id, size, deleted_at) VALUES (?1, '2026-w47', 'video', 'let-go', 'dQw4w9WgXcQ', NULL, 1, 'now')",
 		"INSERT INTO rust_round_log (subject_id, session_id, revision, started_at, body, sha256, written_at) VALUES (?1, 's', 1, 'now', '{}', 'h', 'now')",
 		"INSERT INTO report_week (subject_id, week, body, written_at) VALUES (?1, '2026-W46', '{}', 'now')",
+		"INSERT INTO report_video_link (subject_id, week, youtube_id, recorded_at) VALUES (?1, '2026-W46', 'dQw4w9WgXcQ', 'now')",
+		"INSERT INTO report_video_deletion (subject_id, week, step, youtube_id, size, deleted_at) VALUES (?1, '2026-W46', 'video', 'dQw4w9WgXcQ', 1, 'now')",
 		"INSERT INTO written_reflection (subject_id, reflection_id, session_id, at, at_ms, text, written_at) VALUES (?1, 'r', 's', 'then', NULL, 't', 'now')",
 		"INSERT INTO drama_prompt (subject_id, stamp, text, written_at) VALUES (?1, 'drama-20261101T000000000Z', 't', 'now')",
 		"INSERT INTO episode_note (subject_id, note_id, feed, episode_key, at_ms, categories, take_id, written_at, stored_at) VALUES (?1, 'n', 'call', '2026-10-30', 0, '[\"shallow\"]', NULL, 'then', 'now')",

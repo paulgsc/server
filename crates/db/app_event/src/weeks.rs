@@ -72,6 +72,12 @@ impl IsoWeek {
 		}
 	}
 
+	/// Its Monday, the owner's date it starts on.
+	#[must_use]
+	pub const fn monday(self) -> NaiveDate {
+		self.monday
+	}
+
 	/// `2026-W46`.
 	#[must_use]
 	pub fn label(self) -> String {

@@ -369,6 +369,37 @@ if [ "$1" = tests/record/cards.ts ]; then
   too_large "$out/$key/cards.mp4"
   exit 0
 fi
+# A week's engagement report (ENG12, #821): `tsx tests/record/report.ts …
+# --report-file <week>.json --out <w>` writes report.mp4, report.json and a
+# cache into <w>/<week>, the week being the file's name, or refuses a week
+# still under way in the real recorder's words while $FAKE/under-way exists.
+# Each run is counted in $FAKE/report-runs as `<file> <out>`.
+if [ "$1" = tests/record/report.ts ]; then
+  file= out=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --report-file) file=$2; shift ;;
+      --out) out=$2; shift ;;
+      --week | --week-file) echo "report.ts takes no $1"; exit 2 ;;
+    esac
+    shift
+  done
+  echo "$file $out" >> "$fake/report-runs"
+  week=$(basename "$file" .json)
+  if [ -e "$fake/under-way" ]; then
+    echo "$file isn't a report home can make:" >&2
+    echo "the week $week is still under way" >&2
+    exit 1
+  fi
+  overflow
+  mkdir -p "$out/$week/cache"
+  echo intermediate > "$out/$week/cache/frame"
+  cp "$file" "$out/$week/report.json"
+  echo assembling
+  echo "report of $week" > "$out/$week/report.mp4"
+  too_large "$out/$week/report.mp4"
+  exit 0
+fi
 [ "$1" = tests/record/call.ts ] || { echo "not the call's recorder: $1"; exit 2; }
 week_file= out= part=
 while [ $# -gt 0 ]; do
@@ -491,7 +522,7 @@ fresh() {
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
-    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" \
+    "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" "$FAKE/report-runs" "$FAKE/under-way" \
     "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/overflow-prefix" "$FAKE/pd-runs"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
@@ -1152,6 +1183,51 @@ run_job cards-essay > "$SCRATCH/pass.out" 2>&1
 check "and once it is fixed it renders, and its failed.log goes" \
   test -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cards.mp4" -a ! -e "$ROOT/renders/cards-essay-worker/zfs-2026-11-02.failed.log"
 
+# A week's engagement report (ENG12, #821): each <week>.json file_host gave
+# is recorded from home's counts, oldest week first; kept whole in
+# renders/report without its cache. A file whose name is not a week is never
+# read.
+fresh report
+mkdir -p "$ROOT/report-weeks"
+for key in 2026-W46 2026-W45 2026-w47 notes; do
+  echo "{\"week\":\"$key\"}" > "$ROOT/report-weeks/$key.json"
+done
+check "reports go by their week, oldest first, and only a week is read" \
+  test "$(INPUT=$ROOT/report-weeks episodes report | tr '\n' ' ')" = "2026-W45 2026-W46 "
+run_job report > "$SCRATCH/pass.out" 2>&1
+check "a report is recorded from home's counts, into its job's work folder, the older week first" \
+  test "$(head -n 1 "$FAKE/report-runs")" = "$ROOT/report-weeks/2026-W45.json $ROOT/renders/report-work"
+check "and kept whole in renders/report" \
+  test -e "$ROOT/renders/report/2026-W45/report.mp4" -a -e "$ROOT/renders/report/2026-W45/report.json"
+check "without its cache, and its work gone" \
+  test ! -e "$ROOT/renders/report/2026-W45/cache" -a ! -e "$ROOT/renders/report-work/2026-W45"
+check "with the caps every job has" grep -qx -- --max-video-mb "$FAKE/args-report"
+check "and said by home's Kokoro speaker, as the call is" \
+  test "$(grep -A1 -xF -- --voices "$FAKE/args-report" | sed -n 2p) $(grep -A1 -xF -- --speaker "$FAKE/args-report" | sed -n 2p)" \
+  = "kokoro http://kokoro:8880"
+run_job report > "$SCRATCH/pass.out" 2>&1
+check "both weeks are made, once each, and no other file is read" test "$(wc -l < "$FAKE/report-runs")" -eq 2 \
+  -a -e "$ROOT/renders/report/2026-W46/report.mp4"
+# A week the owner let go leaves the input (file_host's let go), and is
+# never made again.
+rm "$ROOT/report-weeks/2026-W45.json" && rm -r "$ROOT/renders/report/2026-W45"
+run_job report > "$SCRATCH/pass.out" 2>&1
+check "a week let go is never made again" test "$(wc -l < "$FAKE/report-runs")" -eq 2 -a ! -e "$ROOT/renders/report/2026-W45"
+
+# A week the recorder refuses keeps its words for the owner and is tried
+# again, as any episode.
+fresh report-refused
+mkdir -p "$ROOT/report-weeks"
+echo '{}' > "$ROOT/report-weeks/2026-W46.json"
+touch "$FAKE/under-way"
+run_job report > "$SCRATCH/pass.out" 2>&1
+check "a refused report's words are its failed.log" grep -q "still under way" "$ROOT/renders/report-worker/2026-W46.failed.log"
+check "and it leaves no folder in renders/report" test ! -e "$ROOT/renders/report/2026-W46"
+rm "$FAKE/under-way"
+run_job report > "$SCRATCH/pass.out" 2>&1
+check "and once it can be made it renders, and its failed.log goes" \
+  test -e "$ROOT/renders/report/2026-W46/report.mp4" -a ! -e "$ROOT/renders/report-worker/2026-W46.failed.log"
+
 # A preview a restart left runs first, as any job does.
 fresh preview-left
 mkdir -p "$ROOT/previews" "$ROOT/renders/call-worker"
@@ -1378,7 +1454,7 @@ check "a week a part of which is made is not" bash -c '! grep -qx "$1" "$2"' _ "
 
 # RF1 widened (#975): scenes that don't fit the frame are the policy's
 # refusal too, for every job that records stills (the call, a Rust Rounds
-# essay, a mock interview's essay, Playoff Delta). Each is refused, its scenes
+# essay, a mock interview's essay, Playoff Delta, a week's engagement report). Each is refused, its scenes
 # kept, held past RETRY_AFTER, and tried again once its input changes.
 fresh overflow 2026-10-30
 RETRY_AFTER=0
@@ -1388,6 +1464,8 @@ echo '{}' > "$ROOT/essays/2026-w46/essay.json"
 echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
 echo '{}' > "$ROOT/episodes/2026-SF-09/fill.json"
 echo '{}' > "$ROOT/episodes/2026-SF-09/season.json"
+mkdir -p "$ROOT/report-weeks"
+echo '{}' > "$ROOT/report-weeks/2026-W46.json"
 # job, key, its runs so far
 overflow_runs() {
   case $1 in
@@ -1395,9 +1473,10 @@ overflow_runs() {
     rust-essay) grep -c "/essays/$2/" "$FAKE/essay-runs" ;;
     interview-essay) grep -c "/interview-essays/$2/" "$FAKE/essay-runs" ;;
     playoff-delta) grep -c "/$2\$" "$FAKE/pd-runs" ;;
+    report) grep -c "/report-weeks/$2.json " "$FAKE/report-runs" ;;
   esac
 }
-for job_key in call:2026-10-30 rust-essay:2026-w46 interview-essay:2026-w47 playoff-delta:2026-SF-09; do
+for job_key in call:2026-10-30 rust-essay:2026-w46 interview-essay:2026-w47 playoff-delta:2026-SF-09 report:2026-W46; do
   job=${job_key%%:*} key=${job_key#*:}
   run_job "$job" > "$SCRATCH/pass.out" 2>&1
   use_job "$job"
