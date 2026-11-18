@@ -262,7 +262,7 @@ groups:
           max(call_render_weeks_failed) > 0
         labels:
           objective: CW5
-          says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+          says: "A week of the call failed to render: renders/call-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
 
       - alert: CallRenderOverdue
         # CW5: a week has waited 3 hours since home took it, with no failed
@@ -290,7 +290,7 @@ groups:
           max(pd_render_episodes_failed) > 0
         labels:
           objective: PK5
-          says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+          says: "A week of Playoff Delta failed to render: renders/playoff-delta-worker/<key>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
 
       - alert: PlayoffDeltaRenderOverdue
         # PK5: a voiced fill has waited 3 hours since home took it, with no
@@ -314,7 +314,7 @@ groups:
           max(rust_essay_render_failed) > 0
         labels:
           objective: RR16
-          says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+          says: "A week's Rust Rounds essay failed to render: renders/rust-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
 
       - alert: RustEssayRenderOverdue
         # RR16: an essay has waited 3 hours since home gave it, with no
@@ -362,7 +362,7 @@ groups:
           max(interview_essay_render_failed) > 0
         labels:
           objective: IW6
-          says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+          says: "A week of mock interview's essay failed to render: renders/interview-essay-worker/<week>.failed.log on home's database drive has the whole attempt. It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
 
       - alert: InterviewEssayRenderOverdue
         # IW6, as RustEssay*: an essay has waited 3 hours since home gave it, with no
@@ -431,7 +431,7 @@ groups:
           max(cards_essay_render_failed) > 0
         labels:
           objective: CE1
-          says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly, or, refused as too long or too large, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
+          says: "A cards essay failed to render: renders/cards-essay-worker/<key>.failed.log on home's database drive has the whole attempt (record:cards names what it refused). It is tried again hourly, or, refused as too long, too large or past the frame, once what it was refused for changes (its input, its cap, the render or speaker image, or the brand files)."
 
       - alert: CardsEssayRenderOverdue
         # CE1: an essay has waited 3 hours since home took it, with no

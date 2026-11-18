@@ -60,9 +60,11 @@
 //! **Why the policy refused one** (#929): any shelf's failed row whose
 //! attempt the render policy refused carries `reason` `too-long`, with the
 //! `minutes` it would run and its job's `capMinutes`, or `too-large`, with
-//! its `mb` and the `capMb`: read from the worker's `<key>.refused`
+//! its `mb` and the `capMb`, or `overflow` (#975), with the `scenes` that
+//! don't fit the frame (at most twelve, by id) and how many did not
+//! (`sceneCount`): read from the worker's `<key>.refused`
 //! (`infra/render/render-calls.sh`, `refusal`), a closed shape of the
-//! recorder's numbers, never its words. Any other failure carries none of
+//! recorder's numbers and scene ids, never its words. Any other failure carries none of
 //! them, as before.
 //!
 //! **A done row's size** (`bytes`): a finished video's length on the drive,
@@ -574,7 +576,7 @@ pub struct Failed {
 	/// Why it failed, as a short class, never its log: a preview's
 	/// (`previews`: `no-sample`, `too-long`, `too-large`, `render`,
 	/// `overdue`), and any shelf's the render policy refused (`too-long`,
-	/// `too-large`, with [`Over`]).
+	/// `too-large`, `overflow`, with [`Over`]).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<&'static str>,
 	/// By how much the render policy refused it (#929).
@@ -584,8 +586,8 @@ pub struct Failed {
 
 /// What the render policy refused an episode for, as the worker's
 /// `<key>.refused` says it (`infra/render/render-calls.sh`, `refusal`): the
-/// recorder's numbers, never its words.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// recorder's numbers and scene ids, never its words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Over {
 	/// It would run `minutes`, past its job's `capMinutes`; both in tenths
@@ -600,18 +602,34 @@ pub enum Over {
 	/// It was `mb` MB, past the policy's `capMb`.
 	#[serde(rename_all = "camelCase")]
 	Large { mb: u32, cap_mb: u32 },
+	/// Its `scenes` don't fit the frame, so the video would cut them off
+	/// (#975): at most [`MOST_SCENES`] of them by id, of `sceneCount`.
+	#[serde(rename_all = "camelCase")]
+	Overflow { scenes: Vec<String>, scene_count: u32 },
 }
 
-/// The refusal file's longest: four short lines and a SHA-256.
-const REFUSED_CEILING: u64 = 512;
+/// The refusal file's longest: four lines, the longest twelve scene ids of
+/// 64 bytes and their commas, and a SHA-256.
+const REFUSED_CEILING: u64 = 1024;
+
+/// The most scenes an overflow names (the worker's `REFUSED_SCENES`).
+const MOST_SCENES: usize = 12;
+
+/// A scene's id as the worker keeps one (its `SCENE_ID`): a letter or digit,
+/// then up to 63 letters, digits, `.`, `_` or `-`.
+fn scene_id(text: &str) -> bool {
+	let mut bytes = text.bytes();
+	bytes.next().is_some_and(|b| b.is_ascii_alphanumeric()) && text.len() <= 64 && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
 
 impl Over {
 	/// Its short class, the `reason` it is sent with.
 	#[must_use]
-	pub const fn reason(self) -> &'static str {
+	pub const fn reason(&self) -> &'static str {
 		match self {
 			Self::Long { .. } => "too-long",
 			Self::Large { .. } => "too-large",
+			Self::Overflow { .. } => "overflow",
 		}
 	}
 
@@ -619,16 +637,21 @@ impl Over {
 	#[must_use]
 	pub fn parse(text: &str) -> Option<Self> {
 		let field = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
-		let cap = field("cap")?;
 		match field("reason")? {
 			"too-long" => Some(Self::Long {
 				minutes: tenths_of(field("minutes")?)?,
-				cap_minutes: tenths_of(cap)?,
+				cap_minutes: tenths_of(field("cap")?)?,
 			}),
 			"too-large" => Some(Self::Large {
 				mb: whole(field("mb")?)?,
-				cap_mb: whole(cap)?,
+				cap_mb: whole(field("cap")?)?,
 			}),
+			"overflow" => {
+				let scenes: Vec<String> = field("scenes")?.split(',').map(String::from).collect();
+				let scene_count = whole(field("count")?)?;
+				(scenes.len() <= MOST_SCENES && scenes.iter().all(|id| scene_id(id)) && usize::try_from(scene_count).is_ok_and(|count| count >= scenes.len()))
+					.then_some(Self::Overflow { scenes, scene_count })
+			}
 			_ => None,
 		}
 	}
@@ -880,7 +903,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					failure: *failure,
 					template: template_of(Some(*feed), key),
 					reason: seen.reasons.get(key).copied(),
-					over: seen.overs.get(key).copied(),
+					over: seen.overs.get(key).cloned(),
 				});
 			} else if !current {
 				waiting.push(Episode {

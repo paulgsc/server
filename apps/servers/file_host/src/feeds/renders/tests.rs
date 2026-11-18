@@ -465,10 +465,26 @@ fn a_policy_refusal_is_its_reason_and_numbers() {
 		"reason=too-large\nmb=5.5\ncap=500\n",
 		"reason=too-large\nmb=99999999\ncap=500\n",
 		"reason=the video would run 24.4 min\nminutes=24.4\ncap=30\n",
+		"reason=overflow\nscenes=\ncount=0\n",
+		"reason=overflow\nscenes=dive-2,beside-2\ncount=1\n",
+		"reason=overflow\nscenes=dive-2\n",
+		"reason=overflow\nscenes=a scene, of words\ncount=2\n",
+		"reason=overflow\nscenes=-dive\ncount=1\n",
+		"reason=overflow\nscenes=a,b,c,d,e,f,g,h,i,j,k,l,m\ncount=13\n",
 	] {
 		assert_eq!(Over::parse(text), None, "{text:?}");
 	}
-	let failed = |over| Failed {
+	// #975: scenes past the frame, by id, of how many.
+	let overflow = Over::parse("reason=overflow\nscenes=dive-2,beside-2,dive-3\ncount=14\nheld=ab12\n").unwrap();
+	assert_eq!(
+		overflow,
+		Over::Overflow {
+			scenes: vec![String::from("dive-2"), String::from("beside-2"), String::from("dive-3")],
+			scene_count: 14,
+		}
+	);
+	assert_eq!(overflow.reason(), "overflow");
+	let failed = |over: Over| Failed {
 		feed: String::from("rust-essay"),
 		key: String::from("2026-w46"),
 		at: 1,
@@ -478,7 +494,7 @@ fn a_policy_refusal_is_its_reason_and_numbers() {
 		},
 		template: None,
 		part: None,
-		reason: Some(Over::reason(over)),
+		reason: Some(over.reason()),
 		over: Some(over),
 	};
 	assert_eq!(
@@ -488,6 +504,10 @@ fn a_policy_refusal_is_its_reason_and_numbers() {
 	assert_eq!(
 		serde_json::to_value(failed(large)).unwrap(),
 		serde_json::json!({ "feed": "rust-essay", "key": "2026-w46", "at": 1, "by": "recorder", "exit": 1, "reason": "too-large", "mb": 512, "capMb": 500 })
+	);
+	assert_eq!(
+		serde_json::to_value(failed(overflow)).unwrap(),
+		serde_json::json!({ "feed": "rust-essay", "key": "2026-w46", "at": 1, "by": "recorder", "exit": 1, "reason": "overflow", "scenes": ["dive-2", "beside-2", "dive-3"], "sceneCount": 14 })
 	);
 }
 
@@ -697,7 +717,11 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	assert_eq!(read.done[0].bytes, Some(5));
 	assert_eq!(serde_json::to_value(&read.done[0]).unwrap()["bytes"], serde_json::json!(5), "the phone reads it as `bytes`");
 	assert_eq!(read.failed.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["nixos-upgrade-2026-11-07"]);
-	assert_eq!((read.failed[0].reason, read.failed[0].over), (None, None), "a failure not the policy's says no reason");
+	assert_eq!(
+		(read.failed[0].reason, read.failed[0].over.clone()),
+		(None, None),
+		"a failure not the policy's says no reason"
+	);
 	assert_eq!(shelf(&read.waiting), [(String::from("cards-essay"), String::from("rust-scratchpad-2026-11-08"))]);
 	assert_eq!(read.waiting[0].bytes, None, "a waiting essay has no video yet");
 	assert_eq!(read.waiting[0].template, None, "an essay names no template");
@@ -719,8 +743,21 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 	std::fs::write(&refused, b"reason=too-long\nminutes=24.4\ncap=15.0\nheld=ab12\n").unwrap();
 	let read = super::read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(
-		(read.failed[0].reason, read.failed[0].over),
+		(read.failed[0].reason, read.failed[0].over.clone()),
 		(Some("too-long"), Some(Over::Long { minutes: 244, cap_minutes: 150 }))
+	);
+	// #975: as does one whose scenes don't fit the frame.
+	std::fs::write(&refused, b"reason=overflow\nscenes=dive-2,beside-2\ncount=2\nheld=ab12\n").unwrap();
+	let read = super::read(&db, &folders, "", NOW).await.unwrap();
+	assert_eq!(
+		(read.failed[0].reason, read.failed[0].over.clone()),
+		(
+			Some("overflow"),
+			Some(Over::Overflow {
+				scenes: vec![String::from("dive-2"), String::from("beside-2")],
+				scene_count: 2
+			})
+		)
 	);
 	std::fs::write(&refused, "reason=too-long\nminutes=24.4\ncap=15.0\n".repeat(40)).unwrap();
 	let read = super::read(&db, &folders, "", NOW).await.unwrap();
@@ -935,7 +972,7 @@ async fn a_preview_past_its_deadline_is_failed_whatever_the_worker_last_wrote() 
 	assert_eq!(read.now, None, "the worker lets an overdue preview go");
 	// By key: each row's time is its marker's, which may fall either side
 	// of a second.
-	let mut rows = read.failed.iter().map(|f| (f.key.as_str(), f.reason, f.over)).collect::<Vec<_>>();
+	let mut rows = read.failed.iter().map(|f| (f.key.as_str(), f.reason, f.over.clone())).collect::<Vec<_>>();
 	rows.sort_by_key(|row| row.0);
 	assert_eq!(
 		rows,
