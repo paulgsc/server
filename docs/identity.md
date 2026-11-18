@@ -220,6 +220,7 @@ above the button that deletes (invariant 22):
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
 | A week of mock interview's essay videos: the same, for its essay (IW6; invariant 23) | `interview_essay_video_link`, `interview_essay_video_deletion` |
 | How each recording ended | `app_event` |
+| Each week's engagement report, as written for its video (its file on the drive goes too: invariant 34) | `report_week` |
 | Sign-in | `account`, `passkey`, `auth_session` |
 
 A file home archived out of the mailbox goes with the account, and the person
@@ -2347,6 +2348,22 @@ nowhere is marked as such and belongs to review.
     `nothing_an_event_says_reaches_a_log_line`.
     *Not enforced:* that nothing else writes the table, which
     `git grep -n app_event -- '*.rs'` shows today.
+
+    **Each ended week's report is kept once, as written** (paulgsc/some-ui
+    ENG12, #2700; #821). `report_week` holds, per subject and ISO week, the
+    period read `GET /app-events/weeks/:week` answers, exactly as
+    `report_weeks` gave it to the render worker: counts per pipeline,
+    affordance and surface, and days, nothing more than that read holds. It
+    is written once a week has ended, never updated (a trigger aborts an
+    `UPDATE`), and deleted only with the account; its file on the drive,
+    `report-weeks/<week>.json`, and the video and work made from it, leave
+    within the minute once the account has gone (`report_weeks::tidy`). Only
+    `report_weeks` writes it, holding the deletion lock across a statement
+    that checks the account stands (invariant 9).
+    *Enforced by* `app_event_repo::report`'s
+    `a_kept_week_is_never_rewritten_and_leaves_only_with_its_account` and
+    `report_weeks`'s
+    `no_owner_writes_nothing_and_a_week_no_longer_the_owners_leaves_the_drive`.
 
 35. **A take's meaning is treated as what was said: subject-scoped, never
     logged, never filed, never answered, and it leaves with the take.**

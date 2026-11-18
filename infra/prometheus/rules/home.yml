@@ -398,6 +398,19 @@ groups:
           objective: IW6
           says: "Every pass giving mock interview essays to the render worker has failed for 3 hours; file-host-server's log names what failed."
 
+      - alert: ReportWeeksFailing
+        # RW1 (some-ui#2700, #821): every pass keeping the last whole week's
+        # engagement report and giving the weeks held to the render worker
+        # for 3 hours failed, on storage or on a week it could not write to
+        # the drive (report_weeks). A week with no records to report is not a
+        # failure: the REPORT row says it (report_weeks_unmeasured).
+        expr: |
+          max(report_weeks_pass_failing) == 1
+        for: 3h
+        labels:
+          objective: RW1
+          says: "Every pass writing the weekly engagement report for the render worker has failed for 3 hours; file-host-server's log names what failed."
+
       - alert: CardsEssaysStale
         # CE1 (#854, some-ui#2979): the cards essays worker reads
         # paulgsc/testing's cards index every hour (cards_essays::INTERVAL),

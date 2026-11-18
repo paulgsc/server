@@ -311,6 +311,9 @@ mod tests {
 		// Daylight time starts on Sunday 2026-03-08.
 		let w10 = IsoWeek::parse("2026-W10").unwrap();
 		assert_eq!((w10.from(), w10.to()), ("2026-03-02T08:00:00.000Z".to_owned(), "2026-03-09T07:00:00.000Z".to_owned()));
+		// Daylight time ends on Sunday 2026-11-01.
+		let w44 = IsoWeek::parse("2026-W44").unwrap();
+		assert_eq!((w44.from(), w44.to()), ("2026-10-26T07:00:00.000Z".to_owned(), "2026-11-02T08:00:00.000Z".to_owned()));
 		assert_eq!(super::day_of("2026-11-16T07:59:59.999Z").unwrap(), "2026-11-15", "Sunday evening is Sunday");
 	}
 

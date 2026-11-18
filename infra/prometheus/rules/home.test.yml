@@ -1004,6 +1004,25 @@ tests:
         alertname: InterviewEssayRenderOverdue
         exp_alerts: []
 
+  - name: the engagement report's weeks failing for 3 hours alerts, and a short failure does not (RW1)
+    interval: 1m
+    input_series:
+      - series: 'report_weeks_pass_failing{job="file_host"}'
+        values: '0x10 1x60 0x10 1x300'
+    alert_rule_test:
+      - eval_time: 1h05m
+        alertname: ReportWeeksFailing
+        exp_alerts: []
+      - eval_time: 4h20m
+        alertname: ReportWeeksFailing
+        exp_alerts: []
+      - eval_time: 4h30m
+        alertname: ReportWeeksFailing
+        exp_alerts:
+          - exp_labels:
+              objective: RW1
+              says: "Every pass writing the weekly engagement report for the render worker has failed for 3 hours; file-host-server's log names what failed."
+
   - name: a cards essay whose render failed alerts at once, and one waiting 3 hours unattempted is overdue (CE1)
     interval: 1m
     input_series:

@@ -19,6 +19,7 @@ pub mod periodic;
 pub mod pool;
 pub mod rate_limit;
 pub mod refusals;
+pub mod report_weeks;
 pub mod routine;
 pub mod rust_essays;
 pub mod storage;

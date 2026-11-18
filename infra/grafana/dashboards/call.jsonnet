@@ -87,6 +87,8 @@ local at(x, y, w, h) = { gridPos: { x: x, y: y, w: w, h: h } };
     panels.essays + at(0, 86, 24, 8) + { id: 46 },
     row('Mock interview essays, the seventh job', 94, 48),
     panels.interviewEssays + at(0, 95, 24, 8) + { id: 49 },
+    row('The weekly engagement report', 103, 50),
+    panels.reportWeeks + at(0, 104, 24, 8) + { id: 51 },
   ]),
   refresh: '1m',
   revision: 1,
