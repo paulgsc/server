@@ -373,36 +373,27 @@ pub async fn tidy(db: &SqlitePool, owner: &Owner, folders: &Folders) -> Result<T
 	};
 	let mut done = Tidied::default();
 	let mut on_drive = Vec::new();
-	if let Ok(mut entries) = tokio::fs::read_dir(&folders.reports).await {
-		while let Ok(Some(entry)) = entries.next_entry().await {
-			let name = entry.file_name().to_string_lossy().into_owned();
-			if name.starts_with('.') && name.ends_with(".partial") {
-				done.failed += usize::from(remove_file(&entry.path()).await.is_err());
-			} else if let Some(week) = name.strip_suffix(".json").filter(|week| IsoWeek::parse(week).is_some()) {
-				on_drive.push(week.to_owned());
-			}
+	for (name, path) in entries(&folders.reports, &mut done.failed).await {
+		if name.starts_with('.') && name.ends_with(".partial") {
+			done.failed += usize::from(remove_file(&path).await.is_err());
+		} else if let Some(week) = name.strip_suffix(".json").filter(|week| IsoWeek::parse(week).is_some()) {
+			on_drive.push(week.to_owned());
 		}
 	}
 	for dir in [&folders.renders, &folders.work] {
-		if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
-			while let Ok(Some(entry)) = entries.next_entry().await {
-				let name = entry.file_name().to_string_lossy().into_owned();
-				if IsoWeek::parse(&name).is_some() && !on_drive.contains(&name) {
-					on_drive.push(name);
-				}
+		for (name, _) in entries(dir, &mut done.failed).await {
+			if IsoWeek::parse(&name).is_some() && !on_drive.contains(&name) {
+				on_drive.push(name);
 			}
 		}
 	}
 	let mut logs = Vec::new();
-	if let Ok(mut entries) = tokio::fs::read_dir(&folders.status).await {
-		while let Ok(Some(entry)) = entries.next_entry().await {
-			let name = entry.file_name().to_string_lossy().into_owned();
-			if let Some(week) = log_week(&name) {
-				if !on_drive.contains(&week) {
-					on_drive.push(week.clone());
-				}
-				logs.push((week, entry.path()));
+	for (name, path) in entries(&folders.status, &mut done.failed).await {
+		if let Some(week) = log_week(&name) {
+			if !on_drive.contains(&week) {
+				on_drive.push(week.clone());
 			}
+			logs.push((week, path));
 		}
 	}
 	for week in on_drive {
@@ -419,6 +410,32 @@ pub async fn tidy(db: &SqlitePool, owner: &Owner, folders: &Folders) -> Result<T
 		}
 	}
 	Ok(done)
+}
+
+/// Every entry of `dir`, by name and path. A folder that is not there has
+/// none; one that does not read, or stops reading part way, counts one
+/// failure in `failed`, so a tidy that could not see a week's files is a
+/// failing tidy (`ReportWeeksFailing`), never a quiet one.
+async fn entries(dir: &Path, failed: &mut usize) -> Vec<(String, PathBuf)> {
+	let mut found = Vec::new();
+	let mut read = match tokio::fs::read_dir(dir).await {
+		Ok(read) => read,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return found,
+		Err(_) => {
+			*failed += 1;
+			return found;
+		}
+	};
+	loop {
+		match read.next_entry().await {
+			Ok(Some(entry)) => found.push((entry.file_name().to_string_lossy().into_owned(), entry.path())),
+			Ok(None) => return found,
+			Err(_) => {
+				*failed += 1;
+				return found;
+			}
+		}
+	}
 }
 
 /// The week a worker's file in the status folder is of: `<week>.<anything>`
@@ -566,6 +583,19 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(done.written, 4);
 		assert!(!report::held(&mut conn, ME).await.unwrap().contains(&String::from("2026-W42")), "W42 is past the lookback");
+	}
+
+	#[tokio::test]
+	async fn a_folder_that_does_not_read_is_a_failed_tidy_and_a_missing_one_is_none() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut failed = 0;
+		assert!(entries(&dir.path().join("missing"), &mut failed).await.is_empty());
+		assert_eq!(failed, 0, "a folder not made yet is empty");
+		// A file where a folder should be does not read as one.
+		let file = dir.path().join("a-file");
+		std::fs::write(&file, b"").unwrap();
+		assert!(entries(&file, &mut failed).await.is_empty());
+		assert_eq!(failed, 1);
 	}
 
 	#[test]
