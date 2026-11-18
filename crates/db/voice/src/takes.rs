@@ -574,7 +574,8 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 		let gone = sqlx::query!(
 			r#"SELECT gone.note_id AS "id!: String", gone.of_kind AS "of_kind!: String", gone.recorded_at AS "recorded_at!: String",
 			          gone.size AS "size!: i64", gone.stored_at AS "stored_at!: String", gone.deleted_at AS "deleted_at!: String",
-			          gone.went AS "went!: String", gone.stayed AS "stayed!: String"
+			          gone.went AS "went!: String", gone.stayed AS "stayed!: String",
+			          EXISTS (SELECT 1 FROM studio_take_on_drive AS drive WHERE drive.subject_id = gone.subject_id AND drive.note_id = gone.note_id) AS "on_drive!: bool"
 			   FROM voice_note_deletion AS gone
 			   WHERE gone.subject_id = ?1
 			     AND NOT EXISTS (SELECT 1 FROM voice_note AS note WHERE note.subject_id = gone.subject_id AND note.note_id = gone.note_id)
@@ -608,7 +609,9 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 						went: list(&row.went)?,
 						stayed: list(&row.stayed)?,
 					}),
-					kept: Kept { home: false, drive: false },
+					// A delete keeps the record that Drive holds the take
+					// (`delete::remove`, its receipt's `drive copy`).
+					kept: Kept { home: false, drive: row.on_drive },
 					on_conveyor: false,
 					station: None,
 					station_at: None,
@@ -1108,6 +1111,14 @@ mod tests {
 		.execute(&pool)
 		.await
 		.unwrap();
+		sqlx::query(
+			"INSERT INTO studio_take_on_drive (subject_id, note_id, listed_at, list_name, kept_at)
+			 VALUES (?1, 'gone', 'then', 'drive-takes-20261101T000000Z.json', 'now')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 
 		let today = read(&mut conn, &[]).await.unwrap();
@@ -1127,8 +1138,9 @@ mod tests {
 
 		let gone = all.takes.last().unwrap();
 		assert_eq!(
-			(gone.status, gone.of_ref.as_deref(), gone.about.is_none(), gone.kept.home),
-			(Status::Deleted, None, true, false)
+			(gone.status, gone.of_ref.as_deref(), gone.about.is_none(), gone.kept.home, gone.kept.drive),
+			(Status::Deleted, None, true, false, true),
+			"deleted from home, and still on Drive"
 		);
 		let let_go = all.takes.iter().find(|take| take.id == "reflection").unwrap();
 		assert_eq!(
