@@ -44,8 +44,9 @@ per CLAUDE.md, "Drift is loud, not silent".
 - **RL4. Bytes, not names.** A reference CI writes always carries its digest.
   A tag alone can move under a release.
 - **RL5. Held entries do not move.** An entry in `HELD` keeps whatever main
-  says; none is held since R4 (#793) pinned `file-host` by digest, once the
-  deploy applies whole releases. An entry the release does not follow keeps
+  says. `file-host` was freed by R4 (#793), which pinned it by digest once
+  the deploy applies whole releases; www and resume-render are held since R8
+  (#853), until their images write the labels RL7 needs. An entry the release does not follow keeps
   whatever main says, and a third-party entry moves only by RL8.
 - **RL6. No approval of its own.** Forming the set adds no human step
   (C119). Each image keeps the one approval it has where it is published, and
@@ -59,10 +60,12 @@ per CLAUDE.md, "Drift is loud, not silent".
   `SOURCES` since R4 (#793): the set check (R3, #790) reads labels by digest,
   and with `file-host` pinned by digest it reads both ends of render's
   requirement, so the release pull request refuses a render that requires
-  what its file_host does not provide. www is not run on home (call-stage
-  went with #802), so it is in no release; an image that joins from some-ui
-  later (resume-render, www: #853's server half) joins `SOURCES` only with
-  its `requires` labels.
+  what its file_host does not provide. www and resume-render are run on
+  home since R8 (#853, `infra/compose/www.yml`) and pinned by digest, moved
+  by a reviewed change; they join `SOURCES` (www by its `X.Y.Z` tag,
+  resume-render by its whole commit) only once their images write the
+  labels, `resume-api` below. An image that joins from some-ui later does
+  the same.
 - **RL9. Every requirement is met inside the set.** Each image's
   `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
   the same release ("Constraints", below). CI checks it from the registry by
@@ -169,6 +172,7 @@ it, which a test holds equal to the Dockerfile's label:
 | `render-folders` | file_host | render (some-ui, U2 #792) | `RENDER_FOLDERS_EPOCH`, same file |
 | `rust-runner-protocol` | rust-runner | file_host | `protocol::EPOCH`, `crates/rust_rounds_wire/src/protocol.rs` |
 | `nats-subjects` (subjects and payloads; only subjects are pinned by a test) | orchestrator | file_host | `NATS_SUBJECTS_EPOCH`, `crates/ws-events/src/events/common/event_type.rs` |
+| `resume-api` (**Planned**, #853: neither image writes it yet) | resume-render | www (its `/api/resume/` proxy) | some-ui's, beside `packages/ui/resume/scripts/serve.mjs` |
 
 `render-folders` covers the folders render reads and file_host writes:
 `call-weeks`, `playoff-delta-episodes`, `preview-requests`, `rust-essays`

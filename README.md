@@ -561,6 +561,44 @@ file_host's uid's) and runs `make` as `user` (who holds the sops key);
 `systemctl status home-deploy.path home-deploy` and
 `journalctl -u home-deploy` show it.
 
+#### www and the résumé service are in the release (R8, #853)
+
+The study app's web build (`www`, nginx on `127.0.0.1:5172` behind Caddy)
+and the résumé render it fronts (`resume-render`, no port) are home compose
+services (`infra/compose/www.yml`), each pinned by digest in
+`deploy/home/release.json`. Until their images write the set check's labels
+(docs/release.md, RL7), a reviewed change moves each pin; then
+`release_lock.py` follows them like render, and a www release in
+paulgsc/some-ui or a résumé publish moves its pin by itself. `make home-deploy`
+moves them with everything else; nothing is pulled or composed from a some-ui
+checkout any more. www's nginx config is in its image, and its two
+upstreams are the image's defaults (`file-host-server:3000`,
+`resume-render:3100`), so it takes no environment. The one thing on the box
+that no repository holds is the owner's curated sounds and the optional
+hangul vocabulary, mounted read-only from `${STORAGE}/www/sfx` and
+`${STORAGE}/www/hangul`; a folder missing fails www's start, and so the
+release, rather than serve every sound as the app's `index.html`.
+
+**Once, on the box, to switch over** (some-ui's root compose ran these two
+before, from its checkout; the speech pair it also ran was retired,
+some-ui#2978). As whoever can write `${STORAGE}`:
+
+```bash
+# 1. The asset folders, out of the some-ui checkout (an empty folder is
+#    fine where it has none: hangul is optional).
+mkdir -p "$STORAGE/www/sfx" "$STORAGE/www/hangul"
+cp -a <some-ui checkout>/packages/some-content/public/sfx/. "$STORAGE/www/sfx/"
+cp -a <some-ui checkout>/packages/some-content/public/hangul/. "$STORAGE/www/hangul/"
+chmod -R a+rX "$STORAGE/www"
+# 2. Stop the old stack, which holds port 5172 and the name resume-render.
+(cd <some-ui checkout> && docker compose down)
+# 3. Server's release, www and resume-render included.
+make home-deploy
+```
+
+some-ui's root compose stays for development on a laptop; it is no longer
+how home runs.
+
 ### NixOS modules
 
 The flake exports each binary as a NixOS service, `nixosModules.file-host` and
