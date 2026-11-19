@@ -1,35 +1,68 @@
 //! What home reads of a week of Rust Rounds: the least it needs to keep it
-//! and to record its programs (paulgsc/some-ui#2687, RR12).
+//! and to record its programs (paulgsc/some-ui#2687, RR12; `/2`: #3249 RR25,
+//! #3257 RR29).
 //!
-//! The format is paulgsc/some-ui's `some-ui.rust-week/1`
+//! The format is paulgsc/some-ui's `some-ui.rust-week/1` and `/2`
 //! (`packages/ui/rust-rounds/src/lib/formats/week.ts`, RR11), and the
 //! routine holds a week to all of it (`readWeek`) before it puts one in the
 //! mailbox, as `rust-week-<id>.json` in `brief` ([`MAILBOX_PREFIX`]). Home
 //! checks only:
 //!
-//! - its size ([`WEEK_CEILING`]), its encoding and that it is one JSON object;
-//! - its `schema` tag;
+//! - its size ([`WEEK_CEILING`] for `/1`, [`WEEK_V2_CEILING`] for `/2`), its
+//!   encoding and that it is one JSON object;
+//! - its `schema` tag, [`WEEK_SCHEMA`] or [`WEEK_SCHEMA_V2`];
 //! - its `id`, the ISO week it opens (`2026-w46`), which names it for good;
 //! - its tickets' ids and every ticket's `program`, the bytes it records;
+//! - in a `/2` week, each ticket's `academy`: 1 to [`ACADEMY_MAX`]
+//!   exercises, and each exercise's `starter`, which it records too, under
+//!   [`academy_key`] (`TB-101/academy/1`);
 //! - its `opens` and `due`, when they are RFC 3339 instants, for the week's
 //!   record (RR14, paulgsc/some-ui#2689). A week without them is still kept
 //!   and recorded, and has no record.
 //!
-//! Anything else (the company, the story, the speak-to points, the tutor's
-//! guess) is kept as it came and never read here.
+//! Anything else (the company, the story, the speak-to points or forks, an
+//! exercise's prose and `expect`, the tutor's guess) is kept as it came and
+//! never read here. A `/1` week reads exactly as it did before `/2`: an
+//! `academy` on one of its tickets is not read.
 
 use crate::round::Problem;
 use serde_json::Value;
 
-/// The format's tag.
+/// The first format's tag.
 pub const WEEK_SCHEMA: &str = "some-ui.rust-week/1";
 
-/// The most bytes a week may hold: a round's ceiling.
+/// The format with forks and an academy (RR25, RR29).
+pub const WEEK_SCHEMA_V2: &str = "some-ui.rust-week/2";
+
+/// The most bytes a `/1` week may hold: a round's ceiling.
 ///
 /// A week is two to four tickets, each program at most 25 lines of 40
 /// columns, and their prose: a few KiB, so each program fits the runner's
 /// request with room.
 pub const WEEK_CEILING: usize = crate::round::ROUND_CEILING;
+
+/// The most bytes a `/2` week may hold: 128 KiB.
+///
+/// The most a `/2` week can need, as the format bounds it: 4 tickets of 8
+/// exercises is 32 starters, each a whole `main.rs` of about 1.5 KB, so
+/// 32 × 1.5 KB = 48 KB, about 56 KB once JSON escapes its newlines and
+/// quotes (≈ +15%). Each exercise's prose (title, why, tries, clarity,
+/// keywords, tests, expect) is about 1 KB more: 32 KB. Each ticket's forks
+/// (up to 6 questions of 2 to 6 options, each a decision, its case and the
+/// model it rests on), program and spec are about 4 KB: 16 KB. The week's
+/// own prose (company, story, SLA, references) is about 2 KB. In all
+/// 56 + 32 + 16 + 2 = 106 KB, under 128 KiB with a fifth to spare. The
+/// sample `/2` week, Tallowbrook (3 tickets, 5 exercises), is 11.5 KB.
+///
+/// Each program a week holds still goes to the runner alone, one request
+/// each, under the runner's own `REQUEST_CEILING` (64 KiB,
+/// `rust_rounds_wire::protocol`), which this does not change: a starter
+/// past it is kept, and recorded as `refused`, `too-large`, as any program
+/// is. The mailbox takes up to 1 MiB a file (`MAILBOX_BODY_CEILING`).
+pub const WEEK_V2_CEILING: usize = 128 * 1024;
+
+/// The most exercises a ticket's academy holds, as the format bounds it.
+pub const ACADEMY_MAX: usize = 8;
 
 /// One ticket's program.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,11 +73,27 @@ pub struct TicketProgram {
 	pub source: String,
 }
 
-/// A week home can keep: its id and its tickets' programs, in ticket order.
+/// One exercise's starter, in a `/2` week's academy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Starter {
+	/// Its key, [`academy_key`]: `TB-101/academy/1`. Never a ticket's key.
+	pub key: String,
+	/// The ticket whose academy holds it, `TB-101`.
+	pub ticket: String,
+	/// Its place in that academy, from 1.
+	pub exercise: usize,
+	/// `main.rs`, exactly.
+	pub source: String,
+}
+
+/// A week home can keep: its id, its tickets' programs in ticket order, and
+/// (for `/2`) its academies' starters, ticket by ticket in exercise order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Week {
 	pub id: String,
 	pub programs: Vec<TicketProgram>,
+	/// Empty for a `/1` week.
+	pub academy: Vec<Starter>,
 	/// When the week opens and its deadline, when both are RFC 3339
 	/// instants and the deadline comes after the opening; `None` otherwise.
 	pub window: Option<Window>,
@@ -72,17 +121,36 @@ pub fn mailbox_name(id: &str) -> String {
 	String::from(MAILBOX_PREFIX) + id + ".json"
 }
 
+/// The key an academy's exercise is recorded under: `<ticket>/academy/<n>`,
+/// `n` from 1, as `TB-101/academy/1`.
+///
+/// It holds a `/`, which no ticket's key can ([`is_ticket_key`]), so a
+/// starter's key never names a ticket.
+#[must_use]
+pub fn academy_key(ticket: &str, exercise: usize) -> String {
+	String::from(ticket) + "/academy/" + &exercise.to_string()
+}
+
+/// Which format a week says it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Schema {
+	V1,
+	V2,
+}
+
 /// Read `body` as a week, or say every problem found.
 ///
 /// # Errors
-/// Each [`Problem`]: a body past [`WEEK_CEILING`], not UTF-8 or not one JSON
-/// object; a missing or other `schema`; an `id` that is not an ISO week; no
+/// Each [`Problem`]: a body past [`WEEK_V2_CEILING`], or a `/1` (or
+/// unknown) week past [`WEEK_CEILING`]; not UTF-8 or not one JSON object; a
+/// missing or other `schema`; an `id` that is not an ISO week; no
 /// `tickets`; a ticket whose id is not a key or is used twice, or that has
-/// no `program`.
+/// no `program`; in a `/2` week, a ticket whose `academy` does not hold 1 to
+/// [`ACADEMY_MAX`] exercises, or an exercise with no `starter`.
 pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 	let problem = |field: &str, why| vec![(field.to_owned(), why)];
-	if body.len() > WEEK_CEILING {
-		return Err(problem("body", "is larger than 32 KiB"));
+	if body.len() > WEEK_V2_CEILING {
+		return Err(problem("body", "is larger than 128 KiB"));
 	}
 	let Ok(text) = std::str::from_utf8(body) else {
 		return Err(problem("body", "is not UTF-8"));
@@ -90,15 +158,25 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 	let Ok(Value::Object(week)) = serde_json::from_str::<Value>(text) else {
 		return Err(problem("body", "is not one JSON object"));
 	};
+	let schema = match week.get("schema").and_then(Value::as_str) {
+		Some(WEEK_SCHEMA) => Some(Schema::V1),
+		Some(WEEK_SCHEMA_V2) => Some(Schema::V2),
+		_ => None,
+	};
+	// Only a `/2` week may be larger than a `/1`'s ceiling.
+	if schema != Some(Schema::V2) && body.len() > WEEK_CEILING {
+		return Err(problem("body", "is larger than 32 KiB"));
+	}
 	let mut problems = Vec::new();
-	if week.get("schema").and_then(Value::as_str) != Some(WEEK_SCHEMA) {
-		problems.push((String::from("schema"), "must be \"some-ui.rust-week/1\""));
+	if schema.is_none() {
+		problems.push((String::from("schema"), "must be \"some-ui.rust-week/1\" or \"some-ui.rust-week/2\""));
 	}
 	let id = week.get("id").and_then(Value::as_str).filter(|id| is_week_id(id));
 	if id.is_none() {
 		problems.push((String::from("id"), "must be an ISO year and week, like 2026-w46"));
 	}
 	let mut programs = Vec::new();
+	let mut academy = Vec::new();
 	match week.get("tickets").and_then(Value::as_array) {
 		Some(tickets) if !tickets.is_empty() => {
 			for (index, ticket) in tickets.iter().enumerate() {
@@ -120,6 +198,9 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 					ticket: key.to_owned(),
 					source: source.to_owned(),
 				});
+				if schema == Some(Schema::V2) {
+					read_academy(ticket, key, &at, &mut academy, &mut problems);
+				}
 			}
 		}
 		_ => problems.push((String::from("tickets"), "must hold at least one ticket")),
@@ -139,9 +220,35 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 		Some(id) if problems.is_empty() => Ok(Week {
 			id: id.to_owned(),
 			programs,
+			academy,
 			window,
 		}),
 		_ => Err(problems),
+	}
+}
+
+/// Each starter of `ticket`'s academy (`key`), onto `academy`, or the
+/// problems with it onto `problems`.
+fn read_academy(ticket: &Value, key: &str, at: &impl Fn(&str) -> String, academy: &mut Vec<Starter>, problems: &mut Vec<Problem>) {
+	let exercises = ticket
+		.get("academy")
+		.and_then(Value::as_array)
+		.filter(|exercises| (1..=ACADEMY_MAX).contains(&exercises.len()));
+	let Some(exercises) = exercises else {
+		problems.push((at(".academy"), "must hold 1 to 8 exercises"));
+		return;
+	};
+	for (index, exercise) in exercises.iter().enumerate() {
+		let Some(source) = exercise.get("starter").and_then(Value::as_str) else {
+			problems.push((at(&(String::from(".academy[") + &index.to_string() + "].starter")), "must be the starter, as text"));
+			continue;
+		};
+		academy.push(Starter {
+			key: academy_key(key, index + 1),
+			ticket: key.to_owned(),
+			exercise: index + 1,
+			source: source.to_owned(),
+		});
 	}
 }
 
@@ -174,8 +281,27 @@ pub fn is_ticket_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::{is_ticket_key, is_week_id, mailbox_name, read, TicketProgram};
-	use serde_json::json;
+	use super::{academy_key, is_ticket_key, is_week_id, mailbox_name, read, Starter, TicketProgram, WEEK_CEILING, WEEK_V2_CEILING};
+	use serde_json::{json, Value};
+
+	/// paulgsc/some-ui's sample `/2` week, Tallowbrook
+	/// (`packages/ui/rust-rounds/src/lib/sample-week/tallowbrook.ts`), as JSON.
+	const TALLOWBROOK: &str = include_str!("../testdata/rust-week-2026-w47.json");
+
+	fn tallowbrook() -> Value {
+		serde_json::from_str(TALLOWBROOK).unwrap()
+	}
+
+	/// `week` grown to `size` + 1 bytes by its company's prose, which home
+	/// never reads.
+	fn grown(mut week: Value, size: usize) -> Vec<u8> {
+		week["company"]["about"] = json!("");
+		let short = week.to_string().len();
+		week["company"]["about"] = json!("x".repeat(size + 1 - short));
+		let body = week.to_string().into_bytes();
+		assert_eq!(body.len(), size + 1);
+		body
+	}
 
 	fn week(tickets: &serde_json::Value) -> Vec<u8> {
 		json!({ "schema": "some-ui.rust-week/1", "id": "2026-w46", "company": { "name": "Quillmoss" }, "tickets": tickets })
@@ -225,6 +351,93 @@ mod tests {
 		assert_eq!(read(&week(&json!([]))).unwrap_err()[0].0, "tickets");
 		assert_eq!(read(&vec![b' '; super::WEEK_CEILING + 1]).unwrap_err()[0].0, "body");
 		assert_eq!(read(b"[1]").unwrap_err()[0].0, "body");
+	}
+
+	/// A `/2` week gives each ticket's program, as `/1` does, and each
+	/// exercise's starter under its key, ticket by ticket in exercise order.
+	#[test]
+	fn a_v2_week_gives_each_tickets_program_and_its_academys_starters() {
+		let file = tallowbrook();
+		let read = read(TALLOWBROOK.as_bytes()).unwrap();
+		assert_eq!(read.id, "2026-w47");
+		let tickets: Vec<&str> = read.programs.iter().map(|program| program.ticket.as_str()).collect();
+		assert_eq!(tickets, ["TB-101", "TB-102", "TB-103"]);
+		assert_eq!(read.programs[0].source, file["tickets"][0]["program"].as_str().unwrap());
+		let keys: Vec<&str> = read.academy.iter().map(|starter| starter.key.as_str()).collect();
+		assert_eq!(keys, ["TB-101/academy/1", "TB-101/academy/2", "TB-101/academy/3", "TB-102/academy/1", "TB-103/academy/1"]);
+		assert_eq!(
+			read.academy[2],
+			Starter {
+				key: String::from("TB-101/academy/3"),
+				ticket: String::from("TB-101"),
+				exercise: 3,
+				source: file["tickets"][0]["academy"][2]["starter"].as_str().unwrap().to_owned(),
+			}
+		);
+		assert!(read.window.is_some());
+	}
+
+	/// A `/1` week reads as it always did: an academy on one of its tickets
+	/// is not read, and it holds no starters.
+	#[test]
+	fn a_v1_week_reads_no_academy() {
+		let body = week(&json!([{ "id": "QM-311", "program": "fn main() {}\n", "academy": [{ "starter": "fn main() {}\n" }] }]));
+		assert!(read(&body).unwrap().academy.is_empty());
+		let body = week(&json!([{ "id": "QM-311", "program": "fn main() {}\n", "academy": "anything" }]));
+		assert!(read(&body).is_ok());
+	}
+
+	/// A `/2` ticket's academy holds 1 to 8 exercises, each with a starter.
+	#[test]
+	fn a_v2_week_home_cannot_record_says_every_problem() {
+		let mut file = tallowbrook();
+		file["tickets"][0]["academy"] = json!([]);
+		file["tickets"][1]["academy"][0].as_object_mut().unwrap().remove("starter");
+		file["tickets"][2]["academy"] = json!(vec![json!({ "starter": "fn main() {}\n" }); 9]);
+		let fields: Vec<String> = read(file.to_string().as_bytes()).unwrap_err().into_iter().map(|(field, _)| field).collect();
+		assert_eq!(fields, ["tickets[0].academy", "tickets[1].academy[0].starter", "tickets[2].academy"]);
+
+		let mut file = tallowbrook();
+		file["tickets"][0].as_object_mut().unwrap().remove("academy");
+		file["tickets"][1]["academy"] = json!(vec![json!({ "starter": "fn main() {}\n" }); 8]);
+		let fields: Vec<String> = read(file.to_string().as_bytes()).unwrap_err().into_iter().map(|(field, _)| field).collect();
+		assert_eq!(fields, ["tickets[0].academy"], "eight is the most, and allowed");
+	}
+
+	/// A `/2` week may be larger than a `/1` week's ceiling, up to its own;
+	/// a `/1` week, or one of no known schema, may not.
+	#[test]
+	fn a_v2_week_has_its_own_ceiling() {
+		let v2 = grown(tallowbrook(), WEEK_CEILING);
+		assert!(read(&v2).is_ok(), "a /2 week past 32 KiB and under 128 KiB is kept");
+		let at_most = grown(tallowbrook(), WEEK_V2_CEILING - 1);
+		assert_eq!(at_most.len(), WEEK_V2_CEILING);
+		assert!(read(&at_most).is_ok(), "128 KiB exactly is kept");
+		assert_eq!(
+			read(&grown(tallowbrook(), WEEK_V2_CEILING)).unwrap_err(),
+			[(String::from("body"), "is larger than 128 KiB")]
+		);
+
+		let mut v1 = tallowbrook();
+		v1["schema"] = json!("some-ui.rust-week/1");
+		assert_eq!(read(&grown(v1, WEEK_CEILING)).unwrap_err(), [(String::from("body"), "is larger than 32 KiB")]);
+		let mut unknown = tallowbrook();
+		unknown["schema"] = json!("some-ui.rust-week/3");
+		assert_eq!(read(&grown(unknown, WEEK_CEILING)).unwrap_err()[0].0, "body");
+	}
+
+	/// No starter's key is ever a ticket's, whatever ticket or exercise.
+	#[test]
+	fn a_starter_key_is_never_a_ticket_key() {
+		for ticket in ["TB-101", "Q2RUST-1", "A-123456", "QM-311"] {
+			assert!(is_ticket_key(ticket));
+			for exercise in 1..=super::ACADEMY_MAX {
+				let key = academy_key(ticket, exercise);
+				assert!(!is_ticket_key(&key), "{key}");
+				assert!(key.starts_with(ticket) && key.contains('/'), "{key}");
+			}
+		}
+		assert_eq!(academy_key("TB-101", 1), "TB-101/academy/1");
 	}
 
 	#[test]

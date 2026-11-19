@@ -1,0 +1,466 @@
+{
+  "schema": "some-ui.rust-week/2",
+  "id": "2026-w47",
+  "by": "claude-routine",
+  "family": "performance-task",
+  "opens": "2026-11-16T00:00:00-08:00",
+  "due": "2026-11-22T23:59:00-08:00",
+  "company": {
+    "name": "Tallowbrook",
+    "about": "Shipping labels for warehouses: each order's label is rendered and sent to a thermal printer, about 12,000 labels a minute at peak."
+  },
+  "role": "An engineer on Tallowbrook's label pipeline.",
+  "audience": "The pipeline team, and the warehouse leads who wait on the printers.",
+  "story": "As a warehouse lead, I need every order's label rendered and at the printer within 50 ms, so packers never stand at an empty printer.",
+  "sla": [
+    {
+      "id": "S1",
+      "what": "Render one label and hand it to the printer",
+      "target": "50 ms, p99"
+    },
+    {
+      "id": "S2",
+      "what": "Peak load",
+      "target": "12,000 labels a minute"
+    },
+    {
+      "id": "S3",
+      "what": "Allocations in the print loop",
+      "target": "None: the printer box's allocator stalls at peak"
+    }
+  ],
+  "tickets": [
+    {
+      "id": "TB-101",
+      "title": "Print each queued label's address",
+      "spec": "The print loop reads each label from the queue by index. rustc refuses it.",
+      "figures": [
+        {
+          "id": "F1",
+          "text": "The queue holds up to 2,000 labels at peak."
+        },
+        {
+          "id": "F2",
+          "text": "A jammed label is reprinted from the queue."
+        }
+      ],
+      "forks": [
+        {
+          "question": "How should the print loop get each label's address?",
+          "options": [
+            {
+              "id": "A",
+              "recommended": true,
+              "decision": "Clone it: `queue[i].address.clone()`",
+              "why": "rustc's own help offers it. 2,000 short clones cost far less than 50 ms, and it's the smallest change.",
+              "model": {
+                "id": "clone-is-cheap",
+                "name": "A clone is cheap enough to ignore at this size"
+              },
+              "cites": [
+                "S1",
+                "F1"
+              ]
+            },
+            {
+              "id": "B",
+              "recommended": false,
+              "decision": "Derive `Copy` on `Label`",
+              "why": "Label is two fields. Make it Copy and indexing just works, with no `.clone()` in the loop.",
+              "model": {
+                "id": "copy-is-free",
+                "name": "Copy is a free opt-in for any small struct"
+              },
+              "cites": [
+                "S1"
+              ]
+            },
+            {
+              "id": "C",
+              "recommended": false,
+              "decision": "Loop by value: `for l in queue`",
+              "why": "Take each label out of the queue as you go: no clone, no borrow, no allocation.",
+              "model": {
+                "id": "moving-out-is-free",
+                "name": "Moving out is free once you own the collection"
+              },
+              "cites": [
+                "S3",
+                "F2"
+              ]
+            }
+          ]
+        },
+        {
+          "question": "How should a Label hold its address?",
+          "options": [
+            {
+              "id": "A",
+              "recommended": true,
+              "decision": "Keep an owned `String`",
+              "why": "Addresses come from each order at run time, so each label owns its own.",
+              "model": {
+                "id": "owned-string",
+                "name": "An owned String per label is the plain choice"
+              },
+              "cites": [
+                "S2"
+              ]
+            },
+            {
+              "id": "B",
+              "recommended": false,
+              "decision": "Share it as `Rc<str>`",
+              "why": "The preview shows the same address. Share one copy instead of two.",
+              "model": {
+                "id": "sharing-saves-copies",
+                "name": "Sharing saves the copies"
+              },
+              "cites": [
+                "S1",
+                "S2"
+              ]
+            }
+          ]
+        }
+      ],
+      "program": "struct Label {\n    order: u32,\n    address: String,\n}\n\nfn label(order: u32, a: &str) -> Label {\n    Label { order, address: a.into() }\n}\n\nfn main() {\n    let queue = vec![\n        label(7, \"1 Elm St\"),\n        label(8, \"9 Oak Ave\"),\n    ];\n    for i in 0..queue.len() {\n        let to = queue[i].address;\n        let n = queue[i].order;\n        println!(\"{n} -> {to}\");\n    }\n}\n",
+      "expect": {
+        "outcome": "compile-error",
+        "code": "E0507"
+      },
+      "concepts": [
+        {
+          "id": "moves-out-of-collections",
+          "name": "Moves out of collections"
+        }
+      ],
+      "academy": [
+        {
+          "title": "A struct of plain fields still moves",
+          "why": "Before Label, a struct with nothing on the heap: a bool and a u32. Every field copies bit for bit, so it seems it should copy too.",
+          "forks": [
+            1,
+            2
+          ],
+          "tests": [
+            {
+              "fork": 1,
+              "option": "B"
+            }
+          ],
+          "keywords": [
+            "Copy",
+            "Clone",
+            "move",
+            "#[derive]",
+            "index"
+          ],
+          "starter": "#[derive(Debug)]\nstruct Foo {\n    ready: bool,\n    count: u32,\n}\n\nimpl Foo {\n    fn new(count: u32) -> Foo {\n        Foo { ready: true, count }\n    }\n}\n\nfn first(foos: &Vec<Foo>) -> Foo {\n    foos[0]\n}\n\nfn main() {\n    let foos = vec![Foo::new(1), Foo::new(2)];\n    let f = first(&foos);\n    println!(\"{f:?} {}\", foos.len());\n}\n",
+          "tries": [
+            "Run it and read what rustc says.",
+            "Add Clone and Copy to the derive. Predict what happens, then run it."
+          ],
+          "clarity": [
+            "Every field is copied bit for bit. Why do you still have to derive Copy and Clone?",
+            "Why doesn't the compiler derive them for you?"
+          ],
+          "expect": {
+            "outcome": "compile-error",
+            "code": "E0507"
+          }
+        },
+        {
+          "title": "A String field can't be Copy",
+          "why": "Give the same struct a String. What a String owns lives on the heap, and freeing it is a destructor's job.",
+          "forks": [
+            1,
+            2
+          ],
+          "tests": [
+            {
+              "fork": 1,
+              "option": "B"
+            },
+            {
+              "fork": 2,
+              "option": "A"
+            }
+          ],
+          "keywords": [
+            "Copy",
+            "Drop",
+            "String",
+            "heap",
+            "E0204"
+          ],
+          "starter": "#[derive(Debug, Clone, Copy)]\nstruct Foo {\n    ready: bool,\n    count: u32,\n    name: String,\n}\n\nfn main() {\n    let a = Foo {\n        ready: true,\n        count: 1,\n        name: String::from(\"a\"),\n    };\n    let b = a;\n    println!(\"{a:?} {b:?}\");\n}\n",
+          "tries": [
+            "Predict whether it compiles, then run it.",
+            "Take Copy out of the derive and keep Clone. What does `let b = a;` do to `a` now?"
+          ],
+          "clarity": [
+            "What would go wrong if two copies of a String both ran its destructor?",
+            "What does Clone do for a String that Copy couldn't?"
+          ],
+          "expect": {
+            "outcome": "compile-error",
+            "code": "E0204"
+          }
+        },
+        {
+          "title": "Count what a clone costs",
+          "why": "An allocator that counts. Read 1,000 names, cloning each one, and see what it costs.",
+          "forks": [
+            1
+          ],
+          "tests": [
+            {
+              "fork": 1,
+              "option": "A"
+            },
+            {
+              "fork": 1,
+              "option": "C"
+            }
+          ],
+          "keywords": [
+            "clone",
+            "&",
+            "allocation",
+            "GlobalAlloc"
+          ],
+          "starter": "use std::alloc::{GlobalAlloc, Layout, System};\nuse std::sync::atomic::{AtomicUsize, Ordering};\n\nstruct Counting;\nstatic ALLOCS: AtomicUsize = AtomicUsize::new(0);\n\nunsafe impl GlobalAlloc for Counting {\n    unsafe fn alloc(&self, l: Layout) -> *mut u8 {\n        ALLOCS.fetch_add(1, Ordering::Relaxed);\n        unsafe { System.alloc(l) }\n    }\n    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {\n        unsafe { System.dealloc(p, l) }\n    }\n}\n\n#[global_allocator]\nstatic A: Counting = Counting;\n\nstruct Foo {\n    name: String,\n}\n\nfn main() {\n    let foos: Vec<Foo> = (0..1000)\n        .map(|i| Foo { name: format!(\"f{i}\") })\n        .collect();\n    let before = ALLOCS.load(Ordering::Relaxed);\n    let mut total = 0;\n    for i in 0..foos.len() {\n        let name = foos[i].name.clone();\n        total += name.len();\n    }\n    let after = ALLOCS.load(Ordering::Relaxed);\n    println!(\"{total} bytes read, {} allocations\", after - before);\n}\n",
+          "tries": [
+            "Run it and note the count.",
+            "Change `.clone()` to a borrow. Predict the count, then run it.",
+            "Try `std::mem::take` on a `mut` vector. What does it leave behind?"
+          ],
+          "clarity": [
+            "Where does each allocation in a clone come from?",
+            "What does a borrow ask of the code around it that a clone doesn't?"
+          ],
+          "expect": {
+            "outcome": "prints",
+            "stdout": "3890 bytes read, 1000 allocations\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "TB-102",
+      "title": "Reprint a label without losing the log",
+      "spec": "The printer keeps a log of orders sent. A reprint removes the order before it is sent again. It compiles, and works until an order is printed twice.",
+      "figures": [
+        {
+          "id": "F3",
+          "text": "About one label in 200 is reprinted after a jam."
+        }
+      ],
+      "forks": [
+        {
+          "question": "How should print and reprint share the log?",
+          "options": [
+            {
+              "id": "A",
+              "recommended": true,
+              "decision": "End `print`'s borrow before it calls `reprint`",
+              "why": "The panic is two borrows at once. Scope the first so it ends, then reprint.",
+              "model": {
+                "id": "guard-lifetime",
+                "name": "A RefCell borrow lasts until its guard drops"
+              },
+              "cites": [
+                "S1",
+                "F3"
+              ]
+            },
+            {
+              "id": "B",
+              "recommended": false,
+              "decision": "Make the log a `Mutex<Vec<u32>>`",
+              "why": "A Mutex is built for shared state. Swap it in and the borrow checks go away.",
+              "model": {
+                "id": "mutex-is-refcell",
+                "name": "A Mutex is a RefCell that tolerates a second lock"
+              },
+              "cites": [
+                "S1"
+              ]
+            },
+            {
+              "id": "C",
+              "recommended": false,
+              "decision": "Pass `&mut Vec<u32>` and drop the RefCell",
+              "why": "Let the compiler check the borrows. Then a second one can't happen at run time.",
+              "model": {
+                "id": "static-borrows",
+                "name": "Borrows checked at compile time can't overlap"
+              },
+              "cites": [
+                "S1",
+                "F3"
+              ]
+            }
+          ]
+        }
+      ],
+      "program": "use std::cell::RefCell;\n\ntype Log = RefCell<Vec<u32>>;\n\nfn reprint(log: &Log, order: u32) {\n    let mut sent = log.borrow_mut();\n    sent.retain(|o| *o != order);\n}\n\nfn print(log: &Log, order: u32) {\n    let mut sent = log.borrow_mut();\n    if sent.contains(&order) {\n        reprint(log, order);\n    }\n    sent.push(order);\n}\n\nfn main() {\n    let log = RefCell::new(Vec::new());\n    print(&log, 7);\n    print(&log, 8);\n    print(&log, 7);\n    println!(\"{:?}\", log.borrow());\n}\n",
+      "expect": {
+        "outcome": "panics"
+      },
+      "concepts": [
+        {
+          "id": "aliasing-and-mutation",
+          "name": "Aliasing and mutation"
+        }
+      ],
+      "academy": [
+        {
+          "title": "Two borrows of one RefCell",
+          "why": "A RefCell checks its borrows while the program runs. Hold one guard and ask for another.",
+          "forks": [
+            1
+          ],
+          "tests": [
+            {
+              "fork": 1,
+              "option": "A"
+            },
+            {
+              "fork": 1,
+              "option": "B"
+            }
+          ],
+          "keywords": [
+            "RefCell",
+            "borrow_mut",
+            "guard",
+            "Drop",
+            "panic"
+          ],
+          "starter": "use std::cell::RefCell;\n\nfn main() {\n    let log = RefCell::new(vec![1, 2]);\n    let first = log.borrow_mut();\n    log.borrow_mut().push(3);\n    println!(\"{first:?}\");\n}\n",
+          "tries": [
+            "Predict whether it compiles, and what happens when it runs. Then run it.",
+            "Move the `println!` above the push. What changes, and why?"
+          ],
+          "clarity": [
+            "When does a RefCell's borrow end?",
+            "What would a Mutex do in the same place?"
+          ],
+          "expect": {
+            "outcome": "panics"
+          }
+        }
+      ]
+    },
+    {
+      "id": "TB-103",
+      "title": "Render the page on a worker thread",
+      "spec": "The page is shared with the preview, so it sits in an Rc, and the renderer moves a copy to a worker thread. rustc refuses it.",
+      "figures": [],
+      "forks": [
+        {
+          "question": "What should the renderer share the page with the worker as?",
+          "options": [
+            {
+              "id": "A",
+              "recommended": true,
+              "decision": "An `Arc<Vec<u8>>`",
+              "why": "Same shape as Rc, and it crosses threads. The preview and the worker share one page.",
+              "model": {
+                "id": "arc-is-thread-safe-rc",
+                "name": "Arc is the thread-safe Rc"
+              },
+              "cites": [
+                "S1"
+              ]
+            },
+            {
+              "id": "B",
+              "recommended": false,
+              "decision": "A copy of the page for the worker",
+              "why": "The page is 64 bytes. Copying it per label costs nothing against 50 ms.",
+              "model": {
+                "id": "copy-is-cheap-page",
+                "name": "A copy per label is cheap at this size"
+              },
+              "cites": [
+                "S1",
+                "S2"
+              ]
+            },
+            {
+              "id": "C",
+              "recommended": false,
+              "decision": "Keep the `Rc` and wrap it in a `Mutex`",
+              "why": "A Mutex makes shared state safe, so wrap the Rc and move on.",
+              "model": {
+                "id": "mutex-makes-send",
+                "name": "A Mutex makes anything safe to send"
+              },
+              "cites": [
+                "S1"
+              ]
+            }
+          ]
+        }
+      ],
+      "program": "use std::rc::Rc;\nuse std::thread;\n\nfn main() {\n    let page = Rc::new(vec![0u8; 64]);\n    let copy = Rc::clone(&page);\n    let h = thread::spawn(move || {\n        copy.len()\n    });\n    println!(\"{}\", h.join().unwrap());\n    println!(\"{}\", page.len());\n}\n",
+      "expect": {
+        "outcome": "compile-error",
+        "code": "E0277"
+      },
+      "concepts": [
+        {
+          "id": "send-and-sync",
+          "name": "Send and Sync"
+        }
+      ],
+      "academy": [
+        {
+          "title": "What may cross a thread",
+          "why": "`thread::spawn` takes only what is Send. Ask the compiler which of two pointers is.",
+          "forks": [
+            1
+          ],
+          "tests": [
+            {
+              "fork": 1,
+              "option": "A"
+            },
+            {
+              "fork": 1,
+              "option": "C"
+            }
+          ],
+          "keywords": [
+            "Send",
+            "Rc",
+            "Arc",
+            "thread::spawn",
+            "E0277"
+          ],
+          "starter": "use std::rc::Rc;\nuse std::sync::Arc;\n\nfn needs_send<T: Send>(_: T) {}\n\nfn main() {\n    needs_send(Arc::new(1));\n    needs_send(Rc::new(1));\n}\n",
+          "tries": [
+            "Predict which call rustc refuses, then build it.",
+            "Wrap the Rc in a Mutex and ask again."
+          ],
+          "clarity": [
+            "What does Rc do on clone that makes it unsafe to send?",
+            "What does Arc do differently?"
+          ],
+          "expect": {
+            "outcome": "compile-error",
+            "code": "E0277"
+          }
+        }
+      ]
+    }
+  ],
+  "references": [
+    "rust-reference",
+    "ownership-inventory"
+  ],
+  "rubric": "solo"
+}

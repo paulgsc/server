@@ -19,7 +19,8 @@
 //!   its tag, its id, and every program to run.
 //! - **One row per distinct program** (`rust_round_source`), stored with the
 //!   round or the week ([`queue_week`], RR12) that first holds it, in the
-//!   same transaction. It is the recording pass's queue, in the order
+//!   same transaction. A `/2` week's academy starters (RR25) are programs
+//!   too, queued after its tickets'. It is the recording pass's queue, in the order
 //!   programs arrived.
 //! - **Runs are keyed to the bytes and the toolchain** (EX2, RX4):
 //!   `rust_round_run` holds one row per program and toolchain, written only
@@ -268,16 +269,26 @@ async fn queue(conn: &mut SqliteConnection, source: &str, now: &str) -> Result<(
 
 /// Queue each of `week`'s programs home does not hold yet, received `now`.
 ///
+/// Every ticket's program, in ticket order, then (for a `/2` week) every
+/// academy's starter, ticket by ticket in exercise order (RR25,
+/// paulgsc/some-ui#3249), so a week's tickets are recorded before its
+/// exercises.
+///
 /// RR12, paulgsc/some-ui#2687. The week itself is kept by the mailbox pass,
 /// as the routine's files are (`mailbox_repo`'s `rust-week` folder); call
 /// this in the transaction that keeps it, so a week is never held with its
-/// programs unqueued.
+/// programs unqueued. A starter is a program like any other: one row per
+/// distinct source, recorded and read by its bytes, so a starter that is
+/// also a ticket's program (or another week's) is one program, recorded
+/// once. Its key (`week::academy_key`) is what the week's read names it by,
+/// never stored.
 ///
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn queue_week(conn: &mut SqliteConnection, week: &week::Week, now: &str) -> Result<(), sqlx::Error> {
-	for program in &week.programs {
-		queue(conn, &program.source, now).await?;
+	let starters = week.academy.iter().map(|starter| &starter.source);
+	for source in week.programs.iter().map(|program| &program.source).chain(starters) {
+		queue(conn, source, now).await?;
 	}
 	Ok(())
 }

@@ -3,14 +3,18 @@
 //! programs (paulgsc/some-ui#2234, RR3; #2687, RR12).
 //!
 //! A week is the routine's: it arrives through the mailbox (`mailbox::pass`
-//! keeps it in `brief` as `rust-week-<id>.json` and queues its programs), so
+//! keeps it in `brief` as `rust-week-<id>.json` and queues its programs, a
+//! `/2` week's academy starters included), so
 //! there is no `PUT` for one, and these routes only read it.
 //!
 //! ```text
 //! GET /rust-weeks        → { weeks: [{ id, sha256, receivedAt }] }: the caller's, newest week first
 //! GET /rust-weeks/:id    → { id, sha256, receivedAt, week, tickets: [{ ticket, sourceHash,
-//!                            runs: [{ toolchain, ended, refusal, rustc: RustcRun }] }] },
-//!                          with an ETag, `304` on `If-None-Match`, or a JSON 404
+//!                            runs: [{ toolchain, ended, refusal, rustc: RustcRun }] }],
+//!                            academy?: [{ key, ticket, exercise, sourceHash, runs }] },
+//!                          with an ETag, `304` on `If-None-Match`, or a JSON 404;
+//!                          `academy` only for a `/2` week (RR25), its exercises'
+//!                          starters keyed `<ticket>/academy/<n>`
 //! GET /rust-rounds       → { rounds: [{ id, contentHash, receivedAt }] }: the caller's, newest first
 //! GET /rust-rounds/:id   → { id, contentHash, receivedAt, round, programs: [{ card, sourceHash,
 //!                            runs: [{ toolchain, ended, refusal, rustc: RustcRun }] }] },

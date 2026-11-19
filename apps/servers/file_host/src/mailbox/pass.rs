@@ -1057,8 +1057,9 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// (paulgsc/some-ui `apps/mailbox`, `some-ui.drive-takes/1`), has its takes
 /// home holds recorded as on Drive in the same transaction
 /// (`voice_repo::on_drive`, paulgsc/some-ui#2401). A week of Rust Rounds,
-/// new in `brief` as `rust-week-<id>.json` (`some-ui.rust-week/1`,
-/// paulgsc/some-ui#2687), has each ticket's program queued for the recorder
+/// new in `brief` as `rust-week-<id>.json` (`some-ui.rust-week/1` or `/2`,
+/// paulgsc/some-ui#2687, #3249), has each ticket's program and each academy
+/// starter queued for the recorder
 /// in the same transaction (`rust_round_repo::queue_week`), so home never
 /// holds a week whose programs go unrecorded. The routine's answer to a
 /// pickup, new in `picked` (`some-ui.take-picked/1`, paulgsc/some-ui#2875),
@@ -1570,6 +1571,33 @@ mod tests {
 		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 3);
 		assert_eq!(queued(&pool).await, ["fn main() {}\n", "fn main() { 1; }\n"]);
 		assert_eq!(held(&pool).await, ["rust-week-2026-w46.json", "rust-week-2026-w47.json", "rust-week-2026-w49.json"]);
+	}
+
+	/// A `/2` week is kept as a `/1` week is, with each ticket's program and
+	/// then each academy's starter queued in the same transaction, a program
+	/// home holds already once (RR25, paulgsc/some-ui#3249). One whose
+	/// academy home cannot read is kept and queues nothing, not even its
+	/// tickets' programs.
+	#[tokio::test]
+	async fn a_v2_week_is_kept_with_its_programs_and_starters_queued() {
+		let (pool, fake) = (pool().await, Fake::default());
+		let exercise = |starter: &str| serde_json::json!({ "title": "t", "starter": starter });
+		let week = serde_json::json!({ "schema": "some-ui.rust-week/2", "id": "2026-w47", "tickets": [
+			{ "id": "TB-101", "program": "fn main() {}\n", "academy": [exercise("fn main() { 11; }\n"), exercise("fn main() {}\n")] },
+			{ "id": "TB-102", "program": "fn main() { 2; }\n", "academy": [exercise("fn main() { 21; }\n")] },
+		] });
+		fake.add(1, "rust-week-2026-w47.json", &week.to_string());
+		let mut unread = week.clone();
+		unread["id"] = serde_json::json!("2026-w48");
+		unread["tickets"][1]["academy"] = serde_json::json!([]);
+		fake.add(2, "rust-week-2026-w48.json", &unread.to_string());
+		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 2);
+		assert_eq!(
+			queued(&pool).await,
+			["fn main() {}\n", "fn main() { 2; }\n", "fn main() { 11; }\n", "fn main() { 21; }\n"],
+			"the tickets' programs first, then the starters, each distinct program once"
+		);
+		assert_eq!(held(&pool).await, ["rust-week-2026-w47.json", "rust-week-2026-w48.json"]);
 	}
 
 	/// A file under the list's name that does not read as one is kept as

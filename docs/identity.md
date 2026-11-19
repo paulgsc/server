@@ -1990,7 +1990,8 @@ nowhere is marked as such and belongs to review.
     the mailbox and is kept as every routine file is, in `mailbox_item` under
     the mailbox's subject (invariant 19), listed and read only by that
     subject (`GET /rust-weeks` and `GET /rust-weeks/:id`; another subject's
-    week is a `404`). Its programs join `rust_round_source` in the
+    week is a `404`). Its programs (each ticket's, and in a `/2` week each
+    academy exercise's starter, RR25) join `rust_round_source` in the
     transaction that keeps it, and are as nobody's as a round's. What those
     three tables keep past an account's deletion, their times included, is
     under "What deleting an account erases", "What stays of Rust Rounds".
