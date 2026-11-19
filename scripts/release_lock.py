@@ -25,7 +25,9 @@ Where "newest published" comes from, per followed service (`SOURCES`):
   release publishes (a whole commit for render), never `latest`. render is
   followed since R4 (#793), once `file-host` is pinned by digest and so the
   set check (`scripts/check_release.py`, R3 #790) reads both ends of its
-  requirement (RL7). www is not run on home, so it is in no release.
+  requirement (RL7). www and resume-render are run on home since R8 (#853)
+  and pinned by digest, but not followed: neither image writes its labels
+  yet, and RL7 follows a some-ui image only once it does.
 
 - **A third-party image** (`THIRD_PARTY`, R7 #796), only with
   `--third-party`: the current digest of the tag its entry already names (a
@@ -41,7 +43,8 @@ Docker Hub's tag API gives each tag's digest (another registry's v2 API, for
 an image named with its host), so every reference is `repo:tag@sha256:…`.
 What it never does:
 
-- **Moves a held entry** (`HELD`, none since R4 #793 pinned `file-host`).
+- **Moves a held entry** (`HELD`: www and resume-render, until their
+  images write the labels RL7 needs, #853).
 - **Moves an entry it does not follow**, or adds or removes a service. The
   default mode moves only `SOURCES`; `--third-party` only `THIRD_PARTY`.
 - **Moves an entry backwards in serial**: `serial` rises once, from main's,
@@ -74,7 +77,12 @@ CHANGESETS = REPO_ROOT / ".github" / "docker-changesets"
 HUB = "https://hub.docker.com/v2/repositories"
 
 # Entries no source moves, and why. Each names the story that frees it.
-HELD: dict[str, str] = {}
+HELD: dict[str, str] = {
+    # R8 (#853): home runs both, and a reviewed change moves each pin until
+    # its image writes the set check's labels (docs/release.md, RL7).
+    "resume-render": "held until pgathondu/resume-render writes io.paulgsc.provides (RL7, #853)",
+    "www": "held until pgathondu/www writes io.paulgsc.requires (RL7, #853)",
+}
 
 
 @dataclass(frozen=True)
@@ -108,6 +116,7 @@ SOURCES: dict[str, Changesets | Hub] = {
     # request's set check reads both ends of render's requirement (RL7).
     "render": Hub("pgathondu/render", COMMIT),
     "rust-runner": Changesets("rust-runner"),
+    # Not www or resume-render: HELD (above) until they write their labels.
 }
 
 # Every image home runs that nobody here publishes (R7, #796; C120). Each
@@ -458,6 +467,14 @@ class Tests(unittest.TestCase):
         updated, said = reconcile(sample(), world({}, [], [A], tags), "main", {"render": Hub("pgathondu/render", COMMIT)})
         self.assertEqual(updated["services"]["render"]["image"], f"pgathondu/render:{B}@{DB}")
         self.assertEqual(len(said), 1)
+
+    def test_www_and_resume_render_wait_for_their_labels(self) -> None:
+        """RL7 (#853): pinned in the release, not followed until their images write the labels."""
+        release = json.loads(RELEASE.read_text())["services"]
+        for name in ("www", "resume-render"):
+            self.assertIn("@sha256:", release[name]["image"])
+            self.assertNotIn(name, SOURCES)
+            self.assertIn(name, HELD)
 
     def test_an_unfollowed_entry_is_never_moved(self) -> None:
         seen = world({("pgathondu/rust-runner", A): DA}, [changeset(A, "rust-runner")], [A], {"redis": [("7.4", DA)]})

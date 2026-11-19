@@ -21,8 +21,8 @@ services:
       # Box only: Caddy on the host serves it to the LAN, the phone included,
       # as https://file-host.home.maishatu.com (paulgsc/dotfiles,
       # nixos/subdomains). Other containers use file-host-server:3000 on
-      # shared-dev-network; some-ui's www needs FILE_HOST_UPSTREAM set to
-      # that, since the Docker host gateway is not 127.0.0.1. A 0.0.0.0
+      # shared-dev-network, which is www's image default
+      # (infra/compose/www.yml). A 0.0.0.0
       # publish skips the host firewall: Docker forwards published ports
       # ahead of the INPUT chain that firewall filters.
       - '127.0.0.1:3000:3000'
