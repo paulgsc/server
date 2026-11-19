@@ -1,9 +1,9 @@
 # The web app (apps/www's build) and the résumé service it fronts, on
-# home's release (RELEASE R8, #853). Both images are paulgsc/some-ui's, published by
-# its CI and pinned by digest in deploy/home/release.json like render; home
-# builds and pulls neither by hand. some-ui's root compose keeps the same two
-# services for a laptop (`docker compose up www`); on home this file is how
-# they run, and `make home-deploy` moves them with everything else.
+# home's release (RELEASE R8, #853). Both images are paulgsc/some-ui's,
+# published by its CI and pinned by digest in deploy/home/release.json like
+# render; home builds and pulls neither by hand. some-ui's root compose has
+# its own services of the same images for development; on home this file is
+# how they run, and `make home-deploy` moves them with everything else.
 #
 # - `www`: nginx serving apps/www's build. Its server block, the
 #   /api/file-host/ proxy and the /api/resume/ proxy are baked into the image

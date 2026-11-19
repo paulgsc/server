@@ -45,9 +45,10 @@ per CLAUDE.md, "Drift is loud, not silent".
   A tag alone can move under a release.
 - **RL5. Held entries do not move.** An entry in `HELD` keeps whatever main
   says. `file-host` was freed by R4 (#793), which pinned it by digest once
-  the deploy applies whole releases; www and resume-render are held since R8
-  (#853), until their images write the labels RL7 needs. An entry the release does not follow keeps
-  whatever main says, and a third-party entry moves only by RL8.
+  the deploy applies whole releases; www and resume-render are held since
+  R8 (#853), until their images write the labels RL7 needs. An entry the
+  release does not follow keeps whatever main says, and a third-party entry
+  moves only by RL8.
 - **RL6. No approval of its own.** Forming the set adds no human step
   (C119). Each image keeps the one approval it has where it is published, and
   the release pull request auto-merges once its checks pass. **Planned:**

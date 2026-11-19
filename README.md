@@ -576,9 +576,13 @@ upstreams are the image's defaults (`file-host-server:3000`,
 `resume-render:3100`), so it takes no environment, and it mounts nothing
 from the box.
 
-**Once, on the box, to switch over** (some-ui's root compose ran these two
-before, from its checkout; the speech pair it also ran was retired,
-some-ui#2978):
+**Once, on the box, to switch over, before any deploy after this lands**
+(some-ui's root compose ran these two before, from its checkout; the speech
+pair it also ran was retired, some-ui#2978). Until step 1 is done, some-ui's
+stack holds port 5172 and the name `resume-render`, so every deploy's `up`
+fails and is put back whole (RL11): each later release, a `file-host` bump
+or a deploy a client asked for included, fails the same way, not only the
+first.
 
 ```bash
 # 1. Stop the old stack, which holds port 5172 and the name resume-render.
@@ -586,6 +590,12 @@ some-ui#2978):
 # 2. Server's release, www and resume-render included.
 make home-deploy
 ```
+
+If `make home-deploy` fails after step 1, home has no www until it is
+fixed: the rollback puts back server's last release, which never ran www,
+and does not restart some-ui's stack. To serve the old www meanwhile, run
+`docker compose up -d` in the some-ui checkout again, which then blocks the
+next deploy as above until it is stopped.
 
 some-ui's root compose stays for development on a laptop; it is no longer
 how home runs.
