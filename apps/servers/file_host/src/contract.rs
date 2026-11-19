@@ -28,7 +28,7 @@
 //! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 20;
+pub const CONTRACT_EPOCH: u32 = 21;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
@@ -64,7 +64,7 @@ pub const RENDER_FOLDERS_EPOCH: u32 = 2;
 /// FNV-1a over the sorted `METHOD full_path` lines of every route this build
 /// serves, as [`route_fingerprint`] computes it. A route change fails `the_fingerprint_is_this_route_surface`,
 /// whose message names the new value, until this and the epoch are updated.
-pub const ROUTE_FINGERPRINT: &str = "198593886bb746a5";
+pub const ROUTE_FINGERPRINT: &str = "53846b2ba1dc6de3";
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;

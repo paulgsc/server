@@ -215,7 +215,7 @@ above the button that deletes (invariant 22):
 | Notes on the feeds' episodes | `episode_note` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
-| Rust Rounds' rounds, weeks sent and card-era log | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log` |
+| Rust Rounds' rounds, weeks sent, card-era log and work spans | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log`, `rust_work_span_event` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
 | A week of mock interview's essay videos: the same, for its essay (IW6; invariant 23) | `interview_essay_video_link`, `interview_essay_video_deletion` |
@@ -2034,6 +2034,25 @@ nowhere is marked as such and belongs to review.
     paulgsc/some-ui#2693), for the routine that writes the week's essay:
     only the newest weeks of the mailbox's own subject, never a draft, and
     nothing of it in a log line. A take is still named by id, never audio.
+    **The owner's work spans** (RR26, paulgsc/some-ui#3250) are theirs too:
+    `rust_work_span_event` keeps each span the phone's work tracker ran as
+    two events, its start (`POST /rust-work-spans/start`: the week, ticket,
+    step, exercise and speak-to points, the phone's own name for the device,
+    and when it started) and its close (`POST /rust-work-spans/close`: when
+    it stopped, whether the owner or the two hours stopped it, and whether
+    the owner says they worked all, part or none of it, in seconds that fit
+    the span). Each is written once: the same again changes nothing, another
+    under the same span is a `409`. One span is open at a time per subject,
+    so a start while one is open is a `409` that names it, and the open span
+    is read by every device of the subject, whatever its week
+    (`GET /rust-work-spans?week=`). Spans never overlap in time: a start
+    the phone kept offline and sent after a later span closed, with an `at`
+    before the subject's latest close `at`, is a `409` too. The device's name is a label the phone
+    gives itself, never a key or an identity (invariant 4). The spans are
+    read only by their own subject, never updated, and deleted only with the
+    account, by the triggers and the sweep. They are not yet counted by
+    `GET /subjects/me/kept` (invariant 33), whose kinds follow the phone's
+    `KEPT_FOR_GOOD`.
     *Enforced by* `rust_round_repo`'s `each_subject_reads_only_its_own_rounds`,
     `a_later_send_replaces_the_draft`,
     `the_draft_standing_at_the_deadline_is_final`,
@@ -2044,6 +2063,10 @@ nowhere is marked as such and belongs to review.
     `a_session_grows_by_revisions_and_is_never_rewritten`,
     `the_record_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
     `the_log_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
+    `a_span_starts_once_closes_once_and_one_is_open_at_a_time`,
+    `a_span_starts_no_earlier_than_the_last_one_closed`,
+    `the_spans_refuse_an_update_a_delete_and_a_second_open_and_leave_with_the_account`,
+    `handlers::rust_work_spans`' `a_span_starts_then_closes_and_retries_are_idempotent`,
     `an_account_takes_its_rounds_and_leaves_the_runs` and
     `every_table_refuses_an_update_and_a_delete`, `handlers::rust_rounds`'s
     `each_subject_sees_only_its_own_rounds_and_an_account_takes_its_own`

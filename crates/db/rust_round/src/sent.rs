@@ -146,7 +146,7 @@ pub(crate) fn is_instant(at: &str) -> bool {
 }
 
 /// Whether `at` is more than a few minutes past `now`.
-fn is_ahead(at: &str, now: &str) -> bool {
+pub(crate) fn is_ahead(at: &str, now: &str) -> bool {
 	let (Ok(at), Ok(now)) = (chrono::DateTime::parse_from_rfc3339(at), chrono::DateTime::parse_from_rfc3339(now)) else {
 		return false;
 	};
