@@ -170,6 +170,19 @@ pub enum RustcRun {
 		stderr: String,
 		/// The first error's primary span in `main.rs`.
 		span: Option<RunSpan>,
+		/// Every diagnostic rustc gave under `--error-format=json`, in its
+		/// order, as recorded (RR23, paulgsc/some-ui#3243): the phone lays the
+		/// error out from these in rustc's own words. Their `rendered` texts
+		/// join to `stderr` only when nothing was cut and rustc printed no
+		/// plain lines (an internal compiler error's are in `stderr` alone);
+		/// the phone compares the two and opens the printout when they differ.
+		/// Bounded by the runner's diagnostics ceiling (1 MiB of rustc's JSON),
+		/// not the 4 KiB logs ceiling. A run recorded before RR23 keeps its
+		/// derived `rustc` without them: nothing re-derives a stored run. A
+		/// phone from before paulgsc/some-ui#3246 refuses a run with this key
+		/// (its schema is strict), so this shipped after an APK carrying it.
+		#[serde(default)]
+		diagnostics: Vec<Diagnostic>,
 	},
 	Prints {
 		toolchain: String,
@@ -249,6 +262,7 @@ impl Recording {
 				code,
 				stderr: self.compile.rendered.clone(),
 				span,
+				diagnostics: self.compile.diagnostics.clone(),
 			};
 		};
 		let compile_stderr = self.compile.rendered.clone();
