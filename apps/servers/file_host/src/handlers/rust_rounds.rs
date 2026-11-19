@@ -497,7 +497,7 @@ mod tests {
 		let state = state().await;
 		let browser = session(&state, A, Carrier::Cookie).await;
 		let app = module().into_table_router().with_state(state);
-		assert_eq!(module().descriptors().count(), 11);
+		assert_eq!(module().descriptors().count(), 14);
 		let body = round("indexing-01", "fn main() {}\n");
 		for (method, path) in [
 			(Method::GET, "/rust-rounds"),
@@ -511,6 +511,9 @@ mod tests {
 			(Method::PUT, "/rust-round-log/sessions/s1"),
 			(Method::GET, "/rust-round-log/sessions"),
 			(Method::GET, "/rust-round-log/sessions/s1"),
+			(Method::POST, "/rust-work-spans/start"),
+			(Method::POST, "/rust-work-spans/close"),
+			(Method::GET, "/rust-work-spans?week=2026-w47"),
 		] {
 			assert_eq!(call(&app, method.clone(), path, None, None, &body).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 			assert_eq!(
