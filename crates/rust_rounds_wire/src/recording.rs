@@ -170,6 +170,13 @@ pub enum RustcRun {
 		stderr: String,
 		/// The first error's primary span in `main.rs`.
 		span: Option<RunSpan>,
+		/// Every diagnostic rustc gave under `--error-format=json`, in its
+		/// order, as recorded (RR23, paulgsc/some-ui#3243): the phone lays the
+		/// error out from these in rustc's own words. Each `rendered` joins to
+		/// `stderr`. A phone from before paulgsc/some-ui#3246 refuses a run
+		/// with this key (its schema is strict), so it ships after that did.
+		#[serde(default)]
+		diagnostics: Vec<Diagnostic>,
 	},
 	Prints {
 		toolchain: String,
@@ -249,6 +256,7 @@ impl Recording {
 				code,
 				stderr: self.compile.rendered.clone(),
 				span,
+				diagnostics: self.compile.diagnostics.clone(),
 			};
 		};
 		let compile_stderr = self.compile.rendered.clone();
