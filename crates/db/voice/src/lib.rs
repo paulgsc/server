@@ -479,6 +479,11 @@ pub fn is_note_id(id: &str) -> bool {
 ///   (the form [`instant`] gives). `PASTE` is neither a slug nor a ticket's
 ///   key, so it reads as neither.
 ///
+/// - **An answer to a week's opening question** (paulgsc/some-ui#3269, C736):
+///   `<week>:opening:<n>`, like `2026-w47:opening:2`, n from 1 to 3, the
+///   week it was said in. A card's ref never reads as one: a round named
+///   like a week with a card named `opening` is refused.
+///
 /// Both sit within the rule every `ref` meets, which [`describe`] checks too.
 #[must_use]
 pub fn is_rust_round_ref(of_ref: &str) -> bool {
@@ -487,10 +492,21 @@ pub fn is_rust_round_ref(of_ref: &str) -> bool {
 		return false;
 	};
 	let rest = parts.next();
-	let card = is_slug(first) && is_slug(second) && rest.is_none_or(is_note_id);
+	let opening = is_week_id(first) && second == OPENING;
+	let card = !opening && is_slug(first) && is_slug(second) && rest.is_none_or(is_note_id);
 	let ticket = is_week_id(first) && is_ticket_key(second) && rest.is_none_or(is_point);
 	let paste = is_week_id(first) && second == PASTE && rest.is_some_and(|at| instant(at).as_deref() == Some(at));
-	card || ticket || paste
+	let answer = opening && rest.is_some_and(is_opening_question);
+	card || ticket || paste || answer
+}
+
+/// The second part of an opening answer's `ref` ([`is_rust_round_ref`]).
+pub const OPENING: &str = "opening";
+
+/// An opening question's number in an answer's `ref`: `1`, `2` or `3`.
+#[must_use]
+pub fn is_opening_question(part: &str) -> bool {
+	matches!(part, "1" | "2" | "3")
 }
 
 /// A speak-to point's number in a ticket's `ref`: 1 to 99, no leading zero.
@@ -2031,6 +2047,8 @@ mod tests {
 			"2026-w46:QM-311:1",
 			"2026-w46:QM-311:8",
 			"2026-w46:QM-311:99",
+			"2026-w46:opening:1",
+			"2026-w46:opening:3",
 		] {
 			assert!(is_rust_round_ref(good), "{good}");
 			let note = describe("r1", said_take("rust-round", good), b"said").unwrap();
@@ -2061,6 +2079,11 @@ mod tests {
 			"2026-w46:PASTE:2026-11-09T17:04:00Z",
 			"2026-w46:PASTE:2026-11-09T09:04:00.000-08:00",
 			"2026-w54:PASTE:2026-11-09T17:04:00.000Z",
+			"2026-w46:opening",
+			"2026-w46:opening:0",
+			"2026-w46:opening:4",
+			"2026-w46:opening:01",
+			"2026-w46:opening:note-1",
 		] {
 			assert!(!is_rust_round_ref(bad), "{bad}");
 			let refused = describe("r1", said_take("rust-round", bad), b"said").unwrap_err();

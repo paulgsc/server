@@ -8,7 +8,9 @@
 //!
 //! **A week's record is read, never stored whole.** It is the week (the
 //! routine's, in the mailbox), what the owner sent of it (the draft before
-//! the deadline, the final after it), the errors pasted
+//! the deadline, the final after it), the takes of the week's opening it
+//! plays (paulgsc/some-ui#3269, C736: for each question, the newest kept
+//! take of its answer from that week or an earlier one), the errors pasted
 //! in it, and how often each ticket was opened, read from the phone's
 //! engagement events in `app_event` (CK2, ENG4) rather than a counter of
 //! its own. A ticket no take answered by the deadline is a silence, and the
@@ -89,6 +91,13 @@ pub struct WeekRecord {
 	pub sent: Option<SentAt>,
 	/// Each ticket, in the week's order.
 	pub tickets: Vec<TicketRecord>,
+	/// The takes of the week's opening it plays, by question
+	/// (paulgsc/some-ui#3269, C736): for each, the newest kept take of its
+	/// answer any send of this week or an earlier one names under the week's
+	/// opening version, so a week with no new take reuses the last, and
+	/// deleting one gives way to the next older. A question with none is
+	/// absent; a week with no opening has none.
+	pub opening: Vec<OpeningRecord>,
 	/// The tickets no take answered, in the week's order: every one when
 	/// nothing was sent.
 	pub unanswered: Vec<String>,
@@ -134,6 +143,28 @@ pub struct TicketRecord {
 	/// How many times its card was opened between the week's opening and its
 	/// deadline.
 	pub opens: i64,
+}
+
+/// The take of one opening question's answer a week plays
+/// ([`WeekRecord::opening`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeningRecord {
+	/// The question, from 1.
+	pub n: u8,
+	/// The take's voice-note id.
+	pub take: String,
+	/// When it was recorded.
+	pub recorded_at: String,
+	/// The week it was said in, whose send names it: this week or an
+	/// earlier one.
+	pub week: String,
+	/// The opening's version it was read under: the week's.
+	pub version: u32,
+	/// How long it runs, in milliseconds, as the phone measured it; absent
+	/// when it didn't say.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub ms: Option<u64>,
 }
 
 /// One fork's decision, as the send named it (`<week>:<ticket>:<n>:verdict`).
@@ -214,7 +245,9 @@ fn stored_instant(at: &str) -> Option<String> {
 /// 401 without a session, 403 for a browser's or from an untrusted origin,
 /// 404 for a week the caller's subject does not hold, 422 naming each
 /// refused field (`at` after the deadline, `week` once home's clock is
-/// past it, and a take held as said for another ticket or point, among them), 409 for another body at the draft's moment, 500 for
+/// past it, a take held as said for another ticket or point, and an opening
+/// take held as said for anything but its question of this week's opening,
+/// among them), 409 for another body at the draft's moment, 500 for
 /// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_week_sent_put", skip_all, fields(otel.kind = "server"))]
@@ -239,11 +272,17 @@ pub async fn put_sent(paired: Paired, State(db): State<SqlitePool>, Path(id): Pa
 			return Err(FileHostError::unprocessable_entity(problems));
 		}
 	};
-	// RR24: each answer's ticket and point are its take's own `ref`.
+	// RR24: each answer's ticket and point are its take's own `ref`, and
+	// each opening take's question too (paulgsc/some-ui#3269).
 	let mut held = Vec::new();
-	for answer in &sent.answers {
-		if let Some(of_ref) = voice_repo::ref_of(&mut tx, paired.subject.as_str(), &answer.take, voice_repo::Of::RustRound).await? {
-			held.push((answer.take.as_str(), of_ref));
+	let takes = sent
+		.answers
+		.iter()
+		.map(|answer| answer.take.as_str())
+		.chain(sent.opening.iter().map(|take| take.take.as_str()));
+	for take in takes {
+		if let Some(of_ref) = voice_repo::ref_of(&mut tx, paired.subject.as_str(), take, voice_repo::Of::RustRound).await? {
+			held.push((take, of_ref));
 		}
 	}
 	let held: Vec<(&str, Option<&str>)> = held.iter().map(|(take, of_ref)| (*take, of_ref.as_deref())).collect();
@@ -420,6 +459,7 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 			opens: opened,
 		});
 	}
+	let opening = opening(&mut *conn, subject, &week).await?;
 	Ok(Some(WeekRecord {
 		week: week.id,
 		opens: window.opens,
@@ -431,9 +471,61 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 			draft: held.draft,
 		}),
 		tickets,
+		opening,
 		unanswered,
 		pastes,
 	}))
+}
+
+/// The takes of `week`'s opening it plays for `subject`
+/// ([`WeekRecord::opening`], paulgsc/some-ui#3269, C736): for each question,
+/// the newest take of its answer that a send of `week` or an earlier one
+/// names under the week's opening version
+/// (`rust_round_repo::sent::opening_takes`) and that is still kept. A take
+/// deleted from My data is not kept, nor one home holds as said for
+/// anything but that question of the week its send names; one home does not
+/// hold yet is, since a take and the send reach home on their own. None for
+/// a week with no opening.
+///
+/// # Errors
+/// Any `sqlx` failure, or a stored send that no longer reads.
+pub(crate) async fn opening(conn: &mut SqliteConnection, subject: &str, week: &Week) -> Result<Vec<OpeningRecord>, sqlx::Error> {
+	let Some(set) = week.opening else {
+		return Ok(Vec::new());
+	};
+	let candidates = rust_round_repo::sent::opening_takes(&mut *conn, subject, &week.id, set.version).await?;
+	let mut opening = Vec::new();
+	for n in 1..=set.questions {
+		for candidate in candidates.iter().filter(|candidate| candidate.take.n == n) {
+			let take = &candidate.take.take;
+			if voice_repo::delete::receipt(&mut *conn, subject, take).await.map_err(voice_storage)?.is_some() {
+				continue;
+			}
+			let of_ref = voice_repo::ref_of(&mut *conn, subject, take, voice_repo::Of::RustRound).await?;
+			if of_ref.is_some_and(|of_ref| of_ref.as_deref() != Some(rust_round_repo::sent::opening_ref(&candidate.week, n).as_str())) {
+				continue;
+			}
+			opening.push(OpeningRecord {
+				n,
+				take: take.clone(),
+				recorded_at: candidate.take.recorded_at.clone(),
+				week: candidate.week.clone(),
+				version: candidate.take.version,
+				ms: candidate.take.ms,
+			});
+			break;
+		}
+	}
+	Ok(opening)
+}
+
+/// A voice store failure as the `sqlx` one it is; any other as a protocol
+/// error, since a receipt that doesn't read is a broken store.
+fn voice_storage(err: voice_repo::VoiceError) -> sqlx::Error {
+	match err {
+		voice_repo::VoiceError::Storage(err) => err,
+		other @ (voice_repo::VoiceError::Rewritten | voice_repo::VoiceError::Unreadable) => sqlx::Error::Protocol(other.to_string()),
+	}
 }
 
 /// `PUT /rust-round-log/sessions/:id`, the body being one session of the

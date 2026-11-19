@@ -36,7 +36,10 @@
 //! waits. Past it, the pass makes the week final as any read of it does
 //! (`rust_round_repo::sent::finalize`), and checks the essay against that
 //! final (`rust_round_repo::essay::against`): an essay plays exactly the takes
-//! the final names, and a ticket nothing answered is a silence. An essay that
+//! the final names, and a ticket nothing answered is a silence. The owner's
+//! opening (paulgsc/some-ui#3269, C736) is checked against the week's
+//! record instead: each answer the essay plays names its take, which must be
+//! the newest kept one of that answer, whatever week it was said in. An essay that
 //! contradicts the final is never given to the worker; it is refused, and the
 //! refusal is kept in [`STATUS_FOLDER`] as `<week>.refused.log` (the fields
 //! and why, nothing the essay says), for the `RustEssayRefused` alert.
@@ -291,7 +294,9 @@ async fn tidy_tick(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Res
 ///
 /// Beside the essay go the takes it plays
 /// (`<week>/takes/<ticket>.<webm|ogg|m4a>`, or `<ticket>.<n>.<ext>` for a
-/// take of a ticket's point n (RR24), and, when home heard its words,
+/// take of a ticket's point n (RR24), or `opening.<n>.<ext>` for the answer
+/// to the opening's question n the essay plays (paulgsc/some-ui#3269), and,
+/// when home heard its words,
 /// `<ticket>.words.json`).
 ///
 /// An essay refused is kept as `<week>.refused.log` in the status folder,
@@ -457,6 +462,13 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 		Kind::Interview => crate::handlers::interview_weeks::finalize_at(&mut tx, subject, &essay.week, &due, now).await?,
 	}
 	let standing = standing(&mut tx, kind, subject, &essay.week).await?;
+	let opening = match kind {
+		Kind::RustRounds => match held_rust_week(&mut tx, subject, &essay.week).await? {
+			Some(week) => crate::handlers::rust_week_record::opening(&mut tx, subject, &week).await?,
+			None => Vec::new(),
+		},
+		Kind::Interview => Vec::new(),
+	};
 	let unheard = match &standing {
 		Some(standing) => unheard(&mut tx, kind, subject, standing).await?,
 		None => Vec::new(),
@@ -470,8 +482,13 @@ async fn given(db: &SqlitePool, kind: Kind, subject: &str, week: &str, held: &ma
 	let sent = standing.as_ref().map_or_else(essay::Final::default, |standing| essay::Final {
 		answers: pairs(&standing.answers),
 		reads: pairs(&standing.reads),
+		opening: Vec::new(),
 		unheard: unheard.iter().map(String::as_str).collect(),
 	});
+	let sent = essay::Final {
+		opening: opening.iter().map(|take| (take.n, take.take.as_str())).collect(),
+		..sent
+	};
 	Ok(match essay::against(&essay, &sent) {
 		Ok(played) => Given::Final(played),
 		Err(problems) => Given::Refused(problems),
@@ -539,12 +556,7 @@ async fn standing(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, 
 /// with a window.
 async fn due_of(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, week: &str) -> Result<Option<String>, sqlx::Error> {
 	let window = match kind {
-		Kind::RustRounds => {
-			let file = mailbox_repo::rust_week(conn, subject, &rust_round_repo::week::mailbox_name(week)).await.map_err(storage)?;
-			file
-				.and_then(|file| crate::handlers::rust_rounds::reads_as_named(week, &file.body))
-				.and_then(|week| week.window)
-		}
+		Kind::RustRounds => held_rust_week(conn, subject, week).await?.and_then(|week| week.window),
 		Kind::Interview => {
 			let file = mailbox_repo::rust_week(conn, subject, &rust_round_repo::interview::mailbox_name(week))
 				.await
@@ -555,6 +567,12 @@ async fn due_of(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, we
 		}
 	};
 	Ok(window.map(|window| window.due))
+}
+
+/// The Rust Rounds week `subject` holds as `week`, when it reads as one.
+async fn held_rust_week(conn: &mut sqlx::SqliteConnection, subject: &str, week: &str) -> Result<Option<rust_round_repo::week::Week>, sqlx::Error> {
+	let file = mailbox_repo::rust_week(conn, subject, &rust_round_repo::week::mailbox_name(week)).await.map_err(storage)?;
+	Ok(file.and_then(|file| crate::handlers::rust_rounds::reads_as_named(week, &file.body)))
 }
 
 /// The takes an essay plays, as home holds them.
@@ -719,8 +737,27 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 /// owner's reconciliation of an unheard one may (paulgsc/server#912,
 /// HEARD3), withdraws nothing. A revision that does not read counts as
 /// playing it.
+///
+/// An answer of the owner's opening (paulgsc/some-ui#3269) names its take in
+/// the essay, which may be another week's: a deleted one withdraws the week
+/// when the revision given to the render plays it. One only a revision not
+/// yet given plays withdraws nothing: [`essay::against`] refuses that
+/// revision when it is given, so one playing the next older take can follow.
 async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str, given: Option<u32>) -> Result<Option<String>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
+	if let Some(given) = given.filter(|_| kind == Kind::RustRounds) {
+		let given_opening = held_essays(&mut conn, kind, subject)
+			.await?
+			.into_iter()
+			.filter(|file| essay::parse_name_of(kind, &file.name) == Some((week.to_owned(), given)))
+			.filter_map(|file| essay::read_of(kind, &file.body).ok())
+			.flat_map(|essay| essay.opening);
+		for (_, take) in given_opening {
+			if voice_repo::delete::receipt(&mut conn, subject, &take).await.map_err(voice)?.is_some() {
+				return Ok(Some(take));
+			}
+		}
+	}
 	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
 		return Ok(None);
 	};
@@ -952,7 +989,7 @@ fn log_pass(kind: Kind, result: &Result<Exported, sqlx::Error>) {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use rust_round_repo::sent::{Answer, Sent};
+	use rust_round_repo::sent::{Answer, OpeningTake, Sent};
 	use serde_json::json;
 	use sqlx::sqlite::SqlitePoolOptions;
 
@@ -1017,6 +1054,12 @@ mod tests {
 	}
 
 	async fn send(pool: &SqlitePool, id: &str) {
+		send_opening(pool, id, Vec::new()).await;
+	}
+
+	/// The week's send, with the takes of its opening said that week
+	/// (paulgsc/some-ui#3269).
+	async fn send_opening(pool: &SqlitePool, id: &str, opening: Vec<OpeningTake>) {
 		let sent = Sent {
 			week: id.to_owned(),
 			at: String::from("2026-11-15T19:30:00.000Z"),
@@ -1028,6 +1071,7 @@ mod tests {
 			}],
 			passed: vec![String::from("QM-312")],
 			verdicts: Vec::new(),
+			opening,
 		};
 		let mut conn = pool.acquire().await.unwrap();
 		rust_round_repo::sent::put_draft(&mut conn, ME, &sent, BEFORE).await.unwrap();
@@ -1318,6 +1362,100 @@ mod tests {
 		assert!(!folders.essays.join("2026-w46").exists(), "its input is not recreated");
 		tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
 		assert!(!folders.essays.join("2026-w46").exists(), "and tidy leaves none");
+	}
+
+	/// paulgsc/some-ui#3269, C736: an essay plays each opening answer's
+	/// newest kept take, whatever week said it, handed over as
+	/// `opening.<n>.<ext>`; one naming a take a newer one replaced is refused;
+	/// and deleting a take the given essay plays withdraws the week.
+	#[tokio::test]
+	async fn an_essay_plays_the_newest_kept_take_of_each_opening_answer() {
+		let opening = |n: u8, take: &str, recorded: &str| OpeningTake {
+			n,
+			take: take.to_owned(),
+			recorded_at: recorded.to_owned(),
+			version: 1,
+			ms: Some(20_000),
+		};
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		let week = json!({
+			"schema": "some-ui.rust-week/1", "id": "2026-w46", "opens": "2026-11-09T00:00:00.000-08:00", "due": DUE,
+			"opening": { "version": 1, "exchanges": [{ "ask": "Why?", "script": "paulgsc here." }, { "ask": "And?", "script": "Then." }] },
+			"tickets": [{ "id": "QM-311", "program": "fn main() {}\n" }, { "id": "QM-312", "program": "fn main() {}\n" }],
+		});
+		hold(&pool, 1, &rust_round_repo::week::mailbox_name("2026-w46"), &week.to_string()).await;
+		// Question 1 said again this week; question 2 last said in w45, reused.
+		send_opening(&pool, "2026-w46", vec![opening(1, "note-o1", "2026-11-14T10:00:00.000Z")]).await;
+		let w45 = json!({ "week": "2026-w45", "at": "2026-11-08T10:00:00.000Z", "answers": [], "passed": [], "opening": [
+			opening_json(1, "note-o1-old", "2026-11-07T10:00:00.000Z"),
+			opening_json(2, "note-o2", "2026-11-07T10:05:00.000Z"),
+		] });
+		sqlx::query("INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w45', 'then', ?2, 'then')")
+			.bind(ME)
+			.bind(w45.to_string())
+			.execute(&pool)
+			.await
+			.unwrap();
+		hold_take(&pool).await;
+		for (note, of_ref) in [("note-o1", "2026-w46:opening:1"), ("note-o1-old", "2026-w45:opening:1"), ("note-o2", "2026-w45:opening:2")] {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, 'rust-round', ?3, 'then', 'audio/ogg', 4, 's', 'now')",
+			)
+			.bind(ME)
+			.bind(note)
+			.bind(of_ref)
+			.execute(&pool)
+			.await
+			.unwrap();
+			sqlx::query("INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, ?2, x'4f676753')")
+				.bind(ME)
+				.bind(note)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let with_opening = |takes: [&str; 2]| {
+			let mut body: serde_json::Value = serde_json::from_str(&essay("2026-w46", ["take", "silence"])).unwrap();
+			body["opening"] = json!({ "exchanges": [
+				{ "n": 1, "ask": "Why?", "transcript": "paulgsc here", "take": takes[0] },
+				{ "n": 2, "ask": "And?", "transcript": "then", "take": takes[1] },
+			] });
+			body.to_string()
+		};
+
+		// The older take of question 1 is not the one home holds as its newest.
+		hold(&pool, 2, &essay::mailbox_name("2026-w46"), &with_opening(["note-o1-old", "note-o2"])).await;
+		assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap().refused, 1);
+		assert_eq!(
+			std::fs::read_to_string(folders.status.join("2026-w46.refused.log")).unwrap(),
+			"opening.exchanges[0].take: is not the take home holds as the newest of this answer\n"
+		);
+
+		hold(&pool, 3, "rust-essay-2026-w46-r2.json", &with_opening(["note-o1", "note-o2"])).await;
+		assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap().written, 1);
+		let mut names: Vec<_> = std::fs::read_dir(folders.essays.join("2026-w46").join("takes"))
+			.unwrap()
+			.map(|entry| entry.unwrap().file_name().into_string().unwrap())
+			.collect();
+		names.sort();
+		assert_eq!(names, ["QM-311.ogg", "QM-311.words.json", "opening.1.ogg", "opening.2.ogg"]);
+
+		// Deleting w45's take of question 2, which the given essay plays.
+		for statement in [
+			"DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = 'note-o2'",
+			"DELETE FROM voice_note WHERE subject_id = ?1 AND note_id = 'note-o2'",
+			"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed)
+			 VALUES (?1, 'note-o2', 'rust-round', 'then', 4, 'then', 'now', '[]', '[]')",
+		] {
+			sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+		}
+		assert_eq!(tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap().withdrawn, 1);
+	}
+
+	fn opening_json(n: u8, take: &str, recorded: &str) -> serde_json::Value {
+		json!({ "n": n, "take": take, "recordedAt": recorded, "version": 1 })
 	}
 
 	/// HEARD3 (paulgsc/server#912): a take home could not hear that the

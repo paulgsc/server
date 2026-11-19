@@ -58,7 +58,10 @@
 # exactly the takes the week's final record names (`rust_essays`): the
 # worker reads no record and no draft. The tutor's lines are said by home's
 # speaker as every job's; each answer scene is the owner's take, played
-# whole by the recorder.
+# whole by the recorder. An essay that opens on the owner's conversation
+# (paulgsc/some-ui#3269) is given each answer's take it plays as
+# opening.<n>.<ext> beside the tickets', the newest kept one of that answer,
+# whatever week it was said in.
 # A week of mock interview's essay is the same, by the same file_host
 # export over its kind (`rust_essays`): keyed by its week, given once the
 # interview week is final and only when it plays exactly the answers the

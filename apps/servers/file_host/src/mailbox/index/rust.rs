@@ -6,7 +6,8 @@
 //! `brief`), and home refuses one whose take or silence per ticket disagrees
 //! with the week's final ([`rust_round_repo::essay::against`]). The routine
 //! reads the final here: which take counted for each ticket at the deadline,
-//! and for each of its points answered on its own (RR24), the owner's
+//! and for each of its points answered on its own (RR24), the takes of the
+//! week's opening it plays (paulgsc/some-ui#3269), the owner's
 //! decision at each fork the send carried (RR29, paulgsc/some-ui#3257),
 //! and the errors pasted in the week, which the next week is seeded from
 //! (paulgsc/some-ui#2685).
@@ -203,7 +204,7 @@ pub(in crate::mailbox) async fn put_rust_index<T: MailboxTransport>(
 #[cfg(test)]
 mod tests {
 	use super::{fitted, rust_index};
-	use crate::handlers::rust_week_record::{PointRecord, SentAt, TicketRecord, WeekRecord};
+	use crate::handlers::rust_week_record::{OpeningRecord, PointRecord, SentAt, TicketRecord, WeekRecord};
 	use crate::mailbox::pass::MAILBOX_BODY_CEILING;
 	use rust_round_repo::sent::StoredPaste;
 	use serde_json::{json, Value};
@@ -243,6 +244,14 @@ mod tests {
 					opens: 0,
 				},
 			],
+			opening: vec![OpeningRecord {
+				n: 1,
+				take: String::from("2026-w45:opening:1"),
+				recorded_at: String::from("2026-11-04T16:00:00.000Z"),
+				week: String::from("2026-w45"),
+				version: 1,
+				ms: Some(24_000),
+			}],
 			unanswered: vec![String::from("QM-2")],
 			pastes: paste
 				.map(|text| StoredPaste {
@@ -277,6 +286,8 @@ mod tests {
 							"points": [{ "point": 2, "take": "2026-w46:QM-1:2", "recordedAt": "2026-11-12T17:30:00.000Z" }], "decisions": [], "opens": 2 },
 						{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "points": [], "decisions": [], "opens": 0 },
 					],
+					// paulgsc/some-ui#3269: the opening's takes it plays, from any week up to it.
+					"opening": [{ "n": 1, "take": "2026-w45:opening:1", "recordedAt": "2026-11-04T16:00:00.000Z", "week": "2026-w45", "version": 1, "ms": 24_000 }],
 					"unanswered": ["QM-2"],
 					"pastes": [{ "at": "2026-11-13T09:00:00.000Z", "text": "error[E0502]: cannot borrow", "note": null, "receivedAt": "2026-11-17T09:00:00.000Z" }],
 				}],

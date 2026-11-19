@@ -15,7 +15,7 @@
 //! it was matched to, an interview answer's rung) is read for the page the
 //! library answers ([`with_game`], [`with_rung`]).
 
-use crate::{bite_match::Method, is_interview_ref, is_point, How, Mode, Of, VoiceError};
+use crate::{bite_match::Method, is_interview_ref, is_opening_question, is_point, How, Mode, Of, VoiceError, OPENING};
 use rust_round_repo::{
 	interview::{Rung, Sent},
 	week::{is_ticket_key, is_week_id},
@@ -253,8 +253,9 @@ fn studio(of_ref: &str, idea: Option<(String, String)>) -> About {
 }
 
 /// A Rust Rounds note: a week's ticket (`<week>:<ticket>`) or one of its
-/// points (`<week>:<ticket>:<n>`), a pasted error (`<week>:PASTE:<at>`), or a
-/// card (`<round>:<card>[:<note>]`), as [`crate::is_rust_round_ref`] reads
+/// points (`<week>:<ticket>:<n>`), a pasted error (`<week>:PASTE:<at>`), an
+/// answer to the week's opening question n (`<week>:opening:<n>`,
+/// paulgsc/some-ui#3269: the week's, with no ticket), or a card (`<round>:<card>[:<note>]`), as [`crate::is_rust_round_ref`] reads
 /// them. Keyed by the week, or by the round for a card.
 fn rust_round(of_ref: &str) -> About {
 	let mut parts = of_ref.splitn(3, ':');
@@ -264,6 +265,7 @@ fn rust_round(of_ref: &str) -> About {
 	let owned = |part: &str| Some(part.to_owned());
 	let (week, ticket, point, round, card, pasted_at) = match (is_week_id(first), second, rest) {
 		(true, Some(PASTE), Some(at)) => (owned(first), None, None, None, None, owned(at)),
+		(true, Some(OPENING), Some(n)) if is_opening_question(n) => (owned(first), None, None, None, None, None),
 		(true, Some(ticket), None) if is_ticket_key(ticket) => (owned(first), owned(ticket), None, None, None, None),
 		(true, Some(ticket), Some(n)) if is_ticket_key(ticket) && is_point(n) => (owned(first), owned(ticket), n.parse().ok(), None, None, None),
 		(_, Some(card), _) => (None, None, None, owned(first), owned(card), None),
@@ -489,6 +491,18 @@ mod tests {
 				card: None,
 				pasted_at: Some("2026-11-17T10:00:00.000Z".into())
 			}
+		);
+		assert_eq!(
+			about(Of::RustRound, "2026-w47:opening:2", None).detail,
+			Detail::RustRound {
+				week: Some("2026-w47".into()),
+				ticket: None,
+				point: None,
+				round: None,
+				card: None,
+				pasted_at: None
+			},
+			"an opening answer is the week's, never a card's (paulgsc/some-ui#3269)"
 		);
 		// RR24: a take of one point names its ticket and point, read from the
 		// `ref`; a take of the whole ticket names no point.

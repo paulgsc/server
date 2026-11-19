@@ -1289,7 +1289,9 @@ nowhere is marked as such and belongs to review.
     `<round>:<card>`, or on a refine card `<round>:<card>:<note>`, naming the
     earlier note it brings back, so the pair is home's record; or, for a
     week's ticket (RR13, paulgsc/some-ui#2688), `<week>:<ticket>` such as
-    `2026-w46:QM-311`, which no card's ref can read as
+    `2026-w46:QM-311`, which no card's ref can read as, or for the answer to
+    a week's opening question n (paulgsc/some-ui#3269, C736),
+    `<week>:opening:<n>`, the week it was said in
     (`voice_repo::is_rust_round_ref`; any other `ref` is a `422`). It
     carries nothing beside it (`20261102000100_add_rust_round_to_voice_note`),
     is heard by the transcriber like every note, and has its transcript
@@ -2003,7 +2005,11 @@ nowhere is marked as such and belongs to review.
     named by voice-note id and when it was recorded, the tickets passed over,
     the decision at each fork of a `/2` week (RR29, paulgsc/some-ui#3257:
     an option, the owner's own or the recommended by default, each named
-    `<week>:<ticket>:<n>:verdict`), when Send was pressed and when it reached
+    `<week>:<ticket>:<n>:verdict`), the takes of the week's opening said that
+    week (paulgsc/some-ui#3269: each its question, take, when it was
+    recorded, the opening's version it was read under and, when the phone
+    measured it, how long it runs; each held as said for
+    `<week>:opening:<n>`), when Send was pressed and when it reached
     home). Until the week's
     deadline it is a draft (`rust_week_draft`, `PUT /rust-weeks/:id/sent`): a
     later send replaces it, an earlier one leaves it, and another body at its
@@ -2031,7 +2037,11 @@ nowhere is marked as such and belongs to review.
     never updated, and deleted only with the account, by the triggers and
     the sweep; a draft alone is also replaced, and deleted once its week is
     final. A week's record is read, never stored whole: the week, its draft
-    before the deadline or its final after it, its pastes, and
+    before the deadline or its final after it, the takes of its opening it
+    plays (for each question, the newest take of its answer that this week's
+    send or an earlier week's names under the week's opening version and
+    that was not deleted, so a week with no new take reuses the last, C736),
+    its pastes, and
     how often each ticket was opened, which is the phone's engagement events
     (`left` at the ticket's place, invariant 34) counted in the week's window,
     so there is no second counter. A ticket no take answered is listed as

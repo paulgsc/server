@@ -13,12 +13,17 @@
 //! its schema, its week and each ticket's answer kind ([`read`]), and checks
 //! those against what the owner sent of the week by its deadline ([`against`]):
 //! an essay may play only takes the week's final record names, and must
-//! play every one of them. Nothing the essay says is read past that, and
-//! nothing of it reaches a log line.
+//! play every one of them. The owner's opening (paulgsc/some-ui#3269,
+//! template version 5) is read the same way: each answer an essay plays
+//! names its take, which must be the one home holds as the newest of that
+//! answer ([`Final::opening`]), and an essay may leave out an answer home
+//! heard nothing in. Nothing the essay says is read past that, and nothing
+//! of it reaches a log line.
 
 use crate::draft::Kind;
 use crate::round::{is_slug, Problem};
-use crate::week::{is_ticket_key, is_week_id};
+use crate::sent::is_note_id;
+use crate::week::{is_ticket_key, is_week_id, OPENING_MOST};
 use serde_json::Value;
 
 /// The essay's format, as `essay.ts` writes it (`ESSAY_SCHEMA`).
@@ -191,6 +196,11 @@ pub struct Essay {
 	/// as [`PointAnswer`]; none for a mock interview's.
 	pub points: Vec<PointAnswer>,
 	pub reads: Vec<(String, Answered)>,
+	/// Each answer of the owner's opening a Rust Rounds essay plays
+	/// (paulgsc/some-ui#3269), in its order: the question, from 1, and the
+	/// take it names. None for a mock interview's, whose `opening` home does
+	/// not read.
+	pub opening: Vec<(u8, String)>,
 }
 
 /// A speak-to point an essay answers on its own (RR24,
@@ -220,7 +230,9 @@ pub fn read(body: &[u8]) -> Result<Essay, Vec<Problem>> {
 /// JSON object; another `schema`; a `week.id` that is not an ISO week; no
 /// items; an item whose id is not the kind's (a ticket's key, a question's
 /// slug) or is used twice, or whose `answer.kind` is neither `take` nor
-/// `silence`.
+/// `silence`; a Rust Rounds essay's `opening` with no `exchanges` list, or
+/// an exchange whose `n` is not a question from 1 to 3 or is used twice, or
+/// whose `take` is not a note id.
 pub fn read_of(kind: Kind, body: &[u8]) -> Result<Essay, Vec<Problem>> {
 	let words = words(kind);
 	let problem = |field: &str, why| vec![(field.to_owned(), why)];
@@ -260,6 +272,10 @@ pub fn read_of(kind: Kind, body: &[u8]) -> Result<Essay, Vec<Problem>> {
 		}
 		Some((_, None)) | None => Vec::new(),
 	};
+	let opening = match essay.get("opening") {
+		Some(opening) if kind == Kind::RustRounds => opening_exchanges(opening, &mut problems),
+		_ => Vec::new(),
+	};
 	match week {
 		Some(week) if problems.is_empty() => Ok(Essay {
 			kind,
@@ -267,9 +283,50 @@ pub fn read_of(kind: Kind, body: &[u8]) -> Result<Essay, Vec<Problem>> {
 			tickets,
 			points,
 			reads,
+			opening,
 		}),
 		_ => Err(problems),
 	}
+}
+
+/// Each answer a Rust Rounds essay's `opening` plays: `exchanges[i]`'s `n`
+/// and `take`, with each problem found.
+fn opening_exchanges(opening: &Value, problems: &mut Vec<Problem>) -> Vec<(u8, String)> {
+	let Some(exchanges) = opening.get("exchanges").and_then(Value::as_array) else {
+		problems.push((String::from("opening.exchanges"), "must list the opening's questions asked and answered"));
+		return Vec::new();
+	};
+	let mut played: Vec<(u8, String)> = Vec::new();
+	for (index, exchange) in exchanges.iter().enumerate() {
+		let at = |field: &str| String::from("opening.exchanges[") + &index.to_string() + "]." + field;
+		let n = exchange
+			.get("n")
+			.and_then(Value::as_u64)
+			.and_then(|n| u8::try_from(n).ok())
+			.filter(|n| (1..=OPENING_MOST).contains(n));
+		let take = exchange.get("take").and_then(Value::as_str).filter(|take| is_note_id(take));
+		match n {
+			None => problems.push((at("n"), "must be one of the opening's questions, 1 to 3")),
+			Some(n) if played.iter().any(|(held, _)| *held == n) => problems.push((at("n"), "is a question an earlier exchange plays")),
+			Some(_) => {}
+		}
+		if take.is_none() {
+			problems.push((at("take"), "must name the take it plays, by its voice note's id"));
+		}
+		if let (Some(n), Some(take)) = (n, take) {
+			played.push((n, take.to_owned()));
+		}
+	}
+	played
+}
+
+/// The take's name in the render's `takes/` for the opening's question `n`.
+///
+/// Less its extension, as paulgsc/some-ui's `openingTakeId` names it:
+/// `opening.2`. A ticket's key is capitals, so it never names a ticket's.
+#[must_use]
+pub fn opening_take_id(n: u8) -> String {
+	String::from("opening.") + &n.to_string()
 }
 
 /// Each item of `held`, a `list` of an essay, with each problem found.
@@ -349,7 +406,8 @@ pub fn point_key(ticket: &str, point: usize) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Played {
 	/// The take's name in the render's `takes/`, less its extension: the
-	/// ticket's or question's id, or `read.<card>` for a card read.
+	/// ticket's or question's id, `read.<card>` for a card read, or
+	/// [`opening_take_id`] for an answer of the owner's opening.
 	pub ticket: String,
 	/// The take's voice-note id, as the week's final record names it.
 	pub take: String,
@@ -364,6 +422,10 @@ pub struct Played {
 pub struct Final<'a> {
 	pub answers: Vec<(&'a str, &'a str)>,
 	pub reads: Vec<(&'a str, &'a str)>,
+	/// For each question of a Rust Rounds week's opening, the take home
+	/// holds as the newest kept one of its answer under the week's opening
+	/// version (paulgsc/some-ui#3269, C736); none for a mock interview's.
+	pub opening: Vec<(u8, &'a str)>,
 	/// The takes among them an essay may call a silence: home's verdict on
 	/// the transcript the routine reads of each is garbled, failed or
 	/// nothing said (paulgsc/server#908, HEARD1). An essay may treat one as
@@ -372,8 +434,8 @@ pub struct Final<'a> {
 }
 
 /// Check `essay` against what the owner sent of its week by the deadline.
-/// Each take the essay plays, in the essay's order: its items', then its
-/// reads'.
+/// Each take the essay plays, in the essay's order: its opening's, then its
+/// items', then its reads'.
 ///
 /// An essay may play only the takes the final names, and must play each one:
 /// an item the final answers is a `take`, every other item a `silence`, and
@@ -382,6 +444,13 @@ pub struct Final<'a> {
 /// ([`Final::unheard`]) may be a silence too: the routines treat it as
 /// unanswered (HEARD2), and the essay then plays nothing for it.
 ///
+/// Each answer of the opening the essay plays names its take, which must be
+/// the one home holds for that question ([`Final::opening`]): a take since
+/// deleted, or one a newer take has replaced, is refused, so the essay is
+/// never given with words that aren't the take's. An essay may leave out a
+/// question home holds a take of, since home may have heard nothing said in
+/// it.
+///
 /// # Errors
 /// Each [`Problem`], naming the item by its place in the essay or, for one
 /// the essay lacks, by its id.
@@ -389,6 +458,17 @@ pub fn against(essay: &Essay, sent: &Final<'_>) -> Result<Vec<Played>, Vec<Probl
 	let words = words(essay.kind);
 	let mut problems = Vec::new();
 	let mut played = Vec::new();
+	for (index, (n, take)) in essay.opening.iter().enumerate() {
+		if sent.opening.iter().any(|(held, held_take)| held == n && held_take == take) {
+			played.push(Played {
+				ticket: opening_take_id(*n),
+				take: take.clone(),
+			});
+		} else {
+			let at = String::from("opening.exchanges[") + &index.to_string() + "].take";
+			problems.push((at, "is not the take home holds as the newest of this answer"));
+		}
+	}
 	let at_fields = |list: &List, held: &[(String, Answered)]| -> Vec<(String, Answered, String)> {
 		held
 			.iter()
@@ -460,6 +540,7 @@ pub fn rust_final(answers: &[(String, String)]) -> Final<'_> {
 	Final {
 		answers: answers.iter().map(|(item, take)| (item.as_str(), take.as_str())).collect(),
 		reads: Vec::new(),
+		opening: Vec::new(),
 		unheard: Vec::new(),
 	}
 }
@@ -473,6 +554,7 @@ pub fn interview_final(sent: Option<&crate::interview::Sent>) -> Final<'_> {
 			sent.answers.iter().map(|answer| (answer.question.as_str(), answer.take.as_str())).collect()
 		}),
 		reads: sent.map_or_else(Vec::new, |sent| sent.reads.iter().map(|read| (read.card.as_str(), read.take.as_str())).collect()),
+		opening: Vec::new(),
 		unheard: Vec::new(),
 	}
 }
@@ -514,6 +596,7 @@ mod tests {
 				.collect(),
 			passed: Vec::new(),
 			verdicts: Vec::new(),
+			opening: Vec::new(),
 		}
 	}
 
@@ -590,6 +673,7 @@ mod tests {
 				tickets: vec![(String::from("QM-311"), Answered::Take), (String::from("QM-312"), Answered::Silence)],
 				points: Vec::new(),
 				reads: Vec::new(),
+				opening: Vec::new(),
 			}
 		);
 		let mut wrong = essay();
@@ -601,6 +685,71 @@ mod tests {
 		assert_eq!(fields, ["schema", "week.id", "tickets[1].id", "tickets[2].answer.kind"]);
 		assert!(read(b"[]").is_err());
 		assert!(read(&vec![b' '; super::ESSAY_CEILING + 1]).is_err());
+	}
+
+	/// paulgsc/some-ui#3269: each answer of the owner's opening an essay
+	/// plays names its question and take; an interview essay's opening is
+	/// not read.
+	#[test]
+	fn an_essay_names_each_opening_take_it_plays() {
+		let mut opening = essay();
+		opening["opening"] = json!({ "exchanges": [
+			{ "n": 1, "ask": "Why?", "transcript": "paulgsc here", "take": "note-a" },
+			{ "n": 3, "ask": "And?", "transcript": "then", "take": "note-c" },
+		] });
+		assert_eq!(read(&body(&opening)).unwrap().opening, [(1, String::from("note-a")), (3, String::from("note-c"))]);
+		opening["opening"] = json!({ "exchanges": [
+			{ "n": 0, "take": "note-a" },
+			{ "n": 2, "take": "a take/with a slash" },
+			{ "n": 2, "take": "note-b" },
+			{ "n": 4 },
+		] });
+		let fields: Vec<_> = read(&body(&opening)).unwrap_err().into_iter().map(|(field, _)| field).collect();
+		assert_eq!(
+			fields,
+			["opening.exchanges[0].n", "opening.exchanges[1].take", "opening.exchanges[3].n", "opening.exchanges[3].take"],
+			"the second exchange of question 2 counts only once the first reads"
+		);
+		opening["opening"] = json!("paulgsc here");
+		assert_eq!(read(&body(&opening)).unwrap_err()[0].0, "opening.exchanges");
+		let mut interview = interview_essay();
+		interview["opening"] = json!("anything");
+		assert_eq!(read_of(Kind::Interview, &body(&interview)).unwrap().opening, [], "an interview essay's opening is not read");
+	}
+
+	/// paulgsc/some-ui#3269: an essay plays each opening answer's take only
+	/// when it is the one home holds as the newest of that answer, first,
+	/// and may leave out an answer home holds a take of.
+	#[test]
+	fn an_essay_plays_the_newest_take_of_each_opening_answer() {
+		let answers = rust_answers(Some(&sent(&[("QM-311", "note-1")])));
+		let holds = |opening: Vec<(u8, &'static str)>| Final { opening, ..rust_final(&answers) };
+		let mut body_of = essay();
+		body_of["opening"] = json!({ "exchanges": [{ "n": 2, "take": "note-b" }] });
+		let essay = read(&body(&body_of)).unwrap();
+		assert_eq!(
+			against(&essay, &holds(vec![(1, "note-a"), (2, "note-b")])).unwrap(),
+			[
+				Played {
+					ticket: String::from("opening.2"),
+					take: String::from("note-b"),
+				},
+				Played {
+					ticket: String::from("QM-311"),
+					take: String::from("note-1"),
+				},
+			],
+			"the opening first; question 1 left out, as home heard nothing in it"
+		);
+		for held in [vec![(2, "note-newer")], vec![(1, "note-b")], vec![]] {
+			let refused: Vec<_> = against(&essay, &holds(held.clone())).unwrap_err().into_iter().map(|(field, _)| field).collect();
+			assert_eq!(refused, ["opening.exchanges[0].take"], "{held:?}");
+		}
+		assert_eq!(
+			against(&read(&body(&self::essay())).unwrap(), &holds(vec![(1, "note-a")])).unwrap().len(),
+			1,
+			"an essay without an opening"
+		);
 	}
 
 	#[test]
@@ -702,6 +851,7 @@ mod tests {
 				tickets: vec![(String::from("about-you"), Answered::Take), (String::from("a-conflict"), Answered::Silence)],
 				points: Vec::new(),
 				reads: vec![(String::from("intro"), Answered::Take)],
+				opening: Vec::new(),
 			}
 		);
 		assert!(read_of(Kind::RustRounds, &body(&interview_essay())).is_err(), "not a Rust Rounds essay");
