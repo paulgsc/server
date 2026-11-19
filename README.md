@@ -591,7 +591,7 @@ first.
 #    client's deploy may have tried one), or step 3 skips them as failed.
 #    Read it first: a key whose serial is below this release's failed
 #    before it, for another reason; keep that one if it still matters.
-state="${XDG_STATE_HOME:-$HOME/.local/state}/server-deploy"
+state="$HOME/.local/state/server-deploy"   # envctl's, whatever XDG_STATE_HOME says
 cat "$state/failed-releases.json"
 echo '[]' > "$state/failed-releases.json"
 # 3. Server's release, www and resume-render included.
@@ -607,7 +607,7 @@ remove them, then start some-ui's stack again, which blocks the next deploy
 as above until it is stopped:
 
 ```bash
-docker rm -f www resume-render
+docker rm -f www resume-render || true   # either may be gone already
 (cd <some-ui checkout> && docker compose up -d)
 ```
 
