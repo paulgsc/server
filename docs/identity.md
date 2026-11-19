@@ -234,8 +234,9 @@ program it held stays (`rust_round_source`), with what rustc did with it
 (`rust_round_drop`): a tutor's code and its output, shared by every round
 or week that holds the same bytes, naming no one (invariant 28). Their times stay
 too. `rust_round_source.queued_at` is when the first round holding the
-program reached home, so it still dates the deleted account's first such
-round, to the millisecond, for whoever holds the database; `recorded_at` and
+program reached home (for a week kept before home could read it, the
+first mailbox pass after the upgrade), so it still dates the deleted
+account's first such round, to the millisecond, for whoever holds the database; `recorded_at` and
 `dropped_at` date the pass that recorded it, a minute or so later. None is
 served. The Account screen says the programs and what rustc printed stay.
 
@@ -1990,9 +1991,12 @@ nowhere is marked as such and belongs to review.
     the mailbox and is kept as every routine file is, in `mailbox_item` under
     the mailbox's subject (invariant 19), listed and read only by that
     subject (`GET /rust-weeks` and `GET /rust-weeks/:id`; another subject's
-    week is a `404`). Its programs join `rust_round_source` in the
-    transaction that keeps it, and are as nobody's as a round's. What those
-    three tables keep past an account's deletion, their times included, is
+    week is a `404`). Its programs (each ticket's, and in a `/2` week each
+    academy exercise's starter, RR25) join `rust_round_source` in the
+    transaction that keeps it; a week kept by a build that could not read
+    its schema joins it at the first mailbox pass after the upgrade, which
+    queues every held week once per process (queueing is idempotent). They
+    are as nobody's as a round's. What those three tables keep past an account's deletion, their times included, is
     under "What deleting an account erases", "What stays of Rust Rounds".
     What the owner did with a week (RR14, paulgsc/some-ui#2689) is theirs:
     a week's send is the phone's `WeekSent` (each ticket answered, its take

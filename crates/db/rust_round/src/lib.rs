@@ -19,7 +19,8 @@
 //!   its tag, its id, and every program to run.
 //! - **One row per distinct program** (`rust_round_source`), stored with the
 //!   round or the week ([`queue_week`], RR12) that first holds it, in the
-//!   same transaction. It is the recording pass's queue, in the order
+//!   same transaction. A `/2` week's academy starters (RR25) are programs
+//!   too, queued after its tickets'. It is the recording pass's queue, in the order
 //!   programs arrived.
 //! - **Runs are keyed to the bytes and the toolchain** (EX2, RX4):
 //!   `rust_round_run` holds one row per program and toolchain, written only
@@ -257,10 +258,11 @@ pub async fn put_round(conn: &mut SqliteConnection, subject: &str, round: &Round
 }
 
 /// Queue `source` for the recording pass, unless home holds those bytes
-/// already: one row per distinct program, whatever brought it.
-async fn queue(conn: &mut SqliteConnection, source: &str, now: &str) -> Result<(), sqlx::Error> {
+/// already: one row per distinct program, whatever brought it. The rows it
+/// wrote: 1 for a program new to home, 0 for one home holds.
+async fn queue(conn: &mut SqliteConnection, source: &str, now: &str) -> Result<u64, sqlx::Error> {
 	let source_hash = content_hash(source.as_bytes());
-	sqlx::query!(
+	let written = sqlx::query!(
 		"INSERT INTO rust_round_source (source_hash, source, queued_at) VALUES (?1, ?2, ?3) ON CONFLICT (source_hash) DO NOTHING",
 		source_hash,
 		source,
@@ -268,23 +270,41 @@ async fn queue(conn: &mut SqliteConnection, source: &str, now: &str) -> Result<(
 	)
 	.execute(&mut *conn)
 	.await?;
-	Ok(())
+	Ok(written.rows_affected())
 }
 
 /// Queue each of `week`'s programs home does not hold yet, received `now`.
 ///
+/// Every ticket's program, in ticket order, then (for a `/2` week) every
+/// academy's starter, ticket by ticket in exercise order (RR25,
+/// paulgsc/some-ui#3249), so a week's tickets are recorded before its
+/// exercises.
+///
 /// RR12, paulgsc/some-ui#2687. The week itself is kept by the mailbox pass,
 /// as the routine's files are (`mailbox_repo`'s `rust-week` folder); call
-/// this in the transaction that keeps it, so a week is never held with its
-/// programs unqueued.
+/// this in the transaction that keeps it, so a week home reads is never held
+/// with its programs unqueued. A starter is a program like any other: one row per
+/// distinct source, recorded and read by its bytes, so a starter that is
+/// also a ticket's program (or another week's) is one program, recorded
+/// once. Its key (`week::academy_key`) is what the week's read names it by,
+/// never stored.
+///
+/// Idempotent: queueing a week again writes nothing for a program home
+/// holds, so the mailbox pass queues every held week again once per process
+/// (`file_host`'s `mailbox::pass::queue_held_weeks`), and a week kept while
+/// home could not read it (by a build older than its schema) has its programs
+/// queued by the first pass after the upgrade. Returns the rows written, 0
+/// for a week whose every program home holds.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn queue_week(conn: &mut SqliteConnection, week: &week::Week, now: &str) -> Result<(), sqlx::Error> {
-	for program in &week.programs {
-		queue(conn, &program.source, now).await?;
+pub async fn queue_week(conn: &mut SqliteConnection, week: &week::Week, now: &str) -> Result<u64, sqlx::Error> {
+	let starters = week.academy.iter().map(|starter| &starter.source);
+	let mut written = 0;
+	for source in week.programs.iter().map(|program| &program.source).chain(starters) {
+		written += queue(conn, source, now).await?;
 	}
-	Ok(())
+	Ok(written)
 }
 
 /// `subject`'s newest `limit` rounds, newest first.
@@ -437,7 +457,7 @@ pub async fn keep_drop(conn: &mut SqliteConnection, toolchain: &str, seq: i64, h
 #[cfg(test)]
 mod tests {
 	use super::round::read;
-	use super::{content_hash, keep_drop, keep_run, put_round, round, rounds, runs, waiting, Change, Ended, Kept, Lost, RoundError};
+	use super::{content_hash, keep_drop, keep_run, put_round, queue_week, round, rounds, runs, waiting, week, Change, Ended, Kept, Lost, RoundError};
 	use serde_json::json;
 	use sqlx::sqlite::SqlitePoolOptions;
 	use sqlx::SqlitePool;
@@ -651,5 +671,29 @@ mod tests {
 		sqlx::query("DELETE FROM rust_round WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
 		let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_round").fetch_one(&mut *conn).await.unwrap();
 		assert_eq!(left, 1);
+	}
+
+	/// Queueing a week writes one row per program home does not hold and
+	/// says how many; queueing it again writes and counts none.
+	#[tokio::test]
+	async fn a_week_queued_again_writes_nothing() {
+		let pool = pool().await;
+		let exercise = |starter: &str| json!({ "title": "t", "starter": starter });
+		let held = json!({ "schema": "some-ui.rust-week/2", "id": "2026-w47", "tickets": [
+			{ "id": "TB-101", "program": "fn main() {}\n", "academy": [exercise("fn main() { 11; }\n"), exercise("fn main() {}\n")] },
+		] });
+		let held = week::read(held.to_string().as_bytes()).unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			queue_week(&mut conn, &held, "2026-11-16T08:00:00.000Z").await.unwrap(),
+			2,
+			"a starter that is the ticket's program is one row"
+		);
+		assert_eq!(queue_week(&mut conn, &held, "2026-11-17T08:00:00.000Z").await.unwrap(), 0);
+		let queued: Vec<String> = sqlx::query_scalar("SELECT queued_at FROM rust_round_source ORDER BY seq")
+			.fetch_all(&mut *conn)
+			.await
+			.unwrap();
+		assert_eq!(queued, ["2026-11-16T08:00:00.000Z"; 2], "the first queueing stands");
 	}
 }

@@ -168,7 +168,8 @@ pub async fn get_round(paired: Paired, State(db): State<SqlitePool>, headers: He
 }
 
 /// The hash of `source` and every run kept for it, under any toolchain, in
-/// the order kept: what a round's card and a week's ticket both show.
+/// the order kept: what a round's card, a week's ticket and an academy's
+/// starter each show.
 async fn runs_of(conn: &mut sqlx::SqliteConnection, source: &str) -> Result<(String, Vec<RunKept>), FileHostError> {
 	let source_hash = content_hash(source.as_bytes());
 	let runs = rust_round_repo::runs(conn, &source_hash)
@@ -231,6 +232,11 @@ pub struct WeekWithRuns {
 	pub week: Box<RawValue>,
 	/// Each ticket's program, in ticket order, and every run kept for it.
 	pub tickets: Vec<TicketRuns>,
+	/// A `/2` week's academy (RR25, paulgsc/some-ui#3249): each exercise's
+	/// starter, ticket by ticket in exercise order, and every run kept for
+	/// it. Left out of a `/1` week's answer, which is as it was.
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub academy: Vec<StarterRuns>,
 }
 
 /// One ticket's program and its runs.
@@ -240,6 +246,24 @@ pub struct TicketRuns {
 	/// The ticket's key, `QM-311`.
 	pub ticket: String,
 	/// The hex SHA-256 of the program as the runner is sent it.
+	pub source_hash: String,
+	/// Every run kept for these bytes, under any toolchain, in the order
+	/// kept; empty until the pass records it.
+	pub runs: Vec<RunKept>,
+}
+
+/// One academy exercise's starter and its runs.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StarterRuns {
+	/// `<ticket>/academy/<n>`, `TB-101/academy/1`: never a ticket's key, so
+	/// one map of runs by key holds a week's tickets and its exercises.
+	pub key: String,
+	/// The ticket whose academy holds it, `TB-101`.
+	pub ticket: String,
+	/// Its place in that academy, from 1.
+	pub exercise: usize,
+	/// The hex SHA-256 of the starter as the runner is sent it.
 	pub source_hash: String,
 	/// Every run kept for these bytes, under any toolchain, in the order
 	/// kept; empty until the pass records it.
@@ -285,7 +309,9 @@ pub(crate) fn reads_as_named(id: &str, body: &[u8]) -> Option<rust_round_repo::w
 }
 
 /// `GET /rust-weeks/:id`: the week as home keeps it, and every run kept
-/// for each ticket's program. The `ETag` is the hash of the body, so it
+/// for each of its programs.
+///
+/// Each ticket's program and, in a `/2` week, each academy starter. The `ETag` is the hash of the body, so it
 /// changes when a run is kept; `If-None-Match` answers `304`.
 ///
 /// # Errors
@@ -313,6 +339,17 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 			runs,
 		});
 	}
+	let mut academy = Vec::with_capacity(read.academy.len());
+	for starter in read.academy {
+		let (source_hash, runs) = runs_of(&mut conn, &starter.source).await?;
+		academy.push(StarterRuns {
+			key: starter.key,
+			ticket: starter.ticket,
+			exercise: starter.exercise,
+			source_hash,
+			runs,
+		});
+	}
 	let text = String::from_utf8(held.body).map_err(|_| unreadable())?;
 	let week = WeekWithRuns {
 		id: read.id,
@@ -320,6 +357,7 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 		received_at: held.pulled_at,
 		week: RawValue::from_string(text).map_err(|_| unreadable())?,
 		tickets,
+		academy,
 	};
 	// Disallowed for tracing; this is the response body itself, hashed for
 	// its tag.
@@ -720,6 +758,7 @@ mod tests {
 		let tickets: Vec<&str> = got["tickets"].as_array().unwrap().iter().map(|ticket| ticket["ticket"].as_str().unwrap()).collect();
 		assert_eq!(tickets, ["QM-310", "QM-311"]);
 		assert!(got["tickets"].as_array().unwrap().iter().all(|ticket| ticket["runs"] == json!([])));
+		assert!(got.get("academy").is_none(), "a /1 week's answer is as it was: no academy");
 
 		let done = crate::rust_rounds::pass::run_once(
 			&pool,
@@ -746,6 +785,68 @@ mod tests {
 		for not_a_week in ["/rust-weeks/2026-w49", "/rust-weeks/2026-w47"] {
 			assert_eq!(call(&app, Method::GET, not_a_week, Some(&phone), None, b"").await.0, StatusCode::NOT_FOUND, "{not_a_week}");
 		}
+	}
+
+	/// A `/2` week reads back with each ticket's program and runs, as a `/1`
+	/// week does, and each academy starter under its key, recorded by the
+	/// same pass after the tickets' programs (RR25, paulgsc/some-ui#3249).
+	#[tokio::test]
+	async fn a_v2_week_reads_back_with_each_starters_runs_under_its_key() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		let exercise = |starter: &str| json!({ "title": "t", "starter": starter, "expect": { "outcome": "prints" } });
+		let week = json!({ "schema": "some-ui.rust-week/2", "id": "2026-w46", "tickets": [
+			{ "id": "TB-101", "program": "fn main() {}\n", "forks": [], "academy": [exercise("fn main() { 1; }\n"), exercise("fn main() { 2; }\n")] },
+			// A starter that is the other ticket's program is that one program.
+			{ "id": "TB-102", "program": "fn main() { 3; }\n", "academy": [exercise("fn main() {}\n")] },
+		] });
+		let body = week.to_string();
+		hold_file(&pool, A, 1, "rust-week-2026-w46.json", &body).await;
+		let read = rust_round_repo::week::read(body.as_bytes()).unwrap();
+		rust_round_repo::queue_week(&mut pool.acquire().await.unwrap(), &read, "2026-11-09T08:00:00.000Z")
+			.await
+			.unwrap();
+
+		let (status, _, got) = call(&app, Method::GET, WEEK, Some(&phone), None, b"").await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(got["week"], week);
+		let tickets: Vec<&str> = got["tickets"].as_array().unwrap().iter().map(|ticket| ticket["ticket"].as_str().unwrap()).collect();
+		assert_eq!(tickets, ["TB-101", "TB-102"], "the tickets as a /1 week's");
+		let academy: Vec<(&str, &str, u64)> = got["academy"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|starter| (starter["key"].as_str().unwrap(), starter["ticket"].as_str().unwrap(), starter["exercise"].as_u64().unwrap()))
+			.collect();
+		assert_eq!(
+			academy,
+			[("TB-101/academy/1", "TB-101", 1), ("TB-101/academy/2", "TB-101", 2), ("TB-102/academy/1", "TB-102", 1)]
+		);
+		assert_eq!(got["academy"][0]["sourceHash"], rust_round_repo::content_hash(b"fn main() { 1; }\n"));
+		assert_eq!(got["academy"][2]["sourceHash"], got["tickets"][0]["sourceHash"]);
+		assert!(got["academy"].as_array().unwrap().iter().all(|starter| starter["runs"] == json!([])));
+
+		let done = crate::rust_rounds::pass::run_once(
+			&pool,
+			&Arc::new(Prints),
+			Duration::from_secs(600),
+			crate::rust_rounds::pass::Waits::SERVER,
+			&mut crate::contention::fake::guard(crate::contention::fake::State::Calm).0,
+			&CancellationToken::new(),
+			&|| String::from("now"),
+		)
+		.await
+		.unwrap();
+		assert_eq!(done.recorded, 4, "two tickets' programs and two starters of their own");
+
+		let (_, _, got) = call(&app, Method::GET, WEEK, Some(&phone), None, b"").await;
+		for starter in got["academy"].as_array().unwrap() {
+			assert_eq!(starter["runs"][0]["ended"], "recorded", "{starter}");
+			assert_eq!(starter["runs"][0]["rustc"]["stdout"], "ok\n");
+		}
+		assert_eq!(got["tickets"][1]["runs"][0]["ended"], "recorded");
 	}
 
 	/// A round is its putter's: another subject lists none of it, reads its
