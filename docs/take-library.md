@@ -32,6 +32,59 @@ This adds:
   open question (paulgsc/some-ui#2322, "where a take's audio plays from"),
   answered by the same decision: from home.
 
+## Every kind in one shape (TAKES20)
+
+The owner, 2026-11-18 (paulgsc/some-ui#3219): "If I record something, it
+disappears. I can't see the things I've recorded", and takes have "one
+common home that is an ergonomic place to filter through, sort through, and
+find". Every kind of voice note home accepts (`voice_repo::Of`: reflection,
+jobs, scene, game, studio, soundbite, lens, leetype, rust-round, interview)
+is a take of the library, in one shape.
+
+- **One shape, one per-kind part.** Every take has its id, `kind`, when it
+  was recorded and reached home, its size and `durationMs`, what home heard
+  and its verdict, its `status` (`kept`, `set-aside`, `recording-let-go`,
+  `deleted`) with its `receipt`, where it is `kept` (home holds its
+  recording; Drive listed it), whether it is `onConveyor` and its station,
+  and what it is `about`. `about` is the one part that differs by kind:
+  `voice_repo::about::about`, one arm per kind and no wildcard, so a kind
+  added to `Of` does not compile until it says what its takes are about
+  (and `every_kind_says_what_its_takes_are_about` walks every kind). Each
+  `about` has a `key` (`game:<game>`, `interview:<week>`,
+  `rust-round:<week or round>`, `studio:<project>`, `idea:<idea>`, the
+  `ref` itself for the rest) the read filters on. A game bite's `about`
+  also carries the game's name (`NE @ CHI`, from the newest summary home
+  fetched of it), the bite as the phone described it and the reconciler's
+  newest match, with the play's latest version or why there is none; an
+  interview answer's, the rung its week's standing send gives it.
+- **Today's read is unchanged.** Without `kind`, the read is the one the
+  phone before TAKES20 makes: Studio takes alone, never a take deleted for
+  good (whose receipt keeps no `ref`, which that phone requires), with
+  every field it read; the new fields are added beside them, and that
+  phone drops fields it does not know. With `kind` (a kind's name, or
+  `all`, as often as asked), every take of those kinds, the deleted ones
+  among them. The contract epoch rose to 19 by hand for this payload
+  change (`src/contract.rs`, "When to bump"), so a phone built for it makes
+  home pull the image that serves it.
+- **Filter, sort, find, page.** `from` (inclusive) and `to` (exclusive)
+  bound when a take was recorded; `about` keeps one key's takes; `q`
+  searches what home heard, as before; `sort` is `newest` (the default) or
+  `oldest`, and a search by meaning ranks best first. At most 50 a page;
+  `next` is a cursor (`<recordedAt>|<storedAt>|<id>` of the page's last
+  take) to pass back as `after`, and the next page starts at the first take
+  past that place in the read's order, so a take recorded meanwhile, or the
+  last take deleted or no longer found, never shifts it. Ranked by meaning
+  there is no place to compare, so the next page starts after that take,
+  and one the search no longer finds is a `422`.
+- **Reads only.** It writes nothing and needs no migration: no record is
+  lost or rewritten. The conveyor is not widened: only a Studio take of a
+  scene or of none is on it (docs/conveyor.md, invariant 3), and every other
+  take says `onConveyor: false`.
+- **It replaces the planned `GET /voice-notes/bites`** of the paused Game
+  Week Bites work: a game's bites are `?kind=game&about=game:<game>`. A bite
+  deleted for good is not among them, as its receipt keeps no `ref` to key
+  it by; `?kind=game` lists it with the others.
+
 ## Where the meaning index lives
 
 ST32's first design call. **Decided here** (this doc, and the PR that adds
@@ -127,14 +180,19 @@ takes. The identity doc's do, as above.
 ## Cost
 
 Each library read is one statement: it walks the caller's note descriptions
-(`voice_note` by its key, never the audio), keeps the `studio` ones, and reads
-each one's chosen hearing by the transcripts' key, so no other kind's
-transcript is read; its conveyor station (docs/conveyor.md) is its newest move,
-found by `studio_take_move`'s key, and whether an idea's answer names it. It then keeps at most 50. It grows with how many notes the
-owner keeps, never with other subjects', and only the owner's own paired phone
-asks it, once per screen opened or search said. If the owner's other notes
-ever make that walk slow, an index on `voice_note (subject_id, of_kind)` makes
-it the takes alone.
+of the kinds asked (`voice_note` by its key, never the audio), and reads each
+one's chosen hearing by the transcripts' key; its conveyor station
+(docs/conveyor.md) is its newest move, found by `studio_take_move`'s key,
+and whether an idea's answer names it, Drive lists it or a receipt was kept
+for it, each by its table's key. A read that asks kinds reads the caller's
+receipts once more for the takes deleted for good. The `about` filter, the
+order and the page are applied to those rows, and for the at most 50
+answered, a few reads by key each: the verdict, a game bite's row, its
+newest match and its play, an interview week's standing send. It grows
+with how many notes the owner keeps, never with other subjects', and only
+the owner's own paired phone asks it, once per screen opened, filter
+changed or search said. If the owner's notes ever make that walk slow, an
+index on `voice_note (subject_id, of_kind)` makes it the kinds asked alone.
 
 A search by meaning adds a second statement, the subject's vectors under one
 model by the index's key (1 KiB a heard take), and embeds the asked words (at

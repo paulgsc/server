@@ -97,6 +97,7 @@
 //! scouts file naming it is what puts it in front of the routine, and a
 //! mark does not unname it.
 
+pub mod about;
 pub mod attention;
 pub mod bite_match;
 pub mod conveyor;
@@ -428,7 +429,7 @@ const MAX_OFFSET_MS: i64 = 86_400_000;
 const MAX_SCENARIO_CHARS: usize = 64;
 
 /// `at` as ISO-8601 UTC to the millisecond, if it is an RFC 3339 instant.
-fn instant(at: &str) -> Option<String> {
+pub(crate) fn instant(at: &str) -> Option<String> {
 	DateTime::parse_from_rfc3339(at)
 		.ok()
 		.map(|at| at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true))

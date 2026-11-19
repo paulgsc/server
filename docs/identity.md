@@ -1532,23 +1532,34 @@ nowhere is marked as such and belongs to review.
     (`voice_repo::is_note_id`). `GET /voice-notes/takes`
     (paulgsc/some-ui#2590, ST32; docs/take-library.md), a `Paired` phone's
     (a browser's session is a `403`), is the take library: the caller's own
-    subject's `studio` notes, newest recorded first, at most 50
-    (`voice_repo::takes::NEWEST`), each with its id, `ref`, `recorded_at`,
-    `stored_at`, `size`, set-aside time, the words
+    subject's notes, without `kind` the `studio` ones and with `kind` those
+    kinds (paulgsc/some-ui#3219, TAKES20), the ones deleted for good among
+    them by their receipts (no `ref`, nothing said), at most 50 a page
+    (`voice_repo::takes::NEWEST`), each with its id, kind, `ref`,
+    `recorded_at`, `stored_at`, `size`, duration, set-aside time, the words
     `GET /voice-notes/:id/heard` would answer (the same choice of hearing),
-    and its conveyor `station`, `stationAt` and `stationSeq` (from
-    `studio_take_move` and `idea_answer`; null off the conveyor,
-    docs/conveyor.md),
-    how many takes it holds, and with `q` (at most 200 characters) the
-    takes it found and how many: nearest the asked words' meaning first,
-    when the meaning index is on and holds every heard take (invariant 35),
-    or else those whose words hold every term, compared in Unicode
-    lowercase, and `by` saying which (`voice_repo::takes`, its one caller
-    `handlers::voice`). It answers no audio, no bite, no other kind's note
-    and no other subject's, reads no other kind's transcript, and its span
-    skips every argument, so neither the
-    words nor the search reach a log line. Its name, `takes`, is never a
-    note's id either. `GET /voice-notes/deleted`
+    what became of it (its receipt, if any), whether home holds its
+    recording and Drive lists it, its conveyor `station`, `stationAt` and
+    `stationSeq` (from `studio_take_move` and `idea_answer`; null off the
+    conveyor, docs/conveyor.md), and its `about` (`voice_repo::about`: what
+    its `ref` names; for a game bite, the game's name from its newest
+    summary, the bite's described fields and its newest matched play; for an
+    interview answer, the rung its week's standing send gives it), how many
+    takes the read holds, and with `q` (at most 200 characters) the takes it
+    found and how many: nearest the asked words' meaning first, when the
+    meaning index is on and holds every heard take listed (invariant 35), or
+    else those whose words hold every term, compared in Unicode lowercase,
+    and `by` saying which (`voice_repo::takes`, its one caller
+    `handlers::voice`). The words, kinds, sizes and receipts the same
+    subject's own paired phone already reads elsewhere (`/heard`, `/kept`,
+    `/deleted`); a game bite's described fields and its matched play no
+    other phone route answers, and they are the owner's own bite beside
+    ESPN's public feed (the game's name and the play). The owner amended this
+    invariant for TAKES20 to list all of it in one place (owner, 2026-11-18:
+    "go with a for rule 23"). It answers
+    no audio, no vector and no other subject's note, and its span skips
+    every argument, so neither the words nor the search reach a log line.
+    Its name, `takes`, is never a note's id either. `GET /voice-notes/deleted`
     (paulgsc/server#667, under paulgsc/some-ui#2477 MD3), a `Paired`
     phone's (a browser's session is a `403`), reads the caller's own
     subject's receipts in `voice_note_deletion` for My data's list of what
@@ -1729,9 +1740,9 @@ nowhere is marked as such and belongs to review.
     `GET /ideas` and `GET /ideas/:id` (invariant 32), to the note's own
     subject only, by the same `voice_repo::transcript::heard`. The fourth,
     since paulgsc/some-ui#2590 (ST32), is the take library,
-    `GET /voice-notes/takes`, each `studio` take's words by the same choice
-    of hearing (above). The fifth, since MY-DATA (paulgsc/some-ui#2473,
-    2026-11-13), is `GET /voice-notes/kept?of=`: the first words of that
+    `GET /voice-notes/takes`, each take's words by the same choice of
+    hearing, every kind's since TAKES20 (above). The fifth, since MY-DATA
+    (paulgsc/some-ui#2473, 2026-11-13), is `GET /voice-notes/kept?of=`: the first words of that
     same reading, about 80 characters of each listed note of any kind, with
     its `duration_ms`, to the caller's own paired phone (above). The words
     are readable by no route yet, and the audio leaves home only through

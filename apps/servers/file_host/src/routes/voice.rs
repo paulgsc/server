@@ -37,18 +37,23 @@
 //!                                      phone, with its SHA-256 as the ETag
 //!                                      (`304` on `If-None-Match`), or a
 //!                                      JSON 404
-//! GET /voice-notes/takes?q=           → { takes, total, matched, by }: the
-//!                                      take library, every Studio take
-//!                                      home keeps with the words it heard,
-//!                                      newest first, at most 50, or with
-//!                                      `q` the takes nearest its meaning,
-//!                                      best first, or else those whose
-//!                                      words hold every term, `by` saying
-//!                                      which, to a paired phone
-//!                                      (paulgsc/some-ui#2590, ST32), each
-//!                                      take saying its conveyor `station`,
-//!                                      `stationAt` and `stationSeq` (null off
-//!                                      the conveyor)
+//! GET /voice-notes/takes?kind=&from=&to=&about=&q=&sort=&after=
+//!                                   → { takes, total, matched, by, next }:
+//!                                      the take library, to a paired phone
+//!                                      (paulgsc/some-ui#2590, ST32): without
+//!                                      `kind`, every Studio take home keeps,
+//!                                      as before TAKES20; with `kind` (a
+//!                                      kind, or `all`), every take of those
+//!                                      kinds, deleted ones by their receipts
+//!                                      (paulgsc/some-ui#3219, TAKES20). Each
+//!                                      with the words home heard, its
+//!                                      `kind`, `status`, `kept`, conveyor
+//!                                      `station` (null off it) and what it
+//!                                      is `about`; newest first or `oldest`,
+//!                                      at most 50 a page after `after`, or
+//!                                      with `q` the takes nearest its
+//!                                      meaning, else those whose words hold
+//!                                      every term, `by` saying which
 //! GET /voice-notes/kept?of=           → { kinds, weeks, notes }: how many
 //!                                      notes of each kind home keeps,
 //!                                      their bytes, how many were set

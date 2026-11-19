@@ -114,7 +114,8 @@ pub async fn games_with_bites_to_match(conn: &mut SqliteConnection) -> Result<Ve
 }
 
 /// How a bite was matched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Method {
 	/// The nearest play the scenario's rule accepts, at or before the bite,
 	/// within the window.

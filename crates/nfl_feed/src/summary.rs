@@ -64,6 +64,41 @@ pub struct Play {
 	pub text: Option<String>,
 }
 
+/// Which teams play the game a summary is about, by abbreviation: the
+/// header's competitors, `away` and `home` by their `homeAway`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Matchup {
+	pub away: String,
+	pub home: String,
+}
+
+impl Matchup {
+	/// The game as ESPN's scoreboard names it, `AWAY @ HOME` (`NE @ CHI`).
+	#[must_use]
+	pub fn label(&self) -> String {
+		self.away.clone() + " @ " + &self.home
+	}
+}
+
+/// The teams a summary response's game is between, if its header names both.
+///
+/// # Errors
+/// [`FeedError`] when the body is not a JSON object.
+pub fn matchup(body: &[u8]) -> Result<Option<Matchup>, FeedError> {
+	let page = object(body)?;
+	let mut away = None;
+	let mut home = None;
+	for competitor in page["header"]["competitions"][0]["competitors"].as_array().map_or(&[][..], Vec::as_slice) {
+		let code = text(&competitor["team"]["abbreviation"]);
+		match competitor["homeAway"].as_str() {
+			Some("away") => away = code,
+			Some("home") => home = code,
+			_ => {}
+		}
+	}
+	Ok(away.zip(home).map(|(away, home)| Matchup { away, home }))
+}
+
 /// Parse a summary response.
 ///
 /// # Errors
@@ -140,6 +175,16 @@ mod tests {
 	use super::*;
 	use crate::GameState;
 	use serde_json::json;
+
+	#[test]
+	fn a_summary_names_its_game_away_at_home() {
+		let body = br#"{"header":{"id":"401","competitions":[{"competitors":[
+			{"homeAway":"home","team":{"abbreviation":"CHI"}},{"homeAway":"away","team":{"abbreviation":"NE"}}]}]}}"#;
+		let matchup = super::matchup(body).unwrap().unwrap();
+		assert_eq!(matchup.label(), "NE @ CHI");
+		assert_eq!(super::matchup(br#"{"header":{}}"#).unwrap(), None, "no header, no name");
+		assert!(super::matchup(b"[]").is_err());
+	}
 
 	const FINAL: &[u8] = include_bytes!("../testdata/summary-401873010-final.json");
 	const PRE: &[u8] = include_bytes!("../testdata/summary-401873023-pre.json");

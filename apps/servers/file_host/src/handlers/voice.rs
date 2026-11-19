@@ -80,7 +80,7 @@ use voice_repo::{
 	kept::{KindKept, NoteKept, WeekKept},
 	meaning::Embed as _,
 	set_aside::SetAside,
-	takes::{Library, Search},
+	takes::{Ask, Library},
 	transcript::{Hearing, Transcript},
 	Note, Of, Said, SaidBite, VoiceError, PLAYED_BACK, REWRITTEN,
 };
@@ -422,25 +422,32 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 	Ok(Json(Kept { kinds, weeks, notes }))
 }
 
-/// `GET /voice-notes/takes[?q=<words>]`
+/// `GET /voice-notes/takes[?kind=&from=&to=&about=&q=&sort=&after=]`
 ///
 /// The caller's take library (paulgsc/some-ui#2590, ST32; the owner's
-/// decision 8 on paulgsc/some-ui#2248): every Studio take home keeps, newest
-/// first, each with the words home heard in it, or with `q` the takes it
+/// decision 8 on paulgsc/some-ui#2248), every kind of take in one shape
+/// (paulgsc/some-ui#3219, TAKES20): each take with the words home heard in
+/// it, what became of it, and what it is about by its kind
+/// (`voice_repo::about`). Without `kind` it is the read the phone before
+/// TAKES20 makes: Studio takes alone, and no take deleted for good. With
+/// `kind` (a kind's name, or `all`, as often as asked) it is those kinds,
+/// takes deleted for good among them by their receipts. `from` and `to`
+/// bound when they were recorded, `about` keeps one key's takes, `sort`
+/// orders them `newest` (the default) or `oldest`, and `after` (a page's
+/// `next`) starts the page past the take that page ended on. With `q`, the takes it
 /// finds (`voice_repo::takes`): by meaning when the meaning index is on and
-/// holds every heard take, the asked words embedded here, on the request's
-/// path (`crate::meaning`); else the takes whose words hold every term of
-/// it. `by` says which. It answers what each take is, never its audio, which
-/// `GET /voice-notes/:id/audio` plays, and never a vector.
+/// holds every heard take listed, the asked words embedded here, on the
+/// request's path (`crate::meaning`); else the takes whose words hold every
+/// term of it. `by` says which. It answers what each take is, never its
+/// audio, which `GET /voice-notes/:id/audio` plays, and never a vector.
 ///
-/// The query is read as its pairs, so `q` said twice is refused as a blank
-/// one is; other keys are ignored.
+/// The query is read as its pairs, so a key said twice where once is meant
+/// is refused; other keys are ignored.
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's (only a paired phone reads
-/// it), 422 for a `q` with no term, longer than
-/// `voice_repo::takes::MAX_SEARCH_CHARS` or said more than once, and 500 for
-/// a storage failure.
+/// it), 422 naming each field refused (`voice_repo::takes::Ask::parse`), an
+/// `after` a search ranked by meaning no longer finds, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_takes_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_takes(
@@ -449,23 +456,18 @@ pub async fn get_takes(
 	State(meaning): State<Option<MeaningContext>>,
 	Query(query): Query<Vec<(String, String)>>,
 ) -> Result<Json<Library>, FileHostError> {
-	let refused = || FileHostError::unprocessable_entity([("q", "words to search for, at most 200 characters, said once")]);
-	let asked: Vec<&str> = query.iter().filter(|(key, _)| key == "q").map(|(_, value)| value.as_str()).collect();
-	let search = match asked.as_slice() {
-		[] => None,
-		[words] => {
-			let search = Search::parse(words).ok_or_else(refused)?;
-			Some(match meaning {
-				Some(meaning) => search.with_meaning(meaning.model.model(), meaning.model.embed(words)),
-				None => search,
-			})
-		}
-		_ => return Err(refused()),
+	let ask = Ask::parse(&query).map_err(FileHostError::unprocessable_entity)?;
+	let ask = match (meaning, ask.asked().map(str::to_owned)) {
+		(Some(meaning), Some(words)) => ask.with_meaning(meaning.model.model(), meaning.model.embed(&words)),
+		_ => ask,
 	};
 	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
 	let mut conn = db.begin().await?;
-	let library = voice_repo::takes::library(&mut conn, paired.subject.as_str(), search.as_ref()).await.map_err(refusal)?;
-	Ok(Json(library))
+	voice_repo::takes::library(&mut conn, paired.subject.as_str(), &ask)
+		.await
+		.map_err(refusal)?
+		.map(Json)
+		.ok_or_else(|| FileHostError::unprocessable_entity([("after", "a take this search still finds")]))
 }
 
 /// `PUT /voice-notes/:id/set-aside`'s query: when the owner let the note go.
@@ -1731,14 +1733,19 @@ mod tests {
 			all,
 			json!({
 				"takes": [
-					{ "id": "t2", "ref": "library:t2", "recordedAt": "2026-11-04T18:21:00.000Z", "storedAt": all["takes"][0]["storedAt"],
-						"size": TAKE.len(), "setAsideAt": null, "heard": null, "verdict": null, "station": "in-the-oven", "stationAt": null, "stationSeq": 0 },
-					{ "id": "t1", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
-						"size": TAKE.len(), "setAsideAt": null,
+					{ "id": "t2", "kind": "studio", "ref": "library:t2", "recordedAt": "2026-11-04T18:21:00.000Z", "storedAt": all["takes"][0]["storedAt"],
+						"size": TAKE.len(), "durationMs": null, "setAsideAt": null, "heard": null, "verdict": null,
+						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
+						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
+						"about": { "key": "studio:library:t2", "form": "loose", "ref": "library:t2" } },
+					{ "id": "t1", "kind": "studio", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
+						"size": TAKE.len(), "durationMs": 1000, "setAsideAt": null,
 						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" }, "verdict": null,
-						"station": "in-the-oven", "stationAt": null, "stationSeq": 0 }
+						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
+						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
+						"about": { "key": "studio:ep04", "form": "scene", "project": "ep04", "shot": "s1", "take": "1" } }
 				],
-				"total": 2, "matched": null, "by": "newest"
+				"total": 2, "matched": null, "by": "newest", "next": null
 			}),
 			"the reflection is no take"
 		);
@@ -1750,7 +1757,25 @@ mod tests {
 		);
 		assert_eq!(found["takes"].as_array().map(Vec::len), Some(1));
 
-		for refused in ["/voice-notes/takes?q=%20", "/voice-notes/takes?q=a&q=b"] {
+		// TAKES20 (paulgsc/some-ui#3219): asked a kind, every kind is listed.
+		let (status, every) = get(&app, "/voice-notes/takes?kind=all", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK, "{every}");
+		let reflection = every["takes"].as_array().unwrap().iter().find(|take| take["kind"] == "reflection").unwrap();
+		assert_eq!(
+			(&reflection["about"], &reflection["onConveyor"], &every["total"]),
+			(&json!({ "key": "reflection:session-7f2a", "session": "session-7f2a" }), &json!(false), &json!(3))
+		);
+		let (status, one) = get(&app, "/voice-notes/takes?kind=all&about=studio:ep04", Some(&phone)).await;
+		assert_eq!((status, &one["takes"][0]["id"], &one["total"]), (StatusCode::OK, &json!("t1"), &json!(1)));
+
+		for refused in [
+			"/voice-notes/takes?q=%20",
+			"/voice-notes/takes?q=a&q=b",
+			"/voice-notes/takes?kind=diary",
+			"/voice-notes/takes?sort=best",
+			"/voice-notes/takes?from=yesterday",
+			"/voice-notes/takes?kind=all&after=nowhere",
+		] {
 			let (status, body) = get(&app, refused, Some(&phone)).await;
 			assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}: {body}");
 		}
@@ -1819,8 +1844,14 @@ mod tests {
 		assert_eq!(
 			keys,
 			[
+				"about",
+				"durationMs",
 				"heard",
 				"id",
+				"kept",
+				"kind",
+				"onConveyor",
+				"receipt",
 				"recordedAt",
 				"ref",
 				"setAsideAt",
@@ -1828,8 +1859,9 @@ mod tests {
 				"station",
 				"stationAt",
 				"stationSeq",
+				"status",
 				"storedAt",
-				"verdict"
+				"verdict",
 			],
 			"no vector"
 		);

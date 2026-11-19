@@ -6250,6 +6250,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "hex",
+ "nfl_feed",
  "rust_round_repo",
  "serde",
  "serde_json",
