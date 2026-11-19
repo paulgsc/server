@@ -4126,6 +4126,8 @@ mod tests {
 			"week": "2026-w46", "at": "2026-11-12T18:00:00.000Z",
 			"answers": [{ "ticket": "QM-1", "take": "2026-w46:QM-1", "recordedAt": "2026-11-12T17:30:00.000Z" }],
 			"passed": ["QM-2"],
+			// RR29: the decision at a fork goes with the record, by fork.
+			"verdicts": [{ "ref": "2026-w46:QM-1:1:verdict", "decision": { "kind": "option", "option": "B" } }],
 		}))
 		.unwrap();
 		rust_round_repo::sent::put_draft(&mut pool.acquire().await.unwrap(), OWNER, &sent, "2026-11-12T18:00:01.000Z")
@@ -4152,6 +4154,11 @@ mod tests {
 		assert_eq!(put[0]["weeks"], serde_json::json!([serde_json::to_value(&record).unwrap()]), "the record's own shape");
 		assert_eq!(put[0]["weeks"][0]["sent"]["draft"], serde_json::json!(false));
 		assert_eq!(put[0]["weeks"][0]["unanswered"], serde_json::json!(["QM-2"]));
+		assert_eq!(
+			put[0]["weeks"][0]["tickets"][0]["decisions"],
+			serde_json::json!([{ "fork": 1, "decision": { "kind": "option", "option": "B" } }])
+		);
+		assert_eq!(put[0]["weeks"][0]["tickets"][1]["decisions"], serde_json::json!([]));
 
 		// Nothing moved: nothing put.
 		assert!(pass_at(&pool, &fake, "2026-11-16T09:15:00.000Z").await.unwrap().indexed.is_empty());
