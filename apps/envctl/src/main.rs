@@ -159,8 +159,8 @@ enum Command {
 		ready_timeout: f64,
 		/// Where the applied and failed releases are recorded and their
 		/// worktrees kept (default: the owner's
-		/// `$XDG_STATE_HOME/server-deploy`, the same for `make home-deploy`
-		/// and the on-demand unit).
+		/// `~/.local/state/server-deploy`, whatever `$XDG_STATE_HOME` says,
+		/// so `make home-deploy` and the on-demand unit share it).
 		#[arg(long)]
 		state_dir: Option<PathBuf>,
 		/// The role under deploy/ whose release is applied.
