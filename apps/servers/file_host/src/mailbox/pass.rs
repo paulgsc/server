@@ -85,7 +85,7 @@ use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put,
 use mailbox_repo::{Answer, ArchiveIn, Change, Heard, ItemIn};
 use serde::de::IgnoredAny;
 use sha2::{Digest, Sha256};
-use sqlx::{Connection, SqlitePool};
+use sqlx::SqlitePool;
 use std::fmt;
 use std::sync::atomic::Ordering;
 
@@ -602,7 +602,9 @@ async fn read_one<T: MailboxTransport>(
 /// Queues the programs of every week of Rust Rounds `subject` holds that
 /// reads as the week its name says, once per process (RR25,
 /// paulgsc/some-ui#3249), under the deletion hold in one `BEGIN IMMEDIATE`
-/// transaction, as [`keep`] queues a new one.
+/// transaction, as [`keep`] queues a new one. The weeks are read inside that
+/// transaction, so a deletion that lands while the sweep waits for the hold
+/// leaves it nothing to queue.
 ///
 /// A week is queued as it is kept, but only if home reads it then: one kept
 /// by an older build that could not read its schema queued nothing, and the
@@ -612,18 +614,14 @@ async fn read_one<T: MailboxTransport>(
 /// queued already writes nothing, and the log counts only programs written.
 /// A year holds 52 weeks, each read once per process.
 async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync)) -> Result<(), Failure> {
-	let mut conn = db.acquire().await.map_err(Failure::Storage)?;
-	let held = mailbox_repo::rust_weeks(&mut conn, subject).await.map_err(storage)?;
+	let at = now();
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
+	let held = mailbox_repo::rust_weeks(&mut tx, subject).await.map_err(storage)?;
 	let weeks: Vec<_> = held
 		.iter()
 		.filter_map(|file| rust_round_repo::week::read(&file.body).ok().filter(|week| week.id == file.id))
 		.collect();
-	if weeks.is_empty() {
-		return Ok(());
-	}
-	let at = now();
-	let _hold = deletion.hold().await;
-	let mut tx = conn.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
 	let mut written = 0;
 	for week in &weeks {
 		written += rust_round_repo::queue_week(&mut tx, week, &at).await.map_err(Failure::Storage)?;
@@ -1662,18 +1660,8 @@ mod tests {
 			{ "id": "TB-101", "program": "fn main() {}\n", "academy": [exercise("fn main() { 11; }\n")] },
 		] })
 		.to_string();
-		let sha256 = hex::encode(Sha256::digest(week.as_bytes()));
 		let name = "rust-week-2026-w47.json";
-		let old = mailbox_repo::ItemIn {
-			folder: mailbox_kit::Folder::Brief.as_str(),
-			name,
-			seq: 1,
-			sha256: &sha256,
-			body: week.as_bytes(),
-		};
-		let mut conn = pool.acquire().await.unwrap();
-		mailbox_repo::keep_item(&mut conn, OWNER, old, "2026-11-16T08:00:00.000Z").await.unwrap();
-		drop(conn);
+		hold_unqueued(&pool, 1, name, &week).await;
 		fake.add(1, name, &week);
 		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 0, "the file is held already");
 		assert_eq!(queued(&pool).await, ["fn main() {}\n", "fn main() { 11; }\n"]);
@@ -1701,6 +1689,92 @@ mod tests {
 		restarted.add(1, "rust-week-2026-w46.json", &rust_week("2026-w46", &["fn main() {}\n", "fn main() { 1; }\n"]));
 		assert_eq!(pass_at(&pool, &restarted, "2026-10-25T15:00:00.000Z").await.unwrap().kept, 0);
 		assert_eq!(rows().await, first, "each program as first queued");
+	}
+
+	/// Holds `body` under `name` in `brief` as a build that queued nothing
+	/// for it kept it, the mailbox never listing it again.
+	async fn hold_unqueued(pool: &SqlitePool, seq: i64, name: &str, body: &str) {
+		let sha256 = hex::encode(Sha256::digest(body.as_bytes()));
+		let old = mailbox_repo::ItemIn {
+			folder: mailbox_kit::Folder::Brief.as_str(),
+			name,
+			seq,
+			sha256: &sha256,
+			body: body.as_bytes(),
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		mailbox_repo::keep_item(&mut conn, OWNER, old, "2026-11-16T08:00:00.000Z").await.unwrap();
+	}
+
+	/// The held weeks are swept once per process: a later pass with the
+	/// same memory reads none again, and the first pass after a restart does
+	/// (RR25).
+	#[tokio::test]
+	async fn held_weeks_are_swept_once_per_process() {
+		let (pool, fake) = (pool().await, Fake::default());
+		hold_unqueued(&pool, 1, "rust-week-2026-w46.json", &rust_week("2026-w46", &["fn main() {}\n"])).await;
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(queued(&pool).await, ["fn main() {}\n"]);
+		hold_unqueued(&pool, 2, "rust-week-2026-w47.json", &rust_week("2026-w47", &["fn main() { 1; }\n"])).await;
+		pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap();
+		assert_eq!(queued(&pool).await, ["fn main() {}\n"], "the same process sweeps no more");
+		pass_at(&pool, &Fake::default(), "2026-10-25T15:00:00.000Z").await.unwrap();
+		assert_eq!(queued(&pool).await, ["fn main() {}\n", "fn main() { 1; }\n"], "a restart sweeps again");
+	}
+
+	/// A sweep that fails is tried again at the next pass of the same
+	/// process, and the pass that failed reports it (RR25).
+	#[tokio::test]
+	async fn a_failed_sweep_is_tried_again_next_pass() {
+		let (pool, fake) = (pool().await, Fake::default());
+		hold_unqueued(&pool, 1, "rust-week-2026-w46.json", &rust_week("2026-w46", &["fn main() {}\n"])).await;
+		sqlx::query("CREATE TRIGGER sweep_fails BEFORE INSERT ON rust_round_source BEGIN SELECT RAISE(ABORT, 'no room'); END")
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert!(pass(&pool, &fake).await.is_err());
+		assert!(queued(&pool).await.is_empty());
+		sqlx::query("DROP TRIGGER sweep_fails").execute(&pool).await.unwrap();
+		pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap();
+		assert_eq!(queued(&pool).await, ["fn main() {}\n"]);
+	}
+
+	/// A held file that does not read as the week its name says is passed
+	/// over, and the week beside it that does is queued (RR25).
+	#[tokio::test]
+	async fn a_held_week_that_does_not_read_is_skipped_and_the_rest_queued() {
+		let (pool, fake) = (pool().await, Fake::default());
+		hold_unqueued(&pool, 1, "rust-week-2026-w46.json", r#"{"schema":"some-ui.rust-week/2","id":"2026-w46","tickets":"#).await;
+		hold_unqueued(&pool, 2, "rust-week-2026-w47.json", &rust_week("2026-w48", &["fn main() { 2; }\n"])).await;
+		hold_unqueued(&pool, 3, "rust-week-2026-w49.json", &rust_week("2026-w49", &["fn main() { 3; }\n"])).await;
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(queued(&pool).await, ["fn main() { 3; }\n"]);
+	}
+
+	/// The sweep reads the held weeks under the deletion hold, so a deletion
+	/// that lands while it waits for the hold leaves it nothing to queue
+	/// (RR25). The deletion starts once the pass has had time to reach the
+	/// hold: a sweep that read first would hold this pool's one connection
+	/// while it waits, and the deletion could never run.
+	#[tokio::test]
+	async fn a_sweep_waits_out_a_deletion_in_flight_and_queues_nothing() {
+		let (pool, fake) = (pool().await, Fake::default());
+		hold_unqueued(&pool, 1, "rust-week-2026-w46.json", &rust_week("2026-w46", &["fn main() {}\n"])).await;
+		let deletion = DeletionLock::default();
+		let exclusive = deletion.exclude().await;
+		let mailbox = Mailbox::new(BASE, Token::new(String::from("home-token")), &fake).unwrap();
+		let running = run_once(&pool, &mailbox, None, OWNER, &deletion, SETTLE, &fake.last_index, &|| {
+			String::from("2026-10-23T15:00:00.000Z")
+		});
+		let delete = async {
+			tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+			sqlx::query("DELETE FROM mailbox_item WHERE subject_id = ?1").bind(OWNER).execute(&pool).await.unwrap();
+			sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(OWNER).execute(&pool).await.unwrap();
+			drop(exclusive);
+		};
+		let joined = tokio::time::timeout(std::time::Duration::from_secs(10), async { tokio::join!(running, delete) });
+		assert!(joined.await.is_ok(), "the sweep holds no connection while it waits for the hold");
+		assert!(queued(&pool).await.is_empty());
 	}
 
 	/// A file under the list's name that does not read as one is kept as
