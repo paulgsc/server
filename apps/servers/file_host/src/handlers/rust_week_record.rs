@@ -125,9 +125,24 @@ pub struct TicketRecord {
 	/// in the point's order; empty when none was. The point is the one the
 	/// take's `ref` names, never one inferred from what was said.
 	pub points: Vec<PointRecord>,
+	/// The decision at each of its forks the send carried (RR29,
+	/// paulgsc/some-ui#3257; contract epoch 24), by fork; empty when the
+	/// send carried none, as a phone from before it and the phone on a `/1`
+	/// week send. Home doesn't refuse one for a `/1` week: it doesn't hold
+	/// which format a week came in, only each ticket's points.
+	pub decisions: Vec<ForkDecision>,
 	/// How many times its card was opened between the week's opening and its
 	/// deadline.
 	pub opens: i64,
+}
+
+/// One fork's decision, as the send named it (`<week>:<ticket>:<n>:verdict`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkDecision {
+	/// The fork, counted from 1.
+	pub fork: u8,
+	pub decision: rust_round_repo::sent::Decision,
 }
 
 /// One speak-to point answered by a take of its own.
@@ -378,6 +393,19 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 			})
 			.collect();
 		points.sort_by_key(|each| each.point);
+		let mut decisions: Vec<ForkDecision> = sent
+			.as_ref()
+			.map_or(&[][..], |held| held.sent.verdicts.as_slice())
+			.iter()
+			.filter_map(|verdict| {
+				let (ticket, fork) = rust_round_repo::sent::verdict_of(&week.id, &verdict.of_ref)?;
+				(ticket == program.ticket).then(|| ForkDecision {
+					fork,
+					decision: verdict.decision.clone(),
+				})
+			})
+			.collect();
+		decisions.sort_by_key(|each| each.fork);
 		let answered = whole.is_some() || !points.is_empty();
 		if !answered {
 			unanswered.push(program.ticket.clone());
@@ -388,6 +416,7 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 			take: whole.map(|answer| answer.take.clone()),
 			recorded_at: whole.map(|answer| answer.recorded_at.clone()),
 			points,
+			decisions,
 			opens: opened,
 		});
 	}

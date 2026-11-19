@@ -1027,6 +1027,7 @@ mod tests {
 				recorded_at: String::from("2026-11-15T19:00:00.000Z"),
 			}],
 			passed: vec![String::from("QM-312")],
+			verdicts: Vec::new(),
 		};
 		let mut conn = pool.acquire().await.unwrap();
 		rust_round_repo::sent::put_draft(&mut conn, ME, &sent, BEFORE).await.unwrap();

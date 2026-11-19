@@ -6,7 +6,8 @@
 //! `brief`), and home refuses one whose take or silence per ticket disagrees
 //! with the week's final ([`rust_round_repo::essay::against`]). The routine
 //! reads the final here: which take counted for each ticket at the deadline,
-//! and for each of its points answered on its own (RR24),
+//! and for each of its points answered on its own (RR24), the owner's
+//! decision at each fork the send carried (RR29, paulgsc/some-ui#3257),
 //! and the errors pasted in the week, which the next week is seeded from
 //! (paulgsc/some-ui#2685).
 //!
@@ -229,6 +230,7 @@ mod tests {
 						take: String::from("2026-w46:QM-1:2"),
 						recorded_at: String::from("2026-11-12T17:30:00.000Z"),
 					}],
+					decisions: Vec::new(),
 					opens: 2,
 				},
 				TicketRecord {
@@ -237,6 +239,7 @@ mod tests {
 					take: None,
 					recorded_at: None,
 					points: Vec::new(),
+					decisions: Vec::new(),
 					opens: 0,
 				},
 			],
@@ -271,8 +274,8 @@ mod tests {
 					"sent": { "at": "2026-11-12T18:00:00.000Z", "receivedAt": "2026-11-12T18:00:01.000Z", "draft": false },
 					"tickets": [
 						{ "ticket": "QM-1", "answered": true, "take": "2026-w46:QM-1", "recordedAt": "2026-11-12T17:00:00.000Z",
-							"points": [{ "point": 2, "take": "2026-w46:QM-1:2", "recordedAt": "2026-11-12T17:30:00.000Z" }], "opens": 2 },
-						{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "points": [], "opens": 0 },
+							"points": [{ "point": 2, "take": "2026-w46:QM-1:2", "recordedAt": "2026-11-12T17:30:00.000Z" }], "decisions": [], "opens": 2 },
+						{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "points": [], "decisions": [], "opens": 0 },
 					],
 					"unanswered": ["QM-2"],
 					"pastes": [{ "at": "2026-11-13T09:00:00.000Z", "text": "error[E0502]: cannot borrow", "note": null, "receivedAt": "2026-11-17T09:00:00.000Z" }],

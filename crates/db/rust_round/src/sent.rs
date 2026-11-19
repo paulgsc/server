@@ -81,6 +81,45 @@ pub struct Answer {
 	pub recorded_at: String,
 }
 
+/// The owner's decision at a fork of a `/2` week (RR29,
+/// paulgsc/some-ui#3257; the owner's call C693): a listed option, by id;
+/// their own, which the fork's take says; or, for a fork left alone, the
+/// recommended one by default, kept apart from a pick of it. The essay's
+/// `DecisionSchema` (paulgsc/some-ui `packages/video-render/src/essay.ts`),
+/// less an own option's words, which are the fork's take.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Decision {
+	/// A listed option, by its id, a capital `A` to `F`.
+	Option { option: String },
+	/// The owner's own option, said in the fork's take. Braced, as the next,
+	/// so `deny_unknown_fields` refuses a key it doesn't take (serde lets a
+	/// unit variant of a tagged enum through with any).
+	Own {},
+	/// A fork the owner left alone: the recommended option, by default.
+	RecommendedByDefault {},
+}
+
+/// One fork's decision as sent, named by its `ref`,
+/// `<week>:<ticket>:<n>:verdict`, beside the fork's take,
+/// `<week>:<ticket>:<n>` (RR24), whose words say why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Verdict {
+	#[serde(rename = "ref")]
+	pub of_ref: String,
+	pub decision: Decision,
+}
+
+/// What a verdict's `ref` names: its ticket and fork, from 1.
+#[must_use]
+pub fn verdict_of(week: &str, of_ref: &str) -> Option<(String, u8)> {
+	let rest = of_ref.strip_prefix(week)?.strip_prefix(':')?.strip_suffix(":verdict")?;
+	let (ticket, fork) = rest.rsplit_once(':')?;
+	let fork: u8 = fork.parse().ok()?;
+	(!ticket.is_empty() && !ticket.contains(':') && fork >= 1 && fork.to_string() == rest[ticket.len() + 1..]).then(|| (ticket.to_owned(), fork))
+}
+
 /// A week's answers as sent: the phone's `WeekSent`
 /// (paulgsc/some-ui `packages/ui/rust-rounds/src/lib/week-play/spec.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +133,12 @@ pub struct Sent {
 	pub answers: Vec<Answer>,
 	/// The tickets not said, in the week's order.
 	pub passed: Vec<String>,
+	/// The decision at each fork with options (RR29, contract epoch 24). A
+	/// phone from before it sends none, and the phone sends none for a `/1`
+	/// week, whose forks offer no options; [`read_sent`] checks each against
+	/// the ticket's points, not the week's format, which home doesn't hold.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub verdicts: Vec<Verdict>,
 }
 
 impl WeekSend for Sent {
@@ -198,10 +243,14 @@ pub(crate) fn sent_in_window(at: &str, window: Option<&Window>, now: &str, probl
 /// `passed`, or not at all; a ticket answered whole twice, or a point
 /// answered twice or that its ticket does not have (RR24: a ticket is
 /// answered whole, point by point, or both, at most once each); a take that
-/// is not a note id; a `recordedAt` that is not an instant or is after `at`.
+/// is not a note id; a `recordedAt` that is not an instant or is after `at`;
+/// a decision (RR29) whose `ref` doesn't name a fork of the week's tickets,
+/// names one an earlier decision does, or picks an option id that isn't a
+/// capital `A` to `F`. Which options a fork lists home doesn't hold: the
+/// phone picks only among them.
 pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Problem>> {
 	let value = json_object(body, SENT_CEILING, "is larger than 16 KiB")?;
-	let sent: Sent = serde_json::from_value(value).map_err(|_| vec![(String::from("body"), "must be a week sent: week, at, answers and passed, and nothing else")])?;
+	let sent: Sent = serde_json::from_value(value).map_err(|_| vec![(String::from("body"), "must be a week sent: week, at, answers, passed and verdicts, and nothing else")])?;
 	let mut problems: Vec<Problem> = Vec::new();
 	if sent.week != week.id {
 		problems.push((String::from("week"), "must be the week in the path"));
@@ -239,6 +288,26 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 		let points = week.programs.iter().find(|program| program.ticket == answer.ticket).map_or(0, |program| program.points);
 		if answer.point.is_some_and(|point| point == 0 || usize::from(point) > points) {
 			problems.push((at + ".point", "must be one of the ticket's speak-to points, counted from 1"));
+		}
+	}
+	for (index, verdict) in sent.verdicts.iter().enumerate() {
+		let at = |field: &str| String::from("verdicts[") + &index.to_string() + "]." + field;
+		match verdict_of(&sent.week, &verdict.of_ref) {
+			None => problems.push((at("ref"), "must name a fork of this week: <week>:<ticket>:<n>:verdict")),
+			Some((ticket, fork)) => {
+				let points = week.programs.iter().find(|program| program.ticket == ticket).map(|program| program.points);
+				if points.is_none_or(|points| usize::from(fork) > points) {
+					problems.push((at("ref"), "must name one of a ticket's forks, counted from 1"));
+				}
+				if sent.verdicts[..index].iter().any(|each| each.of_ref == verdict.of_ref) {
+					problems.push((at("ref"), "names a fork an earlier decision does"));
+				}
+			}
+		}
+		if let Decision::Option { option } = &verdict.decision {
+			if !(option.len() == 1 && option.bytes().all(|byte| byte.is_ascii_uppercase() && byte <= b'F')) {
+				problems.push((at("decision.option"), "must be an option's id, a capital A to F"));
+			}
 		}
 	}
 	for (index, answer) in sent.answers.iter().enumerate() {
@@ -429,7 +498,7 @@ pub async fn pastes(conn: &mut SqliteConnection, subject: &str, week: &str) -> R
 
 #[cfg(test)]
 mod tests {
-	use super::{finalize, is_final, pastes, put_draft, put_paste, read_paste, read_sent, standing, take_refs, DraftChange, Sent};
+	use super::{finalize, is_final, pastes, put_draft, put_paste, read_paste, read_sent, standing, take_refs, verdict_of, Decision, DraftChange, Sent};
 	use crate::week::read;
 	use crate::{Change, RoundError};
 	use serde_json::{json, Value};
@@ -484,6 +553,69 @@ mod tests {
 		fields.sort();
 		fields.dedup();
 		fields
+	}
+
+	/// RR29 (paulgsc/some-ui#3257): a send may carry the decision at each
+	/// fork, named `<week>:<ticket>:<n>:verdict`, an option by id, the
+	/// owner's own, or the recommended by default; a phone from before it
+	/// sends none, and reads as before.
+	#[test]
+	fn a_send_carries_each_forks_decision() {
+		let week = week();
+		let mut body = sent_body("2026-11-16T07:58:00.000Z");
+		body["verdicts"] = json!([
+			{ "ref": "2026-w46:QM-311:1:verdict", "decision": { "kind": "option", "option": "B" } },
+			{ "ref": "2026-w46:QM-312:3:verdict", "decision": { "kind": "own" } },
+			{ "ref": "2026-w46:QM-313:2:verdict", "decision": { "kind": "recommended-by-default" } },
+		]);
+		let sent = read_sent(body.to_string().as_bytes(), &week, OPEN).unwrap();
+		assert_eq!(
+			sent.verdicts.iter().map(|each| each.decision.clone()).collect::<Vec<_>>(),
+			vec![Decision::Option { option: String::from("B") }, Decision::Own {}, Decision::RecommendedByDefault {}]
+		);
+		// Kept as sent, and read back the same.
+		assert_eq!(serde_json::to_value(&sent).unwrap()["verdicts"], body["verdicts"]);
+		let without = read_sent(sent_body("2026-11-16T07:58:00.000Z").to_string().as_bytes(), &week, OPEN).unwrap();
+		assert!(without.verdicts.is_empty());
+		assert!(serde_json::to_value(&without).unwrap().get("verdicts").is_none(), "none sent, none written");
+	}
+
+	/// Each refusal of a decision: a ref that names no fork of this week, one
+	/// named twice, an option id that isn't a capital A to F, and a decision
+	/// of no kind the phone makes.
+	#[test]
+	fn a_decision_names_a_fork_of_the_week_once() {
+		let week = week();
+		let refused = |verdicts: Value| {
+			let mut body = sent_body("2026-11-16T07:58:00.000Z");
+			body["verdicts"] = verdicts;
+			read_sent(body.to_string().as_bytes(), &week, OPEN).map_err(|problems| fields(&problems))
+		};
+		let rbd = json!({ "kind": "recommended-by-default" });
+		for of_ref in [
+			"2026-w45:QM-311:1:verdict",
+			"2026-w46:QM-999:1:verdict",
+			"2026-w46:QM-311:0:verdict",
+			"2026-w46:QM-311:4:verdict",
+			"2026-w46:QM-311:01:verdict",
+			"2026-w46:QM-311:1",
+			"2026-w46:QM-311:verdict",
+		] {
+			assert_eq!(refused(json!([{ "ref": of_ref, "decision": rbd }])), Err(vec![String::from("verdicts[0].ref")]), "{of_ref}");
+		}
+		let twice = json!({ "ref": "2026-w46:QM-311:1:verdict", "decision": rbd });
+		assert_eq!(refused(json!([twice, twice])), Err(vec![String::from("verdicts[1].ref")]));
+		for option in ["G", "a", "AB", ""] {
+			let picked = json!([{ "ref": "2026-w46:QM-311:1:verdict", "decision": { "kind": "option", "option": option } }]);
+			assert_eq!(refused(picked), Err(vec![String::from("verdicts[0].decision.option")]), "{option}");
+		}
+		for decision in [json!({ "kind": "verdict" }), json!({ "kind": "own", "decision": "mine" }), json!({ "kind": "option" })] {
+			assert_eq!(
+				refused(json!([{ "ref": "2026-w46:QM-311:1:verdict", "decision": decision }])),
+				Err(vec![String::from("body")])
+			);
+		}
+		assert_eq!(verdict_of("2026-w46", "2026-w46:QM-311:2:verdict"), Some((String::from("QM-311"), 2)));
 	}
 
 	/// The deadline is the week's, offset and all: a Send a minute before it

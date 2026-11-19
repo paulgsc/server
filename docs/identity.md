@@ -2001,7 +2001,10 @@ nowhere is marked as such and belongs to review.
     What the owner did with a week (RR14, paulgsc/some-ui#2689) is theirs:
     a week's send is the phone's `WeekSent` (each ticket answered, its take
     named by voice-note id and when it was recorded, the tickets passed over,
-    when Send was pressed and when it reached home). Until the week's
+    the decision at each fork of a `/2` week (RR29, paulgsc/some-ui#3257:
+    an option, the owner's own or the recommended by default, each named
+    `<week>:<ticket>:<n>:verdict`), when Send was pressed and when it reached
+    home). Until the week's
     deadline it is a draft (`rust_week_draft`, `PUT /rust-weeks/:id/sent`): a
     later send replaces it, an earlier one leaves it, and another body at its
     moment is a `409`; it is not kept for good. Only what stands at the

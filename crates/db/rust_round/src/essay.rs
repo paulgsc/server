@@ -513,6 +513,7 @@ mod tests {
 				})
 				.collect(),
 			passed: Vec::new(),
+			verdicts: Vec::new(),
 		}
 	}
 
