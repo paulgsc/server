@@ -81,9 +81,10 @@ pub struct Answer {
 	pub recorded_at: String,
 }
 
-/// The owner's decision at a fork of a `/2` week (RR29,
-/// paulgsc/some-ui#3257; the owner's call C693): a listed option, by id;
-/// their own, which the fork's take says; or, for a fork left alone, the
+/// The owner's decision at a fork of a `/2` week.
+///
+/// RR29 (paulgsc/some-ui#3257; the owner's call C693): a listed option, by
+/// id; their own, which the fork's take says; or, for a fork left alone, the
 /// recommended one by default, kept apart from a pick of it. The essay's
 /// `DecisionSchema` (paulgsc/some-ui `packages/video-render/src/essay.ts`),
 /// less an own option's words, which are the fork's take.
