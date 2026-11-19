@@ -588,9 +588,8 @@ first.
 # 1. Stop the old stack, which holds port 5172 and the name resume-render.
 (cd <some-ui checkout> && docker compose down)
 # 2. Forget the releases that failed on that port since this landed (a
-#    client's deploy may have tried one), or step 3 skips them as failed.
-#    Read it first: a key whose serial is below this release's failed
-#    before it, for another reason; keep that one if it still matters.
+#    client's deploy may have tried one), or step 3 skips main's as failed.
+#    Only main's own key is ever looked up, so emptying the list is safe.
 state="$HOME/.local/state/server-deploy"   # envctl's, whatever XDG_STATE_HOME says
 cat "$state/failed-releases.json"
 echo '[]' > "$state/failed-releases.json"
@@ -603,8 +602,9 @@ last release, which never ran www, and does not restart some-ui's stack.
 It does not stop a service the failed release added either (#861), so www
 and resume-render may still be running, as orphans of a release that was
 not applied, or may not be running at all. To serve the old www meanwhile,
-remove them, then start some-ui's stack again, which blocks the next deploy
-as above until it is stopped:
+remove them, then start some-ui's stack again. It blocks the next deploy as
+above, and the failed deploy is remembered by its key, so to try again
+repeat steps 1 to 3, not only step 3:
 
 ```bash
 docker rm -f www resume-render || true   # either may be gone already
