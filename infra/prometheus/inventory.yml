@@ -63,7 +63,7 @@ services:
     container_name: www
     hoist_set: false
     scrape:
-      reason: "nginx serving the study app with its access log off and no metrics endpoint; the deploy reads its healthcheck (RL11), and every proxied call it makes is counted on file_host's own side"
+      reason: "nginx serving the web app with its access log off and no metrics endpoint; the deploy reads its healthcheck (RL11), and every proxied call it makes is counted on file_host's own side"
   - service: resume-render
     container_name: resume-render
     hoist_set: false

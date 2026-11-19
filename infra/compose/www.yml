@@ -1,5 +1,5 @@
-# The study app's web build and the résumé service it fronts, on home's
-# release (RELEASE R8, #853). Both images are paulgsc/some-ui's, published by
+# The web app (apps/www's build) and the résumé service it fronts, on
+# home's release (RELEASE R8, #853). Both images are paulgsc/some-ui's, published by
 # its CI and pinned by digest in deploy/home/release.json like render; home
 # builds and pulls neither by hand. some-ui's root compose keeps the same two
 # services for a laptop (`docker compose up www`); on home this file is how
@@ -39,25 +39,9 @@ services:
     depends_on:
       resume-render:
         condition: service_started
-    volumes:
-      # The owner's curated files, which no repository holds (some-ui
-      # gitignores packages/some-content/public): honeycomb's sounds, and an
-      # optional hangul vocabulary in place of the bundled demo pool. Kept on
-      # home's drive, read only. `create_host_path: false`: a folder missing
-      # fails the start loudly, where one Docker made would be empty and every
-      # sound would come back as index.html from the SPA fallback.
-      - type: bind
-        source: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/www/sfx
-        target: /usr/share/nginx/html/sfx
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/www/hangul
-        target: /usr/share/nginx/html/hangul
-        read_only: true
-        bind:
-          create_host_path: false
+    # No asset mounts: the sfx and hangul folders some-ui's compose mounted
+    # are legacy, and the web app relies on no files kept on the box (the
+    # owner, 2026-11-19, C741).
     # Nothing in the image is written but what nginx's entrypoint renders
     # (the template into conf.d), its temp folders and its pid.
     read_only: true
