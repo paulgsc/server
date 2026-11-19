@@ -28,7 +28,7 @@
 //! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 19;
+pub const CONTRACT_EPOCH: u32 = 20;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
@@ -53,7 +53,11 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// Raise it by one whenever a folder, a file's name or a file's shape there
 /// changes in a way render must know, and raise render's `requires` with
 /// the render change that reads it.
-pub const RENDER_FOLDERS_EPOCH: u32 = 1;
+///
+/// 2 (RR24, paulgsc/some-ui#3248): a Rust Rounds essay's `takes/` may hold a
+/// take of one speak-to point, `<ticket>.<n>.<ext>` (`rust_round_repo::essay::point_key`),
+/// beside a ticket's `<ticket>.<ext>`.
+pub const RENDER_FOLDERS_EPOCH: u32 = 2;
 
 /// The route surface [`CONTRACT_EPOCH`] was last set for.
 ///

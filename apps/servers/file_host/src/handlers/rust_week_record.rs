@@ -114,14 +114,32 @@ pub struct SentAt {
 #[serde(rename_all = "camelCase")]
 pub struct TicketRecord {
 	pub ticket: String,
+	/// Answered whole or by any of its points.
 	pub answered: bool,
-	/// The take's voice-note id, when answered.
+	/// The take of the whole ticket's voice-note id, when one was sent: it
+	/// answers every point (a phone from before RR24 sends only these).
 	pub take: Option<String>,
-	/// When the take was recorded, when answered.
+	/// When that take was recorded.
 	pub recorded_at: Option<String>,
+	/// Each point answered by a take of its own (RR24, paulgsc/some-ui#3248),
+	/// in the point's order; empty when none was. The point is the one the
+	/// take's `ref` names, never one inferred from what was said.
+	pub points: Vec<PointRecord>,
 	/// How many times its card was opened between the week's opening and its
 	/// deadline.
 	pub opens: i64,
+}
+
+/// One speak-to point answered by a take of its own.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PointRecord {
+	/// The point, counted from 1.
+	pub point: u8,
+	/// The take's voice-note id.
+	pub take: String,
+	/// When it was recorded.
+	pub recorded_at: String,
 }
 
 /// `PUT /rust-round-log/sessions/:id`.
@@ -180,8 +198,8 @@ fn stored_instant(at: &str) -> Option<String> {
 /// # Errors
 /// 401 without a session, 403 for a browser's or from an untrusted origin,
 /// 404 for a week the caller's subject does not hold, 422 naming each
-/// refused field (`at` after the deadline, and `week` once home's clock is
-/// past it, among them), 409 for another body at the draft's moment, 500 for
+/// refused field (`at` after the deadline, `week` once home's clock is
+/// past it, and a take held as said for another ticket or point, among them), 409 for another body at the draft's moment, 500 for
 /// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_week_sent_put", skip_all, fields(otel.kind = "server"))]
@@ -206,6 +224,18 @@ pub async fn put_sent(paired: Paired, State(db): State<SqlitePool>, Path(id): Pa
 			return Err(FileHostError::unprocessable_entity(problems));
 		}
 	};
+	// RR24: each answer's ticket and point are its take's own `ref`.
+	let mut held = Vec::new();
+	for answer in &sent.answers {
+		if let Some(of_ref) = voice_repo::ref_of(&mut tx, paired.subject.as_str(), &answer.take, voice_repo::Of::RustRound).await? {
+			held.push((answer.take.as_str(), of_ref));
+		}
+	}
+	let held: Vec<(&str, Option<&str>)> = held.iter().map(|(take, of_ref)| (*take, of_ref.as_deref())).collect();
+	let elsewhere = rust_round_repo::sent::take_refs(&sent, &held);
+	if !elsewhere.is_empty() {
+		return Err(FileHostError::unprocessable_entity(elsewhere));
+	}
 	let (change, sent) = rust_round_repo::sent::put_draft(&mut tx, paired.subject.as_str(), &sent, &now)
 		.await
 		.map_err(|err| refused(err, SENT_TWICE))?;
@@ -335,15 +365,29 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 	for (index, program) in week.programs.iter().enumerate() {
 		let place = ticket_place(index + 1);
 		let opened = opens.iter().find(|each| each.place == place).map_or(0, |each| each.left);
-		let answer = answers.iter().find(|answer| answer.ticket == program.ticket);
-		if answer.is_none() {
+		let whole = answers.iter().find(|answer| answer.ticket == program.ticket && answer.point.is_none());
+		let mut points: Vec<PointRecord> = answers
+			.iter()
+			.filter(|answer| answer.ticket == program.ticket)
+			.filter_map(|answer| {
+				answer.point.map(|point| PointRecord {
+					point,
+					take: answer.take.clone(),
+					recorded_at: answer.recorded_at.clone(),
+				})
+			})
+			.collect();
+		points.sort_by_key(|each| each.point);
+		let answered = whole.is_some() || !points.is_empty();
+		if !answered {
 			unanswered.push(program.ticket.clone());
 		}
 		tickets.push(TicketRecord {
 			ticket: program.ticket.clone(),
-			answered: answer.is_some(),
-			take: answer.map(|answer| answer.take.clone()),
-			recorded_at: answer.map(|answer| answer.recorded_at.clone()),
+			answered,
+			take: whole.map(|answer| answer.take.clone()),
+			recorded_at: whole.map(|answer| answer.recorded_at.clone()),
+			points,
 			opens: opened,
 		});
 	}

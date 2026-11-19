@@ -11,12 +11,15 @@
 //! - its `schema` tag;
 //! - its `id`, the ISO week it opens (`2026-w46`), which names it for good;
 //! - its tickets' ids and every ticket's `program`, the bytes it records;
+//! - how many speak-to points each ticket has (`speakTo`'s length; RR24,
+//!   paulgsc/some-ui#3248), so a take of one point can be checked against
+//!   them. The points' words are never read here;
 //! - its `opens` and `due`, when they are RFC 3339 instants, for the week's
 //!   record (RR14, paulgsc/some-ui#2689). A week without them is still kept
 //!   and recorded, and has no record.
 //!
-//! Anything else (the company, the story, the speak-to points, the tutor's
-//! guess) is kept as it came and never read here.
+//! Anything else (the company, the story, the speak-to points' words, the
+//! tutor's guess) is kept as it came and never read here.
 
 use crate::round::Problem;
 use serde_json::Value;
@@ -38,6 +41,9 @@ pub struct TicketProgram {
 	pub ticket: String,
 	/// `main.rs`, exactly.
 	pub source: String,
+	/// How many speak-to points the ticket has; 0 when it lists none, so no
+	/// take of a point can name one of its points.
+	pub points: usize,
 }
 
 /// A week home can keep: its id and its tickets' programs, in ticket order.
@@ -119,6 +125,7 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 				programs.push(TicketProgram {
 					ticket: key.to_owned(),
 					source: source.to_owned(),
+					points: ticket.get("speakTo").and_then(Value::as_array).map_or(0, Vec::len),
 				});
 			}
 		}
@@ -196,11 +203,13 @@ mod tests {
 			vec![
 				TicketProgram {
 					ticket: String::from("QM-311"),
-					source: String::from("fn main() {}\n")
+					source: String::from("fn main() {}\n"),
+					points: 2,
 				},
 				TicketProgram {
 					ticket: String::from("QM-312"),
-					source: String::from("fn main() { x }\n")
+					source: String::from("fn main() { x }\n"),
+					points: 0,
 				},
 			]
 		);
