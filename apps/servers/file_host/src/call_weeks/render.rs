@@ -308,10 +308,13 @@ mod tests {
 	async fn the_drive_reads_as_videos_work_cache_warnings_and_free_space() {
 		let dir = tempfile::tempdir().unwrap();
 		let (renders, work, status) = (dir.path().join("call"), dir.path().join("call-work"), dir.path().join("call-worker"));
+		// One read: the drive's free space moves between two reads while other
+		// tests write to the same disk (paulgsc/server#1003).
+		let empty = disk(&renders, &work, &status).await;
 		assert_eq!(
-			disk(&renders, &work, &status).await,
+			empty,
 			Disk {
-				drive: disk(&renders, &work, &status).await.drive,
+				drive: empty.drive,
 				..Disk::default()
 			},
 			"nothing rendered, nothing waiting, no warning"
