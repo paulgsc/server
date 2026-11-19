@@ -587,7 +587,13 @@ first.
 ```bash
 # 1. Stop the old stack, which holds port 5172 and the name resume-render.
 (cd <some-ui checkout> && docker compose down)
-# 2. Server's release, www and resume-render included.
+# 2. Forget the releases that failed on that port since this landed (a
+#    client's deploy may have tried one), or step 3 skips them as failed.
+#    Read it first: a key whose serial is below this release's failed
+#    before it, for another reason; keep that one if it still matters.
+cat ~/.local/state/server-deploy/failed-releases.json
+echo '[]' > ~/.local/state/server-deploy/failed-releases.json
+# 3. Server's release, www and resume-render included.
 make home-deploy
 ```
 
