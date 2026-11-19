@@ -1,0 +1,267 @@
+From e1b213bebef3e5d7d699c079d243a6d40154e096 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 16:07:06 +0000
+Subject: [PATCH] feat(www,resume): write the release labels server's set check
+ reads (RELEASE R8)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+resume-render provides resume-api=1 and www requires it, so home's release
+can refuse a www beside a résumé service older than it calls. Each publish
+workflow checks the labels parse before it pushes, as render's does. Records
+the server half's calls, C740-C744 (server#853).
+
+Change-Kind: story
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LDpdUFgNLPvysbZzJXeqba
+---
+ .github/workflows/resume-docker-release.yml | 21 ++++++++++++++++++++
+ .github/workflows/www-docker-release.yml    | 21 ++++++++++++++++++++
+ apps/www/Dockerfile                         | 10 ++++++++++
+ docs/calls/C740.json                        | 22 +++++++++++++++++++++
+ docs/calls/C741.json                        | 20 +++++++++++++++++++
+ docs/calls/C742.json                        | 20 +++++++++++++++++++
+ docs/calls/C743.json                        | 20 +++++++++++++++++++
+ docs/calls/C744.json                        | 18 +++++++++++++++++
+ packages/ui/resume/Dockerfile               | 10 ++++++++++
+ 9 files changed, 162 insertions(+)
+ create mode 100644 docs/calls/C740.json
+ create mode 100644 docs/calls/C741.json
+ create mode 100644 docs/calls/C742.json
+ create mode 100644 docs/calls/C743.json
+ create mode 100644 docs/calls/C744.json
+
+diff --git a/.github/workflows/resume-docker-release.yml b/.github/workflows/resume-docker-release.yml
+index 22d903f6..2e640e0e 100644
+--- a/.github/workflows/resume-docker-release.yml
++++ b/.github/workflows/resume-docker-release.yml
+@@ -41,6 +41,27 @@ jobs:
+             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+             --tag resume-render:proof \
+             packages/ui/resume
++      # The labels server's release check reads (paulgsc/server#853), in the
++      # form its scripts/check_release.py parses, so a malformed one is refused
++      # here rather than by the release.
++      - name: Check the release labels
++        run: |
++          set -euo pipefail
++          pair='[a-z0-9][a-z0-9-]*=([0-9]+|[0-9a-f]{40})'
++          edges=''
++          for key in io.paulgsc.provides io.paulgsc.requires; do
++            value=$(docker inspect --format "{{ index .Config.Labels \"$key\" }}" resume-render:proof)
++            echo "$key=$value"
++            if [ -n "$value" ] && ! [[ "$value" =~ ^$pair(,$pair)*$ ]]; then
++              echo "::error::$key is malformed: $value"
++              exit 1
++            fi
++            [ "$key" = io.paulgsc.provides ] && edges="$value"
++          done
++          if ! [[ ",$edges," =~ ,resume-api=[0-9]+, ]]; then
++            echo "::error::io.paulgsc.provides names no resume-api epoch"
++            exit 1
++          fi
+       # The faux PII is the worst case `pnpm build` already proves every layout
+       # with (scripts/fixtures/faux-pii.json). The request goes from inside the
+       # container, since with no network nothing outside can reach its port.
+diff --git a/.github/workflows/www-docker-release.yml b/.github/workflows/www-docker-release.yml
+index 72c1b172..b8e5b9c2 100644
+--- a/.github/workflows/www-docker-release.yml
++++ b/.github/workflows/www-docker-release.yml
+@@ -180,6 +180,27 @@ jobs:
+           push: false
+           cache-from: type=gha
+           tags: www:serve-check
++      # The labels server's release check reads (paulgsc/server#853), in the
++      # form its scripts/check_release.py parses, so a malformed one is refused
++      # here rather than by the release.
++      - name: Check the release labels
++        run: |
++          set -euo pipefail
++          pair='[a-z0-9][a-z0-9-]*=([0-9]+|[0-9a-f]{40})'
++          edges=''
++          for key in io.paulgsc.provides io.paulgsc.requires; do
++            value=$(docker inspect --format "{{ index .Config.Labels \"$key\" }}" www:serve-check)
++            echo "$key=$value"
++            if [ -n "$value" ] && ! [[ "$value" =~ ^$pair(,$pair)*$ ]]; then
++              echo "::error::$key is malformed: $value"
++              exit 1
++            fi
++            [ "$key" = io.paulgsc.requires ] && edges="$value"
++          done
++          if ! [[ ",$edges," =~ ,resume-api=[0-9]+, ]]; then
++            echo "::error::io.paulgsc.requires names no resume-api epoch"
++            exit 1
++          fi
+       - name: Serve the image bare (WI1)
+         run: |
+           docker run -d --name www-serve-check -p 8080:80 www:serve-check
+diff --git a/apps/www/Dockerfile b/apps/www/Dockerfile
+index 919a1bda..cf7a4cd5 100644
+--- a/apps/www/Dockerfile
++++ b/apps/www/Dockerfile
+@@ -195,3 +195,13 @@ HEALTHCHECK --interval=30s \
+     CMD wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1
+ 
+ CMD ["nginx", "-g", "daemon off;"]
++
++#
++# What paulgsc/server's release check reads (its scripts/check_release.py,
++# docs/release.md "Constraints"), last, so no layer depends on them.
++# - resume-api: the résumé service's API this build's /resume-build page
++#   calls through /api/resume/ (packages/ui/resume/Dockerfile provides it).
++# file_host's contract is not a label: the app asks home's /compat itself.
++#
++LABEL io.paulgsc.provides="" \
++      io.paulgsc.requires="resume-api=1"
+diff --git a/docs/calls/C740.json b/docs/calls/C740.json
+new file mode 100644
+index 00000000..59f2e1e5
+--- /dev/null
++++ b/docs/calls/C740.json
+@@ -0,0 +1,22 @@
++{
++  "id": "C740",
++  "made": "2026-11-19",
++  "by": "claude",
++  "paths": [
++    "server:scripts/release_lock.py",
++    "server:deploy/home/release.json",
++    "server:docs/release.md"
++  ],
++  "chose": "www and resume-render join home's release pinned by digest and held (release_lock.py's HELD), moved by a reviewed change, not followed in SOURCES, until their images write io.paulgsc.provides/requires. RL7 says a some-ui image joins SOURCES only with its requires labels, and neither published image has them.",
++  "options": [
++    "held until labelled, then followed",
++    "followed now, unlabelled",
++    "not in the release until labelled"
++  ],
++  "gray": "The brief asked for SOURCES now; that would break RL7 as written. Raised to the coordinator rather than built.",
++  "undo": "Once a labelled www and resume-render are published, move both from HELD to SOURCES (Hub, VERSION and COMMIT) in one server PR.",
++  "refs": [
++    "server#853",
++    "server#787"
++  ]
++}
+diff --git a/docs/calls/C741.json b/docs/calls/C741.json
+new file mode 100644
+index 00000000..b1daa76d
+--- /dev/null
++++ b/docs/calls/C741.json
+@@ -0,0 +1,20 @@
++{
++  "id": "C741",
++  "made": "2026-11-19",
++  "by": "owner",
++  "paths": [
++    "server:infra/compose/www.yml",
++    "server:README.md"
++  ],
++  "chose": "On home, the www service mounts no asset folders: no sfx or hangul mount, no WWW_SFX_ASSETS_PATH or WWW_HANGUL_ASSETS_PATH, and the owner's switch is only stopping some-ui's root stack, then make home-deploy. The folders are legacy: the web app is now an admin dashboard rather than a place for exercises, the apps are mobile-first, and even Honeycomb (web only) won't rely on local assets (the owner, 2026-11-19, relayed by the coordinator, close paraphrase).",
++  "options": [
++    "no asset mounts",
++    "mount sfx and hangul from host paths, read-only"
++  ],
++  "gray": "Until #3273 removes the legacy paths, a web build that still asks for /sfx/ gets the SPA's index.html, not a sound.",
++  "undo": "Add the two read-only bind mounts back to infra/compose/www.yml and the copy step to the README's switch steps.",
++  "refs": [
++    "server#853",
++    "#3273"
++  ]
++}
+diff --git a/docs/calls/C742.json b/docs/calls/C742.json
+new file mode 100644
+index 00000000..7fd199c7
+--- /dev/null
++++ b/docs/calls/C742.json
+@@ -0,0 +1,20 @@
++{
++  "id": "C742",
++  "made": "2026-11-19",
++  "by": "claude",
++  "paths": [
++    "server:infra/compose/www.yml",
++    "server:docs/home-compute.md"
++  ],
++  "chose": "www and resume-render are interactive (oom_score_adj 0): a person waits on each page, proxied call and résumé render. www runs read_only with tmpfs for conf.d, nginx's cache and /var/run, and cap_drop ALL plus CHOWN, NET_BIND_SERVICE, SETGID, SETUID, measured on pgathondu/www:0.1.69 (without CHOWN nginx stops at start). Caps: www 256M, 1 CPU, 128 pids; resume-render 1G, 2 CPUs, 64 pids, as some-ui's compose had.",
++  "options": [
++    "interactive",
++    "tooling",
++    "www without read_only, as some-ui's compose ran it"
++  ],
++  "gray": "resume-render is one person's occasional tool; tooling would also fit.",
++  "undo": "Change oom_score_adj in infra/compose/www.yml and the class tables in docs/home-compute.md together.",
++  "refs": [
++    "server#853"
++  ]
++}
+diff --git a/docs/calls/C743.json b/docs/calls/C743.json
+new file mode 100644
+index 00000000..e4b7edb3
+--- /dev/null
++++ b/docs/calls/C743.json
+@@ -0,0 +1,20 @@
++{
++  "id": "C743",
++  "made": "2026-11-19",
++  "by": "claude",
++  "paths": [
++    "apps/www/Dockerfile",
++    "packages/ui/resume/Dockerfile"
++  ],
++  "chose": "The www/resume-render edge is a new label, resume-api=1, provided by resume-render and required by www. www states no requirement on file_host's contract: clients check it at run time through /compat, as server's docs/release.md already says of contract.",
++  "options": [
++    "resume-api only",
++    "also require contract=<SERVER_CONTRACT_EPOCH> on www",
++    "no labels, empty both"
++  ],
++  "gray": "A www that needs a newer file_host is still caught only at run time, by /compat, not by the release check.",
++  "undo": "Add contract to www's requires, passed as a build arg from packages/server-routes so the snapshot sync moves it.",
++  "refs": [
++    "server#853"
++  ]
++}
+diff --git a/docs/calls/C744.json b/docs/calls/C744.json
+new file mode 100644
+index 00000000..b859e1ae
+--- /dev/null
++++ b/docs/calls/C744.json
+@@ -0,0 +1,18 @@
++{
++  "id": "C744",
++  "made": "2026-11-19",
++  "by": "claude",
++  "paths": [
++    "server:infra/compose/www.yml"
++  ],
++  "chose": "On home the www container is named www (some-ui's compose named it some-ui-www) and resume-render keeps its name, which www's nginx resolves. The owner stops some-ui's root stack before the first make home-deploy, since it holds port 5172 and the name resume-render.",
++  "options": [
++    "www",
++    "keep some-ui-www"
++  ],
++  "gray": "A name an operator typed for the old container (docker logs some-ui-www) no longer finds it.",
++  "undo": "Rename container_name in infra/compose/www.yml and its inventory entry.",
++  "refs": [
++    "server#853"
++  ]
++}
+diff --git a/packages/ui/resume/Dockerfile b/packages/ui/resume/Dockerfile
+index 88691ef8..b4c756a4 100644
+--- a/packages/ui/resume/Dockerfile
++++ b/packages/ui/resume/Dockerfile
+@@ -28,3 +28,13 @@ EXPOSE 3100
+ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+   CMD ["node", "-e", "fetch('http://127.0.0.1:3100/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+ CMD ["node", "scripts/serve.mjs"]
++
++# What paulgsc/server's release check reads (its scripts/check_release.py,
++# docs/release.md "Constraints"), last, so no layer depends on them.
++# - resume-api: what scripts/serve.mjs answers (`/health`, and `/render`
++#   taking `{variant, template, pii}`), which www's /api/resume/ proxy and
++#   its /resume-build page call. Raise it in the same change that breaks
++#   what an older www sends; home's release then refuses a www that requires
++#   more than the resume-render beside it provides.
++LABEL io.paulgsc.provides="resume-api=1" \
++      io.paulgsc.requires=""
+-- 
+2.43.0
+
