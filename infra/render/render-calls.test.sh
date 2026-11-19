@@ -1293,11 +1293,13 @@ essay_handed() {
 }
 check "and the rest of the policy's caps, the stage and the speaker as every job" essay_handed "$FAKE/args-essay"
 echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
+rm -f "$FAKE/args-essay" # so the check reads the interview run's own
 run_job interview-essay > "$SCRATCH/pass.out" 2>&1
 check "and a mock interview's essay the same 60 (C780)" gives "$FAKE/args-essay" --max-video-minutes 60
 
-# A Rust Rounds essay of 24.4 minutes, week 46's (#927): refused at 15,
-# made at 30.
+# A Rust Rounds essay of 24.4 minutes, week 46's (#927): refused at a cap of
+# 15, made once the cap is raised (30 here, a test value; the shipped cap is
+# 60, C780).
 fresh essay-cap
 mkdir -p "$ROOT/essays/2026-w46/takes"
 echo '{}' > "$ROOT/essays/2026-w46/essay.json"
@@ -1394,6 +1396,8 @@ rm -f "$FAKE/no-take"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "and is not tried again within RETRY_AFTER" test ! -e "$ROOT/renders/rust-essay/2026-w48/essay.mp4"
 RETRY_AFTER=0
+# A test value, not the shipped 60: refused-brand below refuses a 40-minute
+# essay at 30.
 ESSAY_MAX_VIDEO_MINUTES=30
 RENDER_IMAGE=
 KOKORO_IMAGE=
