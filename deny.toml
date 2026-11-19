@@ -103,6 +103,14 @@ ignore = [
   # a release candidate split into other crates), which the take library's
   # meaning index needs to read its model's tokenizer (`file_host::meaning`,
   # docs/take-library.md). Revisit when `tokenizers` drops it.
+  # `chrono` and `chrono-tz` are unmaintained (chronotope/chrono#1768), not
+  # vulnerable: the advisories name no flaw, and every version is affected,
+  # so no bump clears them. Both are direct dependencies of file_host and
+  # about fifteen workspace crates, and chrono also comes in through
+  # `web-push` 0.11.0 (the latest). Moving to `jiff` or `time` is #1018;
+  # remove both entries once `cargo tree -i chrono` is empty.
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no flaw named and no safe upgrade; migration to jiff or time is #1018" },
+  { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained, no flaw named and no safe upgrade; goes with chrono in #1018" },
   { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained, compile-time proc-macro only) via tokenizers 0.23.2, the latest stable release; needed by file_host::meaning" },
   # SQLite before 3.54.0 can return uninitialized page-cache memory when it
   # opens a database together with a `-wal` file of a different page size
