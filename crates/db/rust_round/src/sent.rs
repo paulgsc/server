@@ -63,12 +63,18 @@ pub const SENT_TWICE: &str = "home holds another send of this week at this momen
 /// [`RoundError::Rewritten`]'s words for a paste, for the `409`.
 pub const PASTED_TWICE: &str = "home holds another paste at this moment of this week; a paste is kept as it was";
 
-/// One ticket answered, as Send kept it.
+/// One ticket, or one of its speak-to points, answered, as Send kept it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Answer {
 	/// The ticket's key, `QM-311`.
 	pub ticket: String,
+	/// The speak-to point the take answers, from 1 (RR24,
+	/// paulgsc/some-ui#3248), as the take's `ref` names it
+	/// (`<week>:<ticket>:<n>`); none for a take of the whole ticket, which
+	/// answers every point. A phone from before RR24 never sends it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub point: Option<u8>,
 	/// The take's voice-note id.
 	pub take: String,
 	/// When the take was recorded.
@@ -84,7 +90,7 @@ pub struct Sent {
 	pub week: String,
 	/// When Send was pressed.
 	pub at: String,
-	/// Each ticket said, in the week's order.
+	/// Each ticket, or point of one, said, in the week's order.
 	pub answers: Vec<Answer>,
 	/// The tickets not said, in the week's order.
 	pub passed: Vec<String>,
@@ -188,8 +194,11 @@ pub(crate) fn sent_in_window(at: &str, window: Option<&Window>, now: &str, probl
 /// not the format's shape (an unknown key included); a `week` that is not
 /// `week`'s id, or is final (`now` is past its deadline); an `at` that is not an instant, is before the week opens,
 /// after its deadline or ahead of `now`; no answer; a ticket the week
-/// does not name, or named twice, or not named at all; a take that is not
-/// a note id; a `recordedAt` that is not an instant or is after `at`.
+/// does not name, or named in both the answers and `passed`, twice in
+/// `passed`, or not at all; a ticket answered whole twice, or a point
+/// answered twice or that its ticket does not have (RR24: a ticket is
+/// answered whole, point by point, or both, at most once each); a take that
+/// is not a note id; a `recordedAt` that is not an instant or is after `at`.
 pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Problem>> {
 	let value = json_object(body, SENT_CEILING, "is larger than 16 KiB")?;
 	let sent: Sent = serde_json::from_value(value).map_err(|_| vec![(String::from("body"), "must be a week sent: week, at, answers and passed, and nothing else")])?;
@@ -202,17 +211,35 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 		problems.push((String::from("answers"), "must hold at least one ticket answered"));
 	}
 	let tickets: Vec<&str> = week.programs.iter().map(|program| program.ticket.as_str()).collect();
-	let named: Vec<&str> = sent
+	if sent
 		.answers
 		.iter()
 		.map(|answer| answer.ticket.as_str())
 		.chain(sent.passed.iter().map(String::as_str))
-		.collect();
-	if named.iter().any(|ticket| !tickets.contains(ticket)) {
+		.any(|ticket| !tickets.contains(&ticket))
+	{
 		problems.push((String::from("answers"), "names a ticket the week does not have"));
 	}
-	if tickets.iter().any(|ticket| named.iter().filter(|each| *each == ticket).count() != 1) {
+	// Each ticket is named once: passed, or answered (whole, by points, or
+	// both). An answer per point is one entry, so a ticket counts once.
+	let named_once = |ticket: &&str| {
+		let answered = sent.answers.iter().any(|answer| answer.ticket == *ticket);
+		let passed = sent.passed.iter().filter(|each| each.as_str() == *ticket).count();
+		usize::from(answered) + passed == 1
+	};
+	if !tickets.iter().all(named_once) {
 		problems.push((String::from("passed"), "with the answers, must name each of the week's tickets once"));
+	}
+	for (index, answer) in sent.answers.iter().enumerate() {
+		let at = String::from("answers[") + &index.to_string() + "]";
+		let earlier = sent.answers[..index].iter().any(|each| each.ticket == answer.ticket && each.point == answer.point);
+		if earlier {
+			problems.push((at.clone(), "answers a ticket, or a point of one, that an earlier answer does"));
+		}
+		let points = week.programs.iter().find(|program| program.ticket == answer.ticket).map_or(0, |program| program.points);
+		if answer.point.is_some_and(|point| point == 0 || usize::from(point) > points) {
+			problems.push((at + ".point", "must be one of the ticket's speak-to points, counted from 1"));
+		}
 	}
 	for (index, answer) in sent.answers.iter().enumerate() {
 		let at = |field: &str| String::from("answers[") + &index.to_string() + "]." + field;
@@ -399,7 +426,7 @@ mod tests {
 	}
 
 	fn week() -> crate::week::Week {
-		let ticket = |id: &str| json!({ "id": id, "program": "fn main() {}\n" });
+		let ticket = |id: &str| json!({ "id": id, "program": "fn main() {}\n", "speakTo": ["why", "what if", "when"] });
 		let body = json!({
 			"schema": "some-ui.rust-week/1", "id": "2026-w46",
 			"opens": "2026-11-09T00:00:00-08:00", "due": "2026-11-15T23:59:00-08:00",
@@ -486,6 +513,65 @@ mod tests {
 		let mut extra_in_answer = sent_body(at);
 		extra_in_answer["answers"][0]["words"] = json!("what I said");
 		assert_eq!(refused(extra_in_answer), ["body"]);
+	}
+
+	/// RR24 (paulgsc/some-ui#3248): a ticket is answered whole, point by point
+	/// or both, each at most once, and a point is one of the ticket's own,
+	/// counted from 1. A send from before RR24, with no points, reads as it
+	/// always did, and a point is kept as sent.
+	#[test]
+	fn a_ticket_is_answered_whole_or_point_by_point() {
+		let week = week();
+		let at = "2026-11-15T20:00:00.000Z";
+		let answer = |ticket: &str, point: Option<u8>, take: &str| {
+			let mut answer = json!({ "ticket": ticket, "take": take, "recordedAt": "2026-11-12T20:00:00.000Z" });
+			if let Some(point) = point {
+				answer["point"] = json!(point);
+			}
+			answer
+		};
+		let body = |answers: Vec<Value>, passed: &[&str]| json!({ "week": "2026-w46", "at": at, "answers": answers, "passed": passed });
+		let read = |body: Value| read_sent(body.to_string().as_bytes(), &week, OPEN);
+		let mixed = read(body(
+			vec![
+				answer("QM-311", None, "whole-1"),
+				answer("QM-311", Some(2), "point-1-2"),
+				answer("QM-313", Some(1), "point-3-1"),
+				answer("QM-313", Some(3), "point-3-3"),
+			],
+			&["QM-312"],
+		))
+		.unwrap();
+		assert_eq!(
+			mixed.answers.iter().map(|each| (each.ticket.as_str(), each.point)).collect::<Vec<_>>(),
+			[("QM-311", None), ("QM-311", Some(2)), ("QM-313", Some(1)), ("QM-313", Some(3)),]
+		);
+		let kept = serde_json::to_value(&mixed).unwrap();
+		assert_eq!(kept["answers"][0].get("point"), None, "a take of the whole ticket keeps the old shape");
+		assert_eq!(kept["answers"][1]["point"], json!(2));
+		let refused = |body: Value| fields(&read(body).unwrap_err());
+		assert_eq!(
+			refused(body(vec![answer("QM-311", Some(2), "a"), answer("QM-311", Some(2), "b")], &["QM-312", "QM-313"])),
+			["answers[1]"],
+			"one take per point"
+		);
+		assert_eq!(
+			refused(body(vec![answer("QM-311", None, "a"), answer("QM-311", None, "b")], &["QM-312", "QM-313"])),
+			["answers[1]"],
+			"one take for the whole ticket"
+		);
+		for point in [0, 4] {
+			assert_eq!(
+				refused(body(vec![answer("QM-311", Some(point), "a")], &["QM-312", "QM-313"])),
+				["answers[0].point"],
+				"point {point} of three"
+			);
+		}
+		assert_eq!(
+			refused(body(vec![answer("QM-311", Some(1), "a")], &["QM-311", "QM-312", "QM-313"])),
+			["passed"],
+			"answered and passed"
+		);
 	}
 
 	/// Before the deadline a send replaces the draft when it is later, leaves

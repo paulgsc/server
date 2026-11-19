@@ -907,9 +907,9 @@ mod tests {
 				"closed": true,
 				"sent": { "at": "2026-10-05T06:58:00.000Z", "receivedAt": "2026-10-05T06:58:01.000Z", "draft": false },
 				"tickets": [
-					{ "ticket": "QM-1", "answered": true, "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z", "opens": 2 },
-					{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "opens": 0 },
-					{ "ticket": "QM-3", "answered": false, "take": null, "recordedAt": null, "opens": 1 },
+					{ "ticket": "QM-1", "answered": true, "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z", "points": [], "opens": 2 },
+					{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "points": [], "opens": 0 },
+					{ "ticket": "QM-3", "answered": false, "take": null, "recordedAt": null, "points": [], "opens": 1 },
 				],
 				"unanswered": ["QM-2", "QM-3"],
 				"pastes": [{ "at": "2026-10-02T09:00:00.000Z", "text": "error[E0502]: cannot borrow", "note": null, "receivedAt": record["pastes"][0]["receivedAt"] }],
