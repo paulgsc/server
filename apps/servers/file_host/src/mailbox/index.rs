@@ -809,6 +809,11 @@ pub struct LastIndexes {
 	pub call: LastIndex,
 	pub rust: LastIndex,
 	pub interview: LastIndex,
+	/// Whether a pass of this process has queued the programs of every week
+	/// of Rust Rounds home holds (`pass::queue_held_weeks`, RR25): once per
+	/// process, so the first pass after an upgrade queues a week an older
+	/// build kept without reading.
+	pub weeks_queued: std::sync::atomic::AtomicBool,
 }
 
 /// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),
