@@ -1272,10 +1272,9 @@ check "the call's recorder is handed the policy's caps, the pinned stage and hom
 check "and a preview's recorder the same" handed "$FAKE/args-preview"
 check "and a cards essay's recorder the same (CARDS7)" handed "$FAKE/args-cards"
 
-# Each job's own length cap (#927): a Rust Rounds essay may run
-# ESSAY_MAX_VIDEO_MINUTES, the owner's 30; every other job, a mock
-# interview's essay too (C500), keeps MAX_VIDEO_MINUTES, 15. Read from what
-# the recorders were given.
+# Each job's own length cap (#927, C780): an essay, Rust Rounds or mock
+# interview, may run ESSAY_MAX_VIDEO_MINUTES, 60; every other job keeps
+# MAX_VIDEO_MINUTES, 15. Read from what the recorders were given.
 # Whether `args` (one to a line) gives `flag` exactly `value`.
 gives() {
   grep -A1 -xF -- "$2" "$1" | sed -n 2p | grep -qxF -- "$3"
@@ -1284,10 +1283,10 @@ fresh caps
 mkdir -p "$ROOT/essays/2026-w46/takes" "$ROOT/interview-essays/2026-w47/takes"
 echo '{}' > "$ROOT/essays/2026-w46/essay.json"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
-check "a Rust Rounds essay's recorder is handed 30 minutes" gives "$FAKE/args-essay" --max-video-minutes 30
-# Every other flag as every job's (HANDED, above), the length at 30.
+check "a Rust Rounds essay's recorder is handed 60 minutes" gives "$FAKE/args-essay" --max-video-minutes 60
+# Every other flag as every job's (HANDED, above), the length at 60.
 ESSAY_HANDED=(--dist /opt/stage --voices kokoro --speaker http://kokoro:8880 --brand /brand
-  --max-video-minutes 30 --max-video-mb 500 --cache-mb 2048)
+  --max-video-minutes 60 --max-video-mb 500 --cache-mb 2048)
 essay_handed() {
   local -a HANDED=("${ESSAY_HANDED[@]}")
   handed "$1"
@@ -1295,7 +1294,7 @@ essay_handed() {
 check "and the rest of the policy's caps, the stage and the speaker as every job" essay_handed "$FAKE/args-essay"
 echo '{}' > "$ROOT/interview-essays/2026-w47/essay.json"
 run_job interview-essay > "$SCRATCH/pass.out" 2>&1
-check "a mock interview's essay keeps 15 (C500)" gives "$FAKE/args-essay" --max-video-minutes 15
+check "and a mock interview's essay the same 60 (C780)" gives "$FAKE/args-essay" --max-video-minutes 60
 
 # A Rust Rounds essay of 24.4 minutes, week 46's (#927): refused at 15,
 # made at 30.

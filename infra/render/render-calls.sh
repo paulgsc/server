@@ -158,7 +158,7 @@ set -uo pipefail
 
 # Policy (paulgsc/some-ui#2635, the owner's caps). The recorder refuses a
 # video longer than its job's minutes (`max_minutes`: MAX_VIDEO_MINUTES, or
-# ESSAY_MAX_VIDEO_MINUTES for a Rust Rounds essay; from its words, before
+# ESSAY_MAX_VIDEO_MINUTES for an essay, Rust Rounds or interview; from its words, before
 # anything is said) or larger than MAX_VIDEO_MB (removed once made), a
 # failed attempt that names the cap; it stops keeping an episode's steps
 # past CACHE_MB, with a `cache warning:` line. Each job's waiting work
@@ -166,15 +166,19 @@ set -uo pipefail
 # is removed (its retry starts over).
 MAX_VIDEO_MINUTES=15
 # The owner, 2026-11-17, asked whether a Rust Rounds essay may run past 15
-# minutes: "yes raise the cap to 30 mins" (#927). The rust-essay job
-# only: a mock interview's essay, though recorded by the same recorder, keeps
-# MAX_VIDEO_MINUTES (C500). A 30-minute essay fits the other caps: a synthetic
-# minute of busy, moving text, encoded as the recorder encodes (2026-11-17),
-# is about 4.7 MB finished (CRF 18, AAC 160k: about 140 MB for 30 minutes,
-# under MAX_VIDEO_MB) and 16.5 MB as segments (CRF 8: about 500 MB, under
-# CACHE_MB and WORK_MAX_MB); its joins are JOIN_BATCH scenes at a time, so
-# its memory is the batch's, not the length's.
-ESSAY_MAX_VIDEO_MINUTES=30
+# minutes: "yes raise the cap to 30 mins" (#927). On 2026-11-19 the owner
+# ruled that a length cap is a suggestion an agent moves to meet a moved
+# story ("just update the duration limit or retire it altogether"), when
+# interview takes went from 2 to 3 minutes (some-ui#3289): a full interview
+# week is 10 takes, up to 30 minutes of takes plus its own scenes, about 45.
+# So both essays share one cap, 60 minutes (some-ui C780, which moves C500).
+# A 60-minute essay fits the other caps: a synthetic minute of busy, moving
+# text, encoded as the recorder encodes (2026-11-17), is about 4.7 MB
+# finished (CRF 18, AAC 160k: about 280 MB for 60 minutes, under
+# MAX_VIDEO_MB) and 16.5 MB as segments (CRF 8: about 990 MB, under CACHE_MB
+# and WORK_MAX_MB); its joins are JOIN_BATCH scenes at a time, so its memory
+# is the batch's, not the length's.
+ESSAY_MAX_VIDEO_MINUTES=60
 MAX_VIDEO_MB=500
 CACHE_MB=2048
 WORK_MAX_MB=4096
@@ -274,7 +278,7 @@ COMMON=()
 # The longest video `job` may make, in minutes.
 max_minutes() {
   case $1 in
-    rust-essay) echo "$ESSAY_MAX_VIDEO_MINUTES" ;;
+    rust-essay | interview-essay) echo "$ESSAY_MAX_VIDEO_MINUTES" ;;
     *) echo "$MAX_VIDEO_MINUTES" ;;
   esac
 }
