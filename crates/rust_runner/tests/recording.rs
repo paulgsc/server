@@ -9,6 +9,7 @@
 //! outcomes); the exact text rustc 1.97.0 prints is checked inside the pinned
 //! container by `scripts/check_rust_runner_sandbox.py`.
 
+use rust_runner::diagnostics::{Child, Diagnostic, Span};
 use rust_runner::recording::{CompileRecord, Outcome, Recorder, Recording, RunRecord, RunSpan, RustcRun, Why, PROFILE};
 use rust_runner::service::{answer, ask, Refusal, Request, Response, CLIENT_TIMEOUT, REQUEST_CEILING};
 use rust_runner::{Compiler, Limits, Profile, SpawnError};
@@ -51,7 +52,10 @@ fn the_worked_example_records_what_rustc_and_the_program_did() {
 		indexed.compile.rendered
 	);
 	assert_eq!(indexed.note.as_deref(), Some("rustc exited with status 1"));
-	let RustcRun::CompileError { code, span, stderr, .. } = indexed.rustc_run() else {
+	let RustcRun::CompileError {
+		code, span, stderr, diagnostics, ..
+	} = indexed.rustc_run()
+	else {
 		panic!("{:?}", indexed.rustc_run());
 	};
 	assert_eq!(code.as_deref(), Some("E0277"));
@@ -65,6 +69,8 @@ fn the_worked_example_records_what_rustc_and_the_program_did() {
 		})
 	);
 	assert_eq!(stderr, indexed.compile.rendered);
+	assert_eq!(diagnostics, indexed.compile.diagnostics);
+	assert_eq!(diagnostics.iter().filter_map(|d| d.rendered.as_deref()).collect::<String>(), stderr);
 
 	let byte = recorder.record(&utf8_round("let c = s.as_bytes()[r]; println!(\"{c}\");")).unwrap();
 	assert_eq!(byte.outcome, Outcome::Ok, "{byte:?}");
@@ -329,8 +335,29 @@ fn the_phones_shape_is_rr1s_rustc_run_field_for_field() {
 					line_end: 4,
 					column_end: 16,
 				}),
+				diagnostics: vec![Diagnostic {
+					level: String::from("error"),
+					code: Some(String::from("E0277")),
+					message: String::from("m"),
+					spans: vec![Span {
+						file: String::from("main.rs"),
+						line_start: 4,
+						line_end: 4,
+						column_start: 15,
+						column_end: 16,
+						is_primary: true,
+						label: None,
+						suggested_replacement: Some(String::from("&")),
+					}],
+					children: vec![Child {
+						level: String::from("help"),
+						message: String::from("h"),
+						spans: Vec::new(),
+					}],
+					rendered: Some(String::from("error[E0277]")),
+				}],
 			},
-			r#"{"outcome":"compile-error","toolchain":"1.97.0","code":"E0277","stderr":"error[E0277]","span":{"lineStart":4,"columnStart":15,"lineEnd":4,"columnEnd":16}}"#,
+			r#"{"outcome":"compile-error","toolchain":"1.97.0","code":"E0277","stderr":"error[E0277]","span":{"lineStart":4,"columnStart":15,"lineEnd":4,"columnEnd":16},"diagnostics":[{"level":"error","code":"E0277","message":"m","spans":[{"file":"main.rs","lineStart":4,"lineEnd":4,"columnStart":15,"columnEnd":16,"isPrimary":true,"label":null,"suggestedReplacement":"&"}],"children":[{"level":"help","message":"h","spans":[]}],"rendered":"error[E0277]"}]}"#,
 		),
 		(
 			RustcRun::CompileError {
@@ -338,8 +365,9 @@ fn the_phones_shape_is_rr1s_rustc_run_field_for_field() {
 				code: None,
 				stderr: String::from("e"),
 				span: None,
+				diagnostics: Vec::new(),
 			},
-			r#"{"outcome":"compile-error","toolchain":"1.97.0","code":null,"stderr":"e","span":null}"#,
+			r#"{"outcome":"compile-error","toolchain":"1.97.0","code":null,"stderr":"e","span":null,"diagnostics":[]}"#,
 		),
 		(
 			RustcRun::Prints {
