@@ -168,7 +168,8 @@ pub struct Sent {
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub verdicts: Vec<Verdict>,
 	/// The takes of the week's opening said this week (paulgsc/some-ui#3269,
-	/// contract epoch 25), one per question at most. They answer no ticket,
+	/// contract epoch 25): every take of each question said this week, kept
+	/// (the owner's call C783: no take is lost). They answer no ticket,
 	/// so they never count as one answered. A phone from before it sends
 	/// none, and a send without them is kept without the key.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -283,8 +284,8 @@ pub(crate) fn sent_in_window(at: &str, window: Option<&Window>, now: &str, probl
 /// capital `A` to `F`. Which options a fork lists home doesn't hold: the
 /// phone picks only among them. And of the opening's takes
 /// (paulgsc/some-ui#3269): one in a week whose opening asks nothing, one of
-/// a question the week's opening doesn't ask or an earlier take answers,
-/// one read under another version than the week's, and the same two of its
+/// a question the week's opening doesn't ask, one read under another
+/// version than the week's, and the same two of its
 /// take and `recordedAt` as an answer's. The opening is no answer: a send of
 /// it alone, every ticket passed, has none.
 pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Problem>> {
@@ -383,8 +384,6 @@ fn opening_problems(sent: &Sent, opening: Option<OpeningSet>, problems: &mut Vec
 			Some(asked) => {
 				if take.n == 0 || take.n > asked.questions {
 					problems.push((at("n"), "must be one of the week's opening questions, counted from 1"));
-				} else if sent.opening[..index].iter().any(|each| each.n == take.n) {
-					problems.push((at("n"), "answers a question an earlier take does"));
 				}
 				if take.version != asked.version {
 					problems.push((at("version"), "must be the week's opening version"));
@@ -848,7 +847,8 @@ mod tests {
 	}
 
 	/// paulgsc/some-ui#3269: a send may name the takes of the week's opening
-	/// said that week, one per question, under the week's opening version;
+	/// said that week, every take of a question (C783), under the week's
+	/// opening version;
 	/// they answer no ticket, and a send without them reads and keeps as it
 	/// always did.
 	#[test]
@@ -881,7 +881,16 @@ mod tests {
 		assert_eq!(refused(&plain, json!([take(1, 2)])), ["opening[0].n"], "a week with no opening");
 		assert_eq!(refused(&week, json!([take(3, 2)])), ["opening[0].n"], "a question the opening doesn't ask");
 		assert_eq!(refused(&week, json!([take(0, 2)])), ["opening[0].n"]);
-		assert_eq!(refused(&week, json!([take(1, 2), take(1, 2)])), ["opening[1].n"], "one take per question");
+		let mut twice = sent_body(at);
+		let mut later = take(1, 2);
+		later["take"] = json!("take-opening-again");
+		later["recordedAt"] = json!("2026-11-13T19:00:00.000Z");
+		twice["opening"] = json!([take(1, 2), later]);
+		assert_eq!(
+			read_sent(twice.to_string().as_bytes(), &week, OPEN).unwrap().opening.len(),
+			2,
+			"every take of a question said this week is kept (C783)"
+		);
 		assert_eq!(refused(&week, json!([take(1, 1)])), ["opening[0].version"], "read under another version");
 		let mut bad = take(1, 2);
 		bad["take"] = json!("a take/with a slash");
@@ -952,7 +961,12 @@ mod tests {
 			(
 				A,
 				"2026-w45",
-				json!([take(1, "w45-1", "2026-11-04T10:00:00.000Z", 1), take(2, "w45-2-v2", "2026-11-04T10:05:00.000Z", 2)]),
+				// Recorded again the same week: both kept, the newer first (C783).
+				json!([
+					take(1, "w45-1", "2026-11-04T10:00:00.000Z", 1),
+					take(2, "w45-2-v2", "2026-11-04T10:05:00.000Z", 2),
+					take(1, "w45-1-again", "2026-11-04T10:10:00.000Z", 1)
+				]),
 			),
 			(A, "2026-w47", json!([take(1, "w47-1", "2026-11-18T10:00:00.000Z", 1)])),
 			(B, "2026-w46", json!([take(1, "b-1", "2026-11-12T10:00:00.000Z", 1)])),
@@ -977,6 +991,7 @@ mod tests {
 		assert_eq!(
 			names(opening_takes(&mut conn, A, "2026-w46", 1).await.unwrap()),
 			[
+				(String::from("2026-w45"), String::from("w45-1-again")),
 				(String::from("2026-w45"), String::from("w45-1")),
 				(String::from("2026-w44"), String::from("w44-2")),
 				(String::from("2026-w44"), String::from("w44-1")),
@@ -994,7 +1009,7 @@ mod tests {
 			.execute(&mut *conn)
 			.await
 			.unwrap();
-		assert_eq!(opening_takes(&mut conn, A, "2026-w46", 1).await.unwrap().len(), 3);
+		assert_eq!(opening_takes(&mut conn, A, "2026-w46", 1).await.unwrap().len(), 4);
 		assert_eq!(
 			names(opening_takes(&mut conn, B, "2026-w47", 1).await.unwrap()),
 			[(String::from("2026-w46"), String::from("b-1"))]
