@@ -13,9 +13,10 @@
 //! - its `schema` tag, [`WEEK_SCHEMA`] or [`WEEK_SCHEMA_V2`];
 //! - its `id`, the ISO week it opens (`2026-w46`), which names it for good;
 //! - its tickets' ids and every ticket's `program`, the bytes it records;
-//! - how many speak-to points each ticket has (`speakTo`'s length; RR24,
-//!   paulgsc/some-ui#3248), so a take of one point can be checked against
-//!   them. The points' words are never read here;
+//! - how many speak-to points each ticket has (RR24, paulgsc/some-ui#3248),
+//!   so a take of one point can be checked against them: `speakTo`'s length
+//!   in a `/1` week, `forks`' in a `/2` week, where fork n is point n
+//!   ([`points_field`]). The points' words are never read here;
 //! - in a `/2` week, each ticket's `academy`: 1 to [`ACADEMY_MAX`]
 //!   exercises, and each exercise's `starter`, which it records too, under
 //!   [`academy_key`] (`TB-101/academy/1`);
@@ -144,6 +145,18 @@ enum Schema {
 	V2,
 }
 
+/// The array whose length is a ticket's speak-to points: `speakTo` in a
+/// `/1` week, `forks` in a `/2` week (RR29 replaced the one with the other,
+/// and the phone's `upgradeWeek` turns `speakTo[i]` into `forks[i]`, so a
+/// take's point means the same in both).
+fn points_field(schema: Option<Schema>) -> &'static str {
+	if schema == Some(Schema::V2) {
+		"forks"
+	} else {
+		"speakTo"
+	}
+}
+
 /// Read `body` as a week, or say every problem found.
 ///
 /// # Errors
@@ -203,7 +216,7 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 				programs.push(TicketProgram {
 					ticket: key.to_owned(),
 					source: source.to_owned(),
-					points: ticket.get("speakTo").and_then(Value::as_array).map_or(0, Vec::len),
+					points: ticket.get(points_field(schema)).and_then(Value::as_array).map_or(0, Vec::len),
 				});
 				if schema == Some(Schema::V2) {
 					read_academy(ticket, key, &at, &mut academy, &mut problems);
@@ -411,6 +424,22 @@ mod tests {
 		file["tickets"][1]["academy"] = json!(vec![json!({ "starter": "fn main() {}\n" }); 8]);
 		let fields: Vec<String> = read(file.to_string().as_bytes()).unwrap_err().into_iter().map(|(field, _)| field).collect();
 		assert_eq!(fields, ["tickets[0].academy"], "eight is the most, and allowed");
+	}
+
+	/// A `/2` ticket's points are its forks (fork n is point n); a `speakTo`
+	/// it does not carry is not counted.
+	#[test]
+	fn a_v2_tickets_points_are_its_forks() {
+		let read_week = read(TALLOWBROOK.as_bytes()).unwrap();
+		let points: Vec<(&str, usize)> = read_week.programs.iter().map(|program| (program.ticket.as_str(), program.points)).collect();
+		assert_eq!(points, [("TB-101", 2), ("TB-102", 1), ("TB-103", 1)]);
+
+		let mut file = tallowbrook();
+		file["tickets"][0]["forks"] = json!(vec![json!({ "question": "q" }); 6]);
+		file["tickets"][1]["speakTo"] = json!(["a", "b", "c"]);
+		let read_week = read(file.to_string().as_bytes()).unwrap();
+		assert_eq!(read_week.programs[0].points, 6, "six forks, six points");
+		assert_eq!(read_week.programs[1].points, 1, "a /2 ticket's speakTo is not read");
 	}
 
 	/// A `/2` week may be larger than a `/1` week's ceiling, up to its own;
