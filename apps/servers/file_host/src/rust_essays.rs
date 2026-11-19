@@ -290,7 +290,8 @@ async fn tidy_tick(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Res
 /// given, once its week is final and the essay is that final's.
 ///
 /// Beside the essay go the takes it plays
-/// (`<week>/takes/<ticket>.<webm|ogg|m4a>` and, when home heard its words,
+/// (`<week>/takes/<ticket>.<webm|ogg|m4a>`, or `<ticket>.<n>.<ext>` for a
+/// take of a ticket's point n (RR24), and, when home heard its words,
 /// `<ticket>.words.json`).
 ///
 /// An essay refused is kept as `<week>.refused.log` in the status folder,
@@ -521,7 +522,7 @@ async fn standing(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, 
 	Ok(match kind {
 		Kind::RustRounds => rust_round_repo::sent::standing(conn, subject, week).await?.map(|stored| Standing {
 			draft: stored.draft,
-			answers: stored.sent.answers.into_iter().map(|answer| (answer.ticket, answer.take)).collect(),
+			answers: rust_round_repo::essay::rust_answers(Some(&stored.sent)),
 			reads: Vec::new(),
 		}),
 		Kind::Interview => rust_round_repo::draft::standing::<rust_round_repo::interview::Sent>(conn, subject, week)
@@ -1021,6 +1022,7 @@ mod tests {
 			at: String::from("2026-11-15T19:30:00.000Z"),
 			answers: vec![Answer {
 				ticket: String::from("QM-311"),
+				point: None,
 				take: String::from(TAKE),
 				recorded_at: String::from("2026-11-15T19:00:00.000Z"),
 			}],
