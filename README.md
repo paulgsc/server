@@ -591,17 +591,25 @@ first.
 #    client's deploy may have tried one), or step 3 skips them as failed.
 #    Read it first: a key whose serial is below this release's failed
 #    before it, for another reason; keep that one if it still matters.
-cat ~/.local/state/server-deploy/failed-releases.json
-echo '[]' > ~/.local/state/server-deploy/failed-releases.json
+state="${XDG_STATE_HOME:-$HOME/.local/state}/server-deploy"
+cat "$state/failed-releases.json"
+echo '[]' > "$state/failed-releases.json"
 # 3. Server's release, www and resume-render included.
 make home-deploy
 ```
 
-If `make home-deploy` fails after step 1, home has no www until it is
-fixed: the rollback puts back server's last release, which never ran www,
-and does not restart some-ui's stack. To serve the old www meanwhile, run
-`docker compose up -d` in the some-ui checkout again, which then blocks the
-next deploy as above until it is stopped.
+If `make home-deploy` fails after step 1, the rollback puts back server's
+last release, which never ran www, and does not restart some-ui's stack.
+It does not stop a service the failed release added either (#861), so www
+and resume-render may still be running, as orphans of a release that was
+not applied, or may not be running at all. To serve the old www meanwhile,
+remove them, then start some-ui's stack again, which blocks the next deploy
+as above until it is stopped:
+
+```bash
+docker rm -f www resume-render
+(cd <some-ui checkout> && docker compose up -d)
+```
 
 some-ui's root compose stays for development on a laptop; it is no longer
 how home runs.
