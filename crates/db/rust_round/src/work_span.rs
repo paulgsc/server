@@ -10,7 +10,9 @@
 //!
 //! - **Two events a span, each written once** ([`start`], [`close`]): the
 //!   same event again changes nothing ([`Change::Unchanged`]), another under
-//!   the same span and kind is refused ([`SpanError::Rewritten`]). No row is
+//!   the same span and kind is refused ([`SpanError::Rewritten`]). "The same"
+//!   compares `at` as text, not as an instant: the phone re-sends the string
+//!   it stored, byte for byte. No row is
 //!   updated or, while the account stands, deleted (the migration's
 //!   triggers). The phone is the only writer.
 //! - **One span open at a time** ([`open`]): a start while another span is
@@ -18,6 +20,15 @@
 //!   start ([`SpanError::Unknown`]). The migration's triggers hold both too.
 //!   The open span is the subject's newest start when it has no close, read
 //!   in one indexed step.
+//! - **Spans never overlap in time** ([`start`]): one open at a time holds
+//!   by the order events reach home, which is not the order they happened,
+//!   since the phone can keep a start offline and send it later. So a start
+//!   whose `at` is before the subject's latest close `at`, as instants
+//!   whatever their offsets, is refused too ([`SpanError::Overlaps`]); one
+//!   exactly at it is kept. With each close no earlier than its start, the
+//!   latest close is the newest start's, read in the same step as the open
+//!   span. Only this module holds it, not the triggers, which cannot order
+//!   RFC 3339 text with offsets.
 //! - **What the owner says they worked is checked against the span**
 //!   ([`close`]): at most the span's whole seconds, all of them for `all`, 0
 //!   for `none`; the close no earlier than the start.
@@ -44,6 +55,9 @@ pub const SPAN_REWRITTEN: &str = "home holds another event under this span; a sp
 
 /// [`SpanError::Open`]'s words, for the `409`.
 pub const SPAN_OPEN: &str = "another span is open; close it before starting one";
+
+/// [`SpanError::Overlaps`]'s words, for the `409`.
+pub const SPAN_OVERLAPS: &str = "this start is before the last span closed; a span starts no earlier than the one before it closed";
 
 /// A span's start, as the phone sends it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -122,6 +136,8 @@ pub enum SpanError {
 	Rewritten,
 	/// A start while this span is open.
 	Open(Box<Span>),
+	/// A start whose `at` is before the subject's latest close `at`.
+	Overlaps,
 	/// A close of a span home holds no start of.
 	Unknown,
 	/// A close that does not fit its span, each problem named.
@@ -140,6 +156,7 @@ impl std::fmt::Display for SpanError {
 		match self {
 			Self::Rewritten => f.write_str(SPAN_REWRITTEN),
 			Self::Open(_) => f.write_str(SPAN_OPEN),
+			Self::Overlaps => f.write_str(SPAN_OVERLAPS),
 			Self::Unknown => f.write_str("no span home holds"),
 			Self::Unfit(problems) => write!(f, "{} problem(s) with the close", problems.len()),
 			Self::Storage(err) => write!(f, "storage: {err}"),
@@ -283,9 +300,14 @@ fn unfit(close: &Close, started_at: &str) -> Vec<Problem> {
 /// Store `start` for `subject`, or nothing when the same start is held, in
 /// the caller's transaction. Answers the span as home keeps it after.
 ///
+/// The held span is looked for first, so a retry of a start home already
+/// keeps answers [`Change::Unchanged`] whatever has happened since, a later
+/// span opened or closed included.
+///
 /// # Errors
 /// [`SpanError::Rewritten`] for another start under the same span,
-/// [`SpanError::Open`] while another span is open, each writing nothing;
+/// [`SpanError::Open`] while another span is open, [`SpanError::Overlaps`]
+/// for an `at` before the subject's latest close `at`, each writing nothing;
 /// [`SpanError::Storage`] for any `sqlx` failure, or a held span that no
 /// longer reads.
 pub async fn start(conn: &mut SqliteConnection, subject: &str, start: &Start, now: &str) -> Result<(Change, Span), SpanError> {
@@ -296,8 +318,12 @@ pub async fn start(conn: &mut SqliteConnection, subject: &str, start: &Start, no
 			Err(SpanError::Rewritten)
 		};
 	}
-	if let Some(open) = open(&mut *conn, subject).await? {
-		return Err(SpanError::Open(Box::new(open)));
+	if let Some(newest) = newest(&mut *conn, subject).await? {
+		match &newest.closed {
+			None => return Err(SpanError::Open(Box::new(newest))),
+			Some(closed) if crate::instant_order(&start.at, &closed.at) == Some(std::cmp::Ordering::Less) => return Err(SpanError::Overlaps),
+			Some(_) => {}
+		}
 	}
 	let points = serde_json::Value::from(start.points.clone()).to_string();
 	sqlx::query!(
@@ -320,6 +346,9 @@ pub async fn start(conn: &mut SqliteConnection, subject: &str, start: &Start, no
 	Ok((Change::Added, held))
 }
 
+/// Whether `start` is the start home holds: every field equal, `at` as text.
+/// The phone re-sends the string it stored, byte for byte, so the same
+/// instant written another way is another start.
 fn started_as(held: &Span, start: &Start) -> bool {
 	(&held.started_at, &held.week, &held.ticket, &held.step, held.exercise, &held.points, &held.device)
 		== (&start.at, &start.week, &start.ticket, &start.step, start.exercise, &start.points, &start.device)
@@ -336,6 +365,8 @@ fn started_as(held: &Span, start: &Start) -> bool {
 /// span that no longer reads.
 pub async fn close(conn: &mut SqliteConnection, subject: &str, close: &Close, now: &str) -> Result<(Change, Span), SpanError> {
 	let held = span(&mut *conn, subject, &close.id).await?.ok_or(SpanError::Unknown)?;
+	// The same close is every field equal, `at` as text: the phone re-sends
+	// the string it stored, byte for byte.
 	if let Some(closed) = &held.closed {
 		let same = (&closed.at, &closed.stopped_by, &closed.answer, closed.counted_seconds) == (&close.at, &close.stopped_by, &close.answer, close.counted_seconds);
 		return if same { Ok((Change::Unchanged, held)) } else { Err(SpanError::Rewritten) };
@@ -436,6 +467,16 @@ pub async fn span(conn: &mut SqliteConnection, subject: &str, id: &str) -> Resul
 /// # Errors
 /// Any `sqlx` failure, or a held span that no longer reads.
 pub async fn open(conn: &mut SqliteConnection, subject: &str) -> Result<Option<Span>, sqlx::Error> {
+	Ok(newest(conn, subject).await?.filter(|span| span.closed.is_none()))
+}
+
+/// `subject`'s newest start in the order starts reached home, with its close
+/// if it has one, read in one indexed step.
+///
+/// It is the open span if any span is open; otherwise its close is the
+/// subject's latest close in time, since [`start`] keeps no start before
+/// the latest close and [`close`] no close before its start.
+async fn newest(conn: &mut SqliteConnection, subject: &str) -> Result<Option<Span>, sqlx::Error> {
 	let newest = sqlx::query_scalar!(
 		"SELECT span_id FROM rust_work_span_event INDEXED BY rust_work_span_event_by_kind WHERE subject_id = ?1 AND kind = 'started' ORDER BY rowid DESC LIMIT 1",
 		subject
@@ -445,7 +486,7 @@ pub async fn open(conn: &mut SqliteConnection, subject: &str) -> Result<Option<S
 	let Some(newest) = newest else {
 		return Ok(None);
 	};
-	Ok(span(&mut *conn, subject, &newest).await?.filter(|span| span.closed.is_none()))
+	span(&mut *conn, subject, &newest).await
 }
 
 /// `subject`'s spans of `week`, in the order they started.
@@ -574,7 +615,7 @@ mod tests {
 		assert_eq!(open(&mut conn, A).await.unwrap().map(|span| span.id), Some(String::from(ONE)));
 		assert_eq!(open(&mut conn, B).await.unwrap(), None, "another subject's span is not open for B");
 
-		let second = read_start(start_body(TWO, "2026-11-19T10:00:00.000Z").to_string().as_bytes(), NOW).unwrap();
+		let second = read_start(start_body(TWO, "2026-11-19T11:30:00.000Z").to_string().as_bytes(), NOW).unwrap();
 		match start(&mut conn, A, &second, NOW).await {
 			Err(SpanError::Open(open)) => assert_eq!(open.id, ONE),
 			other => panic!("{other:?}"),
@@ -623,6 +664,57 @@ mod tests {
 		assert_eq!(close(&mut conn, A, &closing, NOW).await.unwrap().0, Change::Added);
 	}
 
+	/// A start is refused when its `at` is before the latest close `at`, as
+	/// instants whatever their offsets, and kept when exactly at it; a retry
+	/// of a start home holds answers unchanged however old it is.
+	#[tokio::test]
+	async fn a_span_starts_no_earlier_than_the_last_one_closed() {
+		const THREE: &str = "33333333-3333-4333-8333-333333333333";
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		let starting = |id: &str, at: &str| read_start(start_body(id, at).to_string().as_bytes(), NOW).unwrap();
+		let closing = |id: &str, at: &str, counted: i64| read_close(close_body(id, at, "all", counted).to_string().as_bytes(), NOW).unwrap();
+		let first = starting(ONE, "2026-11-19T09:00:00.000Z");
+		start(&mut conn, A, &first, NOW).await.unwrap();
+		close(&mut conn, A, &closing(ONE, "2026-11-19T10:00:00.000Z", 3_600), NOW).await.unwrap();
+
+		// Kept offline on the phone, sent after the first closed.
+		for at in [
+			"2026-11-19T09:59:59.999Z",
+			// 09:30Z: after 10:00Z as text, before it in time.
+			"2026-11-19T10:30:00.000+01:00",
+		] {
+			assert!(matches!(start(&mut conn, A, &starting(TWO, at), NOW).await, Err(SpanError::Overlaps)), "{at}");
+		}
+		assert!(
+			start(&mut conn, B, &starting(TWO, "2026-11-19T09:30:00.000Z"), NOW).await.is_ok(),
+			"another subject's close does not count"
+		);
+
+		// 10:00Z exactly, written so it sorts before the close as text.
+		let second = starting(TWO, "2026-11-19T05:00:00.000-05:00");
+		assert_eq!(start(&mut conn, A, &second, NOW).await.unwrap().0, Change::Added, "a start exactly at the last close");
+		assert_eq!(
+			start(&mut conn, A, &first, NOW).await.unwrap().0,
+			Change::Unchanged,
+			"an older held start, while a later span is open"
+		);
+		close(&mut conn, A, &closing(TWO, "2026-11-19T10:30:00.000Z", 1_800), NOW).await.unwrap();
+		assert_eq!(
+			start(&mut conn, A, &first, NOW).await.unwrap().0,
+			Change::Unchanged,
+			"an older held start, after a later span closed"
+		);
+		assert_eq!(start(&mut conn, A, &second, NOW).await.unwrap().0, Change::Unchanged);
+
+		// The latest close is now the second's, not the first's.
+		assert!(matches!(
+			start(&mut conn, A, &starting(THREE, "2026-11-19T10:15:00.000Z"), NOW).await,
+			Err(SpanError::Overlaps)
+		));
+		assert_eq!(start(&mut conn, A, &starting(THREE, "2026-11-19T10:30:00.000Z"), NOW).await.unwrap().0, Change::Added);
+	}
+
 	/// No row is ever updated, none deleted while its account stands, and a
 	/// start beside an open span or a close with no start is refused by the
 	/// table itself; the account takes them all.
@@ -632,17 +724,28 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		let first = read_start(start_body(ONE, "2026-11-19T09:00:00.000Z").to_string().as_bytes(), NOW).unwrap();
 		start(&mut conn, A, &first, NOW).await.unwrap();
-		for statement in [
-			"UPDATE rust_work_span_event SET at = 'x'",
-			"DELETE FROM rust_work_span_event",
-			"INSERT INTO rust_work_span_event (subject_id, span_id, kind, at, week_id, ticket, step, points, device, kept_at)
-			 VALUES ('subject-a', 'other', 'started', 'now', '2026-w47', 'TB-101', 'read', '[1]', 'd', 'now')",
-			"INSERT INTO rust_work_span_event (subject_id, span_id, kind, at, stopped_by, answer, counted_seconds, kept_at)
-			 VALUES ('subject-a', 'never', 'closed', 'now', 'you', 'none', 0, 'now')",
-			"INSERT INTO rust_work_span_event (subject_id, span_id, kind, at, stopped_by, answer, counted_seconds, kept_at)
-			 VALUES ('subject-a', '11111111-1111-4111-8111-111111111111', 'closed', 'now', 'you', 'none', 5, 'now')",
+		for (statement, refusal) in [
+			("UPDATE rust_work_span_event SET at = 'x'", "rust_work_span_event is append-only: a span is never rewritten"),
+			("DELETE FROM rust_work_span_event", "rust_work_span_event is append-only: a span goes only with its account"),
+			(
+				"INSERT INTO rust_work_span_event (subject_id, span_id, kind, at, week_id, ticket, step, points, device, kept_at)
+				 VALUES ('subject-a', 'other', 'started', 'now', '2026-w47', 'TB-101', 'read', '[1]', 'd', 'now')",
+				"rust_work_span_event: another span is open; close it first",
+			),
+			(
+				"INSERT INTO rust_work_span_event (subject_id, span_id, kind, at, stopped_by, answer, counted_seconds, kept_at)
+				 VALUES ('subject-a', 'never', 'closed', 'now', 'you', 'none', 0, 'now')",
+				"rust_work_span_event: a span closes only once it has started",
+			),
+			(
+				"INSERT INTO rust_work_span_event (subject_id, span_id, kind, at, stopped_by, answer, counted_seconds, kept_at)
+				 VALUES ('subject-a', '11111111-1111-4111-8111-111111111111', 'closed', 'now', 'you', 'none', 5, 'now')",
+				"CHECK constraint failed",
+			),
 		] {
-			assert!(sqlx::query(statement).execute(&mut *conn).await.is_err(), "{statement}");
+			let err = sqlx::query(statement).execute(&mut *conn).await.unwrap_err();
+			let message = err.as_database_error().map(|err| err.message().to_owned()).unwrap_or_default();
+			assert!(message.starts_with(refusal), "{statement}: {err}");
 		}
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&mut *conn).await.unwrap();
 		let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rust_work_span_event").fetch_one(&mut *conn).await.unwrap();

@@ -2045,7 +2045,9 @@ nowhere is marked as such and belongs to review.
     under the same span is a `409`. One span is open at a time per subject,
     so a start while one is open is a `409` that names it, and the open span
     is read by every device of the subject, whatever its week
-    (`GET /rust-work-spans?week=`). The device's name is a label the phone
+    (`GET /rust-work-spans?week=`). Spans never overlap in time: a start
+    the phone kept offline and sent after a later span closed, with an `at`
+    before the subject's latest close `at`, is a `409` too. The device's name is a label the phone
     gives itself, never a key or an identity (invariant 4). The spans are
     read only by their own subject, never updated, and deleted only with the
     account, by the triggers and the sweep. They are not yet counted by
@@ -2062,6 +2064,7 @@ nowhere is marked as such and belongs to review.
     `the_record_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
     `the_log_refuses_an_update_and_a_delete_and_leaves_with_the_account`,
     `a_span_starts_once_closes_once_and_one_is_open_at_a_time`,
+    `a_span_starts_no_earlier_than_the_last_one_closed`,
     `the_spans_refuse_an_update_a_delete_and_a_second_open_and_leave_with_the_account`,
     `handlers::rust_work_spans`' `a_span_starts_then_closes_and_retries_are_idempotent`,
     `an_account_takes_its_rounds_and_leaves_the_runs` and

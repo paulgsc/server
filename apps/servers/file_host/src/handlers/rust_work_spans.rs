@@ -12,6 +12,11 @@
 //! in a `BEGIN IMMEDIATE` transaction, so two starts cannot both find nothing
 //! open.
 //!
+//! **Spans never overlap in time.** The phone can keep a start offline and
+//! send it after another span has closed, so a start whose `at` is before the
+//! subject's latest close `at` is a `409` too, in the plain error envelope:
+//! it conflicts with a span home holds, and no retry of it can succeed.
+//!
 //! **Everything is the caller's.** Every handler takes a [`Paired`] phone
 //! and reads and writes only under its subject: another subject's span is
 //! not there (docs/identity.md invariant 28). The extractor holds off
@@ -28,7 +33,7 @@ use axum::{
 	response::{IntoResponse, Response},
 	Json,
 };
-use rust_round_repo::work_span::{self, Span, SpanError, SPAN_OPEN, SPAN_REWRITTEN};
+use rust_round_repo::work_span::{self, Span, SpanError, SPAN_OPEN, SPAN_OVERLAPS, SPAN_REWRITTEN};
 use rust_round_repo::Change;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -86,6 +91,7 @@ fn refused(err: SpanError) -> Result<Response, FileHostError> {
 			};
 			Ok((StatusCode::CONFLICT, Json(body)).into_response())
 		}
+		SpanError::Overlaps => Err(FileHostError::Conflict(SPAN_OVERLAPS)),
 		SpanError::Unknown => Err(FileHostError::NotFound),
 		SpanError::Unfit(problems) => Err(FileHostError::unprocessable_entity(problems)),
 		SpanError::Storage(err) => Err(FileHostError::Sqlite(err)),
@@ -106,8 +112,9 @@ fn written(change: Change, span: Span) -> Response {
 /// # Errors
 /// 401 without a session, 403 for a browser's or from an untrusted origin,
 /// 422 naming each refused field, 409 for another start under the same id,
-/// or, carrying `open`, while another span is open; 500 for a storage
-/// failure.
+/// for an `at` before the latest close's, or, carrying `open`, while another
+/// span is open; 500 for a storage failure. A start home already holds is a
+/// 200 whatever has happened since.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_work_span_start", skip_all, fields(otel.kind = "server"))]
 pub async fn post_start(paired: Paired, State(db): State<SqlitePool>, body: Bytes) -> Result<Response, FileHostError> {
@@ -346,7 +353,8 @@ mod tests {
 
 	/// A close is checked against its span: no more seconds than it held, all
 	/// of them for `all`, none for `none`, and no earlier than its start; an
-	/// unknown span is a `404`. A refused close leaves the span open.
+	/// unknown span is a `404`. A refused close leaves the span open. Once it
+	/// closes, a start before its close is a `409`, one at it is kept.
 	#[tokio::test]
 	async fn a_close_is_checked_against_its_span() {
 		let state = state().await;
@@ -382,5 +390,25 @@ mod tests {
 		assert_eq!(week["open"]["id"], json!(ONE), "still open");
 		let (status, closed) = call(&app, Method::POST, "/rust-work-spans/close", Some(&phone), &close(ONE, &stopped_at, "all", 2_700)).await;
 		assert_eq!((status, &closed["span"]["closed"]["countedSeconds"]), (StatusCode::CREATED, &json!(2_700)));
+
+		// A start the phone kept offline, sent once the span above has closed.
+		let (status, refusal) = call(
+			&app,
+			Method::POST,
+			"/rust-work-spans/start",
+			Some(&phone),
+			&start(TWO, &before_close(&stopped_at), "2026-w47"),
+		)
+		.await;
+		assert_eq!(
+			(status, &refusal["error"]["message"], refusal.get("open")),
+			(StatusCode::CONFLICT, &json!(rust_round_repo::work_span::SPAN_OVERLAPS), None)
+		);
+		let (status, _) = call(&app, Method::POST, "/rust-work-spans/start", Some(&phone), &start(TWO, &stopped_at, "2026-w47")).await;
+		assert_eq!(status, StatusCode::CREATED, "a start exactly at the last close");
+	}
+
+	fn before_close(closed_at: &str) -> String {
+		(chrono::DateTime::parse_from_rfc3339(closed_at).unwrap() - Duration::seconds(1)).to_rfc3339_opts(SecondsFormat::Millis, true)
 	}
 }

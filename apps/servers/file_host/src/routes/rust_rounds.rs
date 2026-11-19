@@ -41,7 +41,8 @@
 //! POST /rust-work-spans/start → { change, span }: the body is a span's start,
 //!                               `{ id, at, week, ticket, step, exercise, points, device }`;
 //!                               201 added, 200 the same again, 409 another start under the
-//!                               id, 409 `{ error, open: span }` while another span is open, 422 why
+//!                               id, 409 `{ error, open: span }` while another span is open,
+//!                               409 an `at` before the latest close's (spans never overlap), 422 why
 //! POST /rust-work-spans/close → { change, span }: the body is a span's close,
 //!                               `{ id, at, stoppedBy, answer, countedSeconds }`; 201 added,
 //!                               200 the same again, 409 another close of the span, 404 no
@@ -65,7 +66,8 @@
 //! **The owner's work, as spans of time** (paulgsc/some-ui#3250, RR26): the
 //! phone's work tracker keeps each span's start and, once the owner says how
 //! much of it they worked, its close. Each is written once; one span is open
-//! at a time, and every device reads it while it is open. See
+//! at a time, and every device reads it while it is open; and none starts
+//! before the last one closed, so spans never overlap in time. See
 //! `handlers::rust_work_spans`.
 //!
 //! **Trust model:** a paired phone's routes. Every handler takes a
