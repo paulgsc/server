@@ -13,6 +13,9 @@
 //! - its `schema` tag, [`WEEK_SCHEMA`] or [`WEEK_SCHEMA_V2`];
 //! - its `id`, the ISO week it opens (`2026-w46`), which names it for good;
 //! - its tickets' ids and every ticket's `program`, the bytes it records;
+//! - how many speak-to points each ticket has (`speakTo`'s length; RR24,
+//!   paulgsc/some-ui#3248), so a take of one point can be checked against
+//!   them. The points' words are never read here;
 //! - in a `/2` week, each ticket's `academy`: 1 to [`ACADEMY_MAX`]
 //!   exercises, and each exercise's `starter`, which it records too, under
 //!   [`academy_key`] (`TB-101/academy/1`);
@@ -20,10 +23,10 @@
 //!   record (RR14, paulgsc/some-ui#2689). A week without them is still kept
 //!   and recorded, and has no record.
 //!
-//! Anything else (the company, the story, the speak-to points or forks, an
-//! exercise's prose and `expect`, the tutor's guess) is kept as it came and
-//! never read here. A `/1` week reads exactly as it did before `/2`: an
-//! `academy` on one of its tickets is not read.
+//! Anything else (the company, the story, the speak-to points' words or
+//! forks, an exercise's prose and `expect`, the tutor's guess) is kept as it
+//! came and never read here. A `/1` week reads exactly as it did before `/2`:
+//! an `academy` on one of its tickets is not read.
 
 use crate::round::Problem;
 use serde_json::Value;
@@ -71,6 +74,9 @@ pub struct TicketProgram {
 	pub ticket: String,
 	/// `main.rs`, exactly.
 	pub source: String,
+	/// How many speak-to points the ticket has; 0 when it lists none, so no
+	/// take of a point can name one of its points.
+	pub points: usize,
 }
 
 /// One exercise's starter, in a `/2` week's academy.
@@ -197,6 +203,7 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 				programs.push(TicketProgram {
 					ticket: key.to_owned(),
 					source: source.to_owned(),
+					points: ticket.get("speakTo").and_then(Value::as_array).map_or(0, Vec::len),
 				});
 				if schema == Some(Schema::V2) {
 					read_academy(ticket, key, &at, &mut academy, &mut problems);
@@ -322,11 +329,13 @@ mod tests {
 			vec![
 				TicketProgram {
 					ticket: String::from("QM-311"),
-					source: String::from("fn main() {}\n")
+					source: String::from("fn main() {}\n"),
+					points: 2,
 				},
 				TicketProgram {
 					ticket: String::from("QM-312"),
-					source: String::from("fn main() { x }\n")
+					source: String::from("fn main() { x }\n"),
+					points: 0,
 				},
 			]
 		);

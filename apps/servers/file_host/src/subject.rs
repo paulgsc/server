@@ -198,6 +198,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"rust_week_sent",
 		"each week of Rust Rounds the owner sent while a week was sent once (paulgsc/some-ui#2689, RR14), kept as it was: which tickets they answered, with which take (a voice note, by id) and when it was recorded, which they passed over, when they sent it and when it reached home. See docs/identity.md invariant 28",
 	),
+	(
+		"rust_work_span_event",
+		"each span of time the owner's phone tracked them working on a week of Rust Rounds (paulgsc/some-ui#3250, RR26): the week, ticket, step, exercise and speak-to points, the phone's own name for the device that started it, when it started and stopped, who stopped it, whether the owner says they worked all, part or none of it and for how many seconds, and when each reached home. See docs/identity.md invariant 28",
+	),
 	("sessions", "study sessions"),
 	(
 		"studio_friction",

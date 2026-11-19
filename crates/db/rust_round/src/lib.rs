@@ -43,6 +43,10 @@
 //!   [`log`] each card-era session, all but the draft append-only, and all
 //!   the subject's (`migrations/20261109000100_create_rust_week_record.up.sql`,
 //!   `migrations/20261110000100_create_rust_week_draft_final.up.sql`).
+//! - **The owner's work on a week, as spans of time** (RR26,
+//!   paulgsc/some-ui#3250): [`work_span`] keeps each span's start and close,
+//!   one span open at a time, append-only and the subject's
+//!   (`migrations/20261119000200_create_rust_work_span_event.up.sql`).
 
 pub mod draft;
 pub mod essay;
@@ -52,6 +56,7 @@ pub mod log;
 pub mod round;
 pub mod sent;
 pub mod week;
+pub mod work_span;
 
 use crate::round::Round;
 use serde::Serialize;

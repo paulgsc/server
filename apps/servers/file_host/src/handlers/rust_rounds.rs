@@ -535,7 +535,7 @@ mod tests {
 		let state = state().await;
 		let browser = session(&state, A, Carrier::Cookie).await;
 		let app = module().into_table_router().with_state(state);
-		assert_eq!(module().descriptors().count(), 11);
+		assert_eq!(module().descriptors().count(), 14);
 		let body = round("indexing-01", "fn main() {}\n");
 		for (method, path) in [
 			(Method::GET, "/rust-rounds"),
@@ -549,6 +549,9 @@ mod tests {
 			(Method::PUT, "/rust-round-log/sessions/s1"),
 			(Method::GET, "/rust-round-log/sessions"),
 			(Method::GET, "/rust-round-log/sessions/s1"),
+			(Method::POST, "/rust-work-spans/start"),
+			(Method::POST, "/rust-work-spans/close"),
+			(Method::GET, "/rust-work-spans?week=2026-w47"),
 		] {
 			assert_eq!(call(&app, method.clone(), path, None, None, &body).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
 			assert_eq!(
@@ -1008,9 +1011,9 @@ mod tests {
 				"closed": true,
 				"sent": { "at": "2026-10-05T06:58:00.000Z", "receivedAt": "2026-10-05T06:58:01.000Z", "draft": false },
 				"tickets": [
-					{ "ticket": "QM-1", "answered": true, "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z", "opens": 2 },
-					{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "opens": 0 },
-					{ "ticket": "QM-3", "answered": false, "take": null, "recordedAt": null, "opens": 1 },
+					{ "ticket": "QM-1", "answered": true, "take": "2026-w40:QM-1", "recordedAt": "2026-10-01T18:00:00.000Z", "points": [], "opens": 2 },
+					{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "points": [], "opens": 0 },
+					{ "ticket": "QM-3", "answered": false, "take": null, "recordedAt": null, "points": [], "opens": 1 },
 				],
 				"unanswered": ["QM-2", "QM-3"],
 				"pastes": [{ "at": "2026-10-02T09:00:00.000Z", "text": "error[E0502]: cannot borrow", "note": null, "receivedAt": record["pastes"][0]["receivedAt"] }],
@@ -1029,6 +1032,41 @@ mod tests {
 			call(&app, Method::GET, "/rust-weeks/2026-w44/record", Some(&phone), None, b"").await.0,
 			StatusCode::NOT_FOUND
 		);
+	}
+
+	/// RR24: an answer's ticket and point are its take's own `ref`. A send
+	/// naming a held take for another ticket is refused; one naming a take
+	/// home does not hold yet, or the take's own ticket, is kept.
+	#[tokio::test]
+	async fn a_send_names_the_ticket_its_take_was_said_for() {
+		const SENT: &str = "/rust-weeks/2026-w53/sent";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		hold_dated_week(&pool, A, 3, "2026-w53", "2026-10-12T00:00:00-07:00", "2099-12-31T23:59:00-08:00").await;
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'take-2', 'rust-round', '2026-w53:QM-2', 'then', 'audio/ogg', 4, 's', 'now')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let send = |at: &str, take: &str| {
+			json!({
+				"week": "2026-w53", "at": at,
+				"answers": [{ "ticket": "QM-1", "take": take, "recordedAt": "2026-10-13T18:00:00.000Z" }],
+				"passed": ["QM-2", "QM-3"],
+			})
+			.to_string()
+			.into_bytes()
+		};
+		let (status, _, refused) = call(&app, Method::PUT, SENT, Some(&phone), None, &send("2026-10-14T09:00:00.000Z", "take-2")).await;
+		assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "take-2 was said for QM-2");
+		assert!(refused["error"]["details"]["answers[0].take"].is_array(), "{refused}");
+		let (status, _, _) = call(&app, Method::PUT, SENT, Some(&phone), None, &send("2026-10-14T09:01:00.000Z", "not-yet")).await;
+		assert_eq!(status, StatusCode::CREATED, "a take home does not hold yet is not refused");
 	}
 
 	/// Before the deadline every send is a draft: a later one replaces it, an

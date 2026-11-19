@@ -41,6 +41,20 @@
 //!                                   413 past `SESSION_CEILING` + 1 bytes
 //! GET /rust-round-log/sessions    → { sessions: [{ id, startedAt, revision, sha256, writtenAt }] }
 //! GET /rust-round-log/sessions/:id → the session's last revision as sent, with an ETag, or a 404
+//!
+//! POST /rust-work-spans/start → { change, span }: the body is a span's start,
+//!                               `{ id, at, week, ticket, step, exercise, points, device }`;
+//!                               201 added, 200 the same again, 409 another start under the
+//!                               id, 409 `{ error, open: span }` while another span is open,
+//!                               409 an `at` before the latest close's (spans never overlap), 422 why
+//! POST /rust-work-spans/close → { change, span }: the body is a span's close,
+//!                               `{ id, at, stoppedBy, answer, countedSeconds }`; 201 added,
+//!                               200 the same again, 409 another close of the span, 404 no
+//!                               start of it, 422 why (seconds that do not fit the span)
+//! GET /rust-work-spans?week=  → { week, spans: [span], open: span | null }: the week's spans in
+//!                               the order they started, and the span open now, whatever its week
+//!   where span = { id, week, ticket, step, exercise, points, device, startedAt, keptAt,
+//!                  closed: { at, stoppedBy, answer, countedSeconds, keptAt } | null }
 //! ```
 //!
 //! **A week's record, silence included** (paulgsc/some-ui#2689, RR14): what
@@ -52,6 +66,13 @@
 //! (each ticket's opens), and names every ticket no take answered. The
 //! card-era log's sessions are kept as the phone sent them, growing by
 //! revisions. See `handlers::rust_week_record`.
+//!
+//! **The owner's work, as spans of time** (paulgsc/some-ui#3250, RR26): the
+//! phone's work tracker keeps each span's start and, once the owner says how
+//! much of it they worked, its close. Each is written once; one span is open
+//! at a time, and every device reads it while it is open; and none starts
+//! before the last one closed, so spans never overlap in time. See
+//! `handlers::rust_work_spans`.
 //!
 //! **Trust model:** a paired phone's routes. Every handler takes a
 //! `Paired`, so a request without a session is `401`, a write from an
@@ -73,6 +94,7 @@
 use crate::auth::AuthContext;
 use crate::handlers::rust_rounds as handlers;
 use crate::handlers::rust_week_record as record;
+use crate::handlers::rust_work_spans as spans;
 use crate::routes::cors::allowlisted_cors_with_credentials;
 use crate::routes::table::{Module, RouteTable};
 use crate::Config;
@@ -86,6 +108,7 @@ use axum::{
 };
 use rust_round_repo::log::SESSION_CEILING;
 use rust_round_repo::round::ROUND_CEILING;
+use rust_round_repo::work_span::SPAN_CEILING;
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 
@@ -111,7 +134,11 @@ where
 		// One past the ceiling, as a round's: the 422 names it, longer is a 413.
 		.put("/rust-round-log/sessions/:id", record::put_session.layer(DefaultBodyLimit::max(SESSION_CEILING + 1)))
 		.get("/rust-round-log/sessions", record::list_sessions)
-		.get("/rust-round-log/sessions/:id", record::get_session);
+		.get("/rust-round-log/sessions/:id", record::get_session)
+		// One past the ceiling, as a round's: the 422 names it, longer is a 413.
+		.post("/rust-work-spans/start", spans::post_start.layer(DefaultBodyLimit::max(SPAN_CEILING + 1)))
+		.post("/rust-work-spans/close", spans::post_close.layer(DefaultBodyLimit::max(SPAN_CEILING + 1)))
+		.get("/rust-work-spans", spans::get_spans);
 
 	Module::versioned("rust_rounds", table).with_cors(cors)
 }
@@ -119,7 +146,7 @@ where
 fn cors(config: &Config) -> CorsLayer {
 	allowlisted_cors_with_credentials(
 		config,
-		vec![Method::GET, Method::PUT, Method::OPTIONS],
+		vec![Method::GET, Method::PUT, Method::POST, Method::OPTIONS],
 		vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION, IF_NONE_MATCH],
 	)
 	.expose_headers([ETAG])

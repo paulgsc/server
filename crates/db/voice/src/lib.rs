@@ -468,6 +468,11 @@ pub fn is_note_id(id: &str) -> bool {
 ///   `2026-w46:QM-311`, the week's id and the ticket's key as a week has them
 ///   (`rust_round_repo::week::is_week_id`, `is_ticket_key`). A ticket's key
 ///   holds a capital and a slug never does, so no ref reads as both.
+/// - **A point of a ticket** (RR24, paulgsc/some-ui#3248): `<week>:<ticket>:<n>`,
+///   like `2026-w46:QM-311:2`, the take for the ticket's second speak-to
+///   point, counted from 1 ([`is_point`]). The point is read from the `ref`,
+///   never from what was said; `<week>:<ticket>` stays the take for the whole
+///   ticket.
 /// - **An error pasted from the owner's own code** (RR13, paulgsc/some-ui#2504):
 ///   `<week>:PASTE:<at>`, like `2026-w46:PASTE:2026-11-09T17:04:00.000Z`, the
 ///   week it was pasted in and when, as an instant to the millisecond in UTC
@@ -483,9 +488,19 @@ pub fn is_rust_round_ref(of_ref: &str) -> bool {
 	};
 	let rest = parts.next();
 	let card = is_slug(first) && is_slug(second) && rest.is_none_or(is_note_id);
-	let ticket = is_week_id(first) && is_ticket_key(second) && rest.is_none();
+	let ticket = is_week_id(first) && is_ticket_key(second) && rest.is_none_or(is_point);
 	let paste = is_week_id(first) && second == PASTE && rest.is_some_and(|at| instant(at).as_deref() == Some(at));
 	card || ticket || paste
+}
+
+/// A speak-to point's number in a ticket's `ref`: 1 to 99, no leading zero.
+///
+/// RR24. A week caps a ticket's points (`SPEAK_TO_MAX` in paulgsc/some-ui's
+/// week format); this is only the shape, which the week's send checks
+/// against the ticket's own count.
+#[must_use]
+pub fn is_point(part: &str) -> bool {
+	part.parse::<u8>().is_ok_and(|n| (1..=99).contains(&n)) && !part.starts_with('0') && part.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Whether `of_ref` names what an [`Of::Interview`] take was said for
@@ -761,6 +776,20 @@ pub async fn holds(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 	)
 	.fetch_one(&mut *conn)
 	.await
+}
+
+/// The `ref` of `subject`'s note `note_id`, when home holds it.
+///
+/// `Some(None)` when it is said for another kind than `of`, `None` when home
+/// does not hold it. Read it in the transaction that acts on the answer.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn ref_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<Option<String>>, sqlx::Error> {
+	let row = sqlx::query!("SELECT of_kind, of_ref FROM voice_note WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.fetch_optional(&mut *conn)
+		.await?;
+	Ok(row.map(|row| (row.of_kind == of.as_str()).then_some(row.of_ref)))
 }
 
 /// What [`VoiceError::Rewritten`] says.
@@ -1987,7 +2016,8 @@ mod tests {
 
 	/// RR6 (paulgsc/some-ui#2237): a Rust Rounds note names its card, and on
 	/// a refine card the earlier note too; RR13 (#2688): or a week's ticket,
-	/// or an error pasted in a week, by when (#2504).
+	/// or an error pasted in a week, by when (#2504); RR24 (#3248): or one
+	/// speak-to point of a ticket, by its number from 1.
 	/// Any other `ref` is refused for it, and its rule binds no other kind.
 	#[test]
 	fn a_rust_round_note_names_its_card_and_what_it_refines() {
@@ -1998,6 +2028,9 @@ mod tests {
 			"2026-w46:QM-311",
 			"2026-w01:A-1",
 			"2026-w46:PASTE:2026-11-09T17:04:00.000Z",
+			"2026-w46:QM-311:1",
+			"2026-w46:QM-311:8",
+			"2026-w46:QM-311:99",
 		] {
 			assert!(is_rust_round_ref(good), "{good}");
 			let note = describe("r1", said_take("rust-round", good), b"said").unwrap();
@@ -2014,6 +2047,12 @@ mod tests {
 			"r/c",
 			"2026-w54:QM-311",
 			"2026-w46:QM-311:note",
+			"2026-w46:QM-311:0",
+			"2026-w46:QM-311:01",
+			"2026-w46:QM-311:100",
+			"2026-w46:QM-311:+1",
+			"2026-w46:QM-311:1:2",
+			"2026-w46:QM-311:",
 			"2026-w46:QM311",
 			"w46:QM-311",
 			"2026-w46:PASTE",

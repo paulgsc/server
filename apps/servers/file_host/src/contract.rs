@@ -53,14 +53,18 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// Raise it by one whenever a folder, a file's name or a file's shape there
 /// changes in a way render must know, and raise render's `requires` with
 /// the render change that reads it.
-pub const RENDER_FOLDERS_EPOCH: u32 = 1;
+///
+/// 2 (RR24, paulgsc/some-ui#3248): a Rust Rounds essay's `takes/` may hold a
+/// take of one speak-to point, `<ticket>.<n>.<ext>` (`rust_round_repo::essay::point_key`),
+/// beside a ticket's `<ticket>.<ext>`.
+pub const RENDER_FOLDERS_EPOCH: u32 = 2;
 
 /// The route surface [`CONTRACT_EPOCH`] was last set for.
 ///
 /// FNV-1a over the sorted `METHOD full_path` lines of every route this build
 /// serves, as [`route_fingerprint`] computes it. A route change fails `the_fingerprint_is_this_route_surface`,
 /// whose message names the new value, until this and the epoch are updated.
-pub const ROUTE_FINGERPRINT: &str = "198593886bb746a5";
+pub const ROUTE_FINGERPRINT: &str = "53846b2ba1dc6de3";
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;

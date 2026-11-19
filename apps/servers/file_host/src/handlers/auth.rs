@@ -1641,6 +1641,7 @@ mod tests {
 		"INSERT INTO interview_essay_video_link (subject_id, week_id, youtube_id, recorded_at) VALUES (?1, '2026-w47', 'dQw4w9WgXcQ', 'now')",
 		"INSERT INTO interview_essay_video_deletion (subject_id, week_id, step, cause, youtube_id, note_id, size, deleted_at) VALUES (?1, '2026-w47', 'video', 'let-go', 'dQw4w9WgXcQ', NULL, 1, 'now')",
 		"INSERT INTO rust_round_log (subject_id, session_id, revision, started_at, body, sha256, written_at) VALUES (?1, 's', 1, 'now', '{}', 'h', 'now')",
+		"INSERT INTO rust_work_span_event (subject_id, span_id, kind, at, week_id, ticket, step, exercise, points, device, kept_at) VALUES (?1, 's', 'started', 'now', '2026-w47', 'TB-101', 'read', NULL, '[1]', 'd', 'now')",
 		"INSERT INTO report_week (subject_id, week, body, written_at) VALUES (?1, '2026-W46', '{}', 'now')",
 		"INSERT INTO report_video_link (subject_id, week, youtube_id, recorded_at) VALUES (?1, '2026-W46', 'dQw4w9WgXcQ', 'now')",
 		"INSERT INTO report_video_deletion (subject_id, week, step, youtube_id, size, deleted_at) VALUES (?1, '2026-W46', 'video', 'dQw4w9WgXcQ', 1, 'now')",

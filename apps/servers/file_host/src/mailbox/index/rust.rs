@@ -6,6 +6,7 @@
 //! `brief`), and home refuses one whose take or silence per ticket disagrees
 //! with the week's final ([`rust_round_repo::essay::against`]). The routine
 //! reads the final here: which take counted for each ticket at the deadline,
+//! and for each of its points answered on its own (RR24),
 //! and the errors pasted in the week, which the next week is seeded from
 //! (paulgsc/some-ui#2685).
 //!
@@ -201,7 +202,7 @@ pub(in crate::mailbox) async fn put_rust_index<T: MailboxTransport>(
 #[cfg(test)]
 mod tests {
 	use super::{fitted, rust_index};
-	use crate::handlers::rust_week_record::{SentAt, TicketRecord, WeekRecord};
+	use crate::handlers::rust_week_record::{PointRecord, SentAt, TicketRecord, WeekRecord};
 	use crate::mailbox::pass::MAILBOX_BODY_CEILING;
 	use rust_round_repo::sent::StoredPaste;
 	use serde_json::{json, Value};
@@ -223,6 +224,11 @@ mod tests {
 					answered: true,
 					take: Some(String::from("2026-w46:QM-1")),
 					recorded_at: Some(String::from("2026-11-12T17:00:00.000Z")),
+					points: vec![PointRecord {
+						point: 2,
+						take: String::from("2026-w46:QM-1:2"),
+						recorded_at: String::from("2026-11-12T17:30:00.000Z"),
+					}],
 					opens: 2,
 				},
 				TicketRecord {
@@ -230,6 +236,7 @@ mod tests {
 					answered: false,
 					take: None,
 					recorded_at: None,
+					points: Vec::new(),
 					opens: 0,
 				},
 			],
@@ -263,8 +270,9 @@ mod tests {
 					"closed": true,
 					"sent": { "at": "2026-11-12T18:00:00.000Z", "receivedAt": "2026-11-12T18:00:01.000Z", "draft": false },
 					"tickets": [
-						{ "ticket": "QM-1", "answered": true, "take": "2026-w46:QM-1", "recordedAt": "2026-11-12T17:00:00.000Z", "opens": 2 },
-						{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "opens": 0 },
+						{ "ticket": "QM-1", "answered": true, "take": "2026-w46:QM-1", "recordedAt": "2026-11-12T17:00:00.000Z",
+							"points": [{ "point": 2, "take": "2026-w46:QM-1:2", "recordedAt": "2026-11-12T17:30:00.000Z" }], "opens": 2 },
+						{ "ticket": "QM-2", "answered": false, "take": null, "recordedAt": null, "points": [], "opens": 0 },
 					],
 					"unanswered": ["QM-2"],
 					"pastes": [{ "at": "2026-11-13T09:00:00.000Z", "text": "error[E0502]: cannot borrow", "note": null, "receivedAt": "2026-11-17T09:00:00.000Z" }],
