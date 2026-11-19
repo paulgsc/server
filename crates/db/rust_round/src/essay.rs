@@ -187,7 +187,21 @@ pub struct Essay {
 	pub kind: Kind,
 	pub week: String,
 	pub tickets: Vec<(String, Answered)>,
+	/// Each speak-to point a Rust Rounds essay answers on its own (RR24),
+	/// as [`PointAnswer`]; none for a mock interview's.
+	pub points: Vec<PointAnswer>,
 	pub reads: Vec<(String, Answered)>,
+}
+
+/// A speak-to point an essay answers on its own (RR24,
+/// paulgsc/some-ui#3248): its item, [`point_key`], its answer, and where it
+/// sits, `tickets[ticket].points[point]`, which is the field a refusal names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointAnswer {
+	pub item: String,
+	pub answered: Answered,
+	pub ticket: usize,
+	pub point: usize,
 }
 
 /// Read `body` as a Rust Rounds essay ([`read_of`]).
@@ -227,17 +241,15 @@ pub fn read_of(kind: Kind, body: &[u8]) -> Result<Essay, Vec<Problem>> {
 	if week.is_none() {
 		problems.push((String::from("week.id"), words.week_why));
 	}
-	let tickets = match essay.get(words.items.field).and_then(Value::as_array) {
+	let (tickets, points) = match essay.get(words.items.field).and_then(Value::as_array) {
 		Some(held) if !held.is_empty() => {
-			let mut tickets = items(held, &words.items, &mut problems);
-			if kind == Kind::RustRounds {
-				tickets.extend(point_items(held, &mut problems));
-			}
-			tickets
+			let tickets = items(held, &words.items, &mut problems);
+			let points = if kind == Kind::RustRounds { point_items(held, &mut problems) } else { Vec::new() };
+			(tickets, points)
 		}
 		_ => {
 			problems.push((String::from(words.items.field), words.no_items));
-			Vec::new()
+			(Vec::new(), Vec::new())
 		}
 	};
 	let reads = match words.more.as_ref().map(|more| (more, essay.get(more.field))) {
@@ -253,6 +265,7 @@ pub fn read_of(kind: Kind, body: &[u8]) -> Result<Essay, Vec<Problem>> {
 			kind,
 			week: week.to_owned(),
 			tickets,
+			points,
 			reads,
 		}),
 		_ => Err(problems),
@@ -293,7 +306,7 @@ fn items(held: &[Value], list: &List, problems: &mut Vec<Problem>) -> Vec<(Strin
 /// The point is the one the take's `ref` names (`<week>:<ticket>:<n>`), as
 /// the week's final keeps it ([`rust_final`]): never one split from a take
 /// of the whole ticket.
-fn point_items(held: &[Value], problems: &mut Vec<Problem>) -> Vec<(String, Answered)> {
+fn point_items(held: &[Value], problems: &mut Vec<Problem>) -> Vec<PointAnswer> {
 	let mut items = Vec::new();
 	for (index, ticket) in held.iter().enumerate() {
 		let Some(key) = ticket.get("id").and_then(Value::as_str).filter(|key| is_ticket_key(key)) else {
@@ -313,7 +326,12 @@ fn point_items(held: &[Value], problems: &mut Vec<Problem>) -> Vec<(String, Answ
 					continue;
 				}
 			};
-			items.push((point_key(key, j + 1), answered));
+			items.push(PointAnswer {
+				item: point_key(key, j + 1),
+				answered,
+				ticket: index,
+				point: j,
+			});
 		}
 	}
 	items
@@ -371,9 +389,21 @@ pub fn against(essay: &Essay, sent: &Final<'_>) -> Result<Vec<Played>, Vec<Probl
 	let words = words(essay.kind);
 	let mut problems = Vec::new();
 	let mut played = Vec::new();
-	check(&essay.tickets, &sent.answers, &sent.unheard, &words.items, &mut played, &mut problems);
+	let at_fields = |list: &List, held: &[(String, Answered)]| -> Vec<(String, Answered, String)> {
+		held
+			.iter()
+			.enumerate()
+			.map(|(index, (item, answered))| (item.clone(), *answered, String::from(list.field) + "[" + &index.to_string() + "].answer.kind"))
+			.collect()
+	};
+	// A point is named by its own field, never by its place among the items.
+	let tickets = at_fields(&words.items, &essay.tickets).into_iter().chain(essay.points.iter().map(|point| {
+		let at = String::from(words.items.field) + "[" + &point.ticket.to_string() + "].points[" + &point.point.to_string() + "].answer.kind";
+		(point.item.clone(), point.answered, at)
+	}));
+	check(&tickets.collect::<Vec<_>>(), &sent.answers, &sent.unheard, &words.items, &mut played, &mut problems);
 	if let Some(more) = &words.more {
-		check(&essay.reads, &sent.reads, &sent.unheard, more, &mut played, &mut problems);
+		check(&at_fields(more, &essay.reads), &sent.reads, &sent.unheard, more, &mut played, &mut problems);
 	}
 	if problems.is_empty() {
 		Ok(played)
@@ -384,9 +414,9 @@ pub fn against(essay: &Essay, sent: &Final<'_>) -> Result<Vec<Played>, Vec<Probl
 
 /// [`against`] for one list: the essay's `items` against what the final sent
 /// of them.
-fn check(items: &[(String, Answered)], sent: &[(&str, &str)], unheard: &[&str], list: &List, played: &mut Vec<Played>, problems: &mut Vec<Problem>) {
-	for (index, (ticket, answered)) in items.iter().enumerate() {
-		let at = String::from(list.field) + "[" + &index.to_string() + "].answer.kind";
+fn check(items: &[(String, Answered, String)], sent: &[(&str, &str)], unheard: &[&str], list: &List, played: &mut Vec<Played>, problems: &mut Vec<Problem>) {
+	for (ticket, answered, at) in items {
+		let at = at.clone();
 		let take = sent.iter().find(|(answered, _)| answered == ticket);
 		match (answered, take) {
 			(Answered::Take, Some((_, take))) => played.push(Played {
@@ -400,7 +430,7 @@ fn check(items: &[(String, Answered)], sent: &[(&str, &str)], unheard: &[&str], 
 		}
 	}
 	for (answered, _) in sent {
-		if !items.iter().any(|(ticket, _)| ticket == answered) {
+		if !items.iter().any(|(ticket, _, _)| ticket == answered) {
 			problems.push((String::from(list.field) + "[" + answered + "]", "was answered by the deadline, and the essay leaves it out"));
 		}
 	}
@@ -525,7 +555,11 @@ mod tests {
 		assert_eq!(against(&read(&body(&unplayed)).unwrap(), &rust_final(&answers)).unwrap_err()[0].0, "tickets[QM-311.2]");
 		let mut silent = essay.clone();
 		silent["tickets"][0]["points"][1]["answer"]["kind"] = json!("silence");
-		assert!(against(&read(&body(&silent)).unwrap(), &rust_final(&answers)).is_err());
+		assert_eq!(
+			against(&read(&body(&silent)).unwrap(), &rust_final(&answers)).unwrap_err()[0].0,
+			"tickets[0].points[1].answer.kind",
+			"a point's refusal names its own field, not its place among the items"
+		);
 		let mut bad = essay;
 		bad["tickets"][0]["points"][1]["answer"]["kind"] = json!("maybe");
 		assert_eq!(read(&body(&bad)).unwrap_err()[0].0, "tickets[0].points[1].answer.kind");
@@ -553,6 +587,7 @@ mod tests {
 				kind: Kind::RustRounds,
 				week: String::from("2026-w46"),
 				tickets: vec![(String::from("QM-311"), Answered::Take), (String::from("QM-312"), Answered::Silence)],
+				points: Vec::new(),
 				reads: Vec::new(),
 			}
 		);
@@ -664,6 +699,7 @@ mod tests {
 				kind: Kind::Interview,
 				week: String::from("2026-w47"),
 				tickets: vec![(String::from("about-you"), Answered::Take), (String::from("a-conflict"), Answered::Silence)],
+				points: Vec::new(),
 				reads: vec![(String::from("intro"), Answered::Take)],
 			}
 		);

@@ -198,8 +198,8 @@ fn stored_instant(at: &str) -> Option<String> {
 /// # Errors
 /// 401 without a session, 403 for a browser's or from an untrusted origin,
 /// 404 for a week the caller's subject does not hold, 422 naming each
-/// refused field (`at` after the deadline, and `week` once home's clock is
-/// past it, among them), 409 for another body at the draft's moment, 500 for
+/// refused field (`at` after the deadline, `week` once home's clock is
+/// past it, and a take held as said for another ticket or point, among them), 409 for another body at the draft's moment, 500 for
 /// a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_week_sent_put", skip_all, fields(otel.kind = "server"))]
@@ -224,6 +224,18 @@ pub async fn put_sent(paired: Paired, State(db): State<SqlitePool>, Path(id): Pa
 			return Err(FileHostError::unprocessable_entity(problems));
 		}
 	};
+	// RR24: each answer's ticket and point are its take's own `ref`.
+	let mut held = Vec::new();
+	for answer in &sent.answers {
+		if let Some(of_ref) = voice_repo::ref_of(&mut tx, paired.subject.as_str(), &answer.take, voice_repo::Of::RustRound).await? {
+			held.push((answer.take.as_str(), of_ref));
+		}
+	}
+	let held: Vec<(&str, Option<&str>)> = held.iter().map(|(take, of_ref)| (*take, of_ref.as_deref())).collect();
+	let elsewhere = rust_round_repo::sent::take_refs(&sent, &held);
+	if !elsewhere.is_empty() {
+		return Err(FileHostError::unprocessable_entity(elsewhere));
+	}
 	let (change, sent) = rust_round_repo::sent::put_draft(&mut tx, paired.subject.as_str(), &sent, &now)
 		.await
 		.map_err(|err| refused(err, SENT_TWICE))?;

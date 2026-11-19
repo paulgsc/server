@@ -259,6 +259,39 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 	}
 }
 
+/// What [`take_refs`] says of an answer whose take is said for another
+/// ticket or point, for the `422`.
+pub const TAKE_ELSEWHERE: &str = "is a take said for another ticket, or another point of one, than the answer names";
+
+/// Each answer of `sent` whose take home holds as said for another ticket,
+/// or point, than the answer names (RR24, paulgsc/some-ui#3248).
+///
+/// A take of the whole ticket's `ref` is `<week>:<ticket>`, a point's
+/// `<week>:<ticket>:<n>`, so an answer's `ticket` and `point` must be what
+/// its take's own `ref` says, never something the phone could get out of step.
+///
+/// `held` gives, for each take home holds, its id and its `ref` when it is a
+/// Rust Rounds note, `None` when it is another kind's. A take home does not
+/// hold yet is not refused: a note and the week's send reach home on their
+/// own, as before RR24.
+#[must_use]
+pub fn take_refs(sent: &Sent, held: &[(&str, Option<&str>)]) -> Vec<Problem> {
+	let mut problems = Vec::new();
+	for (index, answer) in sent.answers.iter().enumerate() {
+		let Some((_, of_ref)) = held.iter().find(|(take, _)| *take == answer.take) else {
+			continue;
+		};
+		let names = answer.point.map_or_else(
+			|| sent.week.clone() + ":" + &answer.ticket,
+			|point| sent.week.clone() + ":" + &answer.ticket + ":" + &point.to_string(),
+		);
+		if *of_ref != Some(names.as_str()) {
+			problems.push((String::from("answers[") + &index.to_string() + "].take", TAKE_ELSEWHERE));
+		}
+	}
+	problems
+}
+
 /// Keep `sent` as `subject`'s draft of its week ([`draft::put_draft`]).
 ///
 /// `sent` is read by [`read_sent`] with home's clock no later than the
@@ -396,7 +429,7 @@ pub async fn pastes(conn: &mut SqliteConnection, subject: &str, week: &str) -> R
 
 #[cfg(test)]
 mod tests {
-	use super::{finalize, is_final, pastes, put_draft, put_paste, read_paste, read_sent, standing, DraftChange, Sent};
+	use super::{finalize, is_final, pastes, put_draft, put_paste, read_paste, read_sent, standing, take_refs, DraftChange, Sent};
 	use crate::week::read;
 	use crate::{Change, RoundError};
 	use serde_json::{json, Value};
@@ -572,6 +605,44 @@ mod tests {
 			["passed"],
 			"answered and passed"
 		);
+	}
+
+	/// RR24: an answer's ticket and point are its take's own `ref`; a take
+	/// said for another ticket, another point, the whole ticket or another
+	/// kind is refused, and one home does not hold yet is not.
+	#[test]
+	fn an_answer_names_what_its_take_was_said_for() {
+		let week = week();
+		let answer = |ticket: &str, point: Option<u8>, take: &str| {
+			let mut answer = json!({ "ticket": ticket, "take": take, "recordedAt": "2026-11-12T20:00:00.000Z" });
+			if let Some(point) = point {
+				answer["point"] = json!(point);
+			}
+			answer
+		};
+		let sent = read_sent(
+			json!({
+				"week": "2026-w46", "at": "2026-11-15T20:00:00.000Z",
+				"answers": [answer("QM-311", None, "whole"), answer("QM-312", Some(2), "point"), answer("QM-313", Some(1), "later")],
+				"passed": [],
+			})
+			.to_string()
+			.as_bytes(),
+			&week,
+			OPEN,
+		)
+		.unwrap();
+		let fields = |held: &[(&str, Option<&str>)]| -> Vec<String> { take_refs(&sent, held).into_iter().map(|(field, _)| field).collect() };
+		let matching = [("whole", Some("2026-w46:QM-311")), ("point", Some("2026-w46:QM-312:2"))];
+		assert!(fields(&matching).is_empty(), "each take said for what its answer names; `later` not held yet");
+		for (whole, point) in [
+			(Some("2026-w46:QM-311:1"), Some("2026-w46:QM-312")),
+			(Some("2026-w46:QM-312"), Some("2026-w46:QM-312:3")),
+			(Some("2026-w45:QM-311"), Some("2026-w46:QM-311:2")),
+			(None, None),
+		] {
+			assert_eq!(fields(&[("whole", whole), ("point", point)]), ["answers[0].take", "answers[1].take"], "{whole:?} {point:?}");
+		}
 	}
 
 	/// Before the deadline a send replaces the draft when it is later, leaves

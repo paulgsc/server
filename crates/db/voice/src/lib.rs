@@ -778,6 +778,20 @@ pub async fn holds(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 	.await
 }
 
+/// The `ref` of `subject`'s note `note_id`, when home holds it.
+///
+/// `Some(None)` when it is said for another kind than `of`, `None` when home
+/// does not hold it. Read it in the transaction that acts on the answer.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn ref_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, of: Of) -> Result<Option<Option<String>>, sqlx::Error> {
+	let row = sqlx::query!("SELECT of_kind, of_ref FROM voice_note WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.fetch_optional(&mut *conn)
+		.await?;
+	Ok(row.map(|row| (row.of_kind == of.as_str()).then_some(row.of_ref)))
+}
+
 /// What [`VoiceError::Rewritten`] says.
 pub const REWRITTEN: &str = "this note id already holds a different note: voice notes are append-only";
 
