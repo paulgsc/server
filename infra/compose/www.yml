@@ -1,0 +1,141 @@
+# The web app (apps/www's build) and the résumé service it fronts, on
+# home's release (RELEASE R8, #853). Both images are paulgsc/some-ui's,
+# published by its CI and pinned by digest in deploy/home/release.json like
+# render; home builds and pulls neither by hand. some-ui's root compose has
+# its own services of the same images for development; on home this file is
+# how they run, and `make home-deploy` moves them with everything else.
+#
+# - `www`: nginx serving apps/www's build. Its server block, the
+#   /api/file-host/ proxy and the /api/resume/ proxy are baked into the image
+#   (some-ui#2993), so a www release is one digest. The two upstreams default
+#   in the image to the names below (`file-host-server:3000`,
+#   `resume-render:3100`), so it takes no environment.
+# - `resume-render`: the LAN résumé render (some-ui's packages/ui/resume),
+#   reached only through www's /api/resume/. It publishes no port.
+#
+#   make home-deploy   # the whole release, www and resume-render included
+#   curl -sI http://127.0.0.1:5172/
+services:
+  www:
+    # pgathondu/www tagged with apps/www's version, and that tag's digest
+    # (release_lock.py follows its newest X.Y.Z).
+    image: ${IMAGE_WWW:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
+    container_name: www
+    # Interactive (docs/home-compute.md, "Classes"): a person on the phone is
+    # waiting on every page and proxied call it serves.
+    oom_score_adj: 0
+    restart: unless-stopped
+    # Loopback only: other devices come through Caddy on the host. A
+    # published port bypasses the host firewall, so the host IP here is the
+    # whole policy.
+    ports:
+      - '127.0.0.1:5172:80'
+    networks:
+      # file_host is `file-host-server` on this network
+      # (infra/compose/file_host.yml); nginx resolves it per request through
+      # Docker's DNS.
+      - monitoring-network
+      - resume-network
+    depends_on:
+      resume-render:
+        condition: service_started
+    # No asset mounts: the sfx and hangul folders some-ui's compose mounted
+    # are legacy, and the web app relies on no files kept on the box (the
+    # owner, 2026-11-19, C741).
+    # Nothing in the image is written but what nginx's entrypoint renders
+    # (the template into conf.d), its temp folders and its pid.
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d
+      - /var/cache/nginx
+      - /var/run
+    # What nginx's root master needs and nothing else: bind :80, chown its
+    # temp folders to the worker's user, and drop to it. Measured on
+    # pgathondu/www:0.1.69: without CHOWN it stops at start.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    # Static files and two proxies: about 6 MiB at rest. nginx starts a
+    # worker per core, so pids leaves room for home's cores.
+    mem_limit: 256M
+    cpus: 1.0
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+          pids: 128
+    # The image's own check, stated so the deploy reads readiness (RL11).
+    # 127.0.0.1, not localhost: BusyBox wget tries ::1 only, and nginx binds
+    # IPv4.
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1/']
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # nginx's access log is off in the image; its error log can carry a
+    # client address and request line when an upstream fails, so it is
+    # bounded like every other container's.
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  resume-render:
+    # pgathondu/resume-render tagged with the paulgsc/some-ui commit it was
+    # published from, and that tag's digest (release_lock.py follows its
+    # newest, as render's).
+    image: ${IMAGE_RESUME_RENDER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
+    # www's nginx reaches it by this name (the image's RESUME_UPSTREAM).
+    container_name: resume-render
+    # Interactive (docs/home-compute.md, "Classes"): the owner waits on each
+    # render, and it does nothing between them.
+    oom_score_adj: 0
+    restart: unless-stopped
+    expose:
+      - '3100'
+    networks:
+      - resume-network
+    # Nothing in the container is writable, /tmp included: a render keeps the
+    # contact details it is sent and its PDF in memory and pipes, so it has
+    # nothing to write (some-ui's packages/ui/resume/README.md, "Scope and
+    # limits").
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1G
+    cpus: 2.0
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+          pids: 64
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3100/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+networks:
+  # Internal: the résumé service reaches nothing, and only www reaches it.
+  resume-network:
+    internal: true

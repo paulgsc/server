@@ -561,6 +561,59 @@ file_host's uid's) and runs `make` as `user` (who holds the sops key);
 `systemctl status home-deploy.path home-deploy` and
 `journalctl -u home-deploy` show it.
 
+#### www and the résumé service are in the release (R8, #853)
+
+The web app (`www`, apps/www's build, nginx on `127.0.0.1:5172` behind Caddy)
+and the résumé render it fronts (`resume-render`, no port) are home compose
+services (`infra/compose/www.yml`), each pinned by digest in
+`deploy/home/release.json`. Until their images write the set check's labels
+(docs/release.md, RL7), a reviewed change moves each pin; then
+`release_lock.py` follows them like render, and a www release in
+paulgsc/some-ui or a résumé publish moves its pin by itself. `make home-deploy`
+moves them with everything else; nothing is pulled or composed from a some-ui
+checkout any more. www's nginx config is in its image, and its two
+upstreams are the image's defaults (`file-host-server:3000`,
+`resume-render:3100`), so it takes no environment, and it mounts nothing
+from the box.
+
+**Once, on the box, to switch over, before any deploy after this lands**
+(some-ui's root compose ran these two before, from its checkout; the speech
+pair it also ran was retired, some-ui#2978). Until step 1 is done, some-ui's
+stack holds port 5172 and the name `resume-render`, so every deploy's `up`
+fails and is put back whole (RL11): each later release, a `file-host` bump
+or a deploy a client asked for included, fails the same way, not only the
+first.
+
+```bash
+# 1. Stop the old stack, which holds port 5172 and the name resume-render.
+(cd <some-ui checkout> && docker compose down)
+# 2. Forget the releases that failed on that port since this landed (a
+#    client's deploy may have tried one), or step 3 skips main's as failed.
+#    Only main's own key is ever looked up, so emptying the list is safe.
+state="$HOME/.local/state/server-deploy"   # envctl's, whatever XDG_STATE_HOME says
+cat "$state/failed-releases.json"
+echo '[]' > "$state/failed-releases.json"
+# 3. Server's release, www and resume-render included.
+make home-deploy
+```
+
+If `make home-deploy` fails after step 1, the rollback puts back server's
+last release, which never ran www, and does not restart some-ui's stack.
+It does not stop a service the failed release added either (#861), so www
+and resume-render may still be running, as orphans of a release that was
+not applied, or may not be running at all. To serve the old www meanwhile,
+remove them, then start some-ui's stack again. It blocks the next deploy as
+above, and the failed deploy is remembered by its key, so to try again
+repeat steps 1 to 3, not only step 3:
+
+```bash
+docker rm -f www resume-render || true   # either may be gone already
+(cd <some-ui checkout> && docker compose up -d)
+```
+
+some-ui's root compose stays for development on a laptop; it is no longer
+how home runs.
+
 ### NixOS modules
 
 The flake exports each binary as a NixOS service, `nixosModules.file-host` and
