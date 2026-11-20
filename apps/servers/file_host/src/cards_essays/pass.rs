@@ -48,7 +48,8 @@
 //!   goes, and an essay given with a take home no longer holds (deleted from
 //!   My data, its recording let go, or its account gone) is withdrawn from
 //!   the worker, its `<key>.json` and `<key>.takes/` removed, so the next
-//!   pass refuses it (`take-missing`).
+//!   pass refuses it (`take-missing`). A `.<key>.takes.partial` a stopped
+//!   pass left goes too.
 
 use crate::game_feed::pass::{fetch_capped, Answer, Fetch, NoAnswer};
 use cards_essay_repo::{Essay, Kept};
@@ -237,6 +238,10 @@ pub async fn tidy(db: &SqlitePool, given: &Given) -> Result<Tidied, sqlx::Error>
 		let name = entry.file_name().to_string_lossy().into_owned();
 		if let Some(key) = name.strip_suffix(".takes").filter(|key| is_key(key)) {
 			keys.push(key.to_owned());
+		} else if name.starts_with('.') && name.ends_with(".takes.partial") {
+			// What a stopped pass left: the export and this run in one task,
+			// one after the other, so none is being written now.
+			done.failed += usize::from(remove_dir(&entry.path()).await.is_err());
 		}
 	}
 	for key in keys {
@@ -270,8 +275,12 @@ async fn still_held(db: &SqlitePool, subject: Option<&str>, key: &str) -> Result
 		return Ok(false);
 	};
 	for take in spoken_takes(&body) {
-		if voice_repo::note_head(&mut conn, subject, &take).await.map_err(voice)?.is_none() {
-			return Ok(false);
+		// Held but not read back (an `Err` other than storage) is never a
+		// reason to take it back.
+		match voice_repo::note_head(&mut conn, subject, &take).await {
+			Ok(None) => return Ok(false),
+			Err(voice_repo::VoiceError::Storage(err)) => return Err(err),
+			Ok(Some(_)) | Err(_) => {}
 		}
 	}
 	Ok(true)
@@ -377,6 +386,13 @@ async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), s
 				Takes::Ready(files) => Some(files),
 				Takes::Waiting => {
 					pass.waiting += 1;
+					// A take that was missing and is now home waits to be
+					// heard: no longer a refusal.
+					clear_refused(&given.status, &essay.key).await;
+					continue;
+				}
+				Takes::Unreadable => {
+					pass.failures.push("unreadable");
 					continue;
 				}
 				Takes::Refused(refusal) => {
@@ -445,6 +461,9 @@ enum Takes {
 	Waiting,
 	/// Never to be given as home holds its takes now.
 	Refused(Refusal),
+	/// A take home holds does not read back: this essay fails the pass, and
+	/// the others are still given.
+	Unreadable,
 }
 
 /// Why an essay was refused: one reason, and the takes it is for, by id.
@@ -478,7 +497,12 @@ async fn takes_of(db: &SqlitePool, subject: Option<&str>, wanted: &[String]) -> 
 			of: None,
 			transcript: true,
 		};
-		match crate::take_files::hand_off(&mut conn, subject, ask).await.map_err(voice)? {
+		let handed = match crate::take_files::hand_off(&mut conn, subject, ask).await {
+			Ok(handed) => handed,
+			Err(voice_repo::VoiceError::Storage(err)) => return Err(err),
+			Err(_) => return Ok(Takes::Unreadable),
+		};
+		match handed {
 			crate::take_files::Take::Files(handed) => files.extend(handed),
 			crate::take_files::Take::Absent { .. } => missing.push(take.clone()),
 			crate::take_files::Take::NotMadeOut => not_made_out.push(take.clone()),
@@ -500,13 +524,6 @@ async fn takes_of(db: &SqlitePool, subject: Option<&str>, wanted: &[String]) -> 
 	} else {
 		Takes::Ready(files)
 	})
-}
-
-fn voice(err: voice_repo::VoiceError) -> sqlx::Error {
-	match err {
-		voice_repo::VoiceError::Storage(err) => err,
-		_ => sqlx::Error::Protocol(String::from("a held take does not read back")),
-	}
 }
 
 /// Writes `files` into `<key>.takes/` in `folder`, whole: made in a
@@ -868,7 +885,7 @@ mod tests {
 		if let Some(verdict) = verdict {
 			sqlx::query(
 				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
-				 VALUES (?1, ?2, 'm', 1, 'heard-1', ?3, '[]', 800, 'now')",
+				 VALUES (?1, ?2, 'm', 1, 'heard-1', ?3, '[]', CASE WHEN ?3 IN ('heard', 'garbled') THEN 800 END, 'now')",
 			)
 			.bind(ME)
 			.bind(note)
@@ -1034,6 +1051,75 @@ mod tests {
 			std::fs::read_to_string(dir.path().join("status").join("kept-2026-11-20.refused")).unwrap(),
 			"reason=take-missing\n"
 		);
+	}
+
+	/// Each way a take is not made out refuses `take-unheard`, a deleted take
+	/// `take-missing`; a take that was missing and is now home but not heard
+	/// waits, and is no longer said as refused; a partial a stopped pass
+	/// left goes.
+	#[tokio::test]
+	async fn every_kind_of_unheard_or_gone_take_is_said_and_a_wait_is_no_refusal() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		let keys = ["silent-2026-11-16", "empty-2026-11-17", "failed-2026-11-18", "deleted-2026-11-19", "late-2026-11-20"];
+		fake.ok("index.json", &index(&keys));
+		for (key, take) in keys.iter().zip(["t-silent", "t-empty", "t-failed", "t-deleted", "t-late"]) {
+			fake.ok(&(String::from(*key) + ".json"), &spoken_essay(&key[key.len() - 10..], &[take]));
+		}
+		hold_take(&pool, "t-silent").await;
+		hear(&pool, "t-silent", "Hi.", Some("nothing_said")).await;
+		hold_take(&pool, "t-empty").await;
+		hear(&pool, "t-empty", " ", None).await;
+		hold_take(&pool, "t-failed").await;
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+			 VALUES (?1, 't-failed', 'm', 'e', 1, 'failed', 1, 'then')",
+		)
+		.bind(ME)
+		.execute(&pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES (?1, 't-failed', 'm', 1, 'heard-1', 'failed', '[\"engine\"]', 'now')",
+		)
+		.bind(ME)
+		.execute(&pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_note_deletion (subject_id, note_id, of_kind, recorded_at, size, stored_at, deleted_at, went, stayed)
+			 VALUES (?1, 't-deleted', 'studio', 'then', 4, 'then', 'now', '[]', '[]')",
+		)
+		.bind(ME)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let mut mine = given(dir.path());
+		mine.subject = Some(String::from(ME));
+		std::fs::create_dir_all(dir.path().join(".gone-2026-11-01.takes.partial")).unwrap();
+		std::fs::write(dir.path().join(".gone-2026-11-01.takes.partial").join("t.ogg"), b"OggS").unwrap();
+
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.exported, done.refused, done.waiting), (0, 5, 0));
+		let reason = |key: &str| std::fs::read_to_string(dir.path().join("status").join(String::from(key) + ".refused")).unwrap();
+		for key in &keys[..3] {
+			assert_eq!(reason(key), "reason=take-unheard\n", "{key}");
+		}
+		assert_eq!(reason("deleted-2026-11-19"), "reason=take-missing\n");
+		assert_eq!(reason("late-2026-11-20"), "reason=take-missing\n", "not sent yet: missing");
+
+		hold_take(&pool, "t-late").await;
+		let later = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((later.refused, later.waiting), (4, 1));
+		let status = dir.path().join("status");
+		assert!(
+			!status.join("late-2026-11-20.refused").exists() && !status.join("late-2026-11-20.failed.log").exists(),
+			"home now, waiting to be heard: no longer refused"
+		);
+
+		assert_eq!(tidy(&pool, &mine).await.unwrap(), Tidied::default());
+		assert!(!dir.path().join(".gone-2026-11-01.takes.partial").exists(), "a stopped pass's partial goes");
 	}
 
 	/// What the render worker made reads as rendered, waiting or failed, as

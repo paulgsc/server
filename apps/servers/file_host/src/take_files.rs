@@ -81,15 +81,12 @@ pub async fn hand_off(conn: &mut SqliteConnection, subject: &str, ask: Ask<'_>) 
 		(Some(of), None) if !ask.transcript => voice_repo::audio_head(conn, subject, ask.take, of).await?.map(|head| head.content_type),
 		_ => None,
 	};
-	let body = match (content_type, ask.of) {
-		(None, _) => None,
-		(Some(_), Some(of)) => voice_repo::audio_body(conn, subject, ask.take, of).await?,
-		(Some(_), None) => voice_repo::transcript::audio(conn, subject, ask.take).await?,
-	};
-	let (Some(content_type), Some(audio)) = (content_type, body) else {
+	let Some(content_type) = content_type else {
 		let deleted = voice_repo::delete::receipt(conn, subject, ask.take).await?.is_some();
 		return Ok(Take::Absent { deleted });
 	};
+	// Whether home heard it before its audio is read, so a take waited for
+	// or refused costs no read of its bytes.
 	let transcript = if ask.transcript {
 		let heard = match voice_repo::transcript::heard(conn, subject, ask.take).await? {
 			voice_repo::transcript::Hearing::Heard(heard) => heard,
@@ -130,6 +127,14 @@ pub async fn hand_off(conn: &mut SqliteConnection, subject: &str, ask: Ask<'_>) 
 		Some(crate::mailbox::pass::transcript_body(&filed, &said, verdict.as_ref()))
 	} else {
 		None
+	};
+	let body = match ask.of {
+		Some(of) => voice_repo::audio_body(conn, subject, ask.take, of).await?,
+		None => voice_repo::transcript::audio(conn, subject, ask.take).await?,
+	};
+	let Some(audio) = body else {
+		let deleted = voice_repo::delete::receipt(conn, subject, ask.take).await?.is_some();
+		return Ok(Take::Absent { deleted });
 	};
 	let extension = match content_type {
 		"audio/ogg" => "ogg",
