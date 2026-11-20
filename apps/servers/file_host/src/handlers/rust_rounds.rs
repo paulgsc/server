@@ -1143,22 +1143,41 @@ mod tests {
 			[(json!("w52-1"), json!("2026-w52")), (json!("w52-2"), json!("2026-w52"))],
 			"deleted: the next older take"
 		);
+	}
 
-		// some-ui#3304, the owner's rule: a newer take home couldn't hear gives
-		// way to the next older one; until it is judged, it is the one played.
+	/// some-ui#3304, the owner's rule ("fall back"): a newer opening take home
+	/// couldn't hear gives way to the last one it did; until it is judged, it
+	/// is the one played.
+	#[tokio::test]
+	async fn an_opening_take_home_couldnt_hear_gives_way_to_the_last_heard() {
+		const RECORD: &str = "/rust-weeks/2026-w53/record";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		hold_opening_week(&pool, A, 1, "2026-w52", "2026-10-05T00:00:00-07:00", "2026-10-11T23:59:00-07:00").await;
+		hold_opening_week(&pool, A, 2, "2026-w53", "2026-10-12T00:00:00-07:00", "2099-12-31T23:59:00-08:00").await;
+		let take = |n: u8, take: &str, at: &str| json!({ "n": n, "take": take, "recordedAt": at, "version": 1 });
+		let w52 = json!({ "week": "2026-w52", "at": "2026-10-07T09:00:00.000Z", "passed": ["QM-2", "QM-3"],
+			"answers": [{ "ticket": "QM-1", "take": "w52-qm1", "recordedAt": "2026-10-07T08:00:00.000Z" }],
+			"opening": [take(1, "w52-1", "2026-10-06T09:00:00.000Z")] });
+		sqlx::query("INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w52', 'then', ?2, 'then')")
+			.bind(A)
+			.bind(w52.to_string())
+			.execute(&pool)
+			.await
+			.unwrap();
 		hold_note(&pool, A, "w53-1-again", "2026-w53:opening:1").await;
-		let (status, _, _) = call(
-			&app,
-			Method::PUT,
-			SENT,
-			Some(&phone),
-			None,
-			&send("2026-10-14T10:00:00.000Z", json!([take(1, "w53-1-again", "2026-10-14T09:30:00.000Z")])),
-		)
-		.await;
-		assert_eq!(status, StatusCode::OK);
+		let sent = json!({
+			"week": "2026-w53", "at": "2026-10-14T10:00:00.000Z",
+			"answers": [{ "ticket": "QM-1", "take": "w53-qm1", "recordedAt": "2026-10-13T18:00:00.000Z" }],
+			"passed": ["QM-2", "QM-3"], "opening": [take(1, "w53-1-again", "2026-10-14T09:30:00.000Z")],
+		});
+		let (status, _, _) = call(&app, Method::PUT, "/rust-weeks/2026-w53/sent", Some(&phone), None, sent.to_string().as_bytes()).await;
+		assert_eq!(status, StatusCode::CREATED);
+		let first = |record: &Value| record["opening"][0]["take"].clone();
 		let (_, _, record) = call(&app, Method::GET, RECORD, Some(&phone), None, b"").await;
-		assert_eq!(plays(&record)[0], (json!("w53-1-again"), json!("2026-w53")), "not judged yet: played");
+		assert_eq!(first(&record), json!("w53-1-again"), "not judged yet: played");
 		sqlx::query(
 			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
 			 VALUES (?1, 'w53-1-again', 'm', 'e', 1, 'heard', 'en', 0.9, 1000, 'words', 1, 'then')",
@@ -1176,7 +1195,7 @@ mod tests {
 		.await
 		.unwrap();
 		let (_, _, record) = call(&app, Method::GET, RECORD, Some(&phone), None, b"").await;
-		assert_eq!(plays(&record)[0], (json!("w52-1"), json!("2026-w52")), "garbled: the last take home heard");
+		assert_eq!(first(&record), json!("w52-1"), "garbled: the last take home heard");
 	}
 
 	/// A Rust Rounds voice note home holds, said for `of_ref`.
