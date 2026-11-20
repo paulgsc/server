@@ -52,6 +52,9 @@ pub struct NewPhone<'a> {
 	pub pairing_id: &'a [u8],
 	pub paired_on: &'a str,
 	pub label: Option<&'a str>,
+	/// 16 fresh random bytes, the account's pairing scope if it has none yet
+	/// (paulgsc/some-ui#3197); never derived from the subject.
+	pub scope: &'a [u8],
 }
 
 // Hand-written so a `{:?}` never prints the token's hash.
@@ -62,9 +65,12 @@ impl std::fmt::Debug for NewPhone<'_> {
 }
 
 /// What pairing a phone did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairPhone {
-	Paired,
+	/// Paired; `scope` is the account's pairing scope, the same for every
+	/// phone it pairs (paulgsc/some-ui#3197), read in the pairing's own
+	/// transaction.
+	Paired { scope: Vec<u8> },
 	/// The account already holds [`MAX_PHONES_PER_SUBJECT`] live phones.
 	AtCapacity,
 	/// No account has this subject id (it was deleted while the code was open).
@@ -339,6 +345,7 @@ impl AuthRepository {
 			pairing_id,
 			paired_on,
 			label,
+			scope,
 		} = *phone;
 		let mut tx = self.pool.begin().await?;
 
@@ -368,30 +375,19 @@ impl AuthRepository {
 			return Ok(if has_account == 0 { PairPhone::NoAccount } else { PairPhone::AtCapacity });
 		}
 
-		tx.commit().await?;
-		Ok(PairPhone::Paired)
-	}
-
-	/// The account's pairing scope (paulgsc/some-ui#3197): `fresh` the first
-	/// time it is asked, the same bytes every time after; `None` when no
-	/// account has this subject id. The caller passes 16 random bytes, never
-	/// anything derived from the subject.
-	///
-	/// # Errors
-	/// Propagates any `sqlx` failure.
-	pub async fn pairing_scope(&self, subject_id: &str, fresh: &[u8]) -> Result<Option<Vec<u8>>, sqlx::Error> {
-		let mut tx = self.pool.begin().await?;
+		// The account's scope, set once by the first pairing, in the same
+		// transaction: a phone is never paired without learning it.
 		sqlx::query("UPDATE account SET pairing_scope = ?2 WHERE subject_id = ?1 AND pairing_scope IS NULL")
 			.bind(subject_id)
-			.bind(fresh)
+			.bind(scope)
 			.execute(&mut *tx)
 			.await?;
-		let scope: Option<Option<Vec<u8>>> = sqlx::query_scalar("SELECT pairing_scope FROM account WHERE subject_id = ?1")
+		let scope: Vec<u8> = sqlx::query_scalar("SELECT pairing_scope FROM account WHERE subject_id = ?1")
 			.bind(subject_id)
-			.fetch_optional(&mut *tx)
+			.fetch_one(&mut *tx)
 			.await?;
 		tx.commit().await?;
-		Ok(scope.flatten())
+		Ok(PairPhone::Paired { scope })
 	}
 
 	/// Mark a session read through a phone's bearer token as a phone's, with
@@ -537,6 +533,7 @@ mod tests {
 			pairing_id,
 			paired_on,
 			label: None,
+			scope: &[9; 16],
 		}
 	}
 
@@ -661,7 +658,7 @@ mod tests {
 		// would have ended first.
 		assert_eq!(
 			repo.pair_phone("subject-a", &phone(b"phone", &[7; 16], "2026-11-17"), 5_000, 200).await.unwrap(),
-			PairPhone::Paired
+			PairPhone::Paired { scope: vec![9; 16] }
 		);
 		for n in 0..=MAX_SESSIONS_PER_SUBJECT {
 			repo.create_session(&n.to_le_bytes(), "subject-a", 10_000 + n, 200).await.unwrap();
@@ -698,11 +695,33 @@ mod tests {
 		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
 		assert!(repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::Open).await.unwrap());
 
-		let a = repo.pairing_scope("subject-a", &[9; 16]).await.unwrap();
-		assert_eq!(a, Some(vec![9; 16]), "the first ask keeps the fresh bytes");
-		assert_eq!(repo.pairing_scope("subject-a", &[8; 16]).await.unwrap(), a, "and later asks find them");
-		assert_eq!(repo.pairing_scope("subject-b", &[7; 16]).await.unwrap(), Some(vec![7; 16]), "another account, its own");
-		assert_eq!(repo.pairing_scope("subject-gone", &[6; 16]).await.unwrap(), None);
+		let pair = |subject: &'static str, token: &'static [u8], id: u8, scope: &'static [u8]| {
+			let repo = &repo;
+			async move {
+				let id = [id; 16];
+				let phone = NewPhone {
+					scope,
+					..phone(token, &id, "2026-11-17")
+				};
+				repo.pair_phone(subject, &phone, 10_000, 200).await.unwrap()
+			}
+		};
+		assert_eq!(
+			pair("subject-a", b"a-1", 1, &[9; 16]).await,
+			PairPhone::Paired { scope: vec![9; 16] },
+			"the first pairing keeps the fresh bytes"
+		);
+		assert_eq!(
+			pair("subject-a", b"a-2", 2, &[8; 16]).await,
+			PairPhone::Paired { scope: vec![9; 16] },
+			"and later pairings find them"
+		);
+		assert_eq!(
+			pair("subject-b", b"b-1", 3, &[7; 16]).await,
+			PairPhone::Paired { scope: vec![7; 16] },
+			"another account, its own"
+		);
+		assert_eq!(pair("subject-gone", b"g-1", 4, &[6; 16]).await, PairPhone::NoAccount, "no account, no scope, no phone");
 	}
 
 	#[tokio::test]
@@ -714,7 +733,7 @@ mod tests {
 			let id = [u8::try_from(n).unwrap(); 16];
 			assert_eq!(
 				repo.pair_phone("subject-a", &phone(&n.to_le_bytes(), &id, "2026-11-17"), 10_000, 200).await.unwrap(),
-				PairPhone::Paired
+				PairPhone::Paired { scope: vec![9; 16] }
 			);
 		}
 		assert_eq!(
@@ -731,7 +750,7 @@ mod tests {
 		repo.extend_session(&0_i64.to_le_bytes(), 250).await.unwrap();
 		assert_eq!(
 			repo.pair_phone("subject-a", &phone(b"one-more", &[200; 16], "2026-11-18"), 10_000, 300).await.unwrap(),
-			PairPhone::Paired
+			PairPhone::Paired { scope: vec![9; 16] }
 		);
 	}
 

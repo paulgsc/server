@@ -468,22 +468,19 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap,
 				pairing_id: &pairing_id,
 				paired_on: &utc_day(now),
 				label: label.as_deref(),
+				scope: &new_pairing_id(),
 			},
 			expires_at,
 			now,
 		)
 		.await?
 	{
-		PairPhone::Paired => {
-			// Under the same hold as the pairing, so a deletion can't come between.
-			let scope = auth.repository().pairing_scope(&subject, &new_pairing_id()).await?.ok_or(FileHostError::Unauthorized)?;
-			Ok(Json(DeviceSession {
-				token: token.encoded(),
-				expires_at: expires_at * 1_000,
-				phone_id: URL_SAFE_NO_PAD.encode(pairing_id),
-				account: URL_SAFE_NO_PAD.encode(scope),
-			}))
-		}
+		PairPhone::Paired { scope } => Ok(Json(DeviceSession {
+			token: token.encoded(),
+			expires_at: expires_at * 1_000,
+			phone_id: URL_SAFE_NO_PAD.encode(pairing_id),
+			account: URL_SAFE_NO_PAD.encode(scope),
+		})),
 		PairPhone::AtCapacity => Err(FileHostError::Conflict("this account already has the most paired phones it may; sign one out first")),
 		PairPhone::NoAccount => Err(FileHostError::Unauthorized),
 	}
