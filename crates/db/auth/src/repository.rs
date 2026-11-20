@@ -372,6 +372,28 @@ impl AuthRepository {
 		Ok(PairPhone::Paired)
 	}
 
+	/// The account's pairing scope (paulgsc/some-ui#3197): `fresh` the first
+	/// time it is asked, the same bytes every time after; `None` when no
+	/// account has this subject id. The caller passes 16 random bytes, never
+	/// anything derived from the subject.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn pairing_scope(&self, subject_id: &str, fresh: &[u8]) -> Result<Option<Vec<u8>>, sqlx::Error> {
+		let mut tx = self.pool.begin().await?;
+		sqlx::query("UPDATE account SET pairing_scope = ?2 WHERE subject_id = ?1 AND pairing_scope IS NULL")
+			.bind(subject_id)
+			.bind(fresh)
+			.execute(&mut *tx)
+			.await?;
+		let scope: Option<Option<Vec<u8>>> = sqlx::query_scalar("SELECT pairing_scope FROM account WHERE subject_id = ?1")
+			.bind(subject_id)
+			.fetch_optional(&mut *tx)
+			.await?;
+		tx.commit().await?;
+		Ok(scope.flatten())
+	}
+
 	/// Mark a session read through a phone's bearer token as a phone's, with
 	/// `pairing_id`, if the row does not say so yet: a phone paired before
 	/// rows said what they are. Its day stays unknown. Once tagged, a row is
@@ -666,6 +688,21 @@ mod tests {
 		assert!(!repo.rename_phone("subject-a", &[7; 16], Some("late"), 5_000).await.unwrap(), "nor renamed");
 		assert!(!repo.end_phone("subject-a", &[7; 16], 5_000).await.unwrap(), "nor reads as signed out");
 		assert!(!repo.rename_phone("subject-a", &[7; 16], None, 0).await.unwrap(), "but its row is gone");
+	}
+
+	/// some-ui#3197: a phone paired again with the same account learns the
+	/// same scope; another account learns another.
+	#[tokio::test]
+	async fn an_accounts_pairing_scope_is_set_once_and_its_own() {
+		let repo = repo().await;
+		assert!(repo.create_account("subject-a", &[1; 16], &passkey(1), Admission::Open).await.unwrap());
+		assert!(repo.create_account("subject-b", &[2; 16], &passkey(2), Admission::Open).await.unwrap());
+
+		let a = repo.pairing_scope("subject-a", &[9; 16]).await.unwrap();
+		assert_eq!(a, Some(vec![9; 16]), "the first ask keeps the fresh bytes");
+		assert_eq!(repo.pairing_scope("subject-a", &[8; 16]).await.unwrap(), a, "and later asks find them");
+		assert_eq!(repo.pairing_scope("subject-b", &[7; 16]).await.unwrap(), Some(vec![7; 16]), "another account, its own");
+		assert_eq!(repo.pairing_scope("subject-gone", &[6; 16]).await.unwrap(), None);
 	}
 
 	#[tokio::test]
