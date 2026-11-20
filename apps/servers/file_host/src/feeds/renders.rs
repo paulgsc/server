@@ -578,8 +578,10 @@ pub struct Failed {
 	pub part: Option<PartOf>,
 	/// Why it failed, as a short class, never its log: a preview's
 	/// (`previews`: `no-sample`, `too-long`, `too-large`, `render`,
-	/// `overdue`), and any shelf's the render policy refused (`too-long`,
-	/// `too-large`, `overflow`, with [`Over`]).
+	/// `overdue`), any shelf's the render policy refused (`too-long`,
+	/// `too-large`, `overflow`, with [`Over`]), and a cards essay home
+	/// refused for a spoken card's take (`take-missing`, `take-unheard`,
+	/// paulgsc/server#1052).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<&'static str>,
 	/// By how much the render policy refused it (#929).
@@ -1238,9 +1240,15 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 			}
 			let mut refused = episode.key.clone();
 			refused.push_str(".refused");
-			if let Some(over) = read_refused(&status.join(refused)).await {
-				seen.reasons.insert(episode.key.clone(), over.reason());
-				seen.overs.insert(episode.key.clone(), over);
+			match read_refused(&status.join(refused)).await {
+				Some(Refused::Over(over)) => {
+					seen.reasons.insert(episode.key.clone(), over.reason());
+					seen.overs.insert(episode.key.clone(), over);
+				}
+				Some(Refused::Home(reason)) => {
+					seen.reasons.insert(episode.key.clone(), reason);
+				}
+				None => {}
 			}
 			let failure = text.as_deref().map_or(
 				Failure {
@@ -1283,16 +1291,38 @@ async fn made_and_size(path: &Path, follows: bool) -> Option<(i64, Option<u64>)>
 	modified(path).await.map(|at| (at, None))
 }
 
-/// The worker's `.refused` beside a failed log, read whole up to its
-/// ceiling, or `None`.
-async fn read_refused(path: &Path) -> Option<Over> {
+/// What a `.refused` says: the render policy's refusal, or one home made
+/// before the render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Refused {
+	Over(Over),
+	/// A cards essay home refused to give the worker (WALK7,
+	/// paulgsc/server#1052, `cards_essays::pass`): `take-missing`, a take
+	/// a spoken card names that home doesn't hold, or `take-unheard`, one
+	/// home couldn't make out or heard nothing in. A class alone.
+	Home(&'static str),
+}
+
+/// The home refusal `text` says, as [`Refused::Home`] has it, if any.
+fn home_refusal(text: &str) -> Option<&'static str> {
+	match text.lines().find_map(|line| line.strip_prefix("reason="))? {
+		"take-missing" => Some("take-missing"),
+		"take-unheard" => Some("take-unheard"),
+		_ => None,
+	}
+}
+
+/// The `.refused` beside a failed log, the worker's or home's, read whole up
+/// to its ceiling, or `None`.
+async fn read_refused(path: &Path) -> Option<Refused> {
 	let file = tokio::fs::File::open(path).await.ok()?;
 	let mut bytes = Vec::new();
 	file.take(REFUSED_CEILING + 1).read_to_end(&mut bytes).await.ok()?;
 	if bytes.len() as u64 > REFUSED_CEILING {
 		return None;
 	}
-	Over::parse(std::str::from_utf8(&bytes).ok()?)
+	let text = std::str::from_utf8(&bytes).ok()?;
+	Over::parse(text).map(Refused::Over).or_else(|| home_refusal(text).map(Refused::Home))
 }
 
 /// The end of a failed attempt's log.

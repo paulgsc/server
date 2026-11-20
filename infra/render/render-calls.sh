@@ -602,9 +602,16 @@ record() {
       # call's recorder is (EXPLAIN6, #878); a silent (v1) essay says
       # nothing. It names the finished folder for the essay's key in --out,
       # with description.txt (its chapters) beside the video when it has
-      # enough of them (`record:cards`).
+      # enough of them (`record:cards`). An essay with spoken cards (WALK7,
+      # #1052) is given the takes they name in <key>.takes/ beside it
+      # (`cards_essays::pass`, written whole before the essay): each take's
+      # audio, its word times and its transcript, which --takes hands over.
+      local takes=()
+      if [ -d "$INPUT/$key.takes" ]; then
+        takes=(--takes "$INPUT/$key.takes")
+      fi
       (cd "$APP_DIR" && "$TSX" tests/record/cards.ts "${COMMON[@]}" \
-        --cut-list-file "$INPUT/$key.json" --out "$WORK") ;;
+        --cut-list-file "$INPUT/$key.json" "${takes[@]}" --out "$WORK") ;;
     report)
       # The report is written from home's counts by the recorder itself
       # (`reportWeek`); it names the finished folder for the week in --out,
@@ -1234,7 +1241,9 @@ inputs_of() {
       # one given for a frozen week changes nothing it is made from.
       week_made "$from" || echo "$INPUT/$from.next" ;;
     playoff-delta | rust-essay | interview-essay | clip-walk) echo "$INPUT/$2" ;;
-    preview | cards-essay | report) echo "$INPUT/$2.json" ;;
+    preview | report) echo "$INPUT/$2.json" ;;
+    # A spoken card's takes are made from too (#1052), whether given or not.
+    cards-essay) printf '%s\n' "$INPUT/$2.json" "$INPUT/$2.takes" ;;
   esac
 }
 

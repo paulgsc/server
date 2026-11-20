@@ -780,7 +780,7 @@ struct FiledWord<'a> {
 /// and how sure the model was of each, what home made of it (HEARD1,
 /// `voice_repo::verdict::Verdict`, null for a transcript kept before
 /// verdicts were), and nothing that points at audio.
-fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word], verdict: Option<&voice_repo::verdict::Verdict>) -> Vec<u8> {
+pub(crate) fn transcript_body(heard: &Heard, words: &[voice_repo::transcript::Word], verdict: Option<&voice_repo::verdict::Verdict>) -> Vec<u8> {
 	let words: Vec<FiledWord<'_>> = words
 		.iter()
 		.map(|word| FiledWord {
