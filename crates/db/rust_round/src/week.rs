@@ -20,6 +20,11 @@
 //! - in a `/2` week, each ticket's `academy`: 1 to [`ACADEMY_MAX`]
 //!   exercises, and each exercise's `starter`, which it records too, under
 //!   [`academy_key`] (`TB-101/academy/1`);
+//! - its `opening`, when it carries one (paulgsc/some-ui#3269, C736): the
+//!   standing set's `version` and how many questions it asks, 1 to
+//!   [`OPENING_MOST`], so a take of an answer can be checked against them
+//!   and the week's record can name the newest take of each. The questions'
+//!   and answers' words are never read here;
 //! - its `opens` and `due`, when they are RFC 3339 instants, for the week's
 //!   record (RR14, paulgsc/some-ui#2689). A week without them is still kept
 //!   and recorded, and has no record.
@@ -68,6 +73,21 @@ pub const WEEK_V2_CEILING: usize = 128 * 1024;
 /// The most exercises a ticket's academy holds, as the format bounds it.
 pub const ACADEMY_MAX: usize = 8;
 
+/// The most questions a week's opening asks (paulgsc/some-ui
+/// `CONVERSATION_MOST`, C738).
+pub const OPENING_MOST: u8 = 3;
+
+/// What home reads of a week's opening (paulgsc/some-ui#3269): the standing
+/// set's version and how many questions it asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpeningSet {
+	/// The set's version, from 1: a take recorded under one version answers
+	/// that version's words, and plays only in a week of the same version.
+	pub version: u32,
+	/// How many questions it asks, 1 to [`OPENING_MOST`].
+	pub questions: u8,
+}
+
 /// One ticket's program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketProgram {
@@ -104,6 +124,9 @@ pub struct Week {
 	/// When the week opens and its deadline, when both are RFC 3339
 	/// instants and the deadline comes after the opening; `None` otherwise.
 	pub window: Option<Window>,
+	/// The week's opening conversation, when it carries one
+	/// (paulgsc/some-ui#3269); `None` otherwise.
+	pub opening: Option<OpeningSet>,
 }
 
 /// When a week opens and when its deadline passes, as the week writes them.
@@ -165,7 +188,9 @@ fn points_field(schema: Option<Schema>) -> &'static str {
 /// missing or other `schema`; an `id` that is not an ISO week; no
 /// `tickets`; a ticket whose id is not a key or is used twice, or that has
 /// no `program`; in a `/2` week, a ticket whose `academy` does not hold 1 to
-/// [`ACADEMY_MAX`] exercises, or an exercise with no `starter`.
+/// [`ACADEMY_MAX`] exercises, or an exercise with no `starter`; an `opening`
+/// whose `version` is not a whole number from 1 or whose `exchanges` do not
+/// hold 1 to [`OPENING_MOST`] questions.
 pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 	let problem = |field: &str, why| vec![(field.to_owned(), why)];
 	if body.len() > WEEK_V2_CEILING {
@@ -236,15 +261,42 @@ pub fn read(body: &[u8]) -> Result<Week, Vec<Problem>> {
 		(Some(opens), Some(due)) if crate::instant_order(&opens, &due) == Some(std::cmp::Ordering::Less) => Some(Window { opens, due }),
 		_ => None,
 	};
+	let opening = week.get("opening").and_then(|opening| read_opening(opening, &mut problems));
 	match id {
 		Some(id) if problems.is_empty() => Ok(Week {
 			id: id.to_owned(),
 			programs,
 			academy,
 			window,
+			opening,
 		}),
 		_ => Err(problems),
 	}
+}
+
+/// A week's `opening` as home reads it ([`OpeningSet`]), or the problems
+/// with it onto `problems`.
+fn read_opening(opening: &Value, problems: &mut Vec<Problem>) -> Option<OpeningSet> {
+	let version = opening
+		.get("version")
+		.and_then(Value::as_u64)
+		.and_then(|version| u32::try_from(version).ok())
+		.filter(|version| *version >= 1);
+	if version.is_none() {
+		problems.push((String::from("opening.version"), "must be the opening's version, a whole number from 1"));
+	}
+	let questions = opening
+		.get("exchanges")
+		.and_then(Value::as_array)
+		.and_then(|exchanges| u8::try_from(exchanges.len()).ok())
+		.filter(|questions| (1..=OPENING_MOST).contains(questions));
+	if questions.is_none() {
+		problems.push((String::from("opening.exchanges"), "must hold 1 to 3 questions"));
+	}
+	Some(OpeningSet {
+		version: version?,
+		questions: questions?,
+	})
 }
 
 /// Each starter of `ticket`'s academy (`key`), onto `academy`, or the
@@ -301,7 +353,7 @@ pub fn is_ticket_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::{academy_key, is_ticket_key, is_week_id, mailbox_name, read, Starter, TicketProgram, WEEK_CEILING, WEEK_V2_CEILING};
+	use super::{academy_key, is_ticket_key, is_week_id, mailbox_name, read, OpeningSet, Starter, TicketProgram, WEEK_CEILING, WEEK_V2_CEILING};
 	use serde_json::{json, Value};
 
 	/// paulgsc/some-ui's sample `/2` week, Tallowbrook
@@ -462,6 +514,31 @@ mod tests {
 		let mut unknown = tallowbrook();
 		unknown["schema"] = json!("some-ui.rust-week/3");
 		assert_eq!(read(&grown(unknown, WEEK_CEILING)).unwrap_err()[0].0, "body");
+	}
+
+	/// paulgsc/some-ui#3269: a week's opening is its version and how many
+	/// questions it asks; its words are never read, and a week without one
+	/// reads as before.
+	#[test]
+	fn a_weeks_opening_is_its_version_and_how_many_questions_it_asks() {
+		assert_eq!(read(TALLOWBROOK.as_bytes()).unwrap().opening, None);
+		let mut week = tallowbrook();
+		week["opening"] = json!({ "version": 2, "exchanges": [
+			{ "ask": "Why Rust Rounds?", "script": "paulgsc here." },
+			{ "ask": "And then?", "script": "Then this." },
+		] });
+		assert_eq!(read(week.to_string().as_bytes()).unwrap().opening, Some(OpeningSet { version: 2, questions: 2 }));
+		let refused = |opening: Value| -> Vec<String> {
+			let mut week = tallowbrook();
+			week["opening"] = opening;
+			read(week.to_string().as_bytes()).unwrap_err().into_iter().map(|(field, _)| field).collect()
+		};
+		let one = json!({ "ask": "Why?", "script": "Because." });
+		assert_eq!(refused(json!({ "version": 0, "exchanges": [one] })), ["opening.version"]);
+		assert_eq!(refused(json!({ "version": 1.5, "exchanges": [one] })), ["opening.version"]);
+		assert_eq!(refused(json!({ "version": 1, "exchanges": [] })), ["opening.exchanges"]);
+		assert_eq!(refused(json!({ "version": 1, "exchanges": [one, one, one, one] })), ["opening.exchanges"]);
+		assert_eq!(refused(json!("paulgsc here")), ["opening.version", "opening.exchanges"]);
 	}
 
 	/// No starter's key is ever a ticket's, whatever ticket or exercise.

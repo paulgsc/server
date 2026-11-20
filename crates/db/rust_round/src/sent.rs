@@ -8,7 +8,9 @@
 //!   every ticket of the week once, answered with a take or passed over, at
 //!   least one answered, sent no later than the week's `due` and no earlier
 //!   than it `opens`, and reaching home no later than `due` either. A take not sent by the deadline doesn't count (owner,
-//!   2026-11-07), so a later `at` is refused, not kept as late.
+//!   2026-11-07), so a later `at` is refused, not kept as late. A send may
+//!   also name the takes of the week's opening said that week
+//!   (paulgsc/some-ui#3269, C736), which answer no ticket.
 //! - **A draft until the deadline, final at it** (RR22,
 //!   paulgsc/some-ui#2832; `migrations/20261110000100_create_rust_week_draft_final.up.sql`):
 //!   before the week's `due`, each send replaces the last as the week's draft
@@ -28,11 +30,15 @@
 //! - **A paste is the owner's own code's error, as pasted** ([`read_paste`],
 //!   [`put_paste`]): kept once per week and moment, and never refused for
 //!   the deadline: a paste is not a take.
+//! - **The opening's takes carry over** (C736): a week's record plays, for
+//!   each of its opening's questions, the newest take of its answer that
+//!   any send of that week or an earlier one names under the week's opening
+//!   version ([`opening_takes`]); a week with no new take reuses the last.
 //! - **Per subject.** Every query takes the subject and filters on it.
 
 use crate::draft::{self, Kind, Stored, WeekSend};
 use crate::round::Problem;
-use crate::week::{Week, Window};
+use crate::week::{OpeningSet, Week, Window};
 use crate::{instant_order, Change, RoundError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,6 +127,27 @@ pub fn verdict_of(week: &str, of_ref: &str) -> Option<(String, u8)> {
 	(!ticket.is_empty() && !ticket.contains(':') && fork >= 1 && fork.to_string() == rest[ticket.len() + 1..]).then(|| (ticket.to_owned(), fork))
 }
 
+/// A take of the answer to one of the week's opening questions, as Send
+/// kept it (paulgsc/some-ui#3269, C736): its take's `ref` is
+/// `<week>:opening:<n>` ([`opening_ref`]), the week it was said in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpeningTake {
+	/// The question it answers, from 1.
+	pub n: u8,
+	/// The take's voice-note id.
+	pub take: String,
+	/// When the take was recorded.
+	pub recorded_at: String,
+	/// The opening's version it was read under: it plays only in a week of
+	/// the same version.
+	pub version: u32,
+	/// How long the take runs, in whole milliseconds, as the phone measured
+	/// it; absent when it didn't.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ms: Option<u64>,
+}
+
 /// A week's answers as sent: the phone's `WeekSent`
 /// (paulgsc/some-ui `packages/ui/rust-rounds/src/lib/week-play/spec.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +167,13 @@ pub struct Sent {
 	/// the ticket's points, not the week's format, which home doesn't hold.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub verdicts: Vec<Verdict>,
+	/// The takes of the week's opening said this week (paulgsc/some-ui#3269,
+	/// contract epoch 25): every take of each question said this week, kept
+	/// (the owner's call C783: no take is lost). They answer no ticket,
+	/// so they never count as one answered. A phone from before it sends
+	/// none, and a send without them is kept without the key.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub opening: Vec<OpeningTake>,
 }
 
 impl WeekSend for Sent {
@@ -248,10 +282,20 @@ pub(crate) fn sent_in_window(at: &str, window: Option<&Window>, now: &str, probl
 /// a decision (RR29) whose `ref` doesn't name a fork of the week's tickets,
 /// names one an earlier decision does, or picks an option id that isn't a
 /// capital `A` to `F`. Which options a fork lists home doesn't hold: the
-/// phone picks only among them.
+/// phone picks only among them. And of the opening's takes
+/// (paulgsc/some-ui#3269): one in a week whose opening asks nothing, one of
+/// a question the week's opening doesn't ask, one read under another
+/// version than the week's, and the same two of its
+/// take and `recordedAt` as an answer's. The opening is no answer: a send of
+/// it alone, every ticket passed, has none.
 pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Problem>> {
 	let value = json_object(body, SENT_CEILING, "is larger than 16 KiB")?;
-	let sent: Sent = serde_json::from_value(value).map_err(|_| vec![(String::from("body"), "must be a week sent: week, at, answers, passed and verdicts, and nothing else")])?;
+	let sent: Sent = serde_json::from_value(value).map_err(|_| {
+		vec![(
+			String::from("body"),
+			"must be a week sent: week, at, answers, passed, verdicts and opening, and nothing else",
+		)]
+	})?;
 	let mut problems: Vec<Problem> = Vec::new();
 	if sent.week != week.id {
 		problems.push((String::from("week"), "must be the week in the path"));
@@ -322,6 +366,7 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 			problems.push((at("recordedAt"), "must not be after the week was sent"));
 		}
 	}
+	opening_problems(&sent, week.opening, &mut problems);
 	if problems.is_empty() {
 		Ok(sent)
 	} else {
@@ -329,9 +374,48 @@ pub fn read_sent(body: &[u8], week: &Week, now: &str) -> Result<Sent, Vec<Proble
 	}
 }
 
+/// The problems with `sent`'s opening takes, of a week whose opening is
+/// `opening`, onto `problems` ([`read_sent`]).
+fn opening_problems(sent: &Sent, opening: Option<OpeningSet>, problems: &mut Vec<Problem>) {
+	for (index, take) in sent.opening.iter().enumerate() {
+		let at = |field: &str| String::from("opening[") + &index.to_string() + "]." + field;
+		match opening {
+			None => problems.push((at("n"), "answers an opening this week doesn't have")),
+			Some(asked) => {
+				if take.n == 0 || take.n > asked.questions {
+					problems.push((at("n"), "must be one of the week's opening questions, counted from 1"));
+				}
+				if take.version != asked.version {
+					problems.push((at("version"), "must be the week's opening version"));
+				}
+			}
+		}
+		if !is_note_id(&take.take) {
+			problems.push((at("take"), "must be a voice note's id"));
+		}
+		if !is_instant(&take.recorded_at) {
+			problems.push((at("recordedAt"), "must be an RFC 3339 instant"));
+		} else if instant_order(&take.recorded_at, &sent.at) == Some(Ordering::Greater) {
+			problems.push((at("recordedAt"), "must not be after the week was sent"));
+		}
+	}
+}
+
 /// What [`take_refs`] says of an answer whose take is said for another
 /// ticket or point, for the `422`.
 pub const TAKE_ELSEWHERE: &str = "is a take said for another ticket, or another point of one, than the answer names";
+
+/// What [`take_refs`] says of an opening take said for anything but its
+/// question of this week's opening, for the `422`.
+pub const OPENING_ELSEWHERE: &str = "is a take said for something other than this question of this week's opening: <week>:opening:<n>";
+
+/// The `ref` of a take of the answer to `week`'s opening question `n`
+/// (paulgsc/some-ui#3269, C736): `<week>:opening:<n>`, such as
+/// `2026-w47:opening:2`.
+#[must_use]
+pub fn opening_ref(week: &str, n: u8) -> String {
+	String::from(week) + ":opening:" + &n.to_string()
+}
 
 /// Each answer of `sent` whose take home holds as said for another ticket,
 /// or point, than the answer names (RR24, paulgsc/some-ui#3248).
@@ -339,6 +423,8 @@ pub const TAKE_ELSEWHERE: &str = "is a take said for another ticket, or another 
 /// A take of the whole ticket's `ref` is `<week>:<ticket>`, a point's
 /// `<week>:<ticket>:<n>`, so an answer's `ticket` and `point` must be what
 /// its take's own `ref` says, never something the phone could get out of step.
+/// Likewise each opening take's question: its `ref` is this week's
+/// [`opening_ref`] (paulgsc/some-ui#3269).
 ///
 /// `held` gives, for each take home holds, its id and its `ref` when it is a
 /// Rust Rounds note, `None` when it is another kind's. A take home does not
@@ -359,7 +445,72 @@ pub fn take_refs(sent: &Sent, held: &[(&str, Option<&str>)]) -> Vec<Problem> {
 			problems.push((String::from("answers[") + &index.to_string() + "].take", TAKE_ELSEWHERE));
 		}
 	}
+	for (index, opening) in sent.opening.iter().enumerate() {
+		let Some((_, of_ref)) = held.iter().find(|(take, _)| *take == opening.take) else {
+			continue;
+		};
+		if *of_ref != Some(opening_ref(&sent.week, opening.n).as_str()) {
+			problems.push((String::from("opening[") + &index.to_string() + "].take", OPENING_ELSEWHERE));
+		}
+	}
 	problems
+}
+
+/// An opening take a send names, with the week whose send names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpeningCandidate {
+	/// The week it was said in, as its `ref` names it.
+	pub week: String,
+	pub take: OpeningTake,
+}
+
+/// Every opening take `subject`'s sends of `week` and earlier weeks name
+/// under `version` (paulgsc/some-ui#3269, C736), newest first.
+///
+/// Newest by `recordedAt` as an instant, then the later week, then the
+/// take's id, so the order never depends on how rows come back. Whether each is still kept is the caller's to ask
+/// (`voice_repo::delete::receipt`), since a deleted take gives way to the
+/// next older one. Each send standing is read, its final or else its draft,
+/// as [`standing`] reads one: a row per week, by the tables' key.
+///
+/// A stored send that no longer reads offers none, so it never breaks a
+/// later week's record.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn opening_takes(conn: &mut SqliteConnection, subject: &str, week: &str, version: u32) -> Result<Vec<OpeningCandidate>, sqlx::Error> {
+	let bodies = sqlx::query!(
+		r#"SELECT week_id AS "week!", body AS "body!" FROM rust_week_final WHERE subject_id = ?1 AND week_id <= ?2
+		   UNION ALL
+		   SELECT week_id AS "week!", body AS "body!" FROM rust_week_draft AS draft WHERE subject_id = ?1 AND week_id <= ?2
+		     AND NOT EXISTS (SELECT 1 FROM rust_week_final AS final WHERE final.subject_id = draft.subject_id AND final.week_id = draft.week_id)"#,
+		subject,
+		week
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let mut takes = Vec::new();
+	for row in bodies {
+		// A send that no longer reads fails only its own week's record, as
+		// before; here it offers no take, so later weeks still read.
+		let Ok(sent) = serde_json::from_str::<Sent>(&row.body) else {
+			continue;
+		};
+		takes.extend(
+			sent
+				.opening
+				.into_iter()
+				.filter(|take| take.version == version)
+				.map(|take| OpeningCandidate { week: row.week.clone(), take }),
+		);
+	}
+	takes.sort_by(|a, b| {
+		instant_order(&b.take.recorded_at, &a.take.recorded_at)
+			.unwrap_or(Ordering::Equal)
+			.then_with(|| b.week.cmp(&a.week))
+			.then_with(|| b.take.take.cmp(&a.take.take))
+	});
+	Ok(takes)
 }
 
 /// Keep `sent` as `subject`'s draft of its week ([`draft::put_draft`]).
@@ -499,7 +650,7 @@ pub async fn pastes(conn: &mut SqliteConnection, subject: &str, week: &str) -> R
 
 #[cfg(test)]
 mod tests {
-	use super::{finalize, is_final, pastes, put_draft, put_paste, read_paste, read_sent, standing, take_refs, verdict_of, Decision, DraftChange, Sent};
+	use super::{finalize, is_final, opening_takes, pastes, put_draft, put_paste, read_paste, read_sent, standing, take_refs, verdict_of, Decision, DraftChange, Sent};
 	use crate::week::read;
 	use crate::{Change, RoundError};
 	use serde_json::{json, Value};
@@ -533,6 +684,20 @@ mod tests {
 		let body = json!({
 			"schema": "some-ui.rust-week/1", "id": "2026-w46",
 			"opens": "2026-11-09T00:00:00-08:00", "due": "2026-11-15T23:59:00-08:00",
+			"tickets": [ticket("QM-311"), ticket("QM-312"), ticket("QM-313")],
+		});
+		read(body.to_string().as_bytes()).unwrap()
+	}
+
+	/// [`week`] with an opening of `questions` questions at `version`
+	/// (paulgsc/some-ui#3269), as `id`.
+	fn opening_week(id: &str, version: u32, questions: usize) -> crate::week::Week {
+		let ticket = |id: &str| json!({ "id": id, "program": "fn main() {}\n", "speakTo": ["why", "what if", "when"] });
+		let exchange = json!({ "ask": "Why?", "script": "paulgsc here." });
+		let body = json!({
+			"schema": "some-ui.rust-week/1", "id": id,
+			"opens": "2026-11-09T00:00:00-08:00", "due": "2026-11-15T23:59:00-08:00",
+			"opening": { "version": version, "exchanges": vec![exchange; questions] },
 			"tickets": [ticket("QM-311"), ticket("QM-312"), ticket("QM-313")],
 		});
 		read(body.to_string().as_bytes()).unwrap()
@@ -679,6 +844,176 @@ mod tests {
 		let mut extra_in_answer = sent_body(at);
 		extra_in_answer["answers"][0]["words"] = json!("what I said");
 		assert_eq!(refused(extra_in_answer), ["body"]);
+	}
+
+	/// paulgsc/some-ui#3269: a send may name the takes of the week's opening
+	/// said that week, every take of a question (C783), under the week's
+	/// opening version;
+	/// they answer no ticket, and a send without them reads and keeps as it
+	/// always did.
+	#[test]
+	fn a_send_names_its_weeks_opening_takes_under_the_weeks_version() {
+		let (plain, week) = (week(), opening_week("2026-w46", 2, 2));
+		let at = "2026-11-15T20:00:00.000Z";
+		let take = |n: u8, version: u32| json!({ "n": n, "take": "take-opening", "recordedAt": "2026-11-12T19:00:00.000Z", "version": version, "ms": 24_000 });
+		let old = read_sent(sent_body(at).to_string().as_bytes(), &week, OPEN).unwrap();
+		assert!(old.opening.is_empty());
+		assert_eq!(serde_json::to_value(&old).unwrap().get("opening"), None, "none sent, none written");
+		let mut with_opening = sent_body(at);
+		with_opening["opening"] = json!([take(2, 2)]);
+		let kept = read_sent(with_opening.to_string().as_bytes(), &week, OPEN).unwrap();
+		assert_eq!((kept.opening[0].n, kept.opening[0].version, kept.opening[0].ms), (2, 2, Some(24_000)));
+		assert_eq!(serde_json::to_value(&kept).unwrap()["opening"], with_opening["opening"], "kept as sent");
+		let mut no_ms = take(1, 2);
+		no_ms.as_object_mut().unwrap().remove("ms");
+		with_opening["opening"] = json!([no_ms]);
+		assert_eq!(
+			read_sent(with_opening.to_string().as_bytes(), &week, OPEN).unwrap().opening[0].ms,
+			None,
+			"a length the phone didn't measure"
+		);
+
+		let refused = |week: &crate::week::Week, opening: Value| {
+			let mut body = sent_body(at);
+			body["opening"] = opening;
+			fields(&read_sent(body.to_string().as_bytes(), week, OPEN).unwrap_err())
+		};
+		assert_eq!(refused(&plain, json!([take(1, 2)])), ["opening[0].n"], "a week with no opening");
+		assert_eq!(refused(&week, json!([take(3, 2)])), ["opening[0].n"], "a question the opening doesn't ask");
+		assert_eq!(refused(&week, json!([take(0, 2)])), ["opening[0].n"]);
+		let mut twice = sent_body(at);
+		let mut later = take(1, 2);
+		later["take"] = json!("take-opening-again");
+		later["recordedAt"] = json!("2026-11-13T19:00:00.000Z");
+		twice["opening"] = json!([take(1, 2), later]);
+		assert_eq!(
+			read_sent(twice.to_string().as_bytes(), &week, OPEN).unwrap().opening.len(),
+			2,
+			"every take of a question said this week is kept (C783)"
+		);
+		assert_eq!(refused(&week, json!([take(1, 1)])), ["opening[0].version"], "read under another version");
+		let mut bad = take(1, 2);
+		bad["take"] = json!("a take/with a slash");
+		bad["recordedAt"] = json!("2026-11-15T21:00:00.000Z");
+		assert_eq!(refused(&week, json!([bad])), ["opening[0].recordedAt", "opening[0].take"]);
+		let mut extra = take(1, 2);
+		extra["script"] = json!("hello");
+		assert_eq!(refused(&week, json!([extra])), ["body"]);
+		let mut fractional = take(1, 2);
+		fractional["ms"] = json!(1.5);
+		assert_eq!(refused(&week, json!([fractional])), ["body"], "whole milliseconds");
+		let alone = json!({ "week": "2026-w46", "at": at, "answers": [], "passed": ["QM-311", "QM-312", "QM-313"], "opening": [take(1, 2)] });
+		assert_eq!(
+			fields(&read_sent(alone.to_string().as_bytes(), &week, OPEN).unwrap_err()),
+			["answers"],
+			"the opening answers no ticket"
+		);
+	}
+
+	/// paulgsc/some-ui#3269, C736: an opening take's question is its `ref`'s,
+	/// this week's `<week>:opening:<n>`, and one home does not hold yet is not
+	/// refused.
+	#[test]
+	fn an_opening_take_names_what_it_was_said_for() {
+		let week = opening_week("2026-w46", 1, 3);
+		let mut body = sent_body("2026-11-15T20:00:00.000Z");
+		body["opening"] = json!([
+			{ "n": 2, "take": "second", "recordedAt": "2026-11-12T19:00:00.000Z", "version": 1 },
+			{ "n": 3, "take": "later", "recordedAt": "2026-11-12T19:00:00.000Z", "version": 1 },
+		]);
+		let sent = read_sent(body.to_string().as_bytes(), &week, OPEN).unwrap();
+		let fields = |held: &[(&str, Option<&str>)]| -> Vec<String> { take_refs(&sent, held).into_iter().map(|(field, _)| field).collect() };
+		assert!(fields(&[("second", Some("2026-w46:opening:2"))]).is_empty(), "`later` not held yet");
+		for of_ref in [
+			Some("2026-w46:opening:1"),
+			Some("2026-w45:opening:2"),
+			Some("2026-w46:opening"),
+			Some("2026-w46:QM-311"),
+			None,
+		] {
+			assert_eq!(fields(&[("second", of_ref)]), ["opening[0].take"], "{of_ref:?}");
+		}
+	}
+
+	/// paulgsc/some-ui#3269, C736: the takes a week's opening may play are
+	/// those the sends of that week and every earlier one name under its
+	/// version, newest first, each week's send read once, its final over a
+	/// draft; a later week's, another version's and another subject's are
+	/// not among them.
+	#[tokio::test]
+	async fn a_weeks_opening_takes_are_this_and_earlier_weeks_newest_first() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		let send = |id: &str, opening: Value| -> String {
+			let mut body = sent_body("2026-11-01T00:00:00.000Z");
+			body["week"] = json!(id);
+			body["opening"] = opening;
+			serde_json::from_value::<Sent>(body.clone()).unwrap();
+			body.to_string()
+		};
+		let take = |n: u8, take: &str, recorded: &str, version: u32| json!({ "n": n, "take": take, "recordedAt": recorded, "version": version });
+		for (subject, id, opening) in [
+			(
+				A,
+				"2026-w44",
+				json!([take(1, "w44-1", "2026-10-28T10:00:00.000Z", 1), take(2, "w44-2", "2026-10-28T10:05:00.000Z", 1)]),
+			),
+			(
+				A,
+				"2026-w45",
+				// Recorded again the same week: both kept, the newer first (C783).
+				json!([
+					take(1, "w45-1", "2026-11-04T10:00:00.000Z", 1),
+					take(2, "w45-2-v2", "2026-11-04T10:05:00.000Z", 2),
+					take(1, "w45-1-again", "2026-11-04T10:10:00.000Z", 1)
+				]),
+			),
+			(A, "2026-w47", json!([take(1, "w47-1", "2026-11-18T10:00:00.000Z", 1)])),
+			(B, "2026-w46", json!([take(1, "b-1", "2026-11-12T10:00:00.000Z", 1)])),
+		] {
+			let table = if id == "2026-w44" { "rust_week_final" } else { "rust_week_draft" };
+			sqlx::query(&(String::from("INSERT INTO ") + table + " (subject_id, week_id, sent_at, body, received_at) VALUES (?1, ?2, 'then', ?3, 'then')"))
+				.bind(subject)
+				.bind(id)
+				.bind(send(id, opening))
+				.execute(&mut *conn)
+				.await
+				.unwrap();
+		}
+		// w44 is final, and a draft beside it, were one ever there, is not read.
+		sqlx::query("INSERT INTO rust_week_draft (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w44', 'then', ?2, 'then')")
+			.bind(A)
+			.bind(send("2026-w44", json!([take(1, "stray", "2026-11-14T10:00:00.000Z", 1)])))
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		let names = |takes: Vec<super::OpeningCandidate>| -> Vec<(String, String)> { takes.into_iter().map(|each| (each.week, each.take.take)).collect() };
+		assert_eq!(
+			names(opening_takes(&mut conn, A, "2026-w46", 1).await.unwrap()),
+			[
+				(String::from("2026-w45"), String::from("w45-1-again")),
+				(String::from("2026-w45"), String::from("w45-1")),
+				(String::from("2026-w44"), String::from("w44-2")),
+				(String::from("2026-w44"), String::from("w44-1")),
+			]
+		);
+		assert_eq!(
+			names(opening_takes(&mut conn, A, "2026-w46", 2).await.unwrap()),
+			[(String::from("2026-w45"), String::from("w45-2-v2"))]
+		);
+		assert_eq!(names(opening_takes(&mut conn, A, "2026-w44", 1).await.unwrap()).len(), 2, "a week's own send counts");
+		assert!(opening_takes(&mut conn, A, "2026-w43", 1).await.unwrap().is_empty());
+		// A send that no longer reads offers no take, and never breaks a later week.
+		sqlx::query("INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w43', 'then', '{\"old\": true}', 'then')")
+			.bind(A)
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		assert_eq!(opening_takes(&mut conn, A, "2026-w46", 1).await.unwrap().len(), 4);
+		assert_eq!(
+			names(opening_takes(&mut conn, B, "2026-w47", 1).await.unwrap()),
+			[(String::from("2026-w46"), String::from("b-1"))]
+		);
 	}
 
 	/// RR24 (paulgsc/some-ui#3248): a ticket is answered whole, point by point
