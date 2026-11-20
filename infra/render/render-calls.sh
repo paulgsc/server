@@ -579,8 +579,17 @@ record() {
     rust-essay)
       # The recorder names the finished folder for the essay's week in
       # --out. Each take it plays is <ticket>.<webm|ogg|m4a> in --takes.
+      # The week with its rustc runs (RR31, #1049), when file_host gave one
+      # (`rust_essays::WEEK_FILE`, what GET /rust-weeks/<week> answers) and
+      # this image's recorder takes it: one from before RR31 refuses a flag
+      # it does not know, so it records the essay as it always did.
+      local week=()
+      if [ -e "$INPUT/$key/week.json" ] && essay_takes_week; then
+        week=(--week-file "$INPUT/$key/week.json")
+      fi
       (cd "$APP_DIR" && "$TSX" tests/record/essay.ts "${COMMON[@]}" \
-        --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" --out "$WORK") ;;
+        --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" \
+        "${week[@]}" --out "$WORK") ;;
     interview-essay)
       # The Rust Rounds essay's recorder, which reads the essay's kind from
       # its schema; its own --out, so its work and renders are its own. Each
@@ -613,6 +622,14 @@ record() {
       (cd "$APP_DIR" && "$TSX" tests/record/report.ts "${COMMON[@]}" \
         --report-file "$INPUT/$key.json" --out "$WORK") ;;
   esac
+}
+
+# Whether this image's essay recorder takes --week-file (RR31): it declares
+# the option in its own parseArgs, which refuses any flag it does not
+# declare. Read from the image's file, so the server's half and the render
+# image's pin land in either order.
+essay_takes_week() {
+  grep -q '"week-file"' "$APP_DIR/tests/record/essay.ts" 2> /dev/null
 }
 
 # Which revision of `key` the job was given: an essay's `revision` file
