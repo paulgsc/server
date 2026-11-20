@@ -1367,9 +1367,8 @@ nowhere is marked as such and belongs to review.
     and `an_interview_essay_whose_take_is_deleted_is_withdrawn`, and
     `rust_round_repo::essay_video`'s tests, which run for both kinds. **A
     cards essay's spoken cards are the same exception** (WALK7,
-    paulgsc/server#1052, paulgsc/some-ui#3282; named 2026-11-20 by the
-    coordinator of run paulgsc/some-ui#3311, the owner's ruling asked for
-    and pending): an essay whose spoken cards name the owner's takes is
+    paulgsc/server#1052, paulgsc/some-ui#3282; owner, 2026-11-20, "add it",
+    relayed by the coordinator of run paulgsc/some-ui#3311): an essay whose spoken cards name the owner's takes is
     given them in `cards-essays/<key>.takes/` (`cards_essays::pass`, through
     the one take hand-off every essay uses, `take_files::hand_off`), and the
     rules hold only as far as this says. (a) holds: the takes are the
