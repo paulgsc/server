@@ -127,6 +127,7 @@ sign-in failing with "Passkey sign-in isn't set up on this server yet".
 |---|---|---|
 | Subject id | `account.subject_id` | `subject-` and 32 random hex digits, minted by `subject.rs`. The key of every per-person row. |
 | User handle | `account.user_handle` | The WebAuthn `user.id`: 16 random bytes. The only thing an authenticator returns on a sign-in that names no account. |
+| Pairing scope | `account.pairing_scope` | 16 random bytes, set when the account's first phone pairs and never changed, answered on `/auth/pairing/finish` as `account` ("Pairing a phone"). Neither a time nor derived from the subject id or the user handle. |
 | Passkeys | `passkey` | Credential id, public key, signature counter and backup flags. At most 16 per account. |
 | Sessions | `auth_session` | SHA-256 of each session token (a paired phone's over a fixed prefix too), its subject, when it expires, and its `kind` (`browser` or `phone`). A phone's row also holds a random `pairing_id`, the UTC day it paired (`paired_on`), and the name the owner typed for it, if any (`label`). At most 32 browser sessions and 16 paired phones per account. |
 
@@ -274,7 +275,8 @@ this relying party. It gets a session another way (`auth::pairing`):
    8 characters of Crockford base32 (40 bits), open for ten minutes. Asking
    again replaces the account's open code.
 2. The person types it on the phone, which sends it to
-   `POST /auth/pairing/finish` and is answered `{ token, expiresAt }`.
+   `POST /auth/pairing/finish` and is answered
+   `{ token, expiresAt, phoneId, account }`.
 3. The phone sends that token as `Authorization: Bearer`. A browser never
    attaches that header on its own, so it is no ambient credential.
 
@@ -311,6 +313,19 @@ supersedes, for phones only, the "deliberately absent" note in
   never derived from the token or its hash), `pairedOn`, `renewedAt` and
   `expiresAt`. No token or hash is ever returned. `/auth/pairing/finish`
   answers the same `phoneId`, so the phone can show its own (C496).
+- **Every phone an account pairs learns the same `account`**
+  (paulgsc/some-ui#3197, C751). `/auth/pairing/finish` also answers
+  `account`, the base64url of the account's `pairing_scope`: 16 random bytes
+  set the first time a phone pairs with the account and the same for every
+  pairing after (migration `20261119000400_add_pairing_scope_to_account`).
+  A phone keeps what it knows home holds under it, so pairing again with the
+  same account, after a reinstall whose backup leaves the pairing out, keeps
+  that knowledge, and another home or another account starts fresh. It is
+  random, never derived from the subject id or the user handle (invariant
+  5's `SubjectId` stays inside home; invariant 8's user handle never leaves
+  it), it names no person or device (invariant 7), and it goes with the
+  account row (invariant 9). It is no credential: it opens nothing, and
+  every request still needs the phone's token.
 - **The owner names each phone** (the owner, 2026-11-17: "yes, let me name
   each phone too"). The name is only what the owner typed: an optional
   `label` sent with `/auth/pairing/finish` while pairing, or set later with

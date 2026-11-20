@@ -125,6 +125,10 @@ pub struct DeviceSession {
 	pub expires_at: i64,
 	/// base64url of 16 random bytes; see [`PhoneView::phone_id`].
 	pub phone_id: String,
+	/// The account's pairing scope, base64url of 16 random bytes: the same
+	/// for every phone the account pairs, another account's differs
+	/// (paulgsc/some-ui#3197). Never derived from the subject id.
+	pub account: String,
 }
 
 /// The account's paired phones, the earliest paired first.
@@ -464,16 +468,18 @@ pub async fn finish_pairing(State(auth): State<AuthContext>, headers: HeaderMap,
 				pairing_id: &pairing_id,
 				paired_on: &utc_day(now),
 				label: label.as_deref(),
+				scope: &new_pairing_id(),
 			},
 			expires_at,
 			now,
 		)
 		.await?
 	{
-		PairPhone::Paired => Ok(Json(DeviceSession {
+		PairPhone::Paired { scope } => Ok(Json(DeviceSession {
 			token: token.encoded(),
 			expires_at: expires_at * 1_000,
 			phone_id: URL_SAFE_NO_PAD.encode(pairing_id),
+			account: URL_SAFE_NO_PAD.encode(scope),
 		})),
 		PairPhone::AtCapacity => Err(FileHostError::Conflict("this account already has the most paired phones it may; sign one out first")),
 		PairPhone::NoAccount => Err(FileHostError::Unauthorized),
@@ -1228,6 +1234,30 @@ mod tests {
 		let (status, _, finished) = call(app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": started["code"] }))).await;
 		assert_eq!(status, StatusCode::OK, "{finished}");
 		(finished["token"].as_str().unwrap().to_owned(), finished["phoneId"].as_str().unwrap().to_owned())
+	}
+
+	/// some-ui#3197: every phone an account pairs learns the same `account`,
+	/// so a phone paired again (after a reinstall) keeps what it knows home
+	/// holds; it is neither a phone's id nor anything a session carries.
+	#[tokio::test]
+	async fn every_pairing_of_an_account_answers_the_same_account() {
+		let app = app(AuthContext::for_tests(pool().await, 100));
+		let browser = register(&app, &mut authenticator()).await;
+		let finish = |code: Value| {
+			let app = app.clone();
+			async move { call(&app, Method::POST, "/auth/pairing/finish", None, Some(json!({ "code": code }))).await.2 }
+		};
+		let (_, _, first) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+		let first = finish(first["code"].clone()).await;
+		let (_, _, second) = call(&app, Method::POST, "/auth/pairing/start", Some(&browser.cookie), None).await;
+		let second = finish(second["code"].clone()).await;
+
+		let account = first["account"].as_str().unwrap();
+		assert_eq!(URL_SAFE_NO_PAD.decode(account).unwrap().len(), 16, "16 random bytes");
+		assert_eq!(second["account"].as_str(), Some(account));
+		assert_ne!(first["phoneId"], second["phoneId"], "each phone its own id");
+		assert_ne!(first["phoneId"].as_str(), Some(account));
+		assert_eq!(first.as_object().unwrap().len(), 4, "token, expiresAt, phoneId and account: {first}");
 	}
 
 	async fn listed_phones(app: &Router, cookie: &str) -> Vec<Value> {
