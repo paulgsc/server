@@ -30,8 +30,10 @@
 //! routine (RR18) writes the essay of the round that closed, for each of the
 //! newest [`ROUND_WEEKS_READ`] weeks home holds whose essay it has not taken:
 //! promised from the round, so the first is listed before any essay came
-//! (C387, paulgsc/server#890). A cards essay comes when a session writes one:
-//! no day.
+//! (C387, paulgsc/server#890). The interview essay's is the same Monday for
+//! a week of mock interview: its Monday routine runs then and writes the
+//! essay of each week that ended (paulgsc/some-ui#2931). A cards essay comes
+//! when a session writes one: no day.
 //!
 //! **A clip's walk** (paulgsc/some-ui#2670's clips) is on the board too, as
 //! the `clip-walk` shelf: no feed (no video, no link, nothing let go), each
@@ -119,8 +121,8 @@ pub const HOME_ZONE: Tz = chrono_tz::America::Los_Angeles;
 /// A feed that took no episode for this long is not expecting one.
 pub const ACTIVE_DAYS: i64 = 21;
 
-/// How many of the newest weeks of Rust Rounds the board reads for the
-/// essay's day.
+/// How many of the newest weeks of Rust Rounds, and of mock interview, the
+/// board reads for each essay's day.
 ///
 /// The week that closed and the one that opened after it, so the next week
 /// arriving before Monday doesn't hide the essay still owed for the one
@@ -413,9 +415,10 @@ pub struct FeedSeen {
 	/// Each episode that is a part of a call's week of more than one
 	/// (paulgsc/some-ui#2918), by key: which part, of how many.
 	pub parts: BTreeMap<String, (u32, u32)>,
-	/// The Rust essay's only: each of the newest weeks of Rust Rounds the
-	/// subject holds ([`ROUND_WEEKS_READ`]), by id, with the Monday its essay
-	/// is written, the day after its `due` at home (paulgsc/server#890).
+	/// The Rust and interview essays' only: each of the newest weeks of Rust
+	/// Rounds, or of mock interview, the subject holds ([`ROUND_WEEKS_READ`]),
+	/// by id, with the Monday its essay is written, the day after its `due` at
+	/// home (paulgsc/server#890).
 	pub rounds: Vec<(String, NaiveDate)>,
 }
 
@@ -757,18 +760,18 @@ fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Nai
 		// week home holds whose essay it has not taken yet, while that Monday
 		// is today or later. Promised from the round being open, before the
 		// first essay ever comes (C387): no `ACTIVE_DAYS`, since the round,
-		// not the feed's last episode, is what says one is owed.
-		Feed::RustEssay => seen
+		// not the feed's last episode, is what says one is owed. The interview
+		// week's Monday routine does the same for a week of mock interview.
+		Feed::RustEssay | Feed::InterviewEssay => seen
 			.rounds
 			.iter()
 			.filter(|(week, monday)| *monday >= today && !seen.let_go.contains(week) && !seen.held.iter().any(|(key, _)| key == week))
 			.map(|(_, monday)| *monday)
 			.min(),
-		// A cards essay comes when a session writes one, and an interview
-		// essay when its routine runs, which promises no day yet: none is
-		// promised. Nor is a report's: a week with no engagement record
-		// makes none (`report_weeks`), so its day is not known before.
-		Feed::CardsEssay | Feed::InterviewEssay | Feed::Report => None,
+		// A cards essay comes when a session writes one: none is promised.
+		// Nor is a report's: a week with no engagement record makes none
+		// (`report_weeks`), so its day is not known before.
+		Feed::CardsEssay | Feed::Report => None,
 		Feed::Call | Feed::PlayoffDelta => cadence(feed, seen, now, today),
 	}
 }
@@ -803,18 +806,34 @@ fn essay_monday(window: &rust_round_repo::week::Window) -> Option<NaiveDate> {
 	Some(on_or_after(due.succ_opt()?, Weekday::Mon))
 }
 
-/// [`essay_monday`] for each of the newest [`ROUND_WEEKS_READ`] weeks
-/// `subject` holds that reads as the week its name says.
-async fn rounds_of(db: &SqlitePool, subject: &str) -> Result<Vec<(String, NaiveDate)>, sqlx::Error> {
-	let held = mailbox_repo::newest_rust_weeks(&mut *db.acquire().await?, subject, ROUND_WEEKS_READ)
-		.await
-		.map_err(crate::rust_essays::storage)?;
+/// Which weeks an essay is written from.
+#[derive(Debug, Clone, Copy)]
+enum Weeks {
+	/// Rust Rounds' (`rust-week-<id>.json`).
+	RustRounds,
+	/// Mock interview's (`interview-week-<id>.json`, paulgsc/some-ui#2931).
+	Interview,
+}
+
+/// [`essay_monday`] for each of the newest [`ROUND_WEEKS_READ`] weeks of
+/// `weeks` that `subject` holds and that reads as the week its name says.
+async fn rounds_of(db: &SqlitePool, subject: &str, weeks: Weeks) -> Result<Vec<(String, NaiveDate)>, sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	let held = match weeks {
+		Weeks::RustRounds => mailbox_repo::newest_rust_weeks(&mut conn, subject, ROUND_WEEKS_READ).await,
+		Weeks::Interview => mailbox_repo::interview_weeks(&mut conn, subject, ROUND_WEEKS_READ).await,
+	}
+	.map_err(crate::rust_essays::storage)?;
 	Ok(
 		held
 			.into_iter()
 			.filter_map(|held| {
-				let week = rust_round_repo::week::read(&held.body).ok().filter(|week| week.id == held.id)?;
-				Some((week.id, essay_monday(week.window.as_ref()?)?))
+				let (id, window) = match weeks {
+					Weeks::RustRounds => rust_round_repo::week::read(&held.body).ok().map(|week| (week.id, week.window)),
+					Weeks::Interview => rust_round_repo::interview::read(&held.body).ok().map(|week| (week.id, week.window)),
+				}?;
+				(id == held.id).then_some(())?;
+				Some((id, essay_monday(window.as_ref()?)?))
 			})
 			.collect(),
 	)
@@ -1034,8 +1053,10 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 			Feed::CardsEssay => continue,
 		};
 		let mut seen = seen(Shelf::Feed(*feed), &held, &let_go, renders, status).await;
-		if *feed == Feed::RustEssay {
-			seen.rounds = rounds_of(db, subject).await?;
+		match feed {
+			Feed::RustEssay => seen.rounds = rounds_of(db, subject, Weeks::RustRounds).await?,
+			Feed::InterviewEssay => seen.rounds = rounds_of(db, subject, Weeks::Interview).await?,
+			_ => {}
 		}
 		feeds.push((Shelf::Feed(*feed), seen));
 	}
