@@ -62,11 +62,11 @@ per CLAUDE.md, "Drift is loud, not silent".
   and with `file-host` pinned by digest it reads both ends of render's
   requirement, so the release pull request refuses a render that requires
   what its file_host does not provide. www and resume-render are run on
-  home since R8 (#853, `infra/compose/www.yml`) and pinned by digest, moved
-  by a reviewed change; they join `SOURCES` (www by its `X.Y.Z` tag,
-  resume-render by its whole commit) only once their images write the
-  labels, `resume-api` below. An image that joins from some-ui later does
-  the same.
+  home since R8 (#853, `infra/compose/www.yml`) and pinned by digest. Since
+  2026-11-20 they are in `SOURCES` (www by its `X.Y.Z` tag, resume-render by
+  its whole commit; C740): their images write the labels, `resume-api`
+  below (some-ui#3275). An image that joins from some-ui later waits in
+  `HELD` until it writes its labels, then joins the same way.
 - **RL9. Every requirement is met inside the set.** Each image's
   `io.paulgsc.requires` is met by another image's `io.paulgsc.provides` in
   the same release ("Constraints", below). CI checks it from the registry by
