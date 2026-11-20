@@ -1143,6 +1143,40 @@ mod tests {
 			[(json!("w52-1"), json!("2026-w52")), (json!("w52-2"), json!("2026-w52"))],
 			"deleted: the next older take"
 		);
+
+		// some-ui#3304, the owner's rule: a newer take home couldn't hear gives
+		// way to the next older one; until it is judged, it is the one played.
+		hold_note(&pool, A, "w53-1-again", "2026-w53:opening:1").await;
+		let (status, _, _) = call(
+			&app,
+			Method::PUT,
+			SENT,
+			Some(&phone),
+			None,
+			&send("2026-10-14T10:00:00.000Z", json!([take(1, "w53-1-again", "2026-10-14T09:30:00.000Z")])),
+		)
+		.await;
+		assert_eq!(status, StatusCode::OK);
+		let (_, _, record) = call(&app, Method::GET, RECORD, Some(&phone), None, b"").await;
+		assert_eq!(plays(&record)[0], (json!("w53-1-again"), json!("2026-w53")), "not judged yet: played");
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 'w53-1-again', 'm', 'e', 1, 'heard', 'en', 0.9, 1000, 'words', 1, 'then')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, 'w53-1-again', 'm', 1, 'heard-1', 'garbled', 'low_confidence', 1000, 'then')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		let (_, _, record) = call(&app, Method::GET, RECORD, Some(&phone), None, b"").await;
+		assert_eq!(plays(&record)[0], (json!("w52-1"), json!("2026-w52")), "garbled: the last take home heard");
 	}
 
 	/// A Rust Rounds voice note home holds, said for `of_ref`.

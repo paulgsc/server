@@ -484,8 +484,9 @@ pub(crate) async fn week_record(conn: &mut SqliteConnection, subject: &str, week
 /// (`rust_round_repo::sent::opening_takes`) and that is still kept. A take
 /// deleted from My data is not kept, nor one home holds as said for
 /// anything but that question of the week its send names; one home does not
-/// hold yet is, since a take and the send reach home on their own. None for
-/// a week with no opening.
+/// hold yet is, since a take and the send reach home on their own. Nor is one
+/// home couldn't hear (some-ui#3304): the next older take answers instead.
+/// None for a week with no opening.
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored send that no longer reads.
@@ -499,6 +500,17 @@ pub(crate) async fn opening(conn: &mut SqliteConnection, subject: &str, week: &W
 		for candidate in candidates.iter().filter(|candidate| candidate.take.n == n) {
 			let take = &candidate.take.take;
 			if voice_repo::delete::receipt(&mut *conn, subject, take).await.map_err(voice_storage)?.is_some() {
+				continue;
+			}
+			// The owner's rule (paulgsc/some-ui#3304): a take home couldn't
+			// hear (garbled, nothing said, every attempt failed) gives way to
+			// the next older one, so a bad attempt never costs the week its
+			// answer. One not judged yet stays: the essay waits on it.
+			if voice_repo::verdict::of_note(&mut *conn, subject, take)
+				.await
+				.map_err(voice_storage)?
+				.is_some_and(|verdict| verdict.kind != voice_repo::verdict::Kind::Heard)
+			{
 				continue;
 			}
 			let of_ref = voice_repo::ref_of(&mut *conn, subject, take, voice_repo::Of::RustRound).await?;
