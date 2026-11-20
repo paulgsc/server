@@ -45,8 +45,9 @@ per CLAUDE.md, "Drift is loud, not silent".
   A tag alone can move under a release.
 - **RL5. Held entries do not move.** An entry in `HELD` keeps whatever main
   says. `file-host` was freed by R4 (#793), which pinned it by digest once
-  the deploy applies whole releases; www and resume-render are held since
-  R8 (#853), until their images write the labels RL7 needs. An entry the
+  the deploy applies whole releases; www and resume-render, held since R8
+  (#853), were freed on 2026-11-20 (C740) once their images wrote the labels
+  RL7 needs. An entry the
   release does not follow keeps whatever main says, and a third-party entry
   moves only by RL8.
 - **RL6. No approval of its own.** Forming the set adds no human step
@@ -173,7 +174,7 @@ it, which a test holds equal to the Dockerfile's label:
 | `render-folders` | file_host | render (some-ui, U2 #792) | `RENDER_FOLDERS_EPOCH`, same file |
 | `rust-runner-protocol` | rust-runner | file_host | `protocol::EPOCH`, `crates/rust_rounds_wire/src/protocol.rs` |
 | `nats-subjects` (subjects and payloads; only subjects are pinned by a test) | orchestrator | file_host | `NATS_SUBJECTS_EPOCH`, `crates/ws-events/src/events/common/event_type.rs` |
-| `resume-api` (**Planned**, #853: neither image writes it yet) | resume-render | www (its `/api/resume/` proxy) | some-ui's, beside `packages/ui/resume/scripts/serve.mjs` |
+| `resume-api` (since 2026-11-20, some-ui#3275) | resume-render | www (its `/api/resume/` proxy) | some-ui's, beside `packages/ui/resume/scripts/serve.mjs` |
 
 `render-folders` covers the folders render reads and file_host writes:
 `call-weeks`, `playoff-delta-episodes`, `preview-requests`, `rust-essays`

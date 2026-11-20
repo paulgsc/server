@@ -25,9 +25,10 @@ Where "newest published" comes from, per followed service (`SOURCES`):
   release publishes (a whole commit for render), never `latest`. render is
   followed since R4 (#793), once `file-host` is pinned by digest and so the
   set check (`scripts/check_release.py`, R3 #790) reads both ends of its
-  requirement (RL7). www and resume-render are run on home since R8 (#853)
-  and pinned by digest, but not followed: neither image writes its labels
-  yet, and RL7 follows a some-ui image only once it does.
+  requirement (RL7). www and resume-render are run on home since R8 (#853),
+  pinned by digest, and followed since 2026-11-20 (C740), once their images
+  wrote their labels: www by its highest `X.Y.Z` tag (never backwards, even
+  if an older version is pushed again), resume-render by its whole commit.
 
 - **A third-party image** (`THIRD_PARTY`, R7 #796), only with
   `--third-party`: the current digest of the tag its entry already names (a
@@ -310,9 +311,13 @@ def newest(source: Changesets | Hub, world: World) -> str | None:
             if digest:
                 return f"{repository}:{sha}@{digest}"
         return None
-    for name, digest in world.tags(source.repository):
-        if name != "latest" and re.fullmatch(source.shape, name):
-            return f"{source.repository}:{name}@{digest}"
+    matching = [(name, digest) for name, digest in world.tags(source.repository) if name != "latest" and re.fullmatch(source.shape, name)]
+    if source.shape == SEMVER:
+        # A version never moves backwards: a re-run of an older publish
+        # re-pushes its tag, so the highest version wins, not the newest push.
+        matching.sort(key=lambda tag: tuple(int(part) for part in tag[0].split(".")), reverse=True)
+    for name, digest in matching:
+        return f"{source.repository}:{name}@{digest}"
     return None
 
 
@@ -486,6 +491,10 @@ class Tests(unittest.TestCase):
         tags = {"pgathondu/www": [("latest", DC), ("0.1.70", DB), ("0.1.69", DA)]}
         updated, _ = reconcile(json.loads(RELEASE.read_text()), world({}, [], [A], tags), "main", {"www": SOURCES["www"]})
         self.assertEqual(updated["services"]["www"]["image"], f"pgathondu/www:0.1.70@{DB}")
+        # An older version pushed again later (a re-run publish) never wins.
+        again = {"pgathondu/www": [("0.1.69", DA), ("latest", DA), ("0.1.70", DB), ("0.1.9", DC)]}
+        updated, _ = reconcile(json.loads(RELEASE.read_text()), world({}, [], [A], again), "main", {"www": SOURCES["www"]})
+        self.assertEqual(updated["services"]["www"]["image"], f"pgathondu/www:0.1.70@{DB}", "the highest version, by number")
 
     def test_an_unfollowed_entry_is_never_moved(self) -> None:
         seen = world({("pgathondu/rust-runner", A): DA}, [changeset(A, "rust-runner")], [A], {"redis": [("7.4", DA)]})
