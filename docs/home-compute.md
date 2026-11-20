@@ -293,9 +293,12 @@ way; CI runs it on every PR.
   pass whose sum differs tries it at once; so a cap
   raised and deployed renders the refused episode on its next pass, with no
   new input.
-- **Each job's length cap is its own** (`max_minutes`): a Rust Rounds
-  essay may run 30 minutes, the owner's (2026-11-17, #927); every other
-  job, a mock interview's essay and an engagement report too, 15. The other caps are every job's.
+- **Each job's length cap is its own** (`max_minutes`): an essay, Rust
+  Rounds or mock interview, may run 60 minutes (C780: the owner's 30 of
+  2026-11-17, #927, raised on 2026-11-19 when interview takes went to 3
+  minutes, under the owner's ruling that a length cap is a suggestion to
+  move with the story); every other job, an engagement report too, 15. The
+  other caps are every job's.
 - **A restart keeps the job.** `job.state` names it, it runs before any
   other, under the same id, and its work is never removed for the
   `WORK_MAX_MB` cap while it waits. Docker stopping the container kills the
