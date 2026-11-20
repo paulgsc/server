@@ -107,7 +107,14 @@ pub const ESSAY_FILE: &str = "essay.json";
 /// Exactly what `GET /rust-weeks/<week>` answers the essay's subject when the
 /// essay is given (`handlers::rust_rounds::week_with_runs`), so the recorder
 /// can show the phone's own screens and rustc's runs. Not written for an
-/// interview essay, nor when the subject holds no such week.
+/// interview essay, nor when the subject holds no such week, nor when the
+/// week or a run of it does not read back (logged): the essay is then
+/// recorded as before RR31, and the pass goes on to the other weeks.
+///
+/// A snapshot, taken once when the essay is given: a run kept after that is
+/// not in it, and a folder given is never written again but by a new
+/// revision. A week's programs are queued when the week reaches home, a week
+/// before its essay can be given, so their runs are normally long kept.
 pub const WEEK_FILE: &str = "week.json";
 
 /// Which revision of the week's essay its folder holds (C72), beside it.
@@ -598,10 +605,16 @@ async fn week_file(db: &SqlitePool, kind: Kind, subject: &str, week: &str) -> Re
 		return Ok(None);
 	}
 	let mut conn = db.acquire().await?;
-	crate::handlers::rust_rounds::week_with_runs(&mut conn, subject, week).await.map_err(|err| match err {
-		crate::FileHostError::Sqlite(err) => err,
-		other => sqlx::Error::Protocol(other.to_string()),
-	})
+	match crate::handlers::rust_rounds::week_with_runs(&mut conn, subject, week).await {
+		Ok(body) => Ok(body),
+		Err(crate::FileHostError::Sqlite(err)) => Err(err),
+		// One week's bad run never holds up the pass: its essay is given
+		// without the week. Said by kind, never by body.
+		Err(_) => {
+			error!(kind = "unreadable", "an essay's week does not read back; given without week.json");
+			Ok(None)
+		}
+	}
 }
 
 /// The takes an essay plays, as home holds them.
@@ -1146,6 +1159,30 @@ mod tests {
 		hold_week(pool, 2, "2026-w46").await;
 		send(pool, "2026-w46").await;
 		body
+	}
+
+	/// A week whose run does not read back is no reason to hold its essay,
+	/// nor the pass: the essay is given without `week.json`.
+	#[tokio::test]
+	async fn an_essay_whose_week_does_not_read_back_is_given_without_it() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		let body = final_week(&pool).await;
+		hold_take(&pool).await;
+		sqlx::query("INSERT INTO rust_round_source (seq, source_hash, source, queued_at) VALUES (1, ?1, 'fn main() {}\n', 'then')")
+			.bind(rust_round_repo::content_hash(b"fn main() {}\n"))
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO rust_round_run (toolchain, source_seq, key, ended, refusal, recording, rustc, recorded_at) VALUES ('1.97.0', 1, 'k', 'refused', 'malformed', NULL, 'not json', 'then')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		let done = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
+		assert_eq!(done.written, 1, "the pass goes on");
+		let week = folders.essays.join("2026-w46");
+		assert_eq!(std::fs::read(week.join(ESSAY_FILE)).unwrap(), body.as_bytes());
+		assert!(!week.join(WEEK_FILE).exists(), "recorded as before RR31");
 	}
 
 	/// An essay waits for its week's deadline and for its takes, then is

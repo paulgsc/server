@@ -321,6 +321,9 @@ pub(crate) fn reads_as_named(id: &str, body: &[u8]) -> Option<rust_round_repo::w
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "rust_week", skip_all, fields(otel.kind = "server"))]
 pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: HeaderMap, Path(id): Path<String>) -> Result<Response, FileHostError> {
+	if !rust_round_repo::week::is_week_id(&id) {
+		return Err(FileHostError::NotFound);
+	}
 	let mut conn = db.acquire().await?;
 	let body = week_with_runs(&mut conn, paired.subject.as_str(), &id).await?.ok_or(FileHostError::NotFound)?;
 	tagged(&headers, body)
