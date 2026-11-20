@@ -375,6 +375,30 @@ fn the_rust_essay_taken_promises_the_next_round_s_monday_and_a_past_one_none() {
 }
 
 #[test]
+fn the_interview_essay_comes_the_monday_after_its_week_even_before_any_essay() {
+	// NOW is Sunday Nov 8 at home: the interview week closes tonight, its essay Monday.
+	let seen = FeedSeen {
+		rounds: vec![round("2026-w45", (2026, 11, 9))],
+		..FeedSeen::default()
+	};
+	let read = board(&[(Feed::InterviewEssay, seen.clone())], None, None, NOW);
+	assert_eq!(
+		read.coming,
+		[Coming {
+			feed: String::from("interview-essay"),
+			on: String::from("2026-11-09")
+		}]
+	);
+	// Once its essay is taken, nothing newer is owed on a day.
+	let taken = FeedSeen {
+		held: vec![(String::from("2026-w45"), NOW - 3_600)],
+		newest_taken: Some(NOW - 3_600),
+		..seen
+	};
+	assert_eq!(board(&[(Feed::InterviewEssay, taken)], None, None, NOW).coming, []);
+}
+
+#[test]
 fn a_cards_essay_is_expected_on_no_day() {
 	let seen = FeedSeen {
 		held: vec![(String::from("zfs-2026-11-02"), NOW - 3_600)],
@@ -840,6 +864,56 @@ async fn the_read_promises_the_rust_essay_from_the_caller_s_open_round() {
 		[Coming {
 			feed: String::from("rust-essay"),
 			on: String::from("2026-11-16")
+		}]
+	);
+}
+
+#[tokio::test]
+async fn the_read_promises_the_interview_essay_from_the_caller_s_open_week() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let (renders, status, lane) = (
+		dir.path().join("interview-essay"),
+		dir.path().join("interview-essay-worker"),
+		dir.path().join("call-worker"),
+	);
+	for folder in [&renders, &status, &lane] {
+		std::fs::create_dir_all(folder).unwrap();
+	}
+	sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('me', 'me')").execute(&db).await.unwrap();
+	let folders = Folders {
+		feeds: vec![(Feed::InterviewEssay, renders, status)],
+		clip_walks: None,
+		previews: None,
+		cards_essays: None,
+		lane,
+	};
+	assert_eq!(read(&db, &folders, "me", NOW).await.unwrap().coming, [], "no week held: nothing promised");
+	let body = serde_json::json!({
+		"schema": "some-ui.interview-week/1", "id": "2026-w45",
+		"opens": "2026-11-02T00:00:00-08:00", "due": "2026-11-08T23:59:00-08:00",
+		"company": { "name": "Fernbrook Labs" }, "role": "Platform engineer",
+		"questions": [{ "id": "about-you", "family": "about-you", "prompt": "Tell me about yourself.", "targetSeconds": 90 }],
+		"cards": [{ "id": "home-first", "script": "I built home first because.", "targetSeconds": 90 }],
+	})
+	.to_string();
+	let name = rust_round_repo::interview::mailbox_name("2026-w45");
+	let sha256 = rust_round_repo::content_hash(body.as_bytes());
+	let item = mailbox_repo::ItemIn {
+		folder: "brief",
+		name: &name,
+		seq: 1,
+		sha256: &sha256,
+		body: body.as_bytes(),
+	};
+	mailbox_repo::keep_item(&mut db.acquire().await.unwrap(), "me", item, "2026-11-02T08:00:00.000Z")
+		.await
+		.unwrap();
+	assert_eq!(
+		read(&db, &folders, "me", NOW).await.unwrap().coming,
+		[Coming {
+			feed: String::from("interview-essay"),
+			on: String::from("2026-11-09")
 		}]
 	);
 }
