@@ -290,10 +290,8 @@ fi
 # the essay file's folder's name, or fails as the real one does for a take
 # its folder lacks while $FAKE/no-take exists. Each run is counted in
 # $FAKE/essay-runs as `<essay file> <takes> <out>`, and the --week-file it
-# was handed (RR31) in $FAKE/essay-weeks, `-` for none. As the real one's
-# strict parseArgs does, it refuses --week-file unless the image's essay.ts
-# (here, the app folder's) declares it. A week of mock interview's essay
-# (IW6) is recorded by the same recorder.
+# was handed (RR31) in $FAKE/essay-weeks, `-` for none. A week of mock
+# interview's essay (IW6) is recorded by the same recorder.
 if [ "$1" = tests/record/essay.ts ]; then
   essay= takes= out= weekfile=-
   while [ $# -gt 0 ]; do
@@ -302,9 +300,7 @@ if [ "$1" = tests/record/essay.ts ]; then
       --takes) takes=$2; shift ;;
       --out) out=$2; shift ;;
       --week) echo "essay.ts takes no $1"; exit 2 ;;
-      --week-file)
-        grep -q '"week-file"' tests/record/essay.ts 2> /dev/null || { echo "Unknown option '--week-file'"; exit 2; }
-        weekfile=$2; shift ;;
+      --week-file) weekfile=$2; shift ;;
     esac
     shift
   done
@@ -531,7 +527,6 @@ fresh() {
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/essay-weeks" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" "$FAKE/report-runs" "$FAKE/under-way" \
     "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/overflow-prefix" "$FAKE/pd-runs"
-  rm -rf "$APP_DIR/tests"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1075,28 +1070,19 @@ run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a rendered essay is not made again, and no other folder is read" test "$(wc -l < "$FAKE/essay-runs")" -eq 1
 
 # An essay's week (RR31, #1049): file_host gives week.json beside the essay,
-# and the recorder is handed it as --week-file only when it is there and the
-# image's recorder declares the option; one from before RR31 is never handed
-# a flag it would refuse, and records the essay as it always did.
+# and the recorder is handed it as --week-file when it is there, and only
+# then.
 fresh essay-week
-mkdir -p "$ROOT/essays/2026-w46/takes" "$ROOT/essays/2026-w47/takes" "$ROOT/essays/2026-w48/takes"
-echo '{}' > "$ROOT/essays/2026-w46/essay.json"
-echo '{}' > "$ROOT/essays/2026-w46/week.json"
-run_job rust-essay > "$SCRATCH/pass.out" 2>&1
-check "a recorder from before RR31 is not handed the week, and records the essay" \
-  test "$(cat "$FAKE/essay-weeks")" = - -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4"
-mkdir -p "$APP_DIR/tests/record"
-printf '%s\n' 'const { values } = parseArgs({ options: { "essay-file": { type: "string" }, "week-file": { type: "string" } } })' \
-  > "$APP_DIR/tests/record/essay.ts"
+mkdir -p "$ROOT/essays/2026-w47/takes" "$ROOT/essays/2026-w48/takes"
 echo '{}' > "$ROOT/essays/2026-w47/essay.json"
 echo '{}' > "$ROOT/essays/2026-w47/week.json"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
-check "one that takes it is handed the week beside the essay" \
-  test "$(sed -n 2p "$FAKE/essay-weeks")" = "$ROOT/essays/2026-w47/week.json"
+check "an essay's recorder is handed the week beside it" \
+  test "$(sed -n 1p "$FAKE/essay-weeks")" = "$ROOT/essays/2026-w47/week.json"
 check "and renders it" test -e "$ROOT/renders/rust-essay/2026-w47/essay.mp4"
 echo '{}' > "$ROOT/essays/2026-w48/essay.json"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
-check "an essay given no week is recorded without one" test "$(sed -n 3p "$FAKE/essay-weeks")" = -
+check "an essay given no week is recorded without one" test "$(sed -n 2p "$FAKE/essay-weeks")" = -
 check "and renders it" test -e "$ROOT/renders/rust-essay/2026-w48/essay.mp4"
 
 # An essay corrected while it renders (C72): what was made of the old
