@@ -32,8 +32,9 @@
 //!   for each take its audio `<take>.<webm|ogg|m4a>`, its word times
 //!   `<take>.words.json` where home kept them, and its transcript
 //!   `<take>.transcript.json`, the `some-ui.voice-transcript/1` body the
-//!   mailbox files (`mailbox::pass::transcript_body`), verdict included, and
-//!   nothing else. A take not heard yet holds the essay back until it is; one
+//!   mailbox files, verdict included, and nothing else: the one take
+//!   hand-off every essay uses (`take_files::hand_off`, as `rust_essays`'
+//!   takes are given). A take not heard yet holds the essay back until it is; one
 //!   home does not hold (never sent, deleted, its recording let go) or did
 //!   not hear (its verdict garbled, nothing said or failed) refuses it: a
 //!   spoken card has no silence to play in a take's place (some-ui C812).
@@ -467,69 +468,22 @@ async fn takes_of(db: &SqlitePool, subject: Option<&str>, wanted: &[String]) -> 
 	for take in wanted {
 		// A name the recorder would skip (`.`-led) or that is no note's id
 		// is no take home could hand over.
-		let note = if take.starts_with('.') || !voice_repo::is_note_id(take) {
-			None
-		} else {
-			voice_repo::note_head(&mut conn, subject, take).await.map_err(voice)?
-		};
-		let Some(note) = note else {
+		if take.starts_with('.') || !voice_repo::is_note_id(take) {
 			missing.push(take.clone());
 			continue;
-		};
-		let heard = match voice_repo::transcript::heard(&mut conn, subject, take).await.map_err(voice)? {
-			voice_repo::transcript::Hearing::Heard(heard) => heard,
-			voice_repo::transcript::Hearing::NotHeld => {
-				missing.push(take.clone());
-				continue;
-			}
-			voice_repo::transcript::Hearing::Waiting => {
-				// Every attempt failed for good: never to be heard.
-				let verdict = voice_repo::verdict::of_note(&mut conn, subject, take).await.map_err(voice)?;
-				if verdict.is_some_and(|verdict| verdict.kind != voice_repo::verdict::Kind::Heard) {
-					not_made_out.push(take.clone());
-				} else {
-					waiting = true;
-				}
-				continue;
-			}
-		};
-		let verdict = voice_repo::verdict::of_ending(&mut conn, subject, take, &heard.model).await.map_err(voice)?;
-		// A transcript kept before verdicts were reads as heard, as the
-		// recorder reads it (`hearingOf`); an empty one heard nothing said.
-		if verdict.as_ref().is_some_and(|verdict| verdict.kind != voice_repo::verdict::Kind::Heard) || heard.text.trim_matches(mailbox_repo::BLANK).is_empty() {
-			not_made_out.push(take.clone());
-			continue;
 		}
-		let Some(audio) = voice_repo::transcript::audio(&mut conn, subject, take).await.map_err(voice)? else {
-			missing.push(take.clone());
-			continue;
+		let ask = crate::take_files::Ask {
+			take,
+			name: take,
+			of: None,
+			transcript: true,
 		};
-		let extension = match note.content_type {
-			"audio/ogg" => "ogg",
-			"audio/mp4" => "m4a",
-			_ => "webm",
-		};
-		files.push((take.clone() + "." + extension, audio));
-		let words = voice_repo::transcript::words(&mut conn, subject, take).await.map_err(voice)?;
-		if !words.is_empty() {
-			let timed: Vec<Value> = words
-				.iter()
-				.map(|word| serde_json::json!({ "text": word.text, "startMs": word.start_ms, "endMs": word.end_ms }))
-				.collect();
-			files.push((take.clone() + ".words.json", Value::Array(timed).to_string().into_bytes()));
+		match crate::take_files::hand_off(&mut conn, subject, ask).await.map_err(voice)? {
+			crate::take_files::Take::Files(handed) => files.extend(handed),
+			crate::take_files::Take::Absent { .. } => missing.push(take.clone()),
+			crate::take_files::Take::NotMadeOut => not_made_out.push(take.clone()),
+			crate::take_files::Take::NotHeardYet => waiting = true,
 		}
-		let as_filed = mailbox_repo::Heard {
-			note_id: take.clone(),
-			model: heard.model.clone(),
-			of_kind: note.of_kind,
-			of_ref: note.of_ref,
-			recorded_at: note.recorded_at,
-			text: heard.text,
-			language: heard.language,
-			heard_at: heard.heard_at,
-		};
-		let said = voice_repo::transcript::words_heard_by(&mut conn, subject, take, &heard.model).await?;
-		files.push((take.clone() + ".transcript.json", crate::mailbox::pass::transcript_body(&as_filed, &said, verdict.as_ref())));
 	}
 	Ok(if !missing.is_empty() {
 		Takes::Refused(Refusal {
