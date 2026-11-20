@@ -57,7 +57,13 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// 2 (RR24, paulgsc/some-ui#3248): a Rust Rounds essay's `takes/` may hold a
 /// take of one speak-to point, `<ticket>.<n>.<ext>` (`rust_round_repo::essay::point_key`),
 /// beside a ticket's `<ticket>.<ext>`.
-pub const RENDER_FOLDERS_EPOCH: u32 = 2;
+///
+/// 3 (paulgsc/some-ui#3269): a Rust Rounds essay's `takes/` may hold the
+/// opening's takes, `opening.<n>.<ext>` and `opening.<n>.words.json`, for
+/// each question n the essay names. A render that requires 2 still runs
+/// against this (a provision meets any lower requirement); render raises
+/// its `requires` with the change that reads them.
+pub const RENDER_FOLDERS_EPOCH: u32 = 3;
 
 /// The route surface [`CONTRACT_EPOCH`] was last set for.
 ///
