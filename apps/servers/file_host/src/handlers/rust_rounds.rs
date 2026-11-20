@@ -325,14 +325,36 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 		return Err(FileHostError::NotFound);
 	}
 	let mut conn = db.acquire().await?;
-	let held = mailbox_repo::rust_week(&mut conn, paired.subject.as_str(), &rust_round_repo::week::mailbox_name(&id))
+	let body = week_with_runs(&mut conn, paired.subject.as_str(), &id).await?.ok_or(FileHostError::NotFound)?;
+	tagged(&headers, body)
+}
+
+/// The body `GET /rust-weeks/:id` answers `subject` for week `id`, or `None`
+/// for a week the subject does not hold (a file under the week's name that
+/// is not that week included).
+///
+/// The route's only serializer: what home gives the render worker beside a
+/// Rust Rounds essay (`rust_essays`, `week.json`, RR31) is these bytes, so
+/// the recorder reads the week exactly as the phone does.
+///
+/// # Errors
+/// A storage failure, or a held week or run that does not read back.
+pub(crate) async fn week_with_runs(conn: &mut sqlx::SqliteConnection, subject: &str, id: &str) -> Result<Option<Vec<u8>>, FileHostError> {
+	if !rust_round_repo::week::is_week_id(id) {
+		return Ok(None);
+	}
+	let Some(held) = mailbox_repo::rust_week(conn, subject, &rust_round_repo::week::mailbox_name(id))
 		.await
 		.map_err(mailbox_failure)?
-		.ok_or(FileHostError::NotFound)?;
-	let read = reads_as_named(&id, &held.body).ok_or(FileHostError::NotFound)?;
+	else {
+		return Ok(None);
+	};
+	let Some(read) = reads_as_named(id, &held.body) else {
+		return Ok(None);
+	};
 	let mut tickets = Vec::with_capacity(read.programs.len());
 	for program in read.programs {
-		let (source_hash, runs) = runs_of(&mut conn, &program.source).await?;
+		let (source_hash, runs) = runs_of(conn, &program.source).await?;
 		tickets.push(TicketRuns {
 			ticket: program.ticket,
 			source_hash,
@@ -341,7 +363,7 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 	}
 	let mut academy = Vec::with_capacity(read.academy.len());
 	for starter in read.academy {
-		let (source_hash, runs) = runs_of(&mut conn, &starter.source).await?;
+		let (source_hash, runs) = runs_of(conn, &starter.source).await?;
 		academy.push(StarterRuns {
 			key: starter.key,
 			ticket: starter.ticket,
@@ -363,7 +385,7 @@ pub async fn get_week(paired: Paired, State(db): State<SqlitePool>, headers: Hea
 	// its tag.
 	#[allow(clippy::disallowed_methods)]
 	let body = serde_json::to_vec(&week)?;
-	tagged(&headers, body)
+	Ok(Some(body))
 }
 
 pub(crate) fn mailbox_failure(err: mailbox_repo::MailboxError) -> FileHostError {
@@ -724,6 +746,46 @@ mod tests {
 		mailbox_repo::keep_item(&mut pool.acquire().await.unwrap(), subject, item, "2026-11-09T08:00:00.000Z")
 			.await
 			.unwrap();
+	}
+
+	/// What `GET /rust-weeks/:id` answers is [`week_with_runs`]' bytes, runs
+	/// and all: the body home gives the render worker beside a Rust Rounds
+	/// essay as `week.json` (RR31, server#1049) is the route's own.
+	#[tokio::test]
+	async fn the_route_answers_exactly_the_bytes_the_render_worker_is_given() {
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = module().into_table_router().with_state(state);
+		hold_week(&pool, A, 1, "2026-w46", &["fn main() {}\n", "fn main() { 1; }\n"]).await;
+		crate::rust_rounds::pass::run_once(
+			&pool,
+			&Arc::new(Prints),
+			Duration::from_secs(600),
+			crate::rust_rounds::pass::Waits::SERVER,
+			&mut crate::contention::fake::guard(crate::contention::fake::State::Calm).0,
+			&CancellationToken::new(),
+			&|| String::from("now"),
+		)
+		.await
+		.unwrap();
+
+		let request = Request::builder().method(Method::GET).uri(WEEK).header(&phone.0, &phone.1).body(Body::empty()).unwrap();
+		let response = app.oneshot(request).await.unwrap();
+		assert_eq!(response.status(), StatusCode::OK);
+		let served = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+		let given = super::week_with_runs(&mut pool.acquire().await.unwrap(), A, "2026-w46").await.unwrap().unwrap();
+		assert_eq!(served.as_ref(), given.as_slice());
+		let read: Value = serde_json::from_slice(&given).unwrap();
+		assert_eq!(read["tickets"][1]["runs"][0]["rustc"]["stdout"], "ok\n", "with the runs kept");
+
+		let mut conn = pool.acquire().await.unwrap();
+		assert!(
+			super::week_with_runs(&mut conn, B, "2026-w46").await.unwrap().is_none(),
+			"another subject holds no such week"
+		);
+		assert!(super::week_with_runs(&mut conn, A, "2026-w47").await.unwrap().is_none());
+		assert!(super::week_with_runs(&mut conn, A, "indexing-01").await.unwrap().is_none());
 	}
 
 	/// The weeks home holds list newest first; one reads back with each

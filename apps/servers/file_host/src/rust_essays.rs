@@ -45,7 +45,10 @@
 //! and why, nothing the essay says), for the `RustEssayRefused` alert.
 //!
 //! **What the worker is given** ([`export`]): `<week>/essay.json` in
-//! [`ESSAYS_FOLDER`], byte for byte as the mailbox held it, written in a
+//! [`ESSAYS_FOLDER`], byte for byte as the mailbox held it, and beside a
+//! Rust Rounds essay its week as `week.json` ([`WEEK_FILE`], RR31): what
+//! `GET /rust-weeks/<week>` answers then, runs included, by that route's own
+//! serializer. All of it is written in a
 //! temporary folder and renamed into place whole, once. An essay already
 //! given is left alone: the mailbox never rewrites a kept file.
 //!
@@ -61,7 +64,9 @@
 //!
 //! Cost: one read of the subject's essays in `brief` (one a week, each tens
 //! of KiB) every [`INTERVAL`], and per essay not yet given, its week's file
-//! and one `BEGIN IMMEDIATE` transaction; one `stat` per essay each minute.
+//! and one `BEGIN IMMEDIATE` transaction; per Rust Rounds essay given, once,
+//! its week again and one indexed read of each of its programs' runs (the
+//! route's [`WEEK_FILE`]); one `stat` per essay each minute.
 
 use crate::auth::owner::Owner;
 use crate::call_weeks::render::{tally, Held, Renders};
@@ -96,6 +101,21 @@ pub const VIDEO: &str = "essay.mp4";
 
 /// The essay's file in its folder under [`ESSAYS_FOLDER`].
 pub const ESSAY_FILE: &str = "essay.json";
+
+/// A Rust Rounds essay's week, beside it (RR31, server#1049).
+///
+/// Exactly what `GET /rust-weeks/<week>` answers the essay's subject when the
+/// essay is given (`handlers::rust_rounds::week_with_runs`), so the recorder
+/// can show the phone's own screens and rustc's runs. Not written for an
+/// interview essay, nor when the subject holds no such week, nor when the
+/// week or a run of it does not read back (logged): the essay is then
+/// recorded as before RR31, and the pass goes on to the other weeks.
+///
+/// A snapshot, taken once when the essay is given: a run kept after that is
+/// not in it, and a folder given is never written again but by a new
+/// revision. A week's programs are queued when the week reaches home, a week
+/// before its essay can be given, so their runs are normally long kept.
+pub const WEEK_FILE: &str = "week.json";
 
 /// Which revision of the week's essay its folder holds (C72), beside it.
 pub const REVISION_FILE: &str = "revision";
@@ -364,8 +384,9 @@ pub async fn export(db: &SqlitePool, kind: Kind, subject: &str, folders: &Folder
 					done.withdrawn += 1;
 				}
 				Takes::Ready(files) => {
+					let week_file = week_file(db, kind, subject, &week).await?;
 					let partial = folders.essays.join(String::from(".") + &week + ".partial");
-					if write_whole(&partial, &input, &held.body, revision, &files).await.is_ok() {
+					if write_whole(&partial, &input, &held.body, week_file.as_deref(), revision, &files).await.is_ok() {
 						done.written += 1;
 						let _ = tokio::fs::remove_file(folders.status.join(week.clone() + ".refused.log")).await;
 					} else {
@@ -573,6 +594,27 @@ async fn due_of(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, we
 async fn held_rust_week(conn: &mut sqlx::SqliteConnection, subject: &str, week: &str) -> Result<Option<rust_round_repo::week::Week>, sqlx::Error> {
 	let file = mailbox_repo::rust_week(conn, subject, &rust_round_repo::week::mailbox_name(week)).await.map_err(storage)?;
 	Ok(file.and_then(|file| crate::handlers::rust_rounds::reads_as_named(week, &file.body)))
+}
+
+/// What [`WEEK_FILE`] holds for `kind`'s essay of `week`: the Rust Rounds
+/// week with its runs, as the route answers it, or `None` for an interview
+/// essay or a week `subject` does not hold. One read of the week and one
+/// of each of its programs' runs, once per essay given.
+async fn week_file(db: &SqlitePool, kind: Kind, subject: &str, week: &str) -> Result<Option<Vec<u8>>, sqlx::Error> {
+	if kind != Kind::RustRounds {
+		return Ok(None);
+	}
+	let mut conn = db.acquire().await?;
+	match crate::handlers::rust_rounds::week_with_runs(&mut conn, subject, week).await {
+		Ok(body) => Ok(body),
+		Err(crate::FileHostError::Sqlite(err)) => Err(err),
+		// One week's bad run never holds up the pass: its essay is given
+		// without the week. Said by kind, never by body.
+		Err(_) => {
+			error!(kind = "unreadable", "an essay's week does not read back; given without week.json");
+			Ok(None)
+		}
+	}
 }
 
 /// The takes an essay plays, as home holds them.
@@ -862,9 +904,10 @@ async fn keep_refusal(status: &Path, week: &str, problems: &[Problem]) -> std::i
 	tokio::fs::rename(&partial, status.join(String::from(week) + ".refused.log")).await
 }
 
-/// Writes the essay, its revision and its takes into `partial`, then puts it
-/// in place of `into`: a lower revision given before is replaced whole.
-async fn write_whole(partial: &Path, into: &Path, essay: &[u8], revision: u32, takes: &[(String, Vec<u8>)]) -> std::io::Result<()> {
+/// Writes the essay, its week when it has one ([`WEEK_FILE`]), its revision
+/// and its takes into `partial`, then puts it in place of `into`: a lower
+/// revision given before is replaced whole.
+async fn write_whole(partial: &Path, into: &Path, essay: &[u8], week: Option<&[u8]>, revision: u32, takes: &[(String, Vec<u8>)]) -> std::io::Result<()> {
 	// What a stopped pass left is made again.
 	match tokio::fs::remove_dir_all(partial).await {
 		Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
@@ -872,6 +915,9 @@ async fn write_whole(partial: &Path, into: &Path, essay: &[u8], revision: u32, t
 	}
 	tokio::fs::create_dir_all(partial).await?;
 	tokio::fs::write(partial.join(ESSAY_FILE), essay).await?;
+	if let Some(week) = week {
+		tokio::fs::write(partial.join(WEEK_FILE), week).await?;
+	}
 	tokio::fs::write(partial.join(REVISION_FILE), revision.to_string() + "\n").await?;
 	// The recorder takes exactly these files in takes/, and an essay that
 	// plays none still has the folder it is pointed at.
@@ -1115,6 +1161,30 @@ mod tests {
 		body
 	}
 
+	/// A week whose run does not read back is no reason to hold its essay,
+	/// nor the pass: the essay is given without `week.json`.
+	#[tokio::test]
+	async fn an_essay_whose_week_does_not_read_back_is_given_without_it() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		let body = final_week(&pool).await;
+		hold_take(&pool).await;
+		sqlx::query("INSERT INTO rust_round_source (seq, source_hash, source, queued_at) VALUES (1, ?1, 'fn main() {}\n', 'then')")
+			.bind(rust_round_repo::content_hash(b"fn main() {}\n"))
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO rust_round_run (toolchain, source_seq, key, ended, refusal, recording, rustc, recorded_at) VALUES ('1.97.0', 1, 'k', 'refused', 'malformed', NULL, 'not json', 'then')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		let done = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
+		assert_eq!(done.written, 1, "the pass goes on");
+		let week = folders.essays.join("2026-w46");
+		assert_eq!(std::fs::read(week.join(ESSAY_FILE)).unwrap(), body.as_bytes());
+		assert!(!week.join(WEEK_FILE).exists(), "recorded as before RR31");
+	}
+
 	/// An essay waits for its week's deadline and for its takes, then is
 	/// given once, from the week's final record, with each take it plays and
 	/// the words home heard in it; the week's draft is final after it.
@@ -1171,6 +1241,17 @@ mod tests {
 		let week = folders.essays.join("2026-w46");
 		assert_eq!(std::fs::read(week.join(ESSAY_FILE)).unwrap(), body.as_bytes());
 		assert_eq!(std::fs::read(week.join("takes").join("QM-311.ogg")).unwrap(), b"OggS");
+		let route = crate::handlers::rust_rounds::week_with_runs(&mut pool.acquire().await.unwrap(), ME, "2026-w46")
+			.await
+			.unwrap()
+			.unwrap();
+		assert_eq!(
+			std::fs::read(week.join(WEEK_FILE)).unwrap(),
+			route,
+			"its week beside it, as `GET /rust-weeks/2026-w46` answers it"
+		);
+		let given: serde_json::Value = serde_json::from_slice(&route).unwrap();
+		assert_eq!((&given["id"], &given["tickets"][0]["ticket"]), (&json!("2026-w46"), &json!("QM-311")));
 		let words: serde_json::Value = serde_json::from_slice(&std::fs::read(week.join("takes").join("QM-311.words.json")).unwrap()).unwrap();
 		assert_eq!(
 			words,
@@ -1770,6 +1851,7 @@ mod tests {
 		);
 		let given = folders.essays.join("2026-w46");
 		assert_eq!(std::fs::read_to_string(given.join(ESSAY_FILE)).unwrap(), body);
+		assert!(!given.join(WEEK_FILE).exists(), "an interview essay is given no Rust Rounds week");
 		let mut takes: Vec<_> = std::fs::read_dir(given.join("takes"))
 			.unwrap()
 			.map(|e| e.unwrap().file_name().into_string().unwrap())

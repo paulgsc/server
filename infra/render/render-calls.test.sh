@@ -289,20 +289,23 @@ fi
 # --out <w>` writes essay.mp4 and a cache into <w>/<week>, the week being
 # the essay file's folder's name, or fails as the real one does for a take
 # its folder lacks while $FAKE/no-take exists. Each run is counted in
-# $FAKE/essay-runs as `<essay file> <takes> <out>`. A week of mock
+# $FAKE/essay-runs as `<essay file> <takes> <out>`, and the --week-file it
+# was handed (RR31) in $FAKE/essay-weeks, `-` for none. A week of mock
 # interview's essay (IW6) is recorded by the same recorder.
 if [ "$1" = tests/record/essay.ts ]; then
-  essay= takes= out=
+  essay= takes= out= weekfile=-
   while [ $# -gt 0 ]; do
     case $1 in
       --essay-file) essay=$2; shift ;;
       --takes) takes=$2; shift ;;
       --out) out=$2; shift ;;
-      --week | --week-file) echo "essay.ts takes no $1"; exit 2 ;;
+      --week) echo "essay.ts takes no $1"; exit 2 ;;
+      --week-file) weekfile=$2; shift ;;
     esac
     shift
   done
   echo "$essay $takes $out" >> "$fake/essay-runs"
+  echo "$weekfile" >> "$fake/essay-weeks"
   if [ -e "$fake/correct-mid-render" ]; then
     rm -f "$fake/correct-mid-render"
     echo '{"r":2}' > "$essay"
@@ -521,7 +524,7 @@ fresh() {
     echo '{}' > "$ROOT/weeks/$week.json"
   done
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
-    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/correct-mid-render" \
+    "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/essay-weeks" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/not-cards" "$FAKE/report-runs" "$FAKE/under-way" \
     "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/overflow-prefix" "$FAKE/pd-runs"
   echo "$ROOT" > "$SCRATCH/root"
@@ -1065,6 +1068,22 @@ check "without its cache, and its work gone" test ! -e "$ROOT/renders/rust-essay
 check "with the speaker and the caps every job has" grep -qx -- --max-video-mb "$FAKE/args-essay"
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a rendered essay is not made again, and no other folder is read" test "$(wc -l < "$FAKE/essay-runs")" -eq 1
+
+# An essay's week (RR31, #1049): file_host gives week.json beside the essay,
+# and the recorder is handed it as --week-file when it is there, and only
+# then.
+fresh essay-week
+mkdir -p "$ROOT/essays/2026-w47/takes" "$ROOT/essays/2026-w48/takes"
+echo '{}' > "$ROOT/essays/2026-w47/essay.json"
+echo '{}' > "$ROOT/essays/2026-w47/week.json"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay's recorder is handed the week beside it" \
+  test "$(sed -n 1p "$FAKE/essay-weeks")" = "$ROOT/essays/2026-w47/week.json"
+check "and renders it" test -e "$ROOT/renders/rust-essay/2026-w47/essay.mp4"
+echo '{}' > "$ROOT/essays/2026-w48/essay.json"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay given no week is recorded without one" test "$(sed -n 2p "$FAKE/essay-weeks")" = -
+check "and renders it" test -e "$ROOT/renders/rust-essay/2026-w48/essay.mp4"
 
 # An essay corrected while it renders (C72): what was made of the old
 # revision is never kept, and it runs again over the new one.

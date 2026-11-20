@@ -579,8 +579,17 @@ record() {
     rust-essay)
       # The recorder names the finished folder for the essay's week in
       # --out. Each take it plays is <ticket>.<webm|ogg|m4a> in --takes.
+      # The week with its rustc runs (RR31, #1049), when file_host gave one
+      # (`rust_essays::WEEK_FILE`, what GET /rust-weeks/<week> answers). The
+      # render image's recorder takes --week-file from paulgsc/some-ui's
+      # RR31 on; this lands after home's render pin carries it.
+      local week=()
+      if [ -e "$INPUT/$key/week.json" ]; then
+        week=(--week-file "$INPUT/$key/week.json")
+      fi
       (cd "$APP_DIR" && "$TSX" tests/record/essay.ts "${COMMON[@]}" \
-        --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" --out "$WORK") ;;
+        --essay-file "$INPUT/$key/essay.json" --takes "$INPUT/$key/takes" \
+        "${week[@]}" --out "$WORK") ;;
     interview-essay)
       # The Rust Rounds essay's recorder, which reads the essay's kind from
       # its schema; its own --out, so its work and renders are its own. Each
