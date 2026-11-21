@@ -405,7 +405,7 @@
         expr: |||
           topk(8,
             sum by (name) (
-              rate(container_cpu_usage_seconds_total{name=~"$container"}[1m])
+              rate(container_cpu_usage_seconds_total{name!="", name=~"$container"}[1m])
             )
           )
         |||,
@@ -446,9 +446,9 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           (
-            container_memory_usage_bytes{name=~"$container"}
+            container_memory_usage_bytes{name!="", name=~"$container"}
             /
-            container_spec_memory_limit_bytes{name=~"$container"}
+            container_spec_memory_limit_bytes{name!="", name=~"$container"}
           ) * 100
         |||,
         legendFormat: '{{name}}',
@@ -477,8 +477,8 @@
         expr: |||
           topk(6,
             sum by (name) (
-              rate(container_fs_reads_bytes_total{name=~"$container"}[1m]) +
-              rate(container_fs_writes_bytes_total{name=~"$container"}[1m])
+              rate(container_fs_reads_bytes_total{name!="", name=~"$container"}[1m]) +
+              rate(container_fs_writes_bytes_total{name!="", name=~"$container"}[1m])
             )
           )
         |||,
@@ -798,7 +798,7 @@
         datasource: { type: 'prometheus', uid: 'prometheus' },
         expr: |||
           container_processes{
-            name=~"$container"
+            name!="", name=~"$container"
           }
         |||,
         format: 'table',
