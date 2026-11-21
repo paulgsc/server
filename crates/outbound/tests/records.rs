@@ -70,7 +70,9 @@ async fn a_request_is_counted_by_caller_host_and_outcome_and_nothing_else() {
 		(String::from(RECEIVED_METRIC), labels("game_feed", "espn", None), 5),
 		(String::from(REQUESTS_METRIC), labels("game_feed", "espn", Some("no_answer")), 1),
 		(String::from(REQUESTS_METRIC), labels("game_feed", "espn", Some("ok")), 1),
+		(String::from(REQUESTS_METRIC), labels("game_feed", "espn", Some("refused_4xx")), 0),
 		(String::from(REQUESTS_METRIC), labels("game_feed", "espn", Some("refused_5xx")), 1),
+		(String::from(REQUESTS_METRIC), labels("game_feed", "espn", Some("timeout")), 0),
 		(String::from(SENT_METRIC), labels("game_feed", "espn", None), 3),
 	];
 	assert_eq!(seen, want);
@@ -81,6 +83,9 @@ async fn a_request_that_does_not_build_is_not_recorded() {
 	let recorder = DebuggingRecorder::new();
 	let _guard = metrics::set_default_local_recorder(&recorder);
 	let client = outbound::client(Caller::Mailbox).build().unwrap();
+	let built = counters(&recorder);
+	assert_eq!(built.len(), 7, "five outcomes and two byte counters, at zero: {built:?}");
+	assert!(built.iter().all(|(_, _, count)| *count == 0));
 	client.get("not a url").send().await.unwrap_err();
-	assert!(counters(&recorder).is_empty());
+	assert_eq!(counters(&recorder), built);
 }

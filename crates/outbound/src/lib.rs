@@ -17,10 +17,17 @@
 //! per caller ([`Caller::host`]), never read from a URL, so no URL, query,
 //! body or address reaches a label.
 //!
-//! The bytes are the request body's length and the answer's declared
-//! `Content-Length`. An answer that declares none (a chunked one) adds
-//! nothing to [`RECEIVED_METRIC`]; the dashboard's cadvisor row is the wire's
-//! own count.
+//! What is measured ends at the answer's headers: the caller reads the body
+//! afterwards. So a request whose body stalls or fails after the headers
+//! counts as its status's outcome, and the bytes received are the answer's
+//! declared `Content-Length`, whether or not the caller then reads it (an
+//! answer that declares none, a chunked one, adds nothing). A worker's own
+//! series (the game feed's `game_feed_fetches_total{kind}`) say what the body
+//! came to; the dashboard's cadvisor row is the wire's own count.
+//!
+//! A client's counters are set to zero when it is built ([`Builder::build`]),
+//! so its first request after a restart is an increase, and "nothing
+//! failed" reads 0 rather than no data.
 
 use std::time::{Duration, Instant};
 
@@ -36,8 +43,10 @@ pub const RECEIVED_METRIC: &str = "outbound_received_bytes_total";
 
 /// [`DURATION_METRIC`]'s buckets, for the binary's `PrometheusBuilder`.
 ///
-/// The exporter's defaults top out at 10 s; the callers' timeouts run to
+/// The exporter's defaults top out at 10 s; the pollers' timeouts run to
 /// 30 s, so a timed-out request needs a bucket above it or it is only `+Inf`.
+/// The nudge's client has no timeout of its own (as before this crate), so a
+/// push that hangs past 60 s lands in `+Inf`.
 pub const DURATION_BUCKETS: &[f64] = &[0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0];
 
 /// Who is asking: one case per worker that reaches outside home.
@@ -141,11 +150,11 @@ pub enum Outcome {
 	Ok,
 	/// A 4xx answer.
 	Refused4xx,
-	/// A 5xx answer.
+	/// A 5xx answer, or any status above.
 	Refused5xx,
-	/// No answer within the client's or the request's timeout.
+	/// No answer's headers within the client's or the request's timeout.
 	Timeout,
-	/// No answer for another reason: no connection, a reset, TLS.
+	/// No answer's headers for another reason: no connection, a reset, TLS.
 	NoAnswer,
 }
 
@@ -222,15 +231,16 @@ impl Builder {
 		}
 	}
 
-	/// The client.
+	/// The client, with its caller's counters set to zero.
 	///
 	/// # Errors
 	/// The TLS backend could not be set up.
 	pub fn build(self) -> Result<Client, reqwest::Error> {
-		Ok(Client {
-			caller: self.caller,
-			inner: self.inner.build()?,
-		})
+		// The one sanctioned construction: see the module doc.
+		#[allow(clippy::disallowed_methods)]
+		let inner = self.inner.build()?;
+		zero(self.caller);
+		Ok(Client { caller: self.caller, inner })
 	}
 }
 
@@ -348,6 +358,16 @@ impl Request {
 		record(client.caller, outcome, started.elapsed(), sent, received);
 		answer
 	}
+}
+
+/// `caller`'s counters at zero, so a first request is an increase.
+fn zero(caller: Caller) {
+	let (caller_label, host_label) = (caller.label(), caller.host().label());
+	for outcome in Outcome::ALL {
+		metrics::counter!(REQUESTS_METRIC, "caller" => caller_label, "host" => host_label, "outcome" => outcome.label()).increment(0);
+	}
+	metrics::counter!(SENT_METRIC, "caller" => caller_label, "host" => host_label).increment(0);
+	metrics::counter!(RECEIVED_METRIC, "caller" => caller_label, "host" => host_label).increment(0);
 }
 
 /// One request, on every series.

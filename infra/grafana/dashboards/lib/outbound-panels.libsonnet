@@ -7,8 +7,11 @@
 // every HTTP client in file_host and its crates is built by. Their labels
 // are closed sets the compiler holds: `caller` (one per worker), `host` (a
 // fixed name per caller, never read from a URL) and `outcome` (ok,
-// refused_4xx, refused_5xx, timeout, no_answer). A series appears only once
-// its caller has sent a request, so a worker that is off draws nothing.
+// refused_4xx, refused_5xx, timeout, no_answer). Each caller's counters are
+// set to zero when its client is built, so a worker that is off draws
+// nothing and one that is on reads 0 until it sends. What is measured ends at
+// the answer's headers: a body that stalls or fails after them counts as its
+// status, and bytes received are declared lengths (crates/outbound's doc).
 //
 // The `container_network_*` series are cadvisor's, per container: the
 // catch-all for the services that are not file_host (render, kokoro, the
@@ -85,7 +88,7 @@ local perMinute(by) = '60 * sum by (' + by + ') (rate(outbound_requests_total[5m
 
   failedToday: stat(
     'NOT OK, 24H',
-    'Requests in the last 24 hours that were refused (4xx, 5xx) or got no answer (timeout, no_answer). Some are normal: a push service answers 410 for a browser that left, ESPN rate-limits.',
+    'Requests in the last 24 hours that were refused (4xx, 5xx) or got no answer\'s headers (timeout, no_answer); a body that fails after its headers is counted by its status, and shows on the worker\'s own dashboard (GAME FEED\'s timeout and transport kinds). Some are normal: a push service answers 410 for a browser that left, ESPN rate-limits.',
     'sum(increase(outbound_requests_total{outcome!="ok"}[24h]))',
     'none',
     [{ color: 'green', value: null }, { color: 'orange', value: 1 }],
@@ -101,7 +104,7 @@ local perMinute(by) = '60 * sum by (' + by + ') (rate(outbound_requests_total[5m
 
   bytesToday: stat(
     'RECEIVED, 24H',
-    'Answer bytes declared (Content-Length) in the last 24 hours. An answer that declares no length is not counted; the container row below is the wire\'s own count.',
+    'Answer bytes declared (Content-Length) in the last 24 hours, whether or not the caller then read them (the game feed leaves an oversized or non-200 body unread). An answer that declares no length is not counted; the container row below is the wire\'s own count.',
     'sum(increase(outbound_received_bytes_total[24h]))',
     'bytes',
     [{ color: 'green', value: null }],
@@ -132,14 +135,14 @@ local perMinute(by) = '60 * sum by (' + by + ') (rate(outbound_requests_total[5m
 
   latency: series(
     'Wait for an answer, p95 by caller',
-    'From send to the answer\'s headers, or to the failure, over 15 minutes. A caller at its timeout (20 s for the game feed, 30 s for the pollers) is getting no answer.',
+    'From send to the answer\'s headers, or to the failure, over 15 minutes. A caller at its timeout (20 s for the game feed, 30 s for the pollers) is getting no answer; the nudge has no timeout, so a hung push sits above the top bucket (60 s).',
     [{ expr: 'histogram_quantile(0.95, sum by (caller, le) (rate(outbound_request_duration_seconds_bucket[15m])))', legendFormat: '{{caller}}', refId: 'A' }],
     's',
   ),
 
   bytes: series(
     'Bytes, by caller',
-    'Per second, over 5 minutes. sent is request bodies; received is answers\' declared lengths.',
+    'Per second, over 5 minutes. sent is request bodies; received is answers\' declared lengths, read or not.',
     [
       { expr: 'sum by (caller) (rate(outbound_sent_bytes_total[5m]))', legendFormat: '{{caller}} sent', refId: 'A' },
       { expr: 'sum by (caller) (rate(outbound_received_bytes_total[5m]))', legendFormat: '{{caller}} received', refId: 'B' },

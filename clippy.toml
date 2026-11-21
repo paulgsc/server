@@ -47,6 +47,9 @@ disallowed-methods = [
   { path = "reqwest::Client::new", reason = "build it with outbound::client(Caller::...) so its requests are recorded (some-ui#3330)" },
   { path = "reqwest::Client::builder", reason = "build it with outbound::client(Caller::...) so its requests are recorded (some-ui#3330)" },
   { path = "reqwest::ClientBuilder::new", reason = "build it with outbound::client(Caller::...) so its requests are recorded (some-ui#3330)" },
+  # Every way to a client ends here, however its builder was made
+  # (`ClientBuilder::default()` is a trait method no path can name).
+  { path = "reqwest::ClientBuilder::build", reason = "build it with outbound::client(Caller::...) so its requests are recorded (some-ui#3330)" },
   { path = "reqwest::get", reason = "send it on an outbound::Client so it is recorded (some-ui#3330)" },
 ]
 

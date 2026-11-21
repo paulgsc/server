@@ -36,10 +36,13 @@ conditions `dashboard.jsonnet`'s HEALTH row renders a verdict on.
 **OUTBOUND and the game feed's own fetch counts.** Every game feed request is
 on OUTBOUND as `outbound_requests_total{caller="game_feed"}`, by status class.
 GAME FEED's `game_feed_fetches_total{kind}` is kept beside it as a narrower view,
-not a duplicate: its kinds say what the answer *meant* to the feed (a
-`scoreboard` or `summary` kept and read, an answer kept but `rate_limited`,
-`not_json` or `not_an_object`), which a status class cannot, and it is what the
-feed backs off on. Read OUTBOUND for how much home asks ESPN; read GAME FEED for
+not a duplicate. Its kinds say what the answer *meant* to the feed (a
+`scoreboard` or `summary` kept and read; an answer kept but `rate_limited`,
+`status`, `not_json` or `not_an_object`), which a status class cannot; and its
+no-answer kinds (`timeout`, `connect`, `transport`) cover the whole read, body
+included, where OUTBOUND's outcome ends at the answer's headers, so a body
+that stalls is a `timeout` there and `ok` on OUTBOUND. It is also what the feed
+backs off on. Read OUTBOUND for how much home asks ESPN; read GAME FEED for
 whether the answers were any use. The mailbox's `mailbox_poll_*` and its bell's
 `mailbox_bell_*` stay on MAILBOX for the same reason. The bell is a WebSocket,
 not an HTTP request, so it is not on OUTBOUND's `outbound_*` series; its bytes
