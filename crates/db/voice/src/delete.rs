@@ -292,6 +292,11 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 		.execute(&mut *conn)
 		.await?
 		.rows_affected();
+	// What waits on it (`stage_want`, paulgsc/server#1091) names it, so it
+	// goes with it; the waiting essay is withdrawn by its own next pass.
+	sqlx::query!("DELETE FROM stage_want WHERE subject_id = ?1 AND item_key = ?2 AND stage = 'transcriber'", subject, note_id)
+		.execute(&mut *conn)
+		.await?;
 	// Its moves along the conveyor are about the take, so they go with it.
 	let moved = sqlx::query!("DELETE FROM studio_take_move WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
 		.execute(&mut *conn)
@@ -864,6 +869,13 @@ mod tests {
 			"take",
 		)
 		.await;
+		run(
+			&pool,
+			"INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'essay', 'transcriber', ?1, ?2)",
+			A,
+			"take",
+		)
+		.await;
 
 		assert_eq!(gone(&pool, B, "nope", ON).await, Deleted::NotHeld);
 		let Deleted::Gone(first) = gone(&pool, A, "take", ON).await else {
@@ -891,6 +903,8 @@ mod tests {
 		}
 		assert_eq!(gone(&pool, A, "take", ON).await, Deleted::Gone(first.clone()), "a repeat reads the receipt");
 		assert_eq!(rows(&pool, "voice_note", B, "take").await, 1, "B's take is B's");
+		let wanted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stage_want").fetch_one(&pool).await.unwrap();
+		assert_eq!(wanted, 0, "what waited on it goes with it (#1091)");
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(receipt(&mut conn, B, "take").await.unwrap(), None);
 	}

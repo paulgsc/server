@@ -154,8 +154,25 @@ pub struct Waiting {
 	pub expected_language: Option<&'static str>,
 }
 
-/// The notes their key in `keys` has not ended (heard, or found silent) and
-/// has failed on fewer than `attempts` times, oldest first, at most `limit`.
+/// The notes their key in `keys` has not ended (heard, or found silent).
+///
+/// Those it has failed on fewer than `attempts` times, at most `limit`: those
+/// tried fewest times first, then those something waits on, most waited on
+/// first, then oldest first.
+///
+/// **What waits on a note puts it first** (paulgsc/server#1091,
+/// docs/shared-stages.md): a note a waiter names in `stage_want` (a cards
+/// essay held back for its take) goes before every note no one waits on,
+/// and the most waited-on before the rest, among notes tried as often, so
+/// the essay's takes are heard first and TR1 below still holds whole. One
+/// indexed lookup per candidate, by `stage_want`'s key.
+///
+/// **A note that keeps failing never holds the queue** (TR1, C895): a note
+/// already tried waits behind every note tried fewer times, so a take that
+/// runs to its deadline is tried again only once every fresher take has had
+/// its turn, and no run of one note's failures stands between a take and its
+/// first hearing. Each note is still tried at most `attempts` times, so the
+/// order only decides who goes first, never how much work there is.
 ///
 /// A [`VERBATIM`] note waits on [`Keys::verbatim`] alone, and any other note
 /// on [`Keys::plain`] alone; [`Waiting::verbatim`] says which.
@@ -175,27 +192,50 @@ pub struct Waiting {
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64, limit: i64) -> Result<Vec<Waiting>, VoiceError> {
+	waiting_first(conn, keys, attempts, limit, None).await
+}
+
+/// [`waiting`], with the note `first` names ahead of every other.
+///
+/// `first` is `(subject, note_id)`, the note the transcriber's contention
+/// guard is excusing (TR1 with the guard, C896). An excuse keeps no attempt, so
+/// nothing else keeps that note first, and a fresher note heard before it
+/// would start a streak that replaces its own (#822). It is ordered first in
+/// the query itself, so it is in the batch however many fresher notes wait.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64, limit: i64, first: Option<(&str, &str)>) -> Result<Vec<Waiting>, VoiceError> {
+	let (first_subject, first_note) = first.unzip();
 	// The key is decided per note before either lookup, a value the
 	// `(subject_id, note_id, model)` index reads as it reads a bound one.
 	let rows = sqlx::query!(
-		r#"SELECT n.subject_id AS "subject_id!", n.note_id AS "note_id!", n.of_kind = ?5 AS "verbatim!: bool", n.of_kind AS "of_kind!" FROM voice_note n
-		 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
-		                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		                     AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
-		                     AND t.outcome IN ('heard', 'silent'))
-		   AND (SELECT COUNT(*) FROM voice_transcript t
-		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		          AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) < ?2
-		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
-		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
-		   AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id)
-		 ORDER BY n.stored_at, n.subject_id, n.note_id
+		r#"WITH candidate AS MATERIALIZED (
+		   SELECT n.subject_id, n.note_id, n.of_kind = ?5 AS verbatim, n.of_kind, n.stored_at,
+		          (SELECT COUNT(*) FROM voice_transcript t
+		           WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried,
+		          (SELECT COUNT(*) FROM stage_want w
+		           WHERE w.stage = 'transcriber' AND w.subject_id = n.subject_id AND w.item_key = n.note_id) AS wanted
+		   FROM voice_note n
+		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
+		                     WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		                       AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
+		                       AND t.outcome IN ('heard', 'silent'))
+		     AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                            WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
+		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
+		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!" FROM candidate
+		 WHERE tried < ?2
+		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, tried, wanted DESC, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
 		keys.plain,
 		attempts,
 		limit,
 		keys.verbatim,
-		VERBATIM
+		VERBATIM,
+		first_subject,
+		first_note
 	)
 	.fetch_all(&mut *conn)
 	.await?;
@@ -210,6 +250,57 @@ pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64,
 			})
 			.collect(),
 	)
+}
+
+/// Every note still waiting on `keys`, as [`waiting`] reads it, with no batch.
+///
+/// When the oldest of them reached home, and how many there are. The
+/// transcriber's headline signal as a shared stage (`file_host::stage`,
+/// paulgsc/some-ui#3333), true whatever order a pass hears them in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backlog {
+	/// The oldest's `stored_at` (ISO-8601 UTC); `None` when nothing waits.
+	pub oldest: Option<String>,
+	pub count: i64,
+}
+
+/// [`Backlog`] of the notes [`waiting`] would list, given every place.
+///
+/// Its WHERE is [`waiting_first`]'s, its candidate filter and `tried <
+/// attempts` written out flat: the same notes, whatever order a pass takes
+/// them in. A change to one is a change to both
+/// (`the_backlog_is_every_note_waiting_and_its_oldest` holds them
+/// together). Read at a pass's start and after each attempt kept, it does
+/// [`waiting_first`]'s own work: each note's lookups by the
+/// `(subject_id, note_id, model)` index, over every candidate, as that
+/// query's materialized CTE reads them before it sorts.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn backlog(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64) -> Result<Backlog, VoiceError> {
+	let row = sqlx::query!(
+		r#"SELECT MIN(n.stored_at) AS "oldest?: String", COUNT(*) AS "count!: i64" FROM voice_note n
+		 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
+		                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		                     AND t.model = CASE WHEN n.of_kind = ?4 THEN ?3 ELSE ?1 END
+		                     AND t.outcome IN ('heard', 'silent'))
+		   AND (SELECT COUNT(*) FROM voice_transcript t
+		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		          AND t.model = CASE WHEN n.of_kind = ?4 THEN ?3 ELSE ?1 END) < ?2
+		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
+		   AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id)"#,
+		keys.plain,
+		attempts,
+		keys.verbatim,
+		VERBATIM
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(Backlog {
+		oldest: row.oldest,
+		count: row.count,
+	})
 }
 
 /// The audio `subject` holds under `note_id`, if any.
@@ -458,7 +549,7 @@ pub async fn words_heard_by(conn: &mut SqliteConnection, subject: &str, note_id:
 
 #[cfg(test)]
 mod tests {
-	use super::{audio, keep_attempt, waiting, words, words_heard_by, Attempt, Kept, Keys, Outcome, Waiting, Word, VERBATIM};
+	use super::{audio, backlog, keep_attempt, waiting, waiting_first, words, words_heard_by, Attempt, Backlog, Kept, Keys, Outcome, Waiting, Word, VERBATIM};
 	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -651,6 +742,48 @@ mod tests {
 		assert_eq!(audio(&mut conn, B, "late").await.unwrap(), None, "B's ids are B's");
 	}
 
+	/// The backlog is every note [`waiting`] would list, past any batch:
+	/// the oldest's arrival and how many, and nothing once all are heard.
+	#[tokio::test]
+	async fn the_backlog_is_every_note_waiting_and_its_oldest() {
+		let pool = pool().await;
+		let (plain, verbatim) = keys(SMALL);
+		let keys = Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		let read = || async {
+			let mut conn = pool.acquire().await.unwrap();
+			backlog(&mut conn, keys, 3).await.unwrap()
+		};
+		assert_eq!(read().await, Backlog { oldest: None, count: 0 }, "nothing waits");
+		note(&pool, A, "late", "2026-10-25T03:00:00.000Z", b"two").await;
+		note(&pool, B, "early", "2026-10-25T02:00:00.000Z", b"one").await;
+		note(&pool, A, "first", "2026-10-25T01:00:00.000Z", b"zero").await;
+		interview(&pool, B, "take", "2026-10-25T00:30:00.000Z").await;
+		let all = read().await;
+		assert_eq!((all.oldest.as_deref(), all.count), (Some("2026-10-25T00:30:00.000Z"), 4), "a verbatim take waits too");
+		{
+			let mut conn = pool.acquire().await.unwrap();
+			assert_eq!(waiting(&mut conn, keys, 3, 1).await.unwrap().len(), 1, "a batch of one");
+		}
+		assert_eq!(read().await.count, 4, "the backlog is not the batch");
+
+		assert_eq!(keep(&pool, B, "take", &attempt(&verbatim, Outcome::Silent)).await, Kept::Added(1));
+		for _ in 0..3 {
+			keep(&pool, A, "first", &attempt(SMALL, Outcome::Deadline)).await;
+		}
+		let later = read().await;
+		assert_eq!(
+			(later.oldest.as_deref(), later.count),
+			(Some("2026-10-25T02:00:00.000Z"), 2),
+			"ended, or out of attempts: no longer waiting"
+		);
+		assert_eq!(keep(&pool, B, "early", &attempt(SMALL, heard("hi"))).await, Kept::Added(1));
+		assert_eq!(keep(&pool, A, "late", &attempt(SMALL, heard("ho"))).await, Kept::Added(1));
+		assert_eq!(read().await, Backlog { oldest: None, count: 0 }, "all heard");
+	}
+
 	/// An interview take waits on the verbatim key alone, and every other
 	/// note on the plain key alone: one key's hearing never ends the other's
 	/// note, and each says which it is (paulgsc/some-ui#2933, IW2).
@@ -686,7 +819,7 @@ mod tests {
 	#[tokio::test]
 	async fn the_queue_searches_transcripts_by_their_index() {
 		let source = include_str!("transcript.rs");
-		let from = source.find("r#\"SELECT n.subject_id").unwrap() + "r#\"".len();
+		let from = source.find("r#\"WITH candidate").unwrap() + "r#\"".len();
 		let to = from + source[from..].find("\"#,").unwrap();
 		let sql = &source[from..to];
 		assert!(sql.contains("CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END") && sql.ends_with("LIMIT ?3"), "{sql}");
@@ -697,6 +830,8 @@ mod tests {
 			.bind(20_i64)
 			.bind("v")
 			.bind(VERBATIM)
+			.bind(Option::<&str>::None)
+			.bind(Option::<&str>::None)
 			.fetch_all(&pool)
 			.await
 			.unwrap();
@@ -737,7 +872,7 @@ mod tests {
 		note(&pool, A, "bad", "2026-10-25T01:00:00.000Z", b"not audio").await;
 		note(&pool, A, "good", "2026-10-25T02:00:00.000Z", b"audio").await;
 		for (n, outcome) in [(1, Outcome::Unreadable), (2, Outcome::Deadline), (3, Outcome::Failed)] {
-			assert_eq!(waiting_for(&pool, SMALL).await[0], named(&[(A, "bad")])[0], "attempt {n}");
+			assert!(waiting_for(&pool, SMALL).await.contains(&named(&[(A, "bad")])[0]), "attempt {n}");
 			assert_eq!(keep(&pool, A, "bad", &attempt(SMALL, outcome)).await, Kept::Added(n));
 		}
 		assert_eq!(waiting_for(&pool, SMALL).await, named(&[(A, "good")]), "three failures and it stops waiting");
@@ -764,6 +899,91 @@ mod tests {
 			.map(|(id, n, kind, text)| (id.to_owned(), n, kind.to_owned(), text.map(str::to_owned)))
 			.collect();
 		assert_eq!(rows, expected);
+	}
+
+	/// TR1 (C895): a note that keeps failing never holds the queue. Every
+	/// note tried fewer times goes before it, whatever its age, so a take
+	/// stored after a run of one note's deadlines is heard first; among notes
+	/// tried as often, the oldest goes first. Generated over every number of
+	/// failures the older note has had, 0 to `attempts` − 1, and every place
+	/// the fresh note's age takes against it.
+	#[tokio::test]
+	async fn a_note_tried_fewer_times_goes_first_whatever_its_age() {
+		for failed in 0..3 {
+			for fresh_at in ["2026-10-25T00:00:00.000Z", "2026-10-25T09:00:00.000Z"] {
+				let pool = pool().await;
+				note(&pool, A, "stuck", "2026-10-25T01:00:00.000Z", b"stuck").await;
+				for _ in 0..failed {
+					keep(&pool, A, "stuck", &attempt(SMALL, Outcome::Deadline)).await;
+				}
+				note(&pool, B, "fresh", fresh_at, b"fresh").await;
+				let order = waiting_for(&pool, SMALL).await;
+				let expected = if failed == 0 && fresh_at.ends_with("09:00:00.000Z") {
+					named(&[(A, "stuck"), (B, "fresh")])
+				} else {
+					named(&[(B, "fresh"), (A, "stuck")])
+				};
+				assert_eq!(order, expected, "{failed} failures, the fresh note stored at {fresh_at}");
+			}
+		}
+	}
+
+	/// paulgsc/server#1091: among notes tried as often, one a waiter wants
+	/// (a cards essay held back for it, `stage_want`) goes before older notes
+	/// no one waits on, the most wanted first; a wanted note tried more often
+	/// still waits behind a fresher one (TR1).
+	#[tokio::test]
+	async fn a_note_something_waits_on_goes_first_among_notes_tried_as_often() {
+		let pool = pool().await;
+		note(&pool, A, "old", "2026-10-25T01:00:00.000Z", b"old").await;
+		note(&pool, A, "wanted", "2026-10-25T03:00:00.000Z", b"wanted").await;
+		note(&pool, A, "most-wanted", "2026-10-25T04:00:00.000Z", b"most").await;
+		note(&pool, A, "retried", "2026-10-25T00:30:00.000Z", b"retried").await;
+		keep(&pool, A, "retried", &attempt(SMALL, Outcome::Deadline)).await;
+		// B waiting on a note of the same id is B's, not A's.
+		sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'e9', 'transcriber', ?1, 'old')")
+			.bind(B)
+			.execute(&pool)
+			.await
+			.unwrap();
+		for (essay, take) in [("e1", "wanted"), ("e1", "most-wanted"), ("e2", "most-wanted"), ("e3", "retried")] {
+			sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', ?1, 'transcriber', ?2, ?3)")
+				.bind(essay)
+				.bind(A)
+				.bind(take)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let order = waiting_for(&pool, SMALL).await;
+		assert_eq!(order, named(&[(A, "most-wanted"), (A, "wanted"), (A, "old"), (A, "retried")]));
+	}
+
+	/// C896: the note named first goes ahead of every other while it waits,
+	/// however many fresher notes tried fewer times would fill the batch, and
+	/// naming a note that no longer waits changes nothing.
+	#[tokio::test]
+	async fn the_note_named_first_is_in_the_batch_whatever_waits_beside_it() {
+		let pool = pool().await;
+		note(&pool, A, "excused", "2026-10-25T01:00:00.000Z", b"excused").await;
+		keep(&pool, A, "excused", &attempt(SMALL, Outcome::Deadline)).await;
+		for n in 0..5 {
+			note(&pool, B, &["fresh-", &n.to_string()].concat(), "2026-10-25T02:00:00.000Z", b"fresh").await;
+		}
+		let (plain, verbatim) = keys(SMALL);
+		let keys = Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		let ids = |rows: Vec<Waiting>| rows.into_iter().map(|row| row.note_id).collect::<Vec<_>>();
+		let plain_order = ids(waiting(&mut conn, keys, 3, 3).await.unwrap());
+		assert!(!plain_order.contains(&String::from("excused")), "tried once, behind the fresh notes: {plain_order:?}");
+		let named = ids(waiting_first(&mut conn, keys, 3, 3, Some((A, "excused"))).await.unwrap());
+		assert_eq!(named.first().map(String::as_str), Some("excused"), "{named:?}");
+		assert_eq!(named.len(), 3);
+		let gone = ids(waiting_first(&mut conn, keys, 3, 3, Some((A, "no-such-note"))).await.unwrap());
+		assert_eq!(gone, plain_order, "a note that does not wait changes nothing");
 	}
 
 	/// The schema holds the rules on its own, whatever writes to it.
