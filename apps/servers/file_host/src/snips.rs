@@ -176,7 +176,7 @@ pub trait Capture: Send + Sync {
 /// [`Capture`] over GitHub's REST API with `SNIPS_GITHUB_TOKEN`.
 #[derive(Clone)]
 pub struct GitHub {
-	client: reqwest::Client,
+	client: outbound::Client,
 	token: String,
 }
 
@@ -206,22 +206,20 @@ impl GitHub {
 		let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
 			return Ok(None);
 		};
-		// A generic client name: nothing of the owner goes to GitHub. A
-		// download is bounded in time as in bytes, so the mailbox pass it
-		// rides waits at most that.
-		let client = reqwest::Client::builder()
-			.user_agent("home-file-host")
-			.connect_timeout(std::time::Duration::from_secs(30))
-			.timeout(std::time::Duration::from_secs(300))
-			.build()?;
+		// A download is bounded in time as in bytes, so the mailbox pass it
+		// rides waits at most that ([`PASS_DEADLINE`] bounds the whole pass).
+		let client = outbound::client(outbound::Caller::Snips).timeout(std::time::Duration::from_secs(300)).build()?;
 		Ok(Some(Self { client, token: token.to_owned() }))
 	}
 
-	fn get(&self, url: &str) -> reqwest::RequestBuilder {
+	fn get(&self, url: &str) -> outbound::Request {
+		// GitHub's API refuses a request with no user agent. A generic name:
+		// nothing of the owner goes to GitHub.
 		self
 			.client
 			.get(url)
 			.bearer_auth(&self.token)
+			.header(reqwest::header::USER_AGENT, "home-file-host")
 			.header(reqwest::header::ACCEPT, "application/vnd.github+json")
 			.header("X-GitHub-Api-Version", "2022-11-28")
 	}
