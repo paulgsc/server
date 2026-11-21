@@ -54,7 +54,8 @@
 //!   as the Rust Rounds essay's: docs/identity.md's essay-render exception,
 //!   rule (c)): an essay whose spoken cards play a take deleted from My data
 //!   or let go is withdrawn whether its render has not started, is under way
-//!   or is done: both receipts in `cards_essay_video_deletion`, cause
+//!   or is done, or it was never given (the pass, in place of a
+//!   `take-missing` refusal): both receipts in `cards_essay_video_deletion`, cause
 //!   `take-deleted`, naming the note beside the note's own receipt, then its
 //!   `<key>.json`, takes, renders folder and work folder are removed. It is
 //!   never given to the worker again, and no list shows it
@@ -103,6 +104,9 @@ pub struct Pass {
 	pub waiting: usize,
 	/// Essays refused: a take a spoken card names is missing or unheard.
 	pub refused: usize,
+	/// Essays not given yet withdrawn for good: a take a spoken card names
+	/// was deleted from My data or let go (paulgsc/server#1055).
+	pub withdrawn: usize,
 	/// Each failure, by kind: `timeout`, `connect`, `transport`, `refused`
 	/// (a status other than 200), `too_big`, `unreadable`, and `export`
 	/// for an essay that could not be written to the folder.
@@ -199,7 +203,7 @@ async fn fetched<F: Fetch>(fetch: &F, url: &str, pass: &mut Pass) -> Option<Vec<
 pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, given: &Given, clock: &(dyn Fn() -> DateTime<Utc> + Sync)) -> Result<Pass, sqlx::Error> {
 	let mut pass = Pass::default();
 	take_new(db, fetch, clock, &mut pass).await?;
-	export(db, given, &mut pass).await?;
+	export(db, given, clock, &mut pass).await?;
 	Ok(pass)
 }
 
@@ -307,9 +311,9 @@ pub async fn tidy(db: &SqlitePool, given: &Given, now: &str) -> Result<Tidied, s
 			if let Some(note) = deleted_take(db, subject, &key).await? {
 				let size = i64::try_from(crate::call_weeks::render::bytes_under(&render).await).unwrap_or(i64::MAX);
 				let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-				cards_essay_repo::withdraw(&mut tx, &key, subject, &note, size, now).await?;
+				let withdrew = cards_essay_repo::withdraw(&mut tx, &key, subject, &note, size, now).await?;
 				tx.commit().await?;
-				done.withdrawn += 1;
+				done.withdrawn += usize::from(withdrew);
 				done.failed += remove_all(&essay, &[&takes, &render, &work]).await;
 				clear_refused(&given.status, &key).await;
 				continue;
@@ -459,9 +463,9 @@ async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> Dat
 /// folder has no file of, as `<key>.json`, byte for byte, through a
 /// temporary name so the render worker never reads half a file. An essay already written is left alone:
 /// home never rewrites a kept essay, so neither does this. An essay with a
-/// spoken card is written only with its takes, after them, and is held back
-/// or refused as the module doc says.
-async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), sqlx::Error> {
+/// spoken card is written only with its takes, after them, and is held back,
+/// refused or, for a take deleted, withdrawn, as the module doc says.
+async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Utc> + Sync), pass: &mut Pass) -> Result<(), sqlx::Error> {
 	let folder = given.essays.as_path();
 	let (held, gone) = {
 		let mut conn = db.acquire().await?;
@@ -503,6 +507,20 @@ async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), s
 					continue;
 				}
 				Takes::Refused(refusal) => {
+					// Never given, or taken back before, and now a take it plays
+					// was deleted: withdrawn for good, as one given would be by
+					// the tidy, with nothing of it on the drive to remove.
+					if let Some(subject) = given.subject.as_deref() {
+						if let Some(note) = deleted_take(db, subject, &essay.key).await? {
+							let now = clock().to_rfc3339_opts(SecondsFormat::Millis, true);
+							let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+							let withdrew = cards_essay_repo::withdraw(&mut tx, &essay.key, subject, &note, 0, &now).await?;
+							tx.commit().await?;
+							pass.withdrawn += usize::from(withdrew);
+							clear_refused(&given.status, &essay.key).await;
+							continue;
+						}
+					}
 					pass.refused += 1;
 					if say_refused(&given.status, &essay.key, &refusal).await.is_err() {
 						pass.failures.push("export");
@@ -1215,8 +1233,8 @@ mod tests {
 		);
 	}
 
-	/// Each way a take is not made out refuses `take-unheard`, a deleted take
-	/// `take-missing`; a take that was missing and is now home but not heard
+	/// Each way a take is not made out refuses `take-unheard`, a take never
+	/// sent `take-missing`, and a deleted one withdraws its essay; a take that was missing and is now home but not heard
 	/// waits, and is no longer said as refused; a partial a stopped pass
 	/// left goes.
 	#[tokio::test]
@@ -1263,17 +1281,17 @@ mod tests {
 		std::fs::write(dir.path().join(".gone-2026-11-01.takes.partial").join("t.ogg"), b"OggS").unwrap();
 
 		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
-		assert_eq!((done.exported, done.refused, done.waiting), (0, 5, 0));
+		assert_eq!((done.exported, done.refused, done.waiting, done.withdrawn), (0, 4, 0, 1), "a deleted take withdraws, #1055");
 		let reason = |key: &str| std::fs::read_to_string(dir.path().join("status").join(String::from(key) + ".refused")).unwrap();
 		for key in &keys[..3] {
 			assert_eq!(reason(key), "reason=take-unheard\n", "{key}");
 		}
-		assert_eq!(reason("deleted-2026-11-19"), "reason=take-missing\n");
+		assert!(!dir.path().join("status").join("deleted-2026-11-19.refused").exists(), "withdrawn, not refused");
 		assert_eq!(reason("late-2026-11-20"), "reason=take-missing\n", "not sent yet: missing");
 
 		hold_take(&pool, "t-late").await;
 		let later = run_once(&pool, &fake, &mine, &clock).await.unwrap();
-		assert_eq!((later.refused, later.waiting), (4, 1));
+		assert_eq!((later.refused, later.waiting, later.withdrawn), (3, 1, 0));
 		let status = dir.path().join("status");
 		assert!(
 			!status.join("late-2026-11-20.refused").exists() && !status.join("late-2026-11-20.failed.log").exists(),
@@ -1432,6 +1450,42 @@ mod tests {
 			!crate::feeds::Feed::CardsEssay.holds(&mut conn, ME, key).await.unwrap(),
 			"{stage:?}: its video is no one's to fetch"
 		);
+	}
+
+	/// An essay never given, waiting for a take to be heard, is withdrawn by
+	/// the pass once another take it plays is deleted: no refusal, and off
+	/// every list, with nothing on the drive to remove.
+	#[tokio::test]
+	async fn an_essay_never_given_is_withdrawn_by_the_pass_not_refused() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		let key = "waiting-2026-11-19";
+		fake.ok("index.json", &index(&[key]));
+		fake.ok(&(String::from(key) + ".json"), &spoken_essay("2026-11-19", &["take-1", "take-2"]));
+		for take in ["take-1", "take-2"] {
+			hold_take(&pool, take).await;
+		}
+		hear(&pool, "take-1", "Hello there.", Some("heard")).await;
+		let mut mine = given(&dir.path().join("essays"));
+		mine.subject = Some(String::from(ME));
+		let first = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((first.exported, first.waiting, first.withdrawn), (0, 1, 0), "take-2 not heard yet");
+
+		delete_from_my_data(&pool, "take-1").await;
+		let next = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((next.exported, next.refused, next.waiting, next.withdrawn), (0, 0, 0, 1));
+		assert!(!mine.status.join(String::from(key) + ".refused").exists(), "withdrawn, not said refused");
+		let mut conn = pool.acquire().await.unwrap();
+		let withdrawn = cards_essay_repo::withdrawn(&mut conn, ME).await.unwrap();
+		assert_eq!(
+			withdrawn.iter().map(|w| (w.key.as_str(), w.note.as_str(), w.size)).collect::<Vec<_>>(),
+			[(key, "take-1", 0)]
+		);
+		drop(conn);
+		assert!(crate::cards_essays::held(&pool).await.unwrap().is_empty(), "off Studio › Renders");
+		let again = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((again.exported, again.refused, again.withdrawn), (0, 0, 0), "never looked at again");
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default());
 	}
 
 	/// An essay with no spoken card, or whose takes are all held, is never

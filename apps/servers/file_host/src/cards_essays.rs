@@ -271,13 +271,14 @@ async fn observe_renders(db: &SqlitePool) {
 /// It counts; it never names an essay's words.
 fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	match result {
-		Ok(done) if done.added == 0 && done.exported == 0 && done.refused == 0 && done.failures.is_empty() => {}
+		Ok(done) if done.added == 0 && done.exported == 0 && done.refused == 0 && done.withdrawn == 0 && done.failures.is_empty() => {}
 		Ok(done) if done.failures.is_empty() => info!(
 			added = done.added,
 			held = done.held,
 			exported = done.exported,
 			waiting = done.waiting,
 			refused = done.refused,
+			withdrawn = done.withdrawn,
 			"cards essays pass"
 		),
 		Ok(done) => warn!(

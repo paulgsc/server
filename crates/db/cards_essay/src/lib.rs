@@ -217,7 +217,8 @@ pub async fn withdraw(conn: &mut SqliteConnection, key: &str, subject: &str, not
 		// Gone already: its video went, and with it the takes it played.
 		return Ok(false);
 	}
-	let link = links(conn).await?.into_iter().filter(|link| link.key == key).last().map(|link| link.youtube_id);
+	// Oldest first within each essay, so its newest is the last.
+	let link = links(conn).await?.into_iter().rev().find(|link| link.key == key).map(|link| link.youtube_id);
 	for (step, bytes) in [("video", size), ("rest", 0)] {
 		sqlx::query!(
 			"INSERT INTO cards_essay_video_deletion (essay_key, step, cause, subject_id, youtube_id, note_id, size, deleted_at)
@@ -404,7 +405,7 @@ mod tests {
 				.await
 				.unwrap();
 		}
-		for key in ["zfs-2026-11-02", "ext4-2026-11-03", "btrfs-2026-11-04"] {
+		for key in ["zfs-2026-11-02", "ext4-2026-11-03", "btrfs-2026-11-04", "xfs-2026-11-05"] {
 			keep(&mut conn, &essay(key, b"{}", "t")).await.unwrap();
 		}
 		record_link(&mut conn, "ext4-2026-11-03", "dQw4w9WgXcQ", "t").await.unwrap();
@@ -412,7 +413,7 @@ mod tests {
 		assert!(!withdraw(&mut conn, "zfs-2026-11-02", "me", "note-2", 1, "t").await.unwrap(), "once");
 		assert!(withdraw(&mut conn, "ext4-2026-11-03", "me", "note-3", 0, "t").await.unwrap());
 		assert!(withdraw(&mut conn, "btrfs-2026-11-04", "them", "note-4", 0, "t").await.unwrap());
-		assert!(withdraw(&mut conn, "xfs-2026-11-05", "me", "note-5", 0, "t").await.is_err(), "no such essay");
+		assert!(withdraw(&mut conn, "ufs-2026-11-06", "me", "note-5", 0, "t").await.is_err(), "no such essay");
 		assert_eq!(gone(&mut conn).await.unwrap(), ["btrfs-2026-11-04", "ext4-2026-11-03", "zfs-2026-11-02"]);
 		let mine = withdrawn(&mut conn, "me").await.unwrap();
 		assert_eq!(
@@ -423,14 +424,27 @@ mod tests {
 		for statement in [
 			"UPDATE cards_essay_video_deletion SET size = 0",
 			"DELETE FROM cards_essay_video_deletion",
-			"INSERT INTO cards_essay_video_deletion VALUES ('ext4-2026-11-03', 'video', 'take-deleted', 'me', NULL, NULL, 0, 't')",
-			"INSERT INTO cards_essay_video_deletion VALUES ('ext4-2026-11-03', 'video', 'let-go', NULL, 'aaaaaaaaaaa', NULL, 0, 't')",
+			// On an essay not withdrawn, so each is refused by its own rule.
+			"INSERT INTO cards_essay_video_deletion VALUES ('xfs-2026-11-05', 'video', 'take-deleted', 'me', NULL, NULL, 0, 't')",
+			"INSERT INTO cards_essay_video_deletion VALUES ('xfs-2026-11-05', 'video', 'take-deleted', NULL, NULL, 'note-6', 0, 't')",
+			"INSERT INTO cards_essay_video_deletion VALUES ('xfs-2026-11-05', 'video', 'let-go', NULL, 'aaaaaaaaaaa', NULL, 0, 't')",
+			"INSERT INTO cards_essay_video_deletion VALUES ('xfs-2026-11-05', 'rest', 'take-deleted', 'me', NULL, 'note-6', 0, 't')",
 		] {
 			assert!(sqlx::query(statement).execute(&mut *conn).await.is_err(), "{statement}");
 		}
+		record_link(&mut conn, "xfs-2026-11-05", "aaaaaaaaaaa", "t").await.unwrap();
+		sqlx::query("INSERT INTO cards_essay_video_deletion VALUES ('xfs-2026-11-05', 'video', 'let-go', NULL, 'aaaaaaaaaaa', NULL, 0, 't')")
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		assert!(!withdraw(&mut conn, "xfs-2026-11-05", "me", "note-7", 0, "t").await.unwrap(), "let go already");
 
 		sqlx::query("DELETE FROM account WHERE subject_id = 'me'").execute(&mut *conn).await.unwrap();
 		assert!(withdrawn(&mut conn, "me").await.unwrap().is_empty(), "a receipt naming my note leaves with my account");
-		assert_eq!(gone(&mut conn).await.unwrap(), ["btrfs-2026-11-04"], "theirs stays");
+		assert_eq!(
+			gone(&mut conn).await.unwrap(),
+			["btrfs-2026-11-04", "xfs-2026-11-05"],
+			"theirs stays, and a let-go names no one"
+		);
 	}
 }

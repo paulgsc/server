@@ -48,9 +48,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Held by an export pass for a whole pass (`call_weeks::pass`,
-/// `pd_fills::render::export`) and by an episode's let go for a whole step
-/// ([`videos::let_go`]), so neither writes or removes an episode's files in
-/// the middle of the other.
+/// `pd_fills::render::export`), by an episode's let go for a whole step
+/// ([`videos::let_go`]), and by each essay tidy (`rust_essays::tidy`,
+/// `cards_essays::pass::tidy`), so none writes or removes an episode's files
+/// in the middle of another.
 pub(crate) static FOLDERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A feed home renders.
@@ -294,6 +295,8 @@ impl Feed {
 				rust_round_repo::essay_video::record_link(conn, crate::rust_essays::Kind::Interview, subject, key, held, youtube_id, now).await
 			}
 			Self::Report => app_event_repo::report_video::record_link(conn, subject, key, youtube_id, now).await,
+			// A withdrawn essay has no video to link, as a withdrawn week has none.
+			Self::CardsEssay if !self.holds(conn, subject, key).await? => Ok(Recorded::NoWeek),
 			Self::CardsEssay => Ok(match cards_essay_repo::record_link(conn, key, youtube_id, now).await? {
 				cards_essay_repo::Linked::Added => Recorded::Added,
 				cards_essay_repo::Linked::Held => Recorded::Held,

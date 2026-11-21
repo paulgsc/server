@@ -1387,14 +1387,20 @@ nowhere is marked as such and belongs to review.
     takes, renders and work folders; it is never given to the worker again
     and no list shows it (`cards_essay_repo::gone`), and a video a render
     under way finishes after that is removed by the next minute's tidy,
-    while its cut list stays in `cards_essay`. A cards essay is kept once,
+    while its cut list stays in `cards_essay`; `GET /cards-essays/:key/video`
+    never serves a withdrawn one meanwhile, and an essay never given is
+    withdrawn by the pass the same way. Receipts are read as the mailbox
+    subject's (`mailbox::pass_subject`), so while none resolves nothing is
+    withdrawn; a made video once the account is gone is
+    paulgsc/server#1064. A cards essay is kept once,
     so what it plays is its one body's, and a spoken card has no silence to
     play in a take's place (C812): any such take withdraws it. (d) is
     some-ui's side (what My data says of a cards video). *Enforced by*
     `cards_essays::pass`' `no_copy_of_a_take_outlives_its_video_or_its_note`,
     `every_kind_of_unheard_or_gone_take_is_said_and_a_wait_is_no_refusal`,
     `a_spoken_card_is_given_its_takes_once_each_is_heard`,
-    `a_take_deleted_before_during_or_after_the_render_withdraws_its_essay_for_good`
+    `a_take_deleted_before_during_or_after_the_render_withdraws_its_essay_for_good`,
+    `an_essay_never_given_is_withdrawn_by_the_pass_not_refused`
     and `only_a_deleted_take_an_essay_plays_withdraws_it`, and
     `cards_essay_repo`'s
     `an_essay_whose_take_is_deleted_is_withdrawn_both_steps_at_once_linked_or_not_and_leaves_with_the_account`. A note
