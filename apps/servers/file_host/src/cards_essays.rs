@@ -186,6 +186,7 @@ async fn given(db: &SqlitePool, configured: Option<&str>) -> Result<pass::Given,
 		status: std::path::PathBuf::from(STATUS_FOLDER),
 		subject,
 		renders: std::path::PathBuf::from(RENDERS_FOLDER),
+		frames: std::path::PathBuf::from(crate::clips::FRAMES_FOLDER),
 	})
 }
 
