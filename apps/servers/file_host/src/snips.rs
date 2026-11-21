@@ -38,8 +38,8 @@
 //!   never dispatches a run itself: its token is Actions: read only. A newer
 //!   run, or a newer attempt of the same run, of that commit clears the mark
 //!   and is fetched.
-//! - **A failure that may clear** (a timeout, the drive) is recorded nowhere
-//!   and asked again next pass.
+//! - **A failure that may clear** (a timeout, the drive) gets no `.gone`
+//!   mark: only its `.retry` one, and it is asked again next pass.
 //! - **Off without its token.** `SNIPS_GITHUB_TOKEN`, a fine-grained token
 //!   with Actions: read on paulgsc/some-ui only. Unset, nothing is fetched,
 //!   and an essay that shows a snip is refused `snip-missing`.
@@ -89,6 +89,12 @@ pub const MAX_UNPACKED: u64 = 512 * 1024 * 1024;
 /// How long one pickup pass may take, all its requests together: so long at
 /// most it holds up the mailbox pass it rides.
 pub const PASS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How long a download may take, below [`PASS_DEADLINE`].
+pub const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+
+/// How long one list call (runs, artifacts) may take.
+pub const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The most files a bundle may hold.
 pub const MAX_FILES: usize = 4096;
@@ -208,7 +214,9 @@ impl GitHub {
 		};
 		// A download is bounded in time as in bytes, so the mailbox pass it
 		// rides waits at most that ([`PASS_DEADLINE`] bounds the whole pass).
-		let client = outbound::client(outbound::Caller::Snips).timeout(std::time::Duration::from_secs(300)).build()?;
+		// Under the pass's deadline, so a stalled download usually fails on
+		// its own clock and is said, rather than being cut off unrecorded.
+		let client = outbound::client(outbound::Caller::Snips).timeout(DOWNLOAD_TIMEOUT).build()?;
 		Ok(Some(Self { client, token: token.to_owned() }))
 	}
 
@@ -225,7 +233,9 @@ impl GitHub {
 	}
 
 	async fn json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, &'static str> {
-		let answer = self.get(url).send().await.map_err(|err| kind_of(&err))?;
+		// A list is small: a stalled one fails here, well inside the pass's
+		// deadline, and is said on OUTBOUND as any request's failure.
+		let answer = self.get(url).timeout(LIST_TIMEOUT).send().await.map_err(|err| kind_of(&err))?;
 		if !answer.status().is_success() {
 			return Err("refused");
 		}
@@ -564,17 +574,21 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		return Ok(picked);
 	}
 	for (_, _, commit) in missing.into_iter().take(COMMITS_LOOKED) {
+		// Marked before it is tried, and cleared once it comes to an outcome:
+		// a pass the deadline cuts short mid-request leaves the commit at the
+		// back of the queue, never at its head.
+		let _ = mark_retry(folder, commit).await;
 		let runs = match capture.runs(commit).await {
 			Ok(runs) => runs,
 			Err(kind) => {
 				picked.failures.push(kind);
-				let _ = mark_retry(folder, commit).await;
 				continue;
 			}
 		};
 		let newest = runs.into_iter().filter(|run| &run.head_sha == commit).max_by_key(|run| (run.id, run.run_attempt));
 		let mark = marked(folder, commit).await;
 		let Some(run) = newest else {
+			let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 			if mark.is_none() {
 				picked.gone += 1;
 				if mark_gone(folder, commit, None, "no-run").await.is_err() {
@@ -585,6 +599,7 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		};
 		if mark.as_deref() == Some(run.mark().as_str()) {
 			// Gone as this run, and no newer one: said, not asked again.
+			let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 			continue;
 		}
 		let zip = folder.join(String::from(".") + commit + ".zip.partial");
@@ -616,16 +631,15 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 				picked.fetched += 1;
 			}
 			Ok(Some(reason)) => {
+				let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 				picked.gone += 1;
 				if mark_gone(folder, commit, Some(&run), reason).await.is_err() {
 					picked.failures.push("drive");
 				}
 			}
-			Err(kind) => {
-				picked.failures.push(kind);
-				// To the back of the queue, so it holds no other commit back.
-				let _ = mark_retry(folder, commit).await;
-			}
+			// Its retry mark stays: to the back of the queue, so it holds no
+			// other commit back.
+			Err(kind) => picked.failures.push(kind),
 		}
 		// One bundle a pass.
 		break;

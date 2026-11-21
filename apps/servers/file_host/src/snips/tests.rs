@@ -340,3 +340,31 @@ fn a_snip_id_is_the_captures_own() {
 	assert_eq!(id_parts("web:/a:phone:1.2.3:0123456789ab"), Some(("1.2.3", "0123456789ab")));
 	assert!(is_commit(&commit(0)) && !is_commit("ABC") && !is_commit(&"A".repeat(40)));
 }
+
+/// GitHub as a connection that never answers.
+struct Stalled;
+
+impl Capture for Stalled {
+	async fn runs(&self, _commit: &str) -> Result<Vec<Run>, &'static str> {
+		std::future::pending().await
+	}
+
+	async fn bundle(&self, _run: &Run, _into: &Path) -> Result<Bundle, &'static str> {
+		std::future::pending().await
+	}
+}
+
+#[tokio::test]
+async fn a_pass_cut_off_mid_request_leaves_its_commit_at_the_back() {
+	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
+	let (_, a, _) = record(b"a", "/a");
+	let (_, b, _) = record(b"b", "/b");
+	hold_essay(&pool, "one-2026-11-20", &[(commit(0), a)]).await;
+	hold_essay(&pool, "two-2026-11-21", &[(commit(1), b)]).await;
+	let cut = tokio::time::timeout(std::time::Duration::from_millis(50), run_once(&pool, &Stalled, &dirs.essays, &dirs.cache)).await;
+	assert!(cut.is_err(), "the pass's deadline cuts it off");
+	assert!(retry_of(&dirs.cache, &commit(0)).exists(), "the commit it was on is marked to retry");
+	fake.run(run(2, 1), Ok(Some(bundle(&commit(1), &[(b"b", "/b")], |_| {}))));
+	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap().fetched, 1);
+	assert_eq!(*fake.asked.lock().unwrap(), [2], "the next pass asks the other commit first");
+}

@@ -49,7 +49,8 @@ call. It would be raised only if these refusals turn out to be common.
 **How a commit recovers.** A newer run of that commit, or a newer attempt of
 the same run (GitHub's Re-run keeps the run id), clears the mark, and the
 bundle is fetched. A failure that may clear on its own, such as a timeout or
-the drive, is marked nowhere and is asked again next pass.
+the drive, gets no `.gone` mark: only `<commit>.retry`, and it is asked again
+next pass, behind the other commits.
 
 ## Not yet
 
