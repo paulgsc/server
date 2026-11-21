@@ -52,7 +52,10 @@ does not read each of its waiters.
    enums; no label names an item or a person.
 6. **Who waits orders, it never adds work.** What waits on an item decides only when the
    stage takes it, after the stage's own fairness rules (TR1's fewest attempts first); how much
-   runs at once stays with the lane.
+   runs at once stays with the lane. One bounded exception, the owner's (C1017): a note the
+   owner fast-tracks is heard through the lane's give on its first try after the mark, at most
+   one deadline per mark set; a note excused by the contention guard gives way as before, and
+   the note's retries are held like the rest (`docs/home-compute.md`, invariant 2).
 7. **The bound is policy.** It is a constant in the source, moved by a call, and reaches the
    alerts as `stage_promise_seconds`; it is never written into a rule.
 
@@ -75,12 +78,16 @@ marking them.
 - **The cards essays name their takes.** An essay held back for a take not heard yet
   (`essay_media::Given::Waiting`, takes listed by id) wants each of them.
 - **The owner's hand is a source too.** `POST /voice-notes/:id/fast-track` puts one of the
-  owner's takes first (`voice_note_fast_track`, append-only, the newest act decides; #1090).
+  owner's notes first (`voice_note_fast_track`, append-only, the newest act decides; #1090). A
+  mark is one try, kept with no clock: each act records how many attempts the note had, and the
+  mark is *live* while that count is unchanged. Once tried it is only *marked*, and once any
+  model hears the note it is spent for good. A note home will never hear (set aside, out of
+  attempts, no audio) is refused (409), so a mark is never recorded that orders nothing.
 - **The transcriber reads both.** `waiting_first` orders the excused note first, then a
-  fast-tracked take not tried yet, then fewest attempts, and among notes tried as often,
-  fast-tracked ones, then notes something waits on (the most waited-on first), then oldest.
+  live fast-tracked note, then fewest attempts, and among notes tried as often,
+  marked ones, then notes something waits on (the most waited-on first), then oldest.
   Each note carries its `transcript::Urgency` (`None < Wanted < FastTrack`, a closed set), and
-  the pass reads it: a fast-tracked take's first try is not held by the lane's give (the owner,
+  the pass reads it: a live fast-tracked note's try is not held by the lane's give, unless it is the excused note (the owner,
   2026-11-21, on #1090).
 - **TR1 holds whole.** Wanted sits after `tried` (C1015), and a fast-tracked take holds the head
   of the line for one try only (C1017): failed once, it falls back among notes tried as often,

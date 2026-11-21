@@ -1657,7 +1657,7 @@ mod tests {
 		"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES (?1, 'n', 'm', 0, 'w', 0, 1)",
 		"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at) VALUES (?1, 'n', 'm', 1, 'r', 'nothing_said', '', 'now')",
 		"INSERT INTO voice_note_attention (subject_id, note_id, n, act, model, attempt, rule, acted_at) VALUES (?1, 'n', 1, 'kept', 'm', 1, 'r', 'now')",
-		"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, acted_at) VALUES (?1, 'n', 1, 'fast', 'now')",
+		"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, attempts, acted_at) VALUES (?1, 'n', 1, 'fast', 0, 'now')",
 		"INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'e', 'transcriber', ?1, 'n')",
 		"INSERT INTO jobs_notice_device (subject_id, token, registered_at) VALUES (?1, 't', 'now')",
 		"INSERT INTO jobs_notice_sent (subject_id, run_name, said, devices, at) VALUES (?1, 'r', 'picks', 1, 'now')",

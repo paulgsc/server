@@ -1486,9 +1486,10 @@ nowhere is marked as such and belongs to review.
     essay video only if the essay plays it ((c) of the essay videos, above).
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
-    vectors in the meaning index (invariant 35), its set-aside mark and its
-    moves along the conveyor (`studio_take_move`, below) in one
-    transaction, and keeps a copy of its words
+    vectors in the meaning index (invariant 35), its set-aside mark, its
+    moves along the conveyor (`studio_take_move`, below), the owner's
+    fast-track acts on it (`voice_note_fast_track`) and what waits on it
+    (`stage_want`) in one transaction, and keeps a copy of its words
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that

@@ -169,24 +169,27 @@ pub enum Urgency {
 	/// A waiter names it in `stage_want` (a cards essay held back for it), or
 	/// the owner fast-tracked it and its first try failed.
 	Wanted,
-	/// The owner put it first by hand (`crate::fast_track`), and it has not
-	/// been tried yet: its one try at the head of the line. Fast-tracked and
-	/// tried already, it is [`Urgency::Wanted`].
+	/// The owner put it first by hand (`crate::fast_track`), and home has not
+	/// tried it since: its one try at the head of the line. Marked and tried
+	/// since, it is [`Urgency::Wanted`].
 	FastTrack,
 }
 
 /// The notes their key in `keys` has not ended (heard, or found silent).
 ///
 /// Those it has failed on fewer than `attempts` times, at most `limit`: a
-/// fast-tracked take not tried yet first, then those tried fewest times, and
-/// among those tried as often, fast-tracked ones, then those something waits
+/// note whose fast-track mark is live first, then those tried fewest times,
+/// and among those tried as often, marked ones, then those something waits
 /// on, most waited on first, then oldest first.
 ///
-/// **A take the owner puts first gets one try at the head of the line**
-/// (paulgsc/server#1090, C1017): ahead of every note but the excused one.
-/// If that try fails, it falls back among notes tried as often, still ahead
-/// of those no one waits on, so TR1 below holds whole and a fast track costs
-/// at most one deadline.
+/// **A note the owner puts first gets one try at the head of the line**
+/// (paulgsc/server#1090, C1017, `crate::fast_track`): its mark is live, ahead
+/// of every note but the excused one, until home's next attempt on it, by
+/// any model. If that try fails, it falls back among notes tried as often,
+/// still ahead of those no one waits on, so TR1 below holds whole and a mark
+/// costs at most one deadline. Once any model has heard the note, its mark is
+/// spent for good, so a new model hearing every note again never brings it
+/// back.
 ///
 /// **What waits on a note puts it first** (paulgsc/server#1091,
 /// docs/shared-stages.md): a note a waiter names in `stage_want` (a cards
@@ -245,8 +248,14 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried,
 		          (SELECT COUNT(*) FROM stage_want w
 		           WHERE w.stage = 'transcriber' AND w.subject_id = n.subject_id AND w.item_key = n.note_id) AS wanted,
+		          COALESCE((SELECT f.act = 'fast'
+		                           AND f.attempts = (SELECT COUNT(*) FROM voice_transcript t WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id)
+		                    FROM voice_note_fast_track f
+		                    WHERE f.subject_id = n.subject_id AND f.note_id = n.note_id ORDER BY f.n DESC LIMIT 1), 0) AS live,
 		          COALESCE((SELECT f.act = 'fast' FROM voice_note_fast_track f
-		                    WHERE f.subject_id = n.subject_id AND f.note_id = n.note_id ORDER BY f.n DESC LIMIT 1), 0) AS fast
+		                    WHERE f.subject_id = n.subject_id AND f.note_id = n.note_id ORDER BY f.n DESC LIMIT 1), 0)
+		            AND NOT EXISTS (SELECT 1 FROM voice_transcript t
+		                            WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')) AS marked
 		   FROM voice_note n
 		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
 		                     WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
@@ -256,9 +265,9 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		                                            WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
 		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
 		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!",
-		        wanted AS "wanted!: i64", fast AS "fast!: bool", tried AS "tried!: i64" FROM candidate
+		        wanted AS "wanted!: i64", live AS "live!: bool", marked AS "marked!: bool" FROM candidate
 		 WHERE tried < ?2
-		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, fast AND tried = 0 DESC, tried, fast DESC, wanted DESC, stored_at, subject_id, note_id
+		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, live DESC, tried, marked DESC, wanted DESC, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
 		keys.plain,
 		attempts,
@@ -278,9 +287,9 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 				note_id: row.note_id,
 				verbatim: row.verbatim,
 				expected_language: crate::verdict::expected_language(&row.of_kind),
-				urgency: if row.fast && row.tried == 0 {
+				urgency: if row.live {
 					Urgency::FastTrack
-				} else if row.fast || row.wanted > 0 {
+				} else if row.marked || row.wanted > 0 {
 					Urgency::Wanted
 				} else {
 					Urgency::None
@@ -874,8 +883,11 @@ mod tests {
 			.await
 			.unwrap();
 		let details: Vec<&str> = plan.iter().map(|(_, _, _, detail)| detail.as_str()).collect();
+		// The ending and the attempts by the note's key, then the fast-track
+		// mark's two (paulgsc/server#1090): the attempts since it and any
+		// model's ending, each by the note's index.
 		let searched = details.iter().filter(|detail| detail.starts_with("SEARCH t USING")).count();
-		assert_eq!(searched, 2, "{details:?}");
+		assert_eq!(searched, 4, "{details:?}");
 		assert!(!details.iter().any(|detail| detail.starts_with("SCAN t")), "{details:?}");
 	}
 
@@ -1009,13 +1021,16 @@ mod tests {
 		note(&pool, A, "chosen", "2026-10-25T03:00:00.000Z", b"chosen").await;
 		note(&pool, A, "retried", "2026-10-25T00:30:00.000Z", b"retried").await;
 		keep(&pool, A, "retried", &attempt(SMALL, Outcome::Deadline)).await;
-		sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'e1', 'transcriber', ?1, 'wanted')")
-			.bind(A)
-			.execute(&pool)
-			.await
-			.unwrap();
+		for take in ["wanted", "retried"] {
+			sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'e1', 'transcriber', ?1, ?2)")
+				.bind(A)
+				.bind(take)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, 3, "now").await.unwrap();
 		drop(conn);
 		let order = |rows: Vec<Waiting>| rows.into_iter().map(|row| (row.note_id, row.urgency)).collect::<Vec<_>>();
 		let read = || async {
@@ -1034,7 +1049,7 @@ mod tests {
 				("chosen", Urgency::FastTrack),
 				("wanted", Urgency::Wanted),
 				("fresh", Urgency::None),
-				("retried", Urgency::None)
+				("retried", Urgency::Wanted)
 			]),
 			"its one try at the head of the line"
 		);
@@ -1045,18 +1060,31 @@ mod tests {
 				("wanted", Urgency::Wanted),
 				("fresh", Urgency::None),
 				("chosen", Urgency::Wanted),
-				("retried", Urgency::None)
+				("retried", Urgency::Wanted)
 			]),
 			"failed once: among notes tried once, ahead of those no one waits on (TR1)"
 		);
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, 3, "now").await.unwrap();
 		drop(conn);
 		assert_eq!(
 			read().await,
-			owned(&[("wanted", Urgency::Wanted), ("fresh", Urgency::None), ("retried", Urgency::None), ("chosen", Urgency::None)]),
-			"taken back: in its own place, by age"
+			owned(&[
+				("wanted", Urgency::Wanted),
+				("fresh", Urgency::None),
+				("retried", Urgency::Wanted),
+				("chosen", Urgency::None)
+			]),
+			"taken back: in its own place"
 		);
+		// Marked again, then heard by another model: spent for good, so a model
+		// hearing every note again never brings it back to the head.
+		let mut conn = pool.acquire().await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, 3, "now").await.unwrap();
+		drop(conn);
+		assert_eq!(keep(&pool, A, "chosen", &attempt(MEDIUM, heard("hello"))).await, Kept::Added(1));
+		let after = read().await;
+		assert_eq!(after.last(), Some(&(String::from("chosen"), Urgency::None)), "{after:?}");
 	}
 
 	/// C896: the note named first goes ahead of every other while it waits,

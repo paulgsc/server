@@ -145,10 +145,18 @@ pub async fn run_once_telling<H: Hear>(
 			pass.cancelled = true;
 			break;
 		}
-		// A take the owner put first is not held by the give (the owner,
-		// 2026-11-21, on #1090); it is ordered first, so a give waits for
-		// no other note behind it.
-		if note.urgency < Urgency::FastTrack && gives_way(turn, &mut pass) {
+		// A take the owner put first is not held by the give on its one try
+		// (the owner, 2026-11-21, on #1090). An excused try keeps no attempt,
+		// so the take the guard is excusing gives way as any note does:
+		// otherwise contention, when renders run, would let it skip the give
+		// again on each excuse. With the excused note first, a give started
+		// on it holds the fast-tracked take behind it too, for at most GIVE.
+		let excused = guard
+			.streak
+			.current()
+			.is_some_and(|(subject, note_id)| *subject == note.subject && *note_id == note.note_id);
+		let first_try = note.urgency == Urgency::FastTrack && !excused;
+		if !first_try && gives_way(turn, &mut pass) {
 			break;
 		}
 		let audio = {
@@ -671,11 +679,13 @@ mod tests {
 	#[tokio::test]
 	async fn a_fast_tracked_take_is_heard_while_the_turn_is_given() {
 		let pool = pool().await;
-		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"words").await;
-		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"words").await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
+		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
 		{
 			let mut conn = pool.acquire().await.unwrap();
-			voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, "now").await.unwrap();
+			voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
+				.await
+				.unwrap();
 		}
 		let cancel = CancellationToken::new();
 		let fake = Fake::new(&cancel);
@@ -688,7 +698,7 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!((done.kept.len(), done.gave_way), (1, true), "the chosen take heard, then the turn given: {done:?}");
-		assert_eq!(fake.heard().len(), 1);
+		assert_eq!(fake.heard(), ["chosen"], "the chosen take, and no other");
 	}
 
 	async fn guarded(pool: &SqlitePool, fake: &Arc<Fake>, guard: &mut Guard<(String, String)>, cancel: &CancellationToken) -> Pass {

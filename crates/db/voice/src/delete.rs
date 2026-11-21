@@ -29,8 +29,10 @@
 //!   paulgsc/some-ui#2265 and in that repo's `docs/discard-sites.md`.
 //! - **What goes:** the note, its audio, what home heard in it (every
 //!   transcript, its words and the take's vectors in the meaning index,
-//!   which are made from them), its set-aside mark and its moves along the
-//!   conveyor ([`crate::conveyor`]), in one transaction.
+//!   which are made from them), its set-aside mark, its moves along the
+//!   conveyor ([`crate::conveyor`]), the owner's fast-track acts on it
+//!   ([`crate::fast_track`]) and what waits on it (`stage_want`), in one
+//!   transaction.
 //!   **What stays:** a copy of its words already filed for the Jobs mailbox
 //!   (the mailbox keeps a name's body for good), the record that Drive
 //!   holds it, the idea an answer belongs to (`idea_answer` still names the
@@ -883,7 +885,7 @@ mod tests {
 		.await;
 		run(
 			&pool,
-			"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, acted_at) VALUES (?1, ?2, 1, 'fast', 'now')",
+			"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, attempts, acted_at) VALUES (?1, ?2, 1, 'fast', 0, 'now')",
 			A,
 			"take",
 		)

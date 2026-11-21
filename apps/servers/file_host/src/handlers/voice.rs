@@ -870,7 +870,7 @@ pub struct FastTrackBody {
 }
 
 /// `POST /voice-notes/:id/fast-track`
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct FastTracked {
 	/// `recorded`, or `unchanged` when the take's newest act already says so.
 	pub change: &'static str,
@@ -881,6 +881,9 @@ pub struct FastTracked {
 /// What putting first a take home has already heard answers with.
 const ALREADY_HEARD: &str = "home has already heard this take: there is nothing to put first";
 
+/// What putting first a take home is not going to hear answers with.
+const NOT_WAITING: &str = "home is not going to hear this take as it stands (set aside, its recording let go, or every attempt spent)";
+
 /// `POST /voice-notes/:id/fast-track`: the owner puts their take `id` at the
 /// front of the transcriber's line, or takes that back (paulgsc/server#1090,
 /// paulgsc/server#1091).
@@ -888,10 +891,13 @@ const ALREADY_HEARD: &str = "home has already heard this take: there is nothing 
 /// The body is `{"fast": true | false}`. The act is appended to
 /// `voice_note_fast_track` (`voice_repo::fast_track::act`): `201` with
 /// `change: "recorded"`. A retry, the act the take's newest already is,
-/// writes nothing and is a `200` with `change: "unchanged"`. While
-/// fast-tracked, the take is heard before every other waiting note but the
-/// one the contention guard is excusing, and the lane's give does not hold
-/// it (the owner, 2026-11-21, on #1090).
+/// writes nothing and is a `200` with `change: "unchanged"`. A mark is one
+/// try: until home's next attempt on the take, it is heard before every
+/// other waiting note but the one the contention guard is excusing, and the
+/// lane's give does not hold that try (the owner, 2026-11-21, on #1090);
+/// failed, it waits among notes tried as often, still ahead of those no one
+/// waits on (`voice_repo::transcript::waiting_first`). Any kind of the
+/// caller's notes may be marked.
 ///
 /// `BEGIN IMMEDIATE`, so the read and the write see one snapshot.
 ///
@@ -899,7 +905,8 @@ const ALREADY_HEARD: &str = "home has already heard this take: there is nothing 
 /// 401 without a session, 403 for a browser's or an untrusted origin, 422
 /// naming `fast` when the body is not one, 404 for a note the caller's
 /// subject does not hold, 409 for one home has already heard or found
-/// silent, and 500 for a storage failure.
+/// silent or is not going to hear (set aside, its recording let go, every
+/// attempt spent), and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_fast_track_post", skip_all, fields(otel.kind = "server"))]
 pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
@@ -908,12 +915,15 @@ pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(
 	};
 	let act = if fast { FastAct::Fast } else { FastAct::Cancel };
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await.map_err(refusal)?;
+	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, crate::transcribe::pass::ATTEMPTS, &now())
+		.await
+		.map_err(refusal)?;
 	tx.commit().await?;
 	let (status, change) = match acted {
 		FastActed::Recorded => (StatusCode::CREATED, "recorded"),
 		FastActed::Unchanged => (StatusCode::OK, "unchanged"),
 		FastActed::Ended => return Err(FileHostError::Conflict(ALREADY_HEARD)),
+		FastActed::NotWaiting => return Err(FileHostError::Conflict(NOT_WAITING)),
 		FastActed::NotHeld => return Err(FileHostError::NotFound),
 	};
 	Ok((status, Json(FastTracked { change, fast })).into_response())
@@ -1337,10 +1347,9 @@ mod tests {
 		assert_eq!(remove(&app, "/voice-notes/n1", &phone).await.0, StatusCode::CONFLICT, "heard: kept for good");
 	}
 
-	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves
-	/// only from where it is, a retry changes nothing, and the station lists
-	/// follow. Another subject's take, an unknown one and a bad move are
-	/// refused and write nothing.
+	/// paulgsc/server#1090: a paired phone puts its own take first and takes
+	/// it back; a retry changes nothing, another's take is not found, a bad
+	/// body is refused, and a take home has heard is not put first.
 	#[tokio::test]
 	async fn the_owner_puts_a_take_first_and_takes_it_back() {
 		const FAST: &str = "/voice-notes/t1/fast-track";
@@ -1378,6 +1387,10 @@ mod tests {
 		assert_eq!(post(&app, FAST, Some(&phone), &fast).await.0, StatusCode::CONFLICT, "heard: nothing to put first");
 	}
 
+	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves
+	/// only from where it is, a retry changes nothing, and the station lists
+	/// follow. Another subject's take, an unknown one and a bad move are
+	/// refused and write nothing.
 	#[tokio::test]
 	async fn the_owner_moves_a_take_along_the_conveyor() {
 		const TAKE_PATH: &str = "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z";
