@@ -8,14 +8,18 @@
     "apps/servers/file_host/src/reconcile.rs",
     "migrations/20261121000100_match_a_bite_to_the_snap_to_come.up.sql"
   ],
-  "chose": "A bite taken on an offer of the snap to come is matched to the first play its scenario's rule accepts that home had not seen when the bite started (less reconcile::LAG, 5 s, for the phone to hear of it), within reconcile::WINDOW either side, and stored as method `next` with a signed gap. Whether an offer was of the snap to come is decided per moment by the engine replayed at the bite's start (rules::offered_said, one arm per Moment): kick is the snap to come on 4th down but the touchdown's own play while a try is pending, and the try (two-point) looks back to its touchdown, because ESPN writes the try into the touchdown's play. Every bite not taken on an offer still looks back.",
+  "chose": "A bite taken on an offer of the snap to come is matched to that snap: the first play from scrimmage or kickoff home had not seen when the offer was on its screen, skipping plays a flag wiped out, and only if the scenario's rule accepts it (a play call on 1st and 10 stays unmatched rather than taking the next short-yardage call). An offer of a first possession or a red-zone trip takes the first accepted play of that possession from the snap on. The offer was on home's screen at the bite's start, or reconcile::LAG (5 s) before it when home no longer offered the scenario at the start but did then (the phone had not yet heard). Stored as method `next` with a signed gap. Whether an offer was of the snap to come is decided per moment by the engine replayed at that time (rules::offered_said, one arm per Moment): kick is the snap to come on 4th down but the touchdown's own play while a try is pending, and the try (two-point) looks back to its touchdown, because ESPN writes the try into the touchdown's play. Every bite not taken on an offer still looks back.",
   "options": [
-    "Anchor on what home had not yet seen (chosen): no new tuned number but LAG, and the snap the offer named is by construction not yet in home's log.",
+    "Anchor on the snap home had not yet seen when the offer was on its screen (chosen): no broadcast-delay constant, and the snap the offer named is by construction not yet in home's log.",
     "Look ahead by a lead-time constant from the bite's start: needs a guessed broadcast delay, and a delayed broadcast puts the snap's wallclock before the bite.",
     "Keep the offer's snap with the bite at recording time (a phone and wire change): exact, but needs some-ui and leaves every bite already kept unfixed.",
     "Direction by scenario alone, as #3040 suggested: wrong for the kick while a try is pending, and for the try itself."
   ],
-  "gray": "The issue's suggested fix named the try as a pre-snap scenario; the recorded game shows the try is part of its touchdown's play, so the call departs from the suggestion. LAG's 5 s is a judgement of the socket's push plus GW5's 2 s clock error.",
+  "gray": "The issue's suggested fix named the try as a pre-snap scenario; the recorded game shows the try is part of its touchdown's play, so the call departs from the suggestion. LAG's 5 s is a judgement of the socket's push plus GW5's 2 s clock error, applied only when home had already stopped offering the scenario at the bite's start, so a quick tap on a new offer never takes the play before it.",
   "undo": "Make rules::offered_said return Said::After for every moment (every bite looks back again); rows already stored as `next` stay, and the down migration refuses while any is held.",
-  "refs": ["paulgsc/some-ui#3040", "paulgsc/some-ui#2081", "paulgsc/server#832"]
+  "refs": [
+    "paulgsc/some-ui#3040",
+    "paulgsc/some-ui#2081",
+    "paulgsc/server#832"
+  ]
 }

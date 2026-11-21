@@ -10,7 +10,7 @@
 #[cfg(test)]
 mod common;
 
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
+use chrono::{SecondsFormat, TimeDelta};
 use common::{first_seen, game, is_snap, pacific, plays, recorded_log, status, wall, CADENCE, ESPN_DELAY, GAME};
 use game_scenarios::Scenario;
 use nfl_feed::{
@@ -18,31 +18,23 @@ use nfl_feed::{
 	summary::Play,
 	GameState,
 };
-use scenario_engine::{its_play, offer, offered_said, plays_that_were, Mode, Said, Situation, Was, Watching};
+use scenario_engine::{its_play, offer, offered_said, on_offer, plays_that_were, Mode, Said, Situation, Watching};
 
 /// A window wide enough that only the direction decides.
 const ANY: TimeDelta = TimeDelta::days(1);
-/// How long after home the phone hears of a play.
-const LAG: TimeDelta = TimeDelta::seconds(5);
-
-#[cfg(test)]
-fn was(id: &str, at: DateTime<Utc>, first: DateTime<Utc>) -> Was {
-	Was {
-		play_id: id.to_owned(),
-		at,
-		first,
-	}
-}
 
 #[cfg(test)]
 fn position(plays: &[Play], id: &str) -> usize {
 	plays.iter().position(|p| p.id == id).unwrap()
 }
 
-/// BM5: before every snap, each scenario offered on it is said before its
-/// play, and its play is that snap whenever the scenario's rule accepts it,
-/// and never a play before the snap. The rule before #3040 (the nearest at
-/// or before) matched none of those to that snap.
+/// BM5: before every snap, each scenario offered on it is matched by its
+/// direction. Offered on the snap itself, its play is that snap (or, after
+/// a flag wiped it out, the down replayed) when the rule accepts it, and
+/// none otherwise (a play call on 1st and 10 is not the
+/// short-yardage call 70 s later). Offered on the drive, it is a play of the
+/// same possession from that snap on. Offered on a play in the log, it is a
+/// play before the snap.
 #[test]
 fn a_bite_on_the_snap_to_come_is_about_that_snap() {
 	let plays = plays();
@@ -50,31 +42,51 @@ fn a_bite_on_the_snap_to_come_is_about_that_snap() {
 	let want = Some("CHI");
 	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
 	let over = game(want, status(GameState::Post, plays.last()), None);
-	let were = |scenario: Scenario| plays_that_were(&over, &log, end, scenario);
-	let (mut on_the_snap, mut before_fix) = (0, 0);
+	let (mut on_the_snap, mut not_its_rule, mut on_the_drive, mut judged) = (0, 0, 0, 0);
 	for (k, play) in plays.iter().enumerate().filter(|(_, p)| is_snap(p)) {
 		let bite = wall(play) - TimeDelta::seconds(10);
+		// Judged only where home had every play before this snap: that is
+		// when the phone is offering it.
+		if plays[..k].iter().any(|p| first_seen(&log, p) > bite) {
+			continue;
+		}
+		judged += 1;
+		// The snap the offer names is the first from here no flag wiped out:
+		// a false start or encroachment replays the down.
+		let Some(target) = (k..plays.len()).find(|j| is_snap(&plays[*j]) && !plays[*j].text.as_deref().unwrap_or_default().contains("No Play")) else {
+			continue;
+		};
 		let then = game(want, status(GameState::In, Some(play)), Some(Situation::before(play)));
 		for offered in offer(&then, &log, pacific(bite), Mode::Full, Watching::Unknown).scenarios {
 			let scenario = offered.scenario;
+			assert!(on_offer(&then, &log, bite, scenario));
 			let said = offered_said(&then, &log, bite, scenario);
-			let were = were(scenario);
-			let picked = its_play(said, bite, &were, ANY, LAG).map(|(w, _)| position(&plays, &w.play_id));
+			let accepts = plays_that_were(&over, &log, end, scenario).iter().any(|w| w.play_id == plays[target].id);
+			let picked = its_play(&over, &log, end, scenario, said, bite, bite, ANY).map(|(w, _)| position(&plays, &w.play_id));
+			let why = [format!("{scenario:?}"), String::from(" before "), play.id.clone()].concat();
 			match said {
-				Said::Before => {
-					assert!(picked.is_none_or(|i| i >= k), "{scenario:?} before {} matched a play before it", play.id);
-					if were.iter().any(|w| w.play_id == play.id) {
-						assert_eq!(picked, Some(k), "{scenario:?} before {}", play.id);
-						on_the_snap += 1;
-						before_fix += usize::from(its_play(Said::After, bite, &were, ANY, LAG).map(|(w, _)| w.play_id.as_str()) == Some(play.id.as_str()));
+				Said::BeforeTheSnap if accepts => {
+					assert_eq!(picked, Some(target), "{why}");
+					on_the_snap += 1;
+				}
+				Said::BeforeTheSnap => {
+					assert_eq!(picked, None, "{why}: its rule does not accept the snap");
+					not_its_rule += 1;
+				}
+				Said::BeforeTheDrive => {
+					if let Some(i) = picked {
+						assert!(i >= k && plays[i].possession == play.possession, "{why}");
+						on_the_drive += 1;
 					}
 				}
-				Said::After => assert!(picked.is_none_or(|i| i < k), "{scenario:?} before {} is about a play in the log", play.id),
+				Said::After => assert!(picked.is_none_or(|i| i < k), "{why} is about a play in the log"),
 			}
 		}
 	}
-	assert!(on_the_snap >= 20, "{on_the_snap} offers named a snap their rule accepts");
-	assert_eq!(before_fix, 0, "looking back never finds the snap to come");
+	assert!(judged >= 100, "{judged} snaps judged");
+	assert!(on_the_snap >= 20, "{on_the_snap} offers matched to their snap");
+	assert!(not_its_rule >= 20, "{not_its_rule} offers whose snap their rule does not accept");
+	assert!(on_the_drive >= 3, "{on_the_drive} offers matched to their drive");
 }
 
 /// The log as [`recorded_log`] keeps it, but each touchdown served first
@@ -128,8 +140,7 @@ fn a_bite_on_the_try_is_about_its_touchdown() {
 				continue;
 			}
 			assert_eq!(offered_said(&then, &log, bite, scenario), Said::After, "{scenario:?} after {}", play.id);
-			let were = plays_that_were(&over, &log, end, scenario);
-			let picked = its_play(Said::After, bite, &were, ANY, LAG).map(|(w, _)| position(&plays, &w.play_id));
+			let picked = its_play(&over, &log, end, scenario, Said::After, bite, bite, ANY).map(|(w, _)| position(&plays, &w.play_id));
 			assert!(picked.is_none_or(|i| i <= k), "{scenario:?} after {} matched a later play", play.id);
 			if scenario == Scenario::TwoPoint {
 				assert_eq!(picked, Some(k), "the try after {} is its touchdown", play.id);
@@ -140,37 +151,4 @@ fn a_bite_on_the_try_is_about_its_touchdown() {
 		}
 	}
 	assert!(tries >= 4 && kicks >= 4, "{tries} tries and {kicks} kicks offered");
-}
-
-/// The direction alone, on plays placed by hand: after, the nearest at or
-/// before within the window; before, the first home had not seen, its time
-/// within the window either side, the gap signed.
-#[test]
-fn its_play_looks_back_after_and_ahead_before() {
-	let t = DateTime::parse_from_rfc3339("2026-10-23T01:00:00Z").unwrap().with_timezone(&Utc);
-	let s = |n: i64| t + TimeDelta::seconds(n);
-	let window = TimeDelta::seconds(90);
-	let were = [
-		was("far", s(-200), s(-190)),
-		was("old", s(-80), s(-70)),
-		was("near", s(-20), s(-5)),
-		// Happened before the bite started, but home saw it after: the snap
-		// the owner spoke ahead of on a delayed broadcast.
-		was("delayed", s(-3), s(4)),
-		was("after", s(30), s(40)),
-	];
-	let pick = |said, were: &[Was]| its_play(said, t, were, window, LAG).map(|(w, gap)| (w.play_id.clone(), gap));
-	assert_eq!(pick(Said::After, &were), Some(("delayed".to_owned(), 3)));
-	assert_eq!(pick(Said::After, &were[..3]), Some(("near".to_owned(), 20)));
-	assert_eq!(pick(Said::Before, &were), Some(("delayed".to_owned(), 3)));
-	assert_eq!(pick(Said::Before, &[was("after", s(30), s(40))]), Some(("after".to_owned(), -30)));
-	assert_eq!(pick(Said::Before, &were[..3]), None, "every play there home had seen: none is to come");
-	assert_eq!(pick(Said::Before, &[was("much later", s(200), s(210))]), None, "outside the window");
-	assert_eq!(pick(Said::After, &[was("far", s(-200), s(-190))]), None, "outside the window");
-	assert_eq!(its_play(Said::After, t, &[was("edge", s(-90), s(-80))], window, LAG).map(|(_, gap)| gap), Some(90));
-	assert_eq!(its_play(Said::Before, t, &[was("edge", s(90), s(95))], window, LAG).map(|(_, gap)| gap), Some(-90));
-	// Home saw the snap 4 s before the bite, the phone not yet: still to come
-	// on the phone. Seen 6 s before, the offer had moved on.
-	assert_eq!(pick(Said::Before, &[was("just seen", s(-10), s(-4))]), Some(("just seen".to_owned(), 10)));
-	assert_eq!(pick(Said::Before, &[was("long seen", s(-10), s(-6))]), None);
 }

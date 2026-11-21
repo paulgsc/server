@@ -248,11 +248,15 @@ which reads bites and writes `bite_match`, is a separate worker (call C160,
   replayed over the whole log), and the match depends on when the bite was
   said (#3040, BM5; `scenario_engine`'s README, "Which play a bite is
   about"). A bite taken on an offer of the snap to come (a third and long, a
-  fourth down, a field goal try) is `next`: the first such play home had not
-  seen when it started, allowing `reconcile::LAG` (5 s) for the phone to hear
-  of it, within `reconcile::WINDOW` either side. Any other is `nearest`: the
-  nearest at or before that time, within `reconcile::WINDOW` (90 s, the
-  broadcast's delay plus the time to start talking, to be tuned on real
+  fourth down, a field goal try, a play call) is `next`: that snap, the
+  first home had not seen when the offer was on its screen, if the rule
+  accepts it, within `reconcile::WINDOW` either side. The offer was on
+  home's screen at the bite's start, or `reconcile::LAG` (5 s) before it if
+  home was no longer offering it then (the phone had not heard yet). A bite
+  on a first possession or a red-zone trip is `next` to the play that ends
+  that drive. Any other is `nearest`: the nearest at or before that time,
+  within `reconcile::WINDOW` (90 s, the broadcast's delay plus the time to
+  start talking, to be tuned on real
   Sundays). Otherwise the bite is kept and marked: `unmatched`, `not-a-play`
   (pregame, the two-minute drill, the final, the owner's own) or
   `no-scenario` (said first, not mapped).

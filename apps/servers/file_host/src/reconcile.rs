@@ -11,9 +11,10 @@
 //! happened" uses, SE3), and picks its play by when it was said
 //! (`scenario_engine::its_play`). A bite said on an offer of the snap to come
 //! (a third and long, a fourth down, a field goal try) is about that snap: the
-//! first such play home had not seen when the bite started (allowing
-//! [`LAG`] for the phone to hear of it), within [`WINDOW`] either side
-//! (`next`, #3040). Any other is about the nearest at
+//! first snap home had not seen when the offer was on its screen (at the
+//! bite's start, or [`LAG`] before it if home had moved on since), if the
+//! rule accepts it, within [`WINDOW`] either side; for a first possession or
+//! a red-zone trip, the play that ends that drive (`next`, #3040). Any other is about the nearest at
 //! or before the bite's start on home's clock, within [`WINDOW`] (`nearest`).
 //! What it finds is a `bite_match` row (`voice_repo::bite_match`); a bite with
 //! no such play is kept, marked `unmatched` (GW15). Nothing is ever edited: a
@@ -32,7 +33,7 @@
 use crate::{websocket::game_live::offer::game_at, AppState};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use game_scenarios::{Scenario, CATALOG_VERSION};
-use scenario_engine::{about_a_play, could_be, its_play, offered_said, plays_that_were, Said, Watching, ENGINE_VERSION};
+use scenario_engine::{about_a_play, could_be, its_play, offered_said, on_offer, Said, Watching, ENGINE_VERSION};
 use sqlx::SqlitePool;
 use std::{collections::HashMap, time::Duration};
 use tracing::{error, info};
@@ -41,15 +42,19 @@ use voice_repo::{
 	VoiceError,
 };
 
-/// How far from a bite the play it was about may be: before it, the
-/// broadcast's delay plus the time to start talking; after it, for a bite on
-/// the snap to come, the time to the snap. About 90 s, to be tuned on real
-/// Sundays (#2081).
+/// How far from a bite the play it was about may be.
+///
+/// Before it, the broadcast's delay plus the time to start talking; after
+/// it, for a bite on the snap to come, the time to the snap. About 90 s, to
+/// be tuned on real Sundays (#2081).
 pub const WINDOW: TimeDelta = TimeDelta::seconds(90);
 
-/// How long after home the phone may hear of a play, so how long an offer of
-/// the snap to come can still show once that snap reached home: the socket's
-/// push plus the clock offset's error (GW5's 2 s).
+/// How long after home the phone may hear of a play.
+///
+/// So how long an offer of the snap to come can still show once that snap
+/// reached home: the socket's push plus the clock offset's error (GW5's 2 s).
+/// A bite whose scenario home was no longer offering at its start, but was
+/// this long before, is read as taken on that earlier offer.
 pub const LAG: TimeDelta = TimeDelta::seconds(5);
 
 /// What one pass over a game did, in counts.
@@ -230,20 +235,26 @@ async fn match_one(conn: &mut sqlx::SqliteConnection, game_id: &str, bite: &Game
 	let Some(game) = game_at(conn, game_id, at).await? else {
 		return Ok(unmatched(Some(named), Method::Unmatched));
 	};
-	// Only an offer can be of the snap to come; the engine, replayed at the
-	// bite's start, says whether this one was (BM5).
-	let said = if bite.bite.how == voice_repo::How::Offered {
-		offered_said(&game, log, at, scenario)
+	// Only an offer can be of the snap to come. The offer the bite took was
+	// on home's screen at its start, or, if the phone had not yet heard that
+	// home moved on, up to LAG before; the engine, replayed then, says
+	// whether it was of the snap to come (BM5).
+	let (said, offered) = if bite.bite.how == voice_repo::How::Offered {
+		let earlier = at - LAG;
+		let then = match game_at(conn, game_id, earlier).await? {
+			Some(before) if !on_offer(&game, log, at, scenario) && on_offer(&before, log, earlier, scenario) => (before, earlier),
+			_ => (game.clone(), at),
+		};
+		(offered_said(&then.0, log, then.1, scenario), then.1)
 	} else {
-		Said::After
+		(Said::After, at)
 	};
-	let were = plays_that_were(&game, log, now, scenario);
-	Ok(match its_play(said, at, &were, WINDOW, LAG) {
+	Ok(match its_play(&game, log, now, scenario, said, at, offered, WINDOW) {
 		Some((was, gap)) => Match {
 			scenario: Some(named.to_owned()),
-			play: Some(was.play_id.clone()),
+			play: Some(was.play_id),
 			method: match said {
-				Said::Before => Method::Next,
+				Said::BeforeTheSnap | Said::BeforeTheDrive => Method::Next,
 				Said::After => Method::Nearest,
 			},
 			gap_seconds: Some(gap),
@@ -375,9 +386,16 @@ mod tests {
 					.is_some_and(|n| n <= sequence)
 			});
 		}
+		// The team with the ball for the snap after `upto`, as ESPN marks it.
+		let all = plays();
+		let next = all.iter().skip_while(|p| p.id != upto.id).nth(1).and_then(|p| p.possession.clone());
 		let competition = &mut page["header"]["competitions"][0];
 		competition["status"]["type"]["state"] = json!("in");
 		competition["status"]["type"]["completed"] = json!(false);
+		for side in competition["competitors"].as_array_mut().unwrap() {
+			let team = side["team"]["abbreviation"].as_str().map(str::to_owned);
+			side["possession"] = json!(team.is_some() && team == next);
+		}
 		page.to_string().into_bytes()
 	}
 
@@ -503,6 +521,28 @@ mod tests {
 		assert_eq!(matched(&db, "before-the-snap").await, (Method::Next, Some(play.id.clone()), Some(-20)));
 		assert_eq!(matched(&db, "after-it").await, (Method::Nearest, Some(play.id.clone()), Some(15)));
 		assert_eq!(matched(&db, "from-the-set").await.0, Method::Unmatched);
+	}
+
+	/// BM5: the phone heard of the snap a moment after home did, so the owner
+	/// took the third and long offer 2 s after home had moved on. The offer was
+	/// on home's screen LAG before the bite, so the bite is about that snap.
+	#[tokio::test]
+	async fn a_bite_on_an_offer_home_just_moved_on_from_is_about_its_snap() {
+		let db = pool().await;
+		let plays = plays();
+		let play = third_long(&plays);
+		let before = &plays[plays.iter().position(|p| p.id == play.id).unwrap() - 1];
+		keep(&db, Fetched::Summary(GAME), &live_through(before), wall(before) + TimeDelta::seconds(5)).await;
+		kept_game(&db, &play).await;
+		let t = wall(&play);
+		// Home saw the snap at t + 5 s.
+		bite(&db, "phone-behind", Some("in.third-long"), "offered", t + TimeDelta::seconds(7), Some(0)).await;
+		// Long after home moved on: no offer of that snap was showing.
+		bite(&db, "stale", Some("in.third-long"), "offered", t + TimeDelta::seconds(40), Some(0)).await;
+		let now = wall(plays.last().unwrap()) + TimeDelta::minutes(10);
+		reconcile(&db, GAME, now).await.unwrap();
+		assert_eq!(matched(&db, "phone-behind").await, (Method::Next, Some(play.id.clone()), Some(7)));
+		assert_eq!(matched(&db, "stale").await.0, Method::Unmatched);
 	}
 
 	#[tokio::test]

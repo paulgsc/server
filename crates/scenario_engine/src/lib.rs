@@ -17,7 +17,7 @@ mod read;
 mod rules;
 mod words;
 
-use chrono::{DateTime, FixedOffset, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, NaiveTime, Offset, TimeDelta, TimeZone, Utc};
 use game_scenarios::{Scenario, CATALOG_VERSION};
 use nfl_feed::{log::Entry, summary::Play, Status, Weather};
 use serde::{Serialize, Serializer};
@@ -264,18 +264,32 @@ pub struct Was {
 /// When a bite was said relative to the play it is about (#3040).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Said {
-	/// Before its play: the bite took an offer about the snap to come (a third
-	/// and long, a fourth down, a field goal try), so its play is the first
-	/// its scenario's rule accepts that home had not seen yet.
-	Before,
+	/// Before its play, which is the snap to come itself: the bite took an
+	/// offer of a third and long, a fourth down, a field goal try, a play
+	/// call, or the opening kickoff.
+	BeforeTheSnap,
+	/// Before its play, which ends the drive the snap to come is in: the bite
+	/// took an offer of a team's first possession or a trip inside the 20.
+	BeforeTheDrive,
 	/// After its play: what just happened, or an offer about a play already in
 	/// the log (the try is read off its touchdown's own play), so its play is
 	/// the nearest at or before it.
 	After,
 }
 
-/// When a bite offered as `scenario` at `at` was said relative to its play,
-/// from `game` and `log` as they stood then (SE2): the moment's rule decides,
+/// Whether `scenario` was on offer in `game` at `at`: its moment's rule fits
+/// then, in any mode, before a mode's count is applied.
+#[must_use]
+pub fn on_offer(game: &Game, log: &[Entry], at: DateTime<Utc>, scenario: Scenario) -> bool {
+	let so_far = read::SoFar::new(game, log, at);
+	rules::now(game, &so_far, at, Mode::Full, Utc.fix(), Watching::Unknown)
+		.iter()
+		.any(|offered| offered.scenario == scenario)
+}
+
+/// When a bite offered as `scenario` at `at` was said relative to its play.
+///
+/// From `game` and `log` as they stood then (SE2): the moment's rule decides,
 /// and one rule decides by the moment (a kick offered while a try is pending
 /// is about the touchdown's play, one offered on 4th down about the snap to
 /// come).
@@ -288,23 +302,46 @@ pub fn offered_said(game: &Game, log: &[Entry], at: DateTime<Utc>, scenario: Sce
 	rules::offered_said(game, &so_far, at, scenario)
 }
 
-/// The play of `were` (a scenario's, from [`plays_that_were`], in ESPN's
-/// order) a bite started at `at` and said as `said` is about, within
-/// `window`, and the bite's start minus the play's time in whole seconds.
+/// The play a bite of `scenario`, said as `said`, is about, and the gap.
 ///
-/// [`Said::After`]: the nearest at or before `at`, at most `window` before.
-/// [`Said::Before`]: the first home had not seen by `lag` before `at`, its
-/// time within `window` either side of `at`. The broadcast runs behind, so
-/// the snap the owner spoke ahead of can have happened before they started;
-/// and the phone hears of a play `lag` or less after home does, so an offer
-/// can still show for that long after its snap reached home.
+/// `game` and `log` are as of `now`, after the game (each play at its latest
+/// version, SE2). The bite started at `at`; `offered` is when the offer it
+/// took was last on home's screen, which is `at` unless the phone was still
+/// showing an offer home had moved on from. The gap is `at` minus the play's
+/// time, in whole seconds.
+///
+/// - [`Said::After`]: the nearest play the scenario's rule accepts at or
+///   before `at`, at most `window` before.
+/// - Before: the snap to come is the first play from scrimmage, or kickoff,
+///   that home had not seen by `offered` and that no flag wiped out, its time
+///   within `window` either side of `at` (the broadcast runs behind, so it
+///   can have happened before the owner started). [`Said::BeforeTheSnap`]:
+///   that snap, if the rule accepts it, else none. [`Said::BeforeTheDrive`]:
+///   the first play from it on, in the same team's possession, the rule
+///   accepts.
 #[must_use]
-pub fn its_play(said: Said, at: DateTime<Utc>, were: &[Was], window: TimeDelta, lag: TimeDelta) -> Option<(&Was, i64)> {
-	let found = match said {
-		Said::After => were.iter().filter(|was| was.at <= at && at - was.at <= window).max_by_key(|was| was.at),
-		Said::Before => were.iter().find(|was| was.first > at - lag && (at - was.at).abs() <= window),
-	};
-	found.map(|was| (was, (at - was.at).num_seconds()))
+#[allow(clippy::too_many_arguments)] // the bite's two times, its scenario and how, the game and the window
+pub fn its_play(
+	game: &Game,
+	log: &[Entry],
+	now: DateTime<Utc>,
+	scenario: Scenario,
+	said: Said,
+	at: DateTime<Utc>,
+	offered: DateTime<Utc>,
+	window: TimeDelta,
+) -> Option<(Was, i64)> {
+	let so_far = read::SoFar::new(game, log, now);
+	let i = rules::its_play(game, &so_far, now, scenario, said, at, offered, window)?;
+	let seen = &so_far.plays[i];
+	Some((
+		Was {
+			play_id: seen.play.id.clone(),
+			at: seen.at,
+			first: seen.first,
+		},
+		(at - seen.at).num_seconds(),
+	))
 }
 
 /// Whether `scenario` can be a play at all. Pregame, the two-minute drill,
