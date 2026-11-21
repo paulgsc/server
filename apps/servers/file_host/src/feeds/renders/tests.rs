@@ -1183,6 +1183,7 @@ fn a_home_refusal_reads_as_its_class() {
 	assert_eq!(super::home_refusal("reason=take-unheard\n"), Some("take-unheard"));
 	assert_eq!(super::home_refusal("reason=snip-missing\n"), Some("snip-missing"));
 	assert_eq!(super::home_refusal("reason=clip-missing\n"), Some("clip-missing"));
+	assert_eq!(super::home_refusal("reason=snip-gone\n"), Some("snip-gone"));
 	assert_eq!(super::home_refusal("reason=too-long\n"), None);
 	assert_eq!(super::home_refusal("take-missing\n"), None);
 	assert_eq!(Over::parse("reason=take-missing\n"), None, "never the policy's");

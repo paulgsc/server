@@ -191,6 +191,7 @@ chrono-tz = "0.10"
 # `statvfs` on the database's filesystem, for the daily storage sample's
 # free-space row (`storage`).
 rustix = { version = "1.1.5", features = ["fs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 
 [dev-dependencies]

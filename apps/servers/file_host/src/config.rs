@@ -206,6 +206,11 @@ pub const CLASSES: &[Classed] = &[
 		why: "A secret.",
 	},
 	Classed {
+		variable: "SNIPS_GITHUB_TOKEN",
+		class: Class::Deployment,
+		why: "A secret.",
+	},
+	Classed {
 		variable: "MAILBOX_ARCHIVE_DAYS",
 		class: Class::Policy,
 		why: "How long a file stays live: a lever, clamped to the mailbox's consts (confirmed on #617).",
@@ -495,6 +500,14 @@ pub struct Config {
 	#[arg(long, env = "MAILBOX_ARCHIVE_DAYS", default_value = "90", help_heading = "Jobs mailbox")]
 	pub mailbox_archive_days: u64,
 
+	/// A fine-grained GitHub token with Actions: read on paulgsc/some-ui only:
+	/// with it, each mailbox pass fetches the `Snips Capture` bundle of each
+	/// commit a waiting cards essay's snips name (`snips`, SNIPS2). Unset,
+	/// nothing is fetched and an essay showing a snip is refused. Never
+	/// logged.
+	#[arg(long, env = "SNIPS_GITHUB_TOKEN", hide_env_values = true, help_heading = "Jobs mailbox")]
+	pub snips_github_token: Option<String>,
+
 	// ── The Jobs arrival notice ───────────────────────────────────────────────
 	//
 	// See `jobs_notice`. With the mailbox on, home tells each phone that asked
@@ -653,7 +666,7 @@ mod tests {
 	];
 	// The URLs, keys and paths are checked by what uses them, which refuses
 	// to start on a bad one, as the mailbox does `ROUTINE_SCHEDULE`.
-	const FREE_TEXT: [&str; 18] = [
+	const FREE_TEXT: [&str; 19] = [
 		"ALLOWED_ORIGINS",
 		"REDIS_URL",
 		"NATS_URL",
@@ -668,6 +681,7 @@ mod tests {
 		"MAILBOX_TOKEN",
 		"MAILBOX_SUBJECT",
 		"MAILBOX_ARCHIVE_TOKEN",
+		"SNIPS_GITHUB_TOKEN",
 		"ROUTINE_SCHEDULE",
 		"FCM_SERVICE_ACCOUNT_FILE",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
