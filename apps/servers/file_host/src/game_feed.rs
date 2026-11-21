@@ -28,7 +28,9 @@
 //! `settings::GameTeams` (every game by default): only a named team's games
 //! get live summaries and wake the scoreboard; any other game's summary is
 //! fetched once the scoreboard calls it completed, until one reads final, so
-//! the record keeps every game's end (owner, 2026-11-21).
+//! the record keeps every game's end (owner, 2026-11-21). The scoreboard
+//! reads at each game's expected end (kickoff plus `pass::PRE_GRACE`) to see
+//! it so, before the scoreboard moves to the next week.
 //!
 //! What this module promises (`docs/game-feed.md` in this app):
 //!

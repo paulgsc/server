@@ -172,12 +172,15 @@ pub struct Cadence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Watch {
 	/// Not read yet, or a chosen game is live, past kickoff and not final, or
-	/// within [`Cadence::margin`] of kickoff: next read at `at`, one
+	/// within [`Cadence::margin`] of kickoff, or any game was still live at
+	/// its end read: next read at `at`, one
 	/// [`Cadence::scoreboard`] after the last (at once before the first).
 	Awake { at: DateTime<Utc> },
-	/// No chosen game near: next read at `until`, the next chosen kickoff
-	/// less [`Cadence::margin`] or [`Cadence::refresh`] after the last read,
-	/// whichever is sooner, and never sooner than [`Watch::Awake`] would be.
+	/// No chosen game near: next read at `until`, the soonest of the next
+	/// chosen kickoff less [`Cadence::margin`], any listed game's end read
+	/// (its kickoff plus [`PRE_GRACE`], so every game is seen over), and
+	/// [`Cadence::refresh`] after the last read; never sooner than
+	/// [`Watch::Awake`] would be.
 	Asleep { until: DateTime<Utc> },
 	/// The last read failed, the first included: next read at `at`, its
 	/// backoff, whatever the games.
@@ -280,6 +283,25 @@ impl Track {
 	fn near(&self, now: DateTime<Utc>, margin: Span) -> bool {
 		self.followed(now) || (!self.done && self.kickoff.is_some_and(|kickoff| now < kickoff && kickoff - margin <= now))
 	}
+
+	/// When the scoreboard reads to see this game over, chosen or not: its
+	/// kickoff plus [`PRE_GRACE`], a game's usual length and some. So a game
+	/// no team chose is seen completed while the scoreboard still lists it,
+	/// and its final summary is kept ([`Track::fetched`]), even when it ends
+	/// the week and the scoreboard moves on before the next daily read.
+	fn end_read(&self) -> Option<DateTime<Utc>> {
+		if self.done || self.completed {
+			return None;
+		}
+		self.kickoff.map(|kickoff| kickoff + PRE_GRACE)
+	}
+
+	/// Whether it was live at its end read and has not been read over yet:
+	/// the scoreboard stays awake until it is, to at most [`POST_GRACE`]
+	/// after kickoff.
+	fn overrunning(&self, now: DateTime<Utc>) -> bool {
+		self.state == Some(GameState::In) && self.end_read().is_some_and(|end| end <= now) && self.kickoff.is_some_and(|kickoff| now - kickoff < POST_GRACE)
+	}
 }
 
 /// The later of two states: a scoreboard read before a summary never moves
@@ -341,7 +363,7 @@ impl Schedule {
 		}
 		let Some(read_at) = self.read_at else { return Watch::Awake { at } };
 		let margin = span(cadence.margin);
-		if self.chosen(teams).any(|track| track.near(now, margin)) {
+		if self.chosen(teams).any(|track| track.near(now, margin)) || self.games.values().any(|track| track.overrunning(now)) {
 			return Watch::Awake { at };
 		}
 		let next_kickoff = self
@@ -349,9 +371,12 @@ impl Schedule {
 			.filter(|track| !track.done)
 			.filter_map(|track| track.kickoff)
 			.filter(|kickoff| now < *kickoff)
-			.min();
+			.min()
+			.map(|kickoff| kickoff - margin);
+		// Any game's end not yet read past, so the record keeps it (C888).
+		let next_end = self.games.values().filter_map(Track::end_read).filter(|end| read_at < *end).min();
 		let refresh = read_at + span(cadence.refresh);
-		let until = next_kickoff.map_or(refresh, |kickoff| (kickoff - margin).min(refresh));
+		let until = [next_kickoff, next_end].into_iter().flatten().fold(refresh, DateTime::min);
 		Watch::Asleep { until: until.max(at) }
 	}
 
@@ -1011,12 +1036,18 @@ mod tests {
 		]);
 		let (sf, dallas) = (teams(&["SF"]), teams(&["DAL"]));
 
-		// A team with no game this week: asleep until the daily read, though
-		// two games kick off today.
+		// A team with no game this week: no kickoff wakes it, though two
+		// games kick off today; only the first game's end read does, to see
+		// it over for the record.
 		let mut schedule = Schedule::new(start);
 		fetch.answer(&board_url, 200, &week);
 		pass_for(&db, &fetch, &mut schedule, start, &dallas).await;
-		assert_eq!(schedule.watch(start, &dallas, CADENCE), Watch::Asleep { until: start + Span::days(1) });
+		assert_eq!(
+			schedule.watch(start, &dallas, CADENCE),
+			Watch::Asleep {
+				until: kickoff - Span::hours(3) + PRE_GRACE
+			}
+		);
 		// Every game, or SF: the earlier GB game, or SF's, wakes it.
 		assert_eq!(schedule.watch(start, &Teams::default(), CADENCE), Watch::Asleep { until: kickoff - Span::hours(4) });
 		assert_eq!(schedule.watch(start, &sf, CADENCE), Watch::Asleep { until: kickoff - Span::hours(1) });
@@ -1089,6 +1120,39 @@ mod tests {
 		// It neither wakes the scoreboard nor counts as followed.
 		assert_eq!(schedule.watch(start, &sf, CADENCE), Watch::Asleep { until: start + Span::days(1) });
 		assert_eq!(schedule.followed(start, &sf), 0);
+	}
+
+	#[tokio::test]
+	async fn the_scoreboard_reads_at_an_unchosen_games_end_so_its_final_summary_is_kept() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let start = at(TUESDAY);
+		let kickoff = start + Span::hours(5);
+		let with = |state: &str, completed: bool| {
+			let mut page: serde_json::Value = serde_json::from_slice(&board(&[(GAME, &stamp(kickoff), state, "GB", "CAR")])).unwrap();
+			page["events"][0]["status"]["type"]["completed"] = serde_json::json!(completed);
+			page.to_string().into_bytes()
+		};
+		let sf = teams(&["SF"]);
+		let mut schedule = Schedule::new(start);
+		fetch.answer(&board_url, 200, &with("pre", false));
+		pass_for(&db, &fetch, &mut schedule, start, &sf).await;
+		// Not its kickoff (no team chose it), but its end, well before the
+		// daily read.
+		let end = kickoff + PRE_GRACE;
+		assert_eq!(schedule.watch(start, &sf, CADENCE), Watch::Asleep { until: end });
+
+		// Still live at its end read: awake until it reads over, then its
+		// final summary.
+		fetch.answer(&board_url, 200, &with("in", false));
+		assert_eq!(pass_for(&db, &fetch, &mut schedule, end, &sf).await.fetched, ["scoreboard"]);
+		let next = end + Span::minutes(10);
+		assert_eq!(schedule.watch(next, &sf, CADENCE), Watch::Awake { at: next });
+		fetch.answer(&board_url, 200, &with("post", true));
+		fetch.answer(&nfl_feed::summary_url(GAME), 200, &final_of_game());
+		assert_eq!(pass_for(&db, &fetch, &mut schedule, next, &sf).await.fetched, ["scoreboard", "summary"]);
+		assert_eq!(schedule.watch(next, &sf, CADENCE), Watch::Asleep { until: next + Span::days(1) });
 	}
 
 	#[tokio::test]

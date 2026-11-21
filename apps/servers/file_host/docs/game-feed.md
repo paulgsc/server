@@ -31,13 +31,18 @@ those two indexed reads:
   games, their kickoffs and their states, as its state says
   (`pass::Watch`, worked out each pass from what the schedule holds):
   - **Awake** while a chosen game is live, past kickoff and not final, or
-    within `game_feed::CADENCE.margin` (3,600 s) of its kickoff: every
+    within `game_feed::CADENCE.margin` (3,600 s) of its kickoff, or while any
+    game was still live at its end read (below), to at most 8 h after its
+    kickoff: every
     `game_feed::CADENCE.scoreboard` (600). Due at once on start, so a
     restart catches up.
-  - **Asleep** otherwise: next read an hour before the next chosen kickoff,
-    or `game_feed::CADENCE.refresh` (86,400 s) after the last read, whichever
-    is sooner, and never sooner than awake would be. A day with no game near
-    costs one read (paulgsc/some-ui#3329). The daily read learns a game added,
+  - **Asleep** otherwise: next read at the soonest of an hour before the next
+    chosen kickoff, any listed game's **end read** (its kickoff plus
+    `pass::PRE_GRACE`, 4 h, chosen or not, so every game is seen over while
+    the scoreboard still lists it), and `game_feed::CADENCE.refresh`
+    (86,400 s) after the last read, and never sooner than awake would be. A
+    day with no game costs one read (paulgsc/some-ui#3329); a game day, one
+    more per kickoff slot. The daily read learns a game added,
     flexed or rescheduled. One added, or moved sooner, to within a day of the
     last read is learnt only at the next one: in the worst case the whole game
     is missed live and fetched once, as over. So is a chosen game whose kickoff
@@ -48,17 +53,19 @@ those two indexed reads:
   - **Backing off** after a read that failed, as below, whatever the games.
 - **Only the chosen teams' games.** `settings::GameTeams` (below, "Turning it
   on") names teams; a game is chosen when either side is named, or always when
-  none is. Only a chosen game's summary is fetched and only its kickoff wakes
+  none is. Only a chosen game gets live summaries and only its kickoff wakes
   the scoreboard. Every listed game is still learnt, so a change of teams
   takes effect at the next pass. A game no team chose gets no live
   summaries, but once the scoreboard calls it completed its summary is
   fetched until one reads final, as a completed game first seen late is
   (owner, 2026-11-21, on paulgsc/some-ui#3329): the record keeps every game's
   end, and a bite about it is still matched to a play (`reconcile`, which
-  reads only games held final). It does not wake the scoreboard, so that
-  fetch comes at the next read after it ends, up to a day later. Until then
-  the phone's game day shows it from the scoreboard alone. One never
-  completed is dropped once it leaves the scoreboard, never fetched.
+  reads only games held final). Its end read is what sees it completed, so a
+  game that ends the week is not lost when the scoreboard moves on; one
+  still live then keeps the scoreboard awake until it reads over. Until its
+  final summary, the phone's game day shows it from the scoreboard alone.
+  One no read ever saw completed (postponed, say) is dropped once it leaves
+  the scoreboard, never fetched.
 - **A game's summary** (`/summary?event=<id>`) every `game_feed::CADENCE.live`
   (15) while the game is live, and from its kickoff while the scoreboard still
   calls it `pre`, since the scoreboard can be ten minutes stale at kickoff. A
