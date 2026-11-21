@@ -390,6 +390,13 @@ everywhere or deleting the account closes it within a minute. Nothing the
 phone says on it (its mode, the game, its watching flags, its UTC offset) is
 stored or logged; it decides one offer of public game data.
 
+A game's moment log (`GET /games/:id/moments`, `routes::games`) is the same
+public game data as a list: every play home kept of a game, as the scenarios
+it was. It holds nothing of the person and keeps no take, but it is a
+`Paired` phone's all the same, as the socket is (no session is `401`, a
+browser's cookie session `403`), so home answers nothing to a client that is
+not the owner's phone. Nothing of the request is stored or logged.
+
 That is not a defence against script running on the app's own origin (an
 XSS). Such script can start a pairing with the cookie and hand the code to a
 native client of its own, which redeems it. It gains nothing it lacked:
