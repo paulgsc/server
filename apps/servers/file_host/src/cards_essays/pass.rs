@@ -23,34 +23,35 @@
 //! - **Counts and kinds, never bytes.** What went wrong is a kind
 //!   ([`Pass::failures`]): no URL, body or essay's words reaches a log.
 //! - **No network in tests.** Fetching is `game_feed`'s [`Fetch`] port.
-//! - **A spoken card's takes** (WALK7, paulgsc/server#1052,
-//!   paulgsc/some-ui#3282): an essay whose shots hold a spoken card
-//!   (`spoken.role == "spoken"`) is given only with the takes its exchanges
-//!   name ([`spoken_takes`]), the mailbox subject's notes by id, whatever they
-//!   were said for. They are written whole to `<key>.takes/` before the
-//!   essay's `<key>.json`, so the worker never sees the essay without them:
-//!   for each take its audio `<take>.<webm|ogg|m4a>`, its word times
+//! - **What an essay shows or plays is given with it** (`essay_media`, one
+//!   family): a spoken card's takes (WALK7, paulgsc/server#1052,
+//!   paulgsc/some-ui#3282), a scene's snips (SNIPS4) and clip frames. Each
+//!   kind the essay names is written whole to `<key>.<kind>/` before the
+//!   essay's `<key>.json`, so the worker never sees the essay without them.
+//!   For takes, the mailbox subject's notes by id, whatever they were said
+//!   for: each take's audio `<take>.<webm|ogg|m4a>`, its word times
 //!   `<take>.words.json` where home kept them, and its transcript
 //!   `<take>.transcript.json`, the `some-ui.voice-transcript/1` body the
-//!   mailbox files, verdict included, and nothing else: the one take
-//!   hand-off every essay uses (`take_files::hand_off`, as `rust_essays`'
-//!   takes are given). A take not heard yet holds the essay back until it is; one
-//!   home does not hold (never sent, deleted, its recording let go) or did
-//!   not hear (its verdict garbled, nothing said or failed) refuses it: a
-//!   spoken card has no silence to play in a take's place (some-ui C812).
-//!   A refused essay is a failed row on Studio › Renders, as the worker's
-//!   own refusals are: `<key>.failed.log` (the reason in words and the takes
-//!   by id, never what was said) and `<key>.refused` (`reason=take-missing`
-//!   or `reason=take-unheard`) in [`super::STATUS_FOLDER`], both gone once
-//!   the essay is given. Every pass looks again at an essay not given.
-//! - **No copy of a take outlives its need** ([`tidy`], each minute, as
-//!   `rust_essays::tidy`): once an essay's video is made its `<key>.takes/`
-//!   goes, and an essay given with a take home no longer holds (deleted from
-//!   My data, its recording let go, or its account gone) is withdrawn from
-//!   the worker, its `<key>.json` and `<key>.takes/` removed, so the next
-//!   pass refuses it (`take-missing`). A `.<key>.takes.partial` a stopped
-//!   pass left goes too.
+//!   mailbox files, verdict included (`essay_media::takes::hand_off`, as
+//!   `rust_essays`' takes are given). A take not heard yet holds the essay
+//!   back until it is; an item home does not hold (a take never sent,
+//!   deleted or let go; a snip or frame never kept) or a take it did not
+//!   hear refuses it: a spoken card has no silence to play in a take's place
+//!   (some-ui C812), and a scene is never a blank frame. A refused essay is a
+//!   failed row on Studio › Renders, as the worker's own refusals are:
+//!   `<key>.failed.log` (the reason in words and the items by id, never what
+//!   they hold) and `<key>.refused` (`reason=take-missing`, `take-unheard`,
+//!   `snip-missing` or `clip-missing`) in [`super::STATUS_FOLDER`], both gone
+//!   once the essay is given. Every pass looks again at an essay not given.
+//! - **No copy outlives its need** ([`tidy`], each minute, as
+//!   `rust_essays::tidy`): once an essay's video is made its media folders
+//!   go, and an essay given with an item home no longer holds (a take deleted
+//!   from My data, its recording let go, or its account gone; a snip's
+//!   picture gone) is withdrawn from the worker, its `<key>.json` and media
+//!   folders removed, so the next pass refuses it. A `.<key>.<kind>.partial`
+//!   a stopped pass left goes too.
 
+use crate::essay_media;
 use crate::game_feed::pass::{fetch_capped, Answer, Fetch, NoAnswer};
 use cards_essay_repo::{Essay, Kept};
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
@@ -207,24 +208,39 @@ pub struct Given {
 	/// The worker's renders ([`super::RENDERS_FOLDER`]): a made video's
 	/// essay keeps no takes.
 	pub renders: PathBuf,
+	/// The clips' frames (`clips::FRAMES_FOLDER`), which a scene may show.
+	pub frames: PathBuf,
+}
+
+impl Given {
+	/// Where the essays' media are read ([`essay_media::Sources`]).
+	fn sources(&self) -> essay_media::Sources {
+		essay_media::Sources {
+			subject: self.subject.clone(),
+			frames: self.frames.clone(),
+		}
+	}
 }
 
 /// What [`tidy`] did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Tidied {
-	/// Takes folders removed once their essay's video was made.
+	/// Media folders (of any kind; named for the first) removed once their
+	/// essay's video was made.
 	pub takes_removed: usize,
-	/// Essays taken back from the worker: a take they play is no longer held.
+	/// Essays taken back from the worker: an item they show or play is no
+	/// longer held.
 	pub withdrawn: usize,
 	/// Files that could not be removed; tried again next minute.
 	pub failed: usize,
 }
 
-/// Each minute, the takes given to the worker brought in line with what home holds.
+/// Each minute, the media given to the worker brought in line with what home
+/// holds (`essay_media`, "No copy outlives its need").
 ///
-/// As the module doc says: one directory read, then per takes folder one
-/// `stat`, and while its video is not made, one read of its essay and one
-/// indexed read per take.
+/// As the module doc says: one directory read, then per essay with a media
+/// folder one `stat`, and while its video is not made, one read of its essay
+/// and a few indexed reads per item it names.
 ///
 /// # Errors
 /// A storage failure.
@@ -233,64 +249,62 @@ pub async fn tidy(db: &SqlitePool, given: &Given) -> Result<Tidied, sqlx::Error>
 	let Ok(mut entries) = tokio::fs::read_dir(&given.essays).await else {
 		return Ok(done);
 	};
-	let mut keys = Vec::new();
+	let mut keys: Vec<String> = Vec::new();
 	while let Ok(Some(entry)) = entries.next_entry().await {
 		let name = entry.file_name().to_string_lossy().into_owned();
-		if let Some(key) = name.strip_suffix(".takes").filter(|key| is_key(key)) {
-			keys.push(key.to_owned());
-		} else if name.starts_with('.') && name.ends_with(".takes.partial") {
+		if let Some((key, _)) = essay_media::parse_folder(&name).filter(|(key, _)| is_key(key)) {
+			if !keys.iter().any(|held| held == key) {
+				keys.push(key.to_owned());
+			}
+		} else if essay_media::is_partial(&name) {
 			// What a stopped pass left: the export and this run in one task,
 			// one after the other, so none is being written now.
-			done.failed += usize::from(remove_dir(&entry.path()).await.is_err());
+			done.failed += usize::from(essay_media::remove_dir(&entry.path()).await.is_err());
 		}
 	}
+	let sources = given.sources();
 	for key in keys {
-		let takes = given.essays.join(String::from(&key) + ".takes");
+		let folders: Vec<PathBuf> = essay_media::Kind::ALL
+			.into_iter()
+			.map(|kind| essay_media::folder_of(&given.essays, &key, kind))
+			.filter(|folder| folder.exists())
+			.collect();
 		if given.renders.join(&key).join(super::VIDEO).exists() {
-			done.takes_removed += 1;
-			done.failed += usize::from(remove_dir(&takes).await.is_err());
+			for folder in &folders {
+				done.takes_removed += 1;
+				done.failed += usize::from(essay_media::remove_dir(folder).await.is_err());
+			}
 			continue;
 		}
-		if !still_held(db, given.subject.as_deref(), &key).await? {
+		if !still_held(db, &sources, &key).await? {
 			done.withdrawn += 1;
-			// The essay first, so the worker never finds it without its takes.
+			// The essay first, so the worker never finds it without its media.
 			let essay = given.essays.join(String::from(&key) + ".json");
 			let gone = match tokio::fs::remove_file(&essay).await {
 				Err(error) => error.kind() == std::io::ErrorKind::NotFound,
 				Ok(()) => true,
 			};
-			done.failed += usize::from(!gone || remove_dir(&takes).await.is_err());
+			for folder in &folders {
+				done.failed += usize::from(!gone || essay_media::remove_dir(folder).await.is_err());
+			}
 		}
 	}
 	Ok(done)
 }
 
-/// Whether `subject` still holds every take `key`'s essay plays.
-async fn still_held(db: &SqlitePool, subject: Option<&str>, key: &str) -> Result<bool, sqlx::Error> {
-	let Some(subject) = subject else {
-		return Ok(false);
-	};
+/// Whether home still holds every item `key`'s essay names, of every kind.
+async fn still_held(db: &SqlitePool, sources: &essay_media::Sources, key: &str) -> Result<bool, sqlx::Error> {
 	let mut conn = db.acquire().await?;
 	let Some(body) = cards_essay_repo::body(&mut conn, key).await? else {
 		return Ok(false);
 	};
-	for take in spoken_takes(&body) {
-		// Held but not read back (an `Err` other than storage) is never a
-		// reason to take it back.
-		match voice_repo::note_head(&mut conn, subject, &take).await {
-			Ok(None) => return Ok(false),
-			Err(voice_repo::VoiceError::Storage(err)) => return Err(err),
-			Ok(Some(_)) | Err(_) => {}
+	let essay = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+	for kind in essay_media::Kind::ALL {
+		if !essay_media::still_held(&mut conn, sources, kind, &essay).await? {
+			return Ok(false);
 		}
 	}
 	Ok(true)
-}
-
-async fn remove_dir(dir: &Path) -> std::io::Result<()> {
-	match tokio::fs::remove_dir_all(dir).await {
-		Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
-		_ => Ok(()),
-	}
 }
 
 /// Reads the index, then fetches and keeps each essay it lists that home
@@ -355,9 +369,9 @@ async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> Dat
 /// Writes each essay home holds that the essays' folder has no file of, as
 /// `<key>.json`, byte for byte, through a temporary name so the render
 /// worker never reads half a file. An essay already written is left alone:
-/// home never rewrites a kept essay, so neither does this. An essay with a
-/// spoken card is written only with its takes, after them, and is held back
-/// or refused as the module doc says.
+/// home never rewrites a kept essay, so neither does this. An essay that
+/// names media is written only after every kind of it (`essay_media`), and is
+/// held back or refused as the module doc says.
 async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), sqlx::Error> {
 	let folder = given.essays.as_path();
 	let held = {
@@ -378,44 +392,51 @@ async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), s
 			cards_essay_repo::body(&mut conn, &essay.key).await?
 		};
 		let Some(body) = body else { continue };
-		let wanted = spoken_takes(&body);
-		let takes = if wanted.is_empty() {
-			None
-		} else {
-			match takes_of(db, given.subject.as_deref(), &wanted).await? {
-				Takes::Ready(files) => Some(files),
-				Takes::Waiting => {
-					pass.waiting += 1;
-					// A take that was missing and is now home waits to be
-					// heard: no longer a refusal.
-					clear_refused(&given.status, &essay.key).await;
-					continue;
-				}
-				Takes::Unreadable => {
-					pass.failures.push("unreadable");
-					continue;
-				}
-				Takes::Refused(refusal) => {
-					pass.refused += 1;
-					if say_refused(&given.status, &essay.key, &refusal).await.is_err() {
-						pass.failures.push("export");
-					}
-					continue;
-				}
-			}
+		let named = {
+			let essay = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+			let mut conn = db.acquire().await?;
+			essay_media::for_essay(&mut conn, &given.sources(), &essay).await
 		};
-		if let Some(files) = &takes {
-			if write_takes(folder, &essay.key, files).await.is_err() {
-				pass.failures.push("export");
+		let media = match named {
+			Ok(essay_media::Given::Ready(media)) => media,
+			Ok(essay_media::Given::Waiting) => {
+				pass.waiting += 1;
+				// An item that was missing and is now home waits (a take to be
+				// heard): no longer a refusal.
+				clear_refused(&given.status, &essay.key).await;
 				continue;
 			}
+			Ok(essay_media::Given::Refused(refusal)) => {
+				pass.refused += 1;
+				if say_refused(&given.status, &essay.key, &refusal).await.is_err() {
+					pass.failures.push("export");
+				}
+				continue;
+			}
+			Err(essay_media::Failed::Storage(err)) => return Err(err),
+			Err(essay_media::Failed::Unreadable) => {
+				pass.failures.push("unreadable");
+				continue;
+			}
+		};
+		let mut written = true;
+		for (kind, files) in &media {
+			written = written && essay_media::write(folder, &essay.key, *kind, files).await.is_ok();
+		}
+		if !written {
+			// No folder of an essay not given is left: tried whole next pass.
+			for (kind, _) in &media {
+				let _ = essay_media::remove_dir(&essay_media::folder_of(folder, &essay.key, *kind)).await;
+			}
+			pass.failures.push("export");
+			continue;
 		}
 		let file = folder.join(String::from(&essay.key) + ".json");
 		let partial = folder.join(String::from(".") + &essay.key + ".json.partial");
 		let written = tokio::fs::write(&partial, &body).await.is_ok() && tokio::fs::rename(&partial, &file).await.is_ok();
 		if written {
 			pass.exported += 1;
-			if takes.is_some() {
+			if !media.is_empty() {
 				clear_refused(&given.status, &essay.key).await;
 			}
 		} else {
@@ -425,141 +446,13 @@ async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), s
 	Ok(())
 }
 
-/// Every take the essay `body`'s spoken cards name, each once.
-///
-/// In the order first named (`@some-ui/video-render`'s `spokenTakesOf`,
-/// C817): each exchange of a shot whose `spoken.role` is `spoken` is
-/// `{ ask, answer }`, two turns, each `{ voice: "kokoro", said }` or
-/// `{ voice: "owner", take }`; every owner turn's `take`, the asking one's
-/// included. None for an essay with no spoken card, or one that does not
-/// read: the recorder refuses that one itself, as before.
-#[must_use]
-pub fn spoken_takes(body: &[u8]) -> Vec<String> {
-	let Ok(essay) = serde_json::from_slice::<Value>(body) else {
-		return Vec::new();
-	};
-	let mut takes: Vec<String> = Vec::new();
-	let shots = essay.get("shots").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
-	for spoken in shots.iter().filter_map(|shot| shot.get("spoken")) {
-		if spoken.get("role").and_then(Value::as_str) != Some("spoken") {
-			continue;
-		}
-		let exchanges = spoken.get("exchanges").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
-		let turns = exchanges.iter().flat_map(|exchange| [exchange.get("ask"), exchange.get("answer")]).flatten();
-		let owners = turns.filter(|turn| turn.get("voice").and_then(Value::as_str) == Some("owner"));
-		for take in owners.filter_map(|turn| turn.get("take").and_then(Value::as_str)) {
-			if !takes.iter().any(|held| held == take) {
-				takes.push(take.to_owned());
-			}
-		}
-	}
-	takes
-}
-
-/// What home holds of the takes an essay's spoken cards name.
-enum Takes {
-	/// Each file of `<key>.takes/`, by name, and its bytes.
-	Ready(Vec<(String, Vec<u8>)>),
-	/// A take is not heard yet, or no subject holds takes: asked again next
-	/// pass.
-	Waiting,
-	/// Never to be given as home holds its takes now.
-	Refused(Refusal),
-	/// A take home holds does not read back: this essay fails the pass, and
-	/// the others are still given.
-	Unreadable,
-}
-
-/// Why an essay was refused: one reason, and the takes it is for, by id.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Refusal {
-	/// `take-missing` or `take-unheard`, Studio › Renders' `reason`.
-	reason: &'static str,
-	takes: Vec<String>,
-}
-
-/// The files of `wanted`'s takes, `subject`'s, or why not. A take missing
-/// refuses before one unheard; a refusal outranks a wait, so an essay that
-/// can never be given says so at once. A few indexed reads per take.
-async fn takes_of(db: &SqlitePool, subject: Option<&str>, wanted: &[String]) -> Result<Takes, sqlx::Error> {
-	let Some(subject) = subject else {
-		return Ok(Takes::Waiting);
-	};
-	let mut conn = db.acquire().await?;
-	let (mut missing, mut not_made_out, mut waiting) = (Vec::new(), Vec::new(), false);
-	let mut files = Vec::with_capacity(wanted.len() * 3);
-	for take in wanted {
-		// A name the recorder would skip (`.`-led) or that is no note's id
-		// is no take home could hand over.
-		if take.starts_with('.') || !voice_repo::is_note_id(take) {
-			missing.push(take.clone());
-			continue;
-		}
-		let ask = crate::take_files::Ask {
-			take,
-			name: take,
-			of: None,
-			transcript: true,
-		};
-		let handed = match crate::take_files::hand_off(&mut conn, subject, ask).await {
-			Ok(handed) => handed,
-			Err(voice_repo::VoiceError::Storage(err)) => return Err(err),
-			Err(_) => return Ok(Takes::Unreadable),
-		};
-		match handed {
-			crate::take_files::Take::Files(handed) => files.extend(handed),
-			crate::take_files::Take::Absent { .. } => missing.push(take.clone()),
-			crate::take_files::Take::NotMadeOut => not_made_out.push(take.clone()),
-			crate::take_files::Take::NotHeardYet => waiting = true,
-		}
-	}
-	Ok(if !missing.is_empty() {
-		Takes::Refused(Refusal {
-			reason: "take-missing",
-			takes: missing,
-		})
-	} else if !not_made_out.is_empty() {
-		Takes::Refused(Refusal {
-			reason: "take-unheard",
-			takes: not_made_out,
-		})
-	} else if waiting {
-		Takes::Waiting
-	} else {
-		Takes::Ready(files)
-	})
-}
-
-/// Writes `files` into `<key>.takes/` in `folder`, whole: made in a
-/// temporary folder and renamed into place, replacing what a stopped pass
-/// left.
-async fn write_takes(folder: &Path, key: &str, files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
-	let partial = folder.join(String::from(".") + key + ".takes.partial");
-	let into = folder.join(String::from(key) + ".takes");
-	for left in [&partial, &into] {
-		match tokio::fs::remove_dir_all(left).await {
-			Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-			_ => {}
-		}
-	}
-	tokio::fs::create_dir_all(&partial).await?;
-	for (name, body) in files {
-		tokio::fs::write(partial.join(name), body).await?;
-	}
-	tokio::fs::rename(&partial, &into).await
-}
-
 /// The refusal's `.refused`, as the worker writes its own (`reason=…`), and
-/// its failed log's words: the reason and the takes by id, never what was
-/// said in them.
-fn refusal_files(refusal: &Refusal) -> (String, String) {
-	let words = match refusal.reason {
-		"take-missing" => "a spoken card names a take home doesn't hold (never sent, deleted, or its recording let go)",
-		_ => "home couldn't make out a take a spoken card plays, or heard nothing said in it, and a spoken card has no silence to play in its place",
-	};
+/// its failed log's words: the reason and the items by id, never what they
+/// hold.
+fn refusal_files(refusal: &essay_media::Refusal) -> (String, String) {
 	(
-		String::from("reason=") + refusal.reason + "\n",
-		String::from("home refused this essay before the render: ") + words + ": " + &refusal.takes.join(", ") + "\n",
+		String::from("reason=") + refusal.reason() + "\n",
+		String::from("home refused this essay before the render: ") + refusal.words() + ": " + &refusal.items.join(", ") + "\n",
 	)
 }
 
@@ -567,7 +460,7 @@ fn refusal_files(refusal: &Refusal) -> (String, String) {
 /// `.refused` (the worker drops a `.refused` with no failed log beside it),
 /// each written whole, and neither rewritten while it says the same, so the
 /// row's time is when the refusal was first said.
-async fn say_refused(status: &Path, key: &str, refusal: &Refusal) -> std::io::Result<()> {
+async fn say_refused(status: &Path, key: &str, refusal: &essay_media::Refusal) -> std::io::Result<()> {
 	let (refused, log) = refusal_files(refusal);
 	tokio::fs::create_dir_all(status).await?;
 	for (name, text) in [(String::from(key) + ".failed.log", log), (String::from(key) + ".refused", refused)] {
@@ -639,7 +532,13 @@ mod tests {
 			status: dir.join("status"),
 			subject: None,
 			renders: dir.join("renders"),
+			frames: dir.join("frames-held"),
 		}
+	}
+
+	/// Every take `body`'s spoken cards name, each once.
+	fn spoken_takes(body: &[u8]) -> Vec<String> {
+		essay_media::named(essay_media::Kind::Takes, &serde_json::from_slice(body).unwrap_or(Value::Null))
 	}
 
 	fn clock() -> DateTime<Utc> {
@@ -1013,6 +912,75 @@ mod tests {
 		let legacy: Value = serde_json::from_slice(&std::fs::read(takes.join("take-2.transcript.json")).unwrap()).unwrap();
 		assert_eq!(legacy["verdict"], Value::Null, "kept before verdicts were: none, which the recorder reads as heard");
 		assert_eq!(run_once(&pool, &fake, &mine, &clock).await.unwrap().exported, 0, "given once");
+	}
+
+	/// An essay stamped `day` whose scenes show `pictures`.
+	fn showing_essay(day: &str, pictures: &[Value]) -> Vec<u8> {
+		let shots: Vec<Value> = pictures.iter().map(|picture| serde_json::json!({ "picture": picture })).collect();
+		let mut essay: Value = serde_json::from_slice(&essay(day)).unwrap();
+		essay["shots"] = Value::Array(shots);
+		essay.to_string().into_bytes()
+	}
+
+	/// A clip frame a scene shows is given beside the essay in `<key>.clips/`
+	/// once home holds it, and the essay is taken back once the frame is gone.
+	/// A snip refuses its essay: home holds none until SNIPS2. No subject:
+	/// neither is a person's.
+	#[tokio::test]
+	async fn a_scene_is_given_the_clip_frames_it_shows_and_refused_a_snip() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let mine = given(dir.path());
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&["framed-2026-11-20", "snipped-2026-11-21"]));
+		let frame = serde_json::json!({ "kind": "screen", "of": { "from": "clips", "clip": "studio-promo", "side": "after", "file": "01.png" } });
+		let snip = serde_json::json!({ "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "at": [] } });
+		fake.ok("framed-2026-11-20.json", &showing_essay("2026-11-20", &[frame]));
+		fake.ok("snipped-2026-11-21.json", &showing_essay("2026-11-21", &[snip]));
+		let status = dir.path().join("status");
+
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.exported, done.refused), (0, 2));
+		assert_eq!(std::fs::read_to_string(status.join("framed-2026-11-20.refused")).unwrap(), "reason=clip-missing\n");
+		assert_eq!(std::fs::read_to_string(status.join("snipped-2026-11-21.refused")).unwrap(), "reason=snip-missing\n");
+		let log = std::fs::read_to_string(status.join("framed-2026-11-20.failed.log")).unwrap();
+		assert!(log.ends_with(": studio-promo/after/01.png\n"), "{log}");
+
+		let mut conn = pool.acquire().await.unwrap();
+		let kept = clip_frame_repo::Frame {
+			clip_id: "studio-promo",
+			side: "after",
+			file: "01.png",
+			made: clip_frame_repo::Made::Walk,
+			bytes: b"frame-png",
+			taken_at: "2026-11-21T09:00:00.000Z",
+		};
+		clip_frame_repo::keep(&mut conn, &kept).await.unwrap();
+		drop(conn);
+		let frame_at = mine.frames.join("studio-promo").join("after").join("01.png");
+		std::fs::create_dir_all(frame_at.parent().unwrap()).unwrap();
+		std::fs::write(&frame_at, b"other").unwrap();
+		run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert!(
+			!dir.path().join("framed-2026-11-20.json").exists(),
+			"a frame on the drive that is not its row's is no frame"
+		);
+		std::fs::write(&frame_at, b"frame-png").unwrap();
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.exported, done.refused), (1, 1));
+		assert!(!status.join("framed-2026-11-20.refused").exists(), "its refusal goes");
+		let clips = dir.path().join("framed-2026-11-20.clips");
+		assert_eq!(names_in(&clips), ["studio-promo"]);
+		assert_eq!(
+			std::fs::read(clips.join("studio-promo/after/01.png")).unwrap(),
+			b"frame-png",
+			"the frame alone, under its path"
+		);
+
+		assert_eq!(tidy(&pool, &mine).await.unwrap(), Tidied::default(), "still held");
+		std::fs::remove_file(&frame_at).unwrap();
+		let tidied = tidy(&pool, &mine).await.unwrap();
+		assert_eq!((tidied.withdrawn, tidied.failed), (1, 0));
+		assert!(!dir.path().join("framed-2026-11-20.json").exists() && !clips.exists(), "the essay and its folder go");
 	}
 
 	/// A take a spoken card names that home doesn't hold, or couldn't hear,

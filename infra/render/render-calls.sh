@@ -302,6 +302,12 @@ WALK_APP='^[a-z0-9]+(-[a-z0-9]+)*$'
 # `cards_essays::pass::is_key`, some-ui's CARDS_KEY).
 CARDS_KEY='^[a-z0-9]+(-[a-z0-9]+)*-[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 
+# What file_host hands beside a cards essay, one folder <key>.<kind>/ per
+# kind it names (`essay_media::Kind::folder`), each handed to the recorder as
+# --<kind> <folder> when it is there, and only then: a spoken card's takes,
+# a scene's snips and its clip frames.
+CARDS_MEDIA=(takes snips clips)
+
 # A week's engagement report: its ISO week (file_host's `IsoWeek`).
 REPORT_KEY='^[0-9]{4}-W[0-9]{2}$'
 
@@ -611,16 +617,20 @@ record() {
       # call's recorder is (EXPLAIN6, #878); a silent (v1) essay says
       # nothing. It names the finished folder for the essay's key in --out,
       # with description.txt (its chapters) beside the video when it has
-      # enough of them (`record:cards`). An essay with spoken cards (WALK7,
-      # #1052) is given the takes they name in <key>.takes/ beside it
-      # (`cards_essays::pass`, written whole before the essay): each take's
-      # audio, its word times and its transcript, which --takes hands over.
-      local takes=()
-      if [ -d "$INPUT/$key.takes" ]; then
-        takes=(--takes "$INPUT/$key.takes")
-      fi
+      # enough of them (`record:cards`). What the essay names that only home
+      # holds is given beside it, each kind in <key>.<kind>/ (CARDS_MEDIA;
+      # `cards_essays::pass`, written whole before the essay): a spoken
+      # card's takes (WALK7, #1052; each take's audio, word times and
+      # transcript), a scene's snips (SNIPS4; snips.json and the pictures)
+      # and its clip frames (clips.json and the frames).
+      local media=() kind
+      for kind in "${CARDS_MEDIA[@]}"; do
+        if [ -d "$INPUT/$key.$kind" ]; then
+          media+=("--$kind" "$INPUT/$key.$kind")
+        fi
+      done
       (cd "$APP_DIR" && "$TSX" tests/record/cards.ts "${COMMON[@]}" \
-        --cut-list-file "$INPUT/$key.json" "${takes[@]}" --out "$WORK") ;;
+        --cut-list-file "$INPUT/$key.json" "${media[@]}" --out "$WORK") ;;
     report)
       # The report is written from home's counts by the recorder itself
       # (`reportWeek`); it names the finished folder for the week in --out,
@@ -1251,8 +1261,12 @@ inputs_of() {
       week_made "$from" || echo "$INPUT/$from.next" ;;
     playoff-delta | rust-essay | interview-essay | clip-walk) echo "$INPUT/$2" ;;
     preview | report) echo "$INPUT/$2.json" ;;
-    # A spoken card's takes are made from too (#1052), whether given or not.
-    cards-essay) printf '%s\n' "$INPUT/$2.json" "$INPUT/$2.takes" ;;
+    # What file_host hands beside it is made from too (#1052), whether given
+    # or not.
+    cards-essay)
+      printf '%s\n' "$INPUT/$2.json"
+      local kind
+      for kind in "${CARDS_MEDIA[@]}"; do printf '%s\n' "$INPUT/$2.$kind"; done ;;
   esac
 }
 
