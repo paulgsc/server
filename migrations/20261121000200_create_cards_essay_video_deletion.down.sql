@@ -1,4 +1,4 @@
--- Reverses 20261121000100_create_cards_essay_video_deletion.up.sql.
+-- Reverses 20261121000200_create_cards_essay_video_deletion.up.sql.
 --
 -- **It refuses rather than discards:** a receipt is kept for good, so once
 -- the table holds a row this fails on the CHECK below and the migration's

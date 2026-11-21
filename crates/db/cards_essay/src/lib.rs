@@ -6,7 +6,7 @@
 //! spoken cards play goes from home. The rules are
 //! `20261114000100_create_cards_essay.up.sql`'s,
 //! `20261115000200_create_cards_essay_link.up.sql`'s and
-//! `20261121000100_create_cards_essay_video_deletion.up.sql`'s.
+//! `20261121000200_create_cards_essay_video_deletion.up.sql`'s.
 
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
