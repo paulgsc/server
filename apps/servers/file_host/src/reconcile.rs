@@ -14,8 +14,15 @@
 //! first snap home had not seen when the offer was on its screen (at the
 //! bite's start, or [`LAG`] before it if home had moved on since), if the
 //! rule accepts it, within [`WINDOW`] either side; for a first possession or
-//! a red-zone trip, the play that ends that drive (`next`, #3040). Any other is about the nearest at
-//! or before the bite's start on home's clock, within [`WINDOW`] (`nearest`).
+//! a red-zone trip, the play that ends that drive; for the coin toss, the
+//! opening kickoff (`next`, #3040). A bite from "just happened" is about the
+//! nearest at or before the bite's start on home's clock, within [`WINDOW`]
+//! (`nearest`); one picked from the whole set, or said first and mapped, the
+//! nearer of the plays either side (`nearest` or `next`).
+//!
+//! BM5's Tolerance: in the [`LAG`] after home sees a snap, a scenario still on
+//! offer for the next one (a play call, a drive) is read as the newer offer,
+//! since nothing the bite keeps says which one the phone was showing.
 //! What it finds is a `bite_match` row (`voice_repo::bite_match`); a bite with
 //! no such play is kept, marked `unmatched` (GW15). Nothing is ever edited: a
 //! later pass adds a row, and only when the match changed.
@@ -126,8 +133,9 @@ pub struct Pass {
 ///
 /// The games looked at are those of the newest week home kept, and any game
 /// with a bite no pass has matched since it was said or mapped (a bite that
-/// reached home late, a game that left the newest scoreboard first, or a
-/// mapping added after). Each whose newest summary
+/// reached home late, a game that left the newest scoreboard first, a
+/// mapping added after, or a match made under an older `ENGINE_VERSION`,
+/// redone once per bump). Each whose newest summary
 /// says it is final is reconciled, unless it already was with the same
 /// [`bite_match::bite_state`] (its bites and their mappings). A restart
 /// reconciles again, which adds nothing unchanged.
@@ -239,11 +247,18 @@ async fn match_one(conn: &mut sqlx::SqliteConnection, game_id: &str, bite: &Game
 	// on home's screen at its start, or, if the phone had not yet heard that
 	// home moved on, up to LAG before; the engine, replayed then, says
 	// whether it was of the snap to come (BM5).
+	// Whether home was offering the scenario when the bite started, or LAG
+	// before; an offer home showed at neither was stale on the phone.
+	let mut stale = false;
 	let (said, offered) = if bite.bite.how == voice_repo::How::Offered {
 		let earlier = at - LAG;
+		let now_on = on_offer(&game, log, at, scenario);
 		let then = match game_at(conn, game_id, earlier).await? {
-			Some(before) if !on_offer(&game, log, at, scenario) && on_offer(&before, log, earlier, scenario) => (before, earlier),
-			_ => (game.clone(), at),
+			Some(before) if !now_on && on_offer(&before, log, earlier, scenario) => (before, earlier),
+			_ => {
+				stale = !now_on;
+				(game.clone(), at)
+			}
 		};
 		(offered_said(&then.0, log, then.1, scenario), then.1)
 	} else if bite.bite.how == voice_repo::How::JustHappened {
@@ -253,8 +268,15 @@ async fn match_one(conn: &mut sqlx::SqliteConnection, game_id: &str, bite: &Game
 		// says which side of its play it was said on.
 		(Said::Either, at)
 	};
-	Ok(match its_play(&game, log, now, scenario, said, at, offered, WINDOW) {
-		Some((was, gap)) => Match {
+	// A stale offer's snap may already be in home's log: if nothing ahead is
+	// its play, it is the nearest at or before (#3040's earlier behaviour).
+	let found = its_play(&game, log, now, scenario, said, at, offered, WINDOW).map(|found| (said, found)).or_else(|| {
+		stale
+			.then(|| its_play(&game, log, now, scenario, Said::After, at, at, WINDOW).map(|found| (Said::After, found)))
+			.flatten()
+	});
+	Ok(match found {
+		Some((said, (was, gap))) => Match {
 			scenario: Some(named.to_owned()),
 			// `next` whenever the bite was said ahead of its play: by its offer,
 			// or a bite not tied to one whose nearer play came after it.
@@ -544,12 +566,13 @@ mod tests {
 		let t = wall(&play);
 		// Home saw the snap at t + 5 s.
 		bite(&db, "phone-behind", Some("in.third-long"), "offered", t + TimeDelta::seconds(7), Some(0)).await;
-		// Long after home moved on: no offer of that snap was showing.
+		// Long after home moved on, on a phone that never heard: home offered
+		// no third and long then, so it is the one just gone, 40 s before.
 		bite(&db, "stale", Some("in.third-long"), "offered", t + TimeDelta::seconds(40), Some(0)).await;
 		let now = wall(plays.last().unwrap()) + TimeDelta::minutes(10);
 		reconcile(&db, GAME, now).await.unwrap();
 		assert_eq!(matched(&db, "phone-behind").await, (Method::Next, Some(play.id.clone()), Some(7)));
-		assert_eq!(matched(&db, "stale").await.0, Method::Unmatched);
+		assert_eq!(matched(&db, "stale").await, (Method::Nearest, Some(play.id.clone()), Some(40)));
 	}
 
 	/// A bite matched under an older engine is matched again once, by the

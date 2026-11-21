@@ -124,9 +124,9 @@ pub enum Method {
 	/// The nearest play the scenario's rule accepts, at or before the bite,
 	/// within the window: a bite said after its play.
 	Nearest,
-	/// The first play the scenario's rule accepts that home had not seen when
-	/// the bite started, within the window either side: a bite said on an
-	/// offer of the snap to come (#3040, BM5).
+	/// A play after the bite: the snap to come (or the drive it opens, or the
+	/// opening kickoff) for a bite on its offer, or the nearer play for one
+	/// tied to no offer (#3040, BM5).
 	Next,
 	/// No such play: kept, and marked (GW15).
 	Unmatched,
@@ -169,7 +169,9 @@ pub struct Match {
 	pub method: Method,
 	/// The bite's start on home's clock minus the play's time; `Some`
 	/// exactly with a play. At or above zero for [`Method::Nearest`]; for
-	/// [`Method::Next`], negative when the play came after the bite.
+	/// [`Method::Next`], negative when the play came after the bite (zero or
+	/// positive when it came less than a second after, or before it on a
+	/// delayed broadcast).
 	pub gap_seconds: Option<i64>,
 	/// The scenario engine's rules it was made under.
 	pub engine_version: i64,

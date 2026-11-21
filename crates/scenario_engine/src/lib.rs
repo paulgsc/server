@@ -265,8 +265,8 @@ pub struct Was {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Said {
 	/// Before its play, which is the snap to come itself: the bite took an
-	/// offer of a third and long, a fourth down, a field goal try, a play
-	/// call, or the opening kickoff.
+	/// offer of a third and long, a fourth down, a field goal try, or a play
+	/// call.
 	BeforeTheSnap,
 	/// Before its play, which ends the drive the snap to come is in: the bite
 	/// took an offer of a team's first possession or a trip inside the 20.
@@ -320,8 +320,8 @@ pub fn offered_said(game: &Game, log: &[Entry], at: DateTime<Utc>, scenario: Sce
 ///
 /// - [`Said::After`]: the nearest play the scenario's rule accepts at or
 ///   before `at`, at most `window` before.
-/// - Before: the snap to come is the first play from scrimmage, or kickoff,
-///   that home had not seen by `offered` and that no flag wiped out, its time
+/// - Before: the snap to come is the first play from scrimmage that home
+///   had not seen by `offered` and that no flag wiped out, its time
 ///   within `window` either side of `at` (the broadcast runs behind, so it
 ///   can have happened before the owner started). [`Said::BeforeTheSnap`]:
 ///   that snap, if the rule accepts it, else none. [`Said::BeforeTheDrive`]:

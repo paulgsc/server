@@ -142,8 +142,9 @@ pub struct BiteAbout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchAbout {
-	/// `nearest` when a play at or before the bite was matched, `next` when
-	/// the bite was said on the snap to come and that snap was matched; else
+	/// `nearest` when a play at or before the bite was matched, `next` when a
+	/// play after it was (the snap to come for a bite on its offer, or the
+	/// nearer play for one tied to no offer); else
 	/// why not: `unmatched` (no play the scenario's rule accepts), `not-a-play`
 	/// (the scenario is about a stretch of the game) or `no-scenario` (said
 	/// first and never mapped).

@@ -74,10 +74,17 @@ fn a_bite_on_the_snap_to_come_is_about_that_snap() {
 					not_its_rule += 1;
 				}
 				Said::BeforeTheDrive => {
-					if let Some(i) = picked {
-						assert!(i >= k && plays[i].possession == play.possession, "{why}");
-						on_the_drive += 1;
-					}
+					// The first play the rule accepts from the snap on, before
+					// the other team snaps the ball.
+					let were = plays_that_were(&over, &log, end, scenario);
+					let expected = plays[target..]
+						.iter()
+						.enumerate()
+						.take_while(|(_, p)| !is_snap(p) || p.possession == plays[target].possession)
+						.find(|(_, p)| were.iter().any(|w| w.play_id == p.id))
+						.map(|(j, _)| target + j);
+					assert_eq!(picked, expected, "{why}");
+					on_the_drive += usize::from(picked.is_some());
 				}
 				Said::After => assert!(picked.is_none_or(|i| i < k), "{why} is about a play in the log"),
 				Said::BeforeTheKickoff | Said::Either => panic!("{why}: no offer before a snap is of the kickoff, and only the reconciler says Either"),
@@ -187,4 +194,28 @@ fn a_bite_not_tied_to_an_offer_takes_the_nearer_play() {
 	let near = |at| its_play(&over, &log, end, Scenario::Sack, Said::Either, at, at, ANY).map(|(w, _)| w.play_id);
 	assert_eq!(near(wall(&plays[b]) - TimeDelta::seconds(5)), Some(plays[b].id.clone()), "the sack 5 s after");
 	assert_eq!(near(wall(&plays[a]) + TimeDelta::seconds(5)), Some(plays[a].id.clone()), "the sack 5 s before");
+}
+
+/// BM5: an opening-drive offer made before the opening kickoff is listed is
+/// about the receivers' first drive: the kickoff is no snap to come, so the
+/// drive is found from the first snap after it.
+#[test]
+fn a_bite_on_the_opening_drive_before_the_kickoff_is_about_that_drive() {
+	let plays = plays();
+	let log = recorded_log(&plays);
+	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+	let over = game(Some("CHI"), status(GameState::Post, plays.last()), None);
+	let kickoff = plays.iter().position(|p| p.play_type.as_deref() == Some("Kickoff")).unwrap();
+	let first = plays[kickoff..].iter().position(is_snap).unwrap() + kickoff;
+	let bite = wall(&plays[kickoff]) - TimeDelta::seconds(10);
+	let were = plays_that_were(&over, &log, end, Scenario::OpeningDrive);
+	let expected = plays[first..]
+		.iter()
+		.enumerate()
+		.take_while(|(_, p)| !is_snap(p) || p.possession == plays[first].possession)
+		.find(|(_, p)| were.iter().any(|w| w.play_id == p.id))
+		.map(|(j, _)| first + j);
+	assert!(expected.is_some(), "the recorded game's first drive ended in a play the rule accepts");
+	let picked = its_play(&over, &log, end, Scenario::OpeningDrive, Said::BeforeTheDrive, bite, bite, TimeDelta::seconds(90));
+	assert_eq!(picked.map(|(w, _)| position(&plays, &w.play_id)), expected);
 }

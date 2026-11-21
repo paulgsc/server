@@ -121,7 +121,10 @@ bite from just happened to the nearest play at or before it, and every bite
 not tied to an offer to the nearer of the plays either side. Family: when a bite is said
 relative to its snap, by the moment's rule. Proof: `tests/its_play.rs`, every
 snap of the recorded game with every scenario offered before it in Full
-mode, and every touchdown with its try to come.
+mode, and every touchdown with its try to come. Tolerance: in
+`reconcile::LAG` after home sees a snap, a scenario still on offer for the
+next one (a play call, a drive) is read as the newer offer; nothing the bite
+keeps says which the phone showed.
 
 ## Invariants
 

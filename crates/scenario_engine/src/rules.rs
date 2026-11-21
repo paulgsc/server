@@ -447,8 +447,8 @@ pub(crate) fn offered_said(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, s
 		Moment::Kick if cx.try_pending().is_some() => Said::After,
 		// Offered on the drive the snap to come is in: its play ends it.
 		Moment::OpeningDrive | Moment::RedZone => Said::BeforeTheDrive,
-		// Offered on the snap to come, which is its play: the opening kickoff,
-		// the down and distance, a play call, a field goal try.
+		// Offered on the snap to come, which is its play: the down and
+		// distance, a play call, a field goal try.
 		Moment::ThirdAndLong | Moment::FourthDown | Moment::Snap | Moment::Kick => Said::BeforeTheSnap,
 		// Offered up to a quarter hour ahead: its play is the opening kickoff.
 		Moment::Kickoff => Said::BeforeTheKickoff,
@@ -493,7 +493,7 @@ pub(crate) fn its_play(
 	let to_come = || {
 		(0..plays.len()).find(|i| {
 			let play = plays[*i].play;
-			plays[*i].first > offered && (read::is_snap(play) || read::kind(play) == "kickoff") && !read::wiped_out(play)
+			plays[*i].first > offered && read::is_snap(play) && !read::wiped_out(play)
 		})
 	};
 	match said {
