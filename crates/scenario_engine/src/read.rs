@@ -348,7 +348,8 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 	// flag on the returning side (not the team ESPN gave the ball: the kicking
 	// team, or the offense that lost it) is enforced from a spot ESPN does not
 	// restate as yards, and a muff or fumble on it is the kicking team's ball.
-	let clean_return = !flagged_against_the_returners(play) && !text.contains("reversed.");
+	// A flag on the try, after the return, leaves it standing.
+	let clean_return = !flagged_against_the_returners(&before_the_try(play)) && !text.contains("reversed.");
 	let kept = !text.contains("muff") && !text.contains("fumble");
 	// A blocked punt or field goal the other side recovers is its return, from
 	// "is BLOCKED by ..., RECOVERED by DEN-T.Hufanga at DEN 37. T.Hufanga to

@@ -1189,16 +1189,23 @@ fn a_big_play_is_the_play_as_it_stood() {
 	);
 	let (p, line) = big(&pass_td).unwrap();
 	assert_eq!((p.kind, p.by.as_str(), p.scored), (Kind::InterceptionReturn, "CHI", false), "{line}");
-	// A flag on the try leaves the return touchdown before it standing.
-	assert_eq!(
-		at(
-			punt,
-			"Punt Return Touchdown",
-			"R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond to NE 0 for 90 yards, TOUCHDOWN. C.Santos extra point is GOOD, Center-S.Daly, Holder-T.Taylor. PENALTY on CHI-K.Raymond, Taunting, 15 yards, enforced on the kickoff."
-		)
-		.map(|(kind, by, _)| (kind, by)),
-		Some((Kind::PuntReturn, "CHI".to_owned()))
+	// A flag on the try leaves the return touchdown before it standing, its
+	// yards and size with it.
+	let tried = just_after(
+		&plays[..punt],
+		Play {
+			play_type: Some("Punt Return Touchdown".to_owned()),
+			text: Some("R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond to NE 0 for 90 yards, TOUCHDOWN. C.Santos extra point is GOOD, Center-S.Daly, Holder-T.Taylor. PENALTY on CHI-K.Raymond, Taunting, 15 yards, enforced on the kickoff.".to_owned()),
+			..plays[punt].clone()
+		},
 	);
+	let (p, line) = big(&tried).unwrap();
+	assert_eq!(
+		(p.kind, p.by.as_str(), p.yards, p.size, p.scored),
+		(Kind::PuntReturn, "CHI", 90, Size::Memorable, true),
+		"{line}"
+	);
+	assert_eq!(line, "CHI 90-yard punt return, touchdown");
 	// A kick in words read nowhere else ("free kick") is still a kick: the
 	// returners' muff the kickers fell on is turned over.
 	let free = at(
