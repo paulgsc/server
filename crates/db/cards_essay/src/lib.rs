@@ -1,9 +1,12 @@
 //! Home's record of the cards essays (CARDS7, #854, paulgsc/some-ui#2979):
 //! `cards_essay`, each essay once by its key, append-only, and
 //! `cards_essay_link`, each essay's `YouTube` link (paulgsc/some-ui#2999),
-//! append-only too. The rules are
-//! `20261114000100_create_cards_essay.up.sql`'s and
-//! `20261115000200_create_cards_essay_link.up.sql`'s.
+//! append-only too, and `cards_essay_video_deletion`, each step of an
+//! essay's video going (paulgsc/server#1055): [`withdraw`] when a take its
+//! spoken cards play goes from home. The rules are
+//! `20261114000100_create_cards_essay.up.sql`'s,
+//! `20261115000200_create_cards_essay_link.up.sql`'s and
+//! `20261121000100_create_cards_essay_video_deletion.up.sql`'s.
 
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
@@ -184,6 +187,83 @@ pub async fn links(conn: &mut SqliteConnection) -> Result<Vec<Link>, sqlx::Error
 	.await
 }
 
+/// An essay withdrawn because a take it plays went from home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Withdrawn {
+	pub key: String,
+	/// The deleted take's voice-note id.
+	pub note: String,
+	/// The bytes that went, video and rest together.
+	pub size: i64,
+	/// The link it had, if it had one.
+	pub youtube_id: Option<String>,
+	pub deleted_at: String,
+}
+
+/// Withdraws the essay `key` for `subject`'s deleted take `note`; whether
+/// it did.
+///
+/// Both steps' receipts, in the caller's transaction, as the Rust Rounds
+/// essay's are (`rust_round_repo::essay_video::withdraw`), with the link it
+/// had. An essay already gone (withdrawn, or let go) keeps what it has.
+///
+/// # Errors
+/// A storage failure, or an essay home does not hold.
+pub async fn withdraw(conn: &mut SqliteConnection, key: &str, subject: &str, note: &str, size: i64, now: &str) -> Result<bool, sqlx::Error> {
+	let had = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM cards_essay_video_deletion WHERE essay_key = ?"#, key)
+		.fetch_one(&mut *conn)
+		.await?;
+	if had > 0 {
+		// Gone already: its video went, and with it the takes it played.
+		return Ok(false);
+	}
+	let link = links(conn).await?.into_iter().filter(|link| link.key == key).last().map(|link| link.youtube_id);
+	for (step, bytes) in [("video", size), ("rest", 0)] {
+		sqlx::query!(
+			"INSERT INTO cards_essay_video_deletion (essay_key, step, cause, subject_id, youtube_id, note_id, size, deleted_at)
+			 VALUES (?, ?, 'take-deleted', ?, ?, ?, ?, ?)",
+			key,
+			step,
+			subject,
+			link,
+			note,
+			bytes,
+			now,
+		)
+		.execute(&mut *conn)
+		.await?;
+	}
+	Ok(true)
+}
+
+/// Every essay withdrawn for `subject`'s deleted take, by key.
+///
+/// # Errors
+/// A storage failure.
+pub async fn withdrawn(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Withdrawn>, sqlx::Error> {
+	sqlx::query_as!(
+		Withdrawn,
+		r#"SELECT essay_key AS "key!", note_id AS "note!", size AS "size!: i64", youtube_id, deleted_at AS "deleted_at!"
+		   FROM cards_essay_video_deletion
+		   WHERE subject_id = ? AND cause = 'take-deleted' AND step = 'video' ORDER BY essay_key"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await
+}
+
+/// The essays whose video went, withdrawn or (once some-ui#2999 lets one
+/// go) let go: the render worker is never given them again, and no list
+/// shows them. Keys alone, whoever's take it was.
+///
+/// # Errors
+/// A storage failure.
+pub async fn gone(conn: &mut SqliteConnection) -> Result<Vec<String>, sqlx::Error> {
+	sqlx::query_scalar!(r#"SELECT essay_key AS "key!" FROM cards_essay_video_deletion WHERE step = 'video' ORDER BY essay_key"#)
+		.fetch_all(&mut *conn)
+		.await
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -311,5 +391,46 @@ mod tests {
 			"UPDATE is refused"
 		);
 		assert!(sqlx::query("DELETE FROM cards_essay_link").execute(&mut *conn).await.is_err(), "DELETE is refused");
+	}
+
+	#[tokio::test]
+	async fn an_essay_whose_take_is_deleted_is_withdrawn_both_steps_at_once_linked_or_not_and_leaves_with_the_account() {
+		let pool = pool().await;
+		let mut conn = pool.acquire().await.unwrap();
+		for subject in ["me", "them"] {
+			sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?1)")
+				.bind(subject)
+				.execute(&mut *conn)
+				.await
+				.unwrap();
+		}
+		for key in ["zfs-2026-11-02", "ext4-2026-11-03", "btrfs-2026-11-04"] {
+			keep(&mut conn, &essay(key, b"{}", "t")).await.unwrap();
+		}
+		record_link(&mut conn, "ext4-2026-11-03", "dQw4w9WgXcQ", "t").await.unwrap();
+		assert!(withdraw(&mut conn, "zfs-2026-11-02", "me", "note-1", 1234, "2026-11-21T00:00:00.000Z").await.unwrap());
+		assert!(!withdraw(&mut conn, "zfs-2026-11-02", "me", "note-2", 1, "t").await.unwrap(), "once");
+		assert!(withdraw(&mut conn, "ext4-2026-11-03", "me", "note-3", 0, "t").await.unwrap());
+		assert!(withdraw(&mut conn, "btrfs-2026-11-04", "them", "note-4", 0, "t").await.unwrap());
+		assert!(withdraw(&mut conn, "xfs-2026-11-05", "me", "note-5", 0, "t").await.is_err(), "no such essay");
+		assert_eq!(gone(&mut conn).await.unwrap(), ["btrfs-2026-11-04", "ext4-2026-11-03", "zfs-2026-11-02"]);
+		let mine = withdrawn(&mut conn, "me").await.unwrap();
+		assert_eq!(
+			mine.iter().map(|w| (w.key.as_str(), w.note.as_str(), w.size, w.youtube_id.as_deref())).collect::<Vec<_>>(),
+			[("ext4-2026-11-03", "note-3", 0, Some("dQw4w9WgXcQ")), ("zfs-2026-11-02", "note-1", 1234, None)],
+			"its link kept beside it; only mine"
+		);
+		for statement in [
+			"UPDATE cards_essay_video_deletion SET size = 0",
+			"DELETE FROM cards_essay_video_deletion",
+			"INSERT INTO cards_essay_video_deletion VALUES ('ext4-2026-11-03', 'video', 'take-deleted', 'me', NULL, NULL, 0, 't')",
+			"INSERT INTO cards_essay_video_deletion VALUES ('ext4-2026-11-03', 'video', 'let-go', NULL, 'aaaaaaaaaaa', NULL, 0, 't')",
+		] {
+			assert!(sqlx::query(statement).execute(&mut *conn).await.is_err(), "{statement}");
+		}
+
+		sqlx::query("DELETE FROM account WHERE subject_id = 'me'").execute(&mut *conn).await.unwrap();
+		assert!(withdrawn(&mut conn, "me").await.unwrap().is_empty(), "a receipt naming my note leaves with my account");
+		assert_eq!(gone(&mut conn).await.unwrap(), ["btrfs-2026-11-04"], "theirs stays");
 	}
 }

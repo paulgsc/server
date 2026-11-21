@@ -13,8 +13,11 @@
 //! ([`Feed::lets_go`]). The owner's ask (2026-11-14) was a place among the
 //! episodes; its `YouTube` link (paulgsc/some-ui#2999, call C388) is kept in
 //! `cards_essay_link`, beside `cards_essay`, which is append-only and holds
-//! the essay alone. Letting home's copy go once the link is recorded needs a
-//! receipt table too, and is a later story.
+//! the essay alone. Letting home's copy go once the link is recorded is a
+//! later story; its receipts will be `cards_essay_video_deletion`'s, which
+//! already holds an essay withdrawn because a take its spoken cards play
+//! was deleted (paulgsc/server#1055, `cards_essays::pass::tidy`): such an
+//! essay is gone, as a withdrawn Rust Rounds week is, so no list shows it.
 //!
 //! An episode is named by its key, one plain path segment by its table's own
 //! checks: the call's week by its first day (`2026-10-30`), or, for a week
@@ -204,15 +207,20 @@ impl Feed {
 				})
 				.collect(),
 			// Newest day first, as the table orders them oldest first.
-			Self::CardsEssay => cards_essay_repo::held(conn)
-				.await?
-				.into_iter()
-				.rev()
-				.map(|essay| HeldEpisode {
-					key: essay.key,
-					date: Some(essay.day),
-				})
-				.collect(),
+			// Less those withdrawn for a deleted take: gone for good.
+			Self::CardsEssay => {
+				let gone = cards_essay_repo::gone(conn).await?;
+				cards_essay_repo::held(conn)
+					.await?
+					.into_iter()
+					.rev()
+					.filter(|essay| !gone.contains(&essay.key))
+					.map(|essay| HeldEpisode {
+						key: essay.key,
+						date: Some(essay.day),
+					})
+					.collect()
+			}
 		})
 	}
 
@@ -232,7 +240,9 @@ impl Feed {
 			},
 			Self::RustEssay => essays_held(conn, crate::rust_essays::Kind::RustRounds, subject).await?.iter().any(|week| week == key),
 			Self::InterviewEssay => essays_held(conn, crate::rust_essays::Kind::Interview, subject).await?.iter().any(|week| week == key),
-			Self::CardsEssay => crate::cards_essays::pass::is_key(key) && cards_essay_repo::holds(conn, key).await?,
+			Self::CardsEssay => {
+				crate::cards_essays::pass::is_key(key) && cards_essay_repo::holds(conn, key).await? && !cards_essay_repo::gone(conn).await?.iter().any(|gone| gone == key)
+			}
 			Self::Report => app_event_repo::report::holds(conn, subject, key).await?,
 		})
 	}

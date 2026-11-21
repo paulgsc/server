@@ -45,11 +45,22 @@
 //!   the essay is given. Every pass looks again at an essay not given.
 //! - **No copy of a take outlives its need** ([`tidy`], each minute, as
 //!   `rust_essays::tidy`): once an essay's video is made its `<key>.takes/`
-//!   goes, and an essay given with a take home no longer holds (deleted from
-//!   My data, its recording let go, or its account gone) is withdrawn from
-//!   the worker, its `<key>.json` and `<key>.takes/` removed, so the next
-//!   pass refuses it (`take-missing`). A `.<key>.takes.partial` a stopped
-//!   pass left goes too.
+//!   goes, and before then an essay given with a take home no longer holds
+//!   (its recording gone, or its account), or with no subject, is taken back
+//!   from the worker, its `<key>.json` and `<key>.takes/` removed, so the
+//!   next pass refuses it (`take-missing`) or waits. A `.<key>.takes.partial`
+//!   a stopped pass left goes too.
+//! - **A take deleted withdraws its essay for good** (paulgsc/server#1055,
+//!   as the Rust Rounds essay's: docs/identity.md's essay-render exception,
+//!   rule (c)): an essay whose spoken cards play a take deleted from My data
+//!   or let go is withdrawn whether its render has not started, is under way
+//!   or is done: both receipts in `cards_essay_video_deletion`, cause
+//!   `take-deleted`, naming the note beside the note's own receipt, then its
+//!   `<key>.json`, takes, renders folder and work folder are removed. It is
+//!   never given to the worker again, and no list shows it
+//!   (`cards_essay_repo::gone`); a video a render under way finishes after
+//!   that goes within a minute, as each minute's tidy removes whatever of a
+//!   gone essay it finds. The take's own receipt stays in My data.
 
 use crate::game_feed::pass::{fetch_capped, Answer, Fetch, NoAnswer};
 use cards_essay_repo::{Essay, Kept};
@@ -207,6 +218,9 @@ pub struct Given {
 	/// The worker's renders ([`super::RENDERS_FOLDER`]): a made video's
 	/// essay keeps no takes.
 	pub renders: PathBuf,
+	/// The worker's work folder ([`super::WORK_FOLDER`]): a withdrawn
+	/// essay's waiting work goes with it.
+	pub work: PathBuf,
 }
 
 /// What [`tidy`] did.
@@ -214,55 +228,144 @@ pub struct Given {
 pub struct Tidied {
 	/// Takes folders removed once their essay's video was made.
 	pub takes_removed: usize,
-	/// Essays taken back from the worker: a take they play is no longer held.
+	/// Essays taken back from the worker before their video was made: a
+	/// take they were given is no longer on home, or no one's takes are.
+	pub taken_back: usize,
+	/// Essays withdrawn for good: a take they play was deleted from My data
+	/// or its recording let go, so their video and folder went.
 	pub withdrawn: usize,
+	/// Essays gone already whose files were found and removed again: a
+	/// render under way when its essay was withdrawn may still finish.
+	pub removed: usize,
 	/// Files that could not be removed; tried again next minute.
 	pub failed: usize,
 }
 
-/// Each minute, the takes given to the worker brought in line with what home holds.
+/// Each minute, what the worker was given and made brought in line with
+/// what home holds.
 ///
-/// As the module doc says: one directory read, then per takes folder one
-/// `stat`, and while its video is not made, one read of its essay and one
-/// indexed read per take.
+/// Under `feeds::FOLDERS`, as `rust_essays::tidy`, for each essay with a
+/// file on the drive (its `<key>.json` or `<key>.takes/` for the worker, or
+/// its renders or work folder):
+/// - an essay gone (`cards_essay_repo::gone`) has all of them removed, and
+///   is tried again each minute until it has, so a video a render under way
+///   finishes after its essay was withdrawn goes within a minute too;
+/// - an essay a take of whose was deleted from My data or let go
+///   ([`deleted_take`]) is withdrawn for good, video made or not: both
+///   receipts (`cards_essay_repo::withdraw`), then all of its files;
+/// - once its video is made, its `<key>.takes/` goes;
+/// - before then, an essay given with a take home no longer holds, or with
+///   no subject, is taken back (`<key>.json`, then `<key>.takes/`).
+///
+/// Cost: three directory reads, then per essay on the drive one `stat`,
+/// one indexed read of its body and, for each take its spoken cards name,
+/// one indexed read of the take's receipt; and while its video is not made,
+/// one more per take.
 ///
 /// # Errors
 /// A storage failure.
-pub async fn tidy(db: &SqlitePool, given: &Given) -> Result<Tidied, sqlx::Error> {
+pub async fn tidy(db: &SqlitePool, given: &Given, now: &str) -> Result<Tidied, sqlx::Error> {
+	let _folders = crate::feeds::FOLDERS.lock().await;
 	let mut done = Tidied::default();
-	let Ok(mut entries) = tokio::fs::read_dir(&given.essays).await else {
-		return Ok(done);
+	let gone = {
+		let mut conn = db.acquire().await?;
+		cards_essay_repo::gone(&mut conn).await?
 	};
-	let mut keys = Vec::new();
-	while let Ok(Some(entry)) = entries.next_entry().await {
-		let name = entry.file_name().to_string_lossy().into_owned();
-		if let Some(key) = name.strip_suffix(".takes").filter(|key| is_key(key)) {
-			keys.push(key.to_owned());
-		} else if name.starts_with('.') && name.ends_with(".takes.partial") {
-			// What a stopped pass left: the export and this run in one task,
-			// one after the other, so none is being written now.
-			done.failed += usize::from(remove_dir(&entry.path()).await.is_err());
+	let mut keys = std::collections::BTreeSet::new();
+	if let Ok(mut entries) = tokio::fs::read_dir(&given.essays).await {
+		while let Ok(Some(entry)) = entries.next_entry().await {
+			let name = entry.file_name().to_string_lossy().into_owned();
+			if let Some(key) = name.strip_suffix(".takes").or_else(|| name.strip_suffix(".json")).filter(|key| is_key(key)) {
+				keys.insert(key.to_owned());
+			} else if name.starts_with('.') && name.ends_with(".takes.partial") {
+				// What a stopped pass left: the export and this run in one task,
+				// one after the other, so none is being written now.
+				done.failed += usize::from(remove_dir(&entry.path()).await.is_err());
+			}
+		}
+	}
+	for folder in [&given.renders, &given.work] {
+		if let Ok(mut entries) = tokio::fs::read_dir(folder).await {
+			while let Ok(Some(entry)) = entries.next_entry().await {
+				let name = entry.file_name().to_string_lossy().into_owned();
+				if is_key(&name) {
+					keys.insert(name);
+				}
+			}
 		}
 	}
 	for key in keys {
+		let essay = given.essays.join(String::from(&key) + ".json");
 		let takes = given.essays.join(String::from(&key) + ".takes");
-		if given.renders.join(&key).join(super::VIDEO).exists() {
+		let (render, work) = (given.renders.join(&key), given.work.join(&key));
+		if gone.contains(&key) {
+			done.removed += 1;
+			done.failed += remove_all(&essay, &[&takes, &render, &work]).await;
+			continue;
+		}
+		if let Some(subject) = given.subject.as_deref() {
+			if let Some(note) = deleted_take(db, subject, &key).await? {
+				let size = i64::try_from(crate::call_weeks::render::bytes_under(&render).await).unwrap_or(i64::MAX);
+				let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+				cards_essay_repo::withdraw(&mut tx, &key, subject, &note, size, now).await?;
+				tx.commit().await?;
+				done.withdrawn += 1;
+				done.failed += remove_all(&essay, &[&takes, &render, &work]).await;
+				clear_refused(&given.status, &key).await;
+				continue;
+			}
+		}
+		if !takes.exists() {
+			continue;
+		}
+		if render.join(super::VIDEO).exists() {
 			done.takes_removed += 1;
 			done.failed += usize::from(remove_dir(&takes).await.is_err());
 			continue;
 		}
 		if !still_held(db, given.subject.as_deref(), &key).await? {
-			done.withdrawn += 1;
-			// The essay first, so the worker never finds it without its takes.
-			let essay = given.essays.join(String::from(&key) + ".json");
-			let gone = match tokio::fs::remove_file(&essay).await {
-				Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-				Ok(()) => true,
-			};
-			done.failed += usize::from(!gone || remove_dir(&takes).await.is_err());
+			done.taken_back += 1;
+			done.failed += remove_all(&essay, &[&takes]).await;
 		}
 	}
 	Ok(done)
+}
+
+/// Removes `essay`, then each of `dirs`; how many could not be removed.
+/// The essay first, so the worker never finds it without its takes.
+async fn remove_all(essay: &Path, dirs: &[&PathBuf]) -> usize {
+	let gone = match tokio::fs::remove_file(essay).await {
+		Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+		Ok(()) => true,
+	};
+	let mut failed = usize::from(!gone);
+	for dir in dirs {
+		failed += usize::from(remove_dir(dir).await.is_err());
+	}
+	failed
+}
+
+/// A take `key`'s spoken cards play that `subject` deleted from My data, or
+/// whose recording was let go, if any: its receipt
+/// (`voice_repo::delete::receipt`), kept for good, is the owner's act. A
+/// cards essay is kept once and never rewritten, so what it plays is its one
+/// body's, and a spoken card has no silence to play in a take's place (C812):
+/// any such take withdraws it, as one the Rust Rounds essay plays does
+/// (`rust_essays`' `deleted_take`).
+async fn deleted_take(db: &SqlitePool, subject: &str, key: &str) -> Result<Option<String>, sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	let Some(body) = cards_essay_repo::body(&mut conn, key).await? else {
+		return Ok(None);
+	};
+	for take in spoken_takes(&body) {
+		match voice_repo::delete::receipt(&mut conn, subject, &take).await {
+			Ok(None) => {}
+			Err(voice_repo::VoiceError::Storage(err)) => return Err(err),
+			// A receipt that does not read back is still a receipt.
+			Ok(Some(_)) | Err(_) => return Ok(Some(take)),
+		}
+	}
+	Ok(None)
 }
 
 /// Whether `subject` still holds every take `key`'s essay plays.
@@ -352,19 +455,23 @@ async fn take_new<F: Fetch>(db: &SqlitePool, fetch: &F, clock: &(dyn Fn() -> Dat
 	Ok(())
 }
 
-/// Writes each essay home holds that the essays' folder has no file of, as
-/// `<key>.json`, byte for byte, through a temporary name so the render
-/// worker never reads half a file. An essay already written is left alone:
+/// Writes each essay home holds, and has not withdrawn, that the essays'
+/// folder has no file of, as `<key>.json`, byte for byte, through a
+/// temporary name so the render worker never reads half a file. An essay already written is left alone:
 /// home never rewrites a kept essay, so neither does this. An essay with a
 /// spoken card is written only with its takes, after them, and is held back
 /// or refused as the module doc says.
 async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), sqlx::Error> {
 	let folder = given.essays.as_path();
-	let held = {
+	let (held, gone) = {
 		let mut conn = db.acquire().await?;
-		cards_essay_repo::held(&mut conn).await?
+		(cards_essay_repo::held(&mut conn).await?, cards_essay_repo::gone(&mut conn).await?)
 	};
-	let missing: Vec<_> = held.into_iter().filter(|essay| !folder.join(String::from(&essay.key) + ".json").exists()).collect();
+	// A withdrawn essay is never given again.
+	let missing: Vec<_> = held
+		.into_iter()
+		.filter(|essay| !gone.contains(&essay.key) && !folder.join(String::from(&essay.key) + ".json").exists())
+		.collect();
 	if missing.is_empty() {
 		return Ok(());
 	}
@@ -639,6 +746,7 @@ mod tests {
 			status: dir.join("status"),
 			subject: None,
 			renders: dir.join("renders"),
+			work: dir.join("work"),
 		}
 	}
 
@@ -825,6 +933,9 @@ mod tests {
 	}
 
 	const ME: &str = "subject-me";
+
+	/// When a tidy runs.
+	const NOW: &str = "2026-11-21T09:00:00.000Z";
 
 	/// An essay stamped `day` whose one spoken card plays `takes`, and a
 	/// scene that is no spoken card.
@@ -1082,17 +1193,17 @@ mod tests {
 		let mut mine = given(dir.path());
 		mine.subject = Some(String::from(ME));
 		assert_eq!(run_once(&pool, &fake, &mine, &clock).await.unwrap().exported, 2);
-		assert_eq!(tidy(&pool, &mine).await.unwrap(), Tidied::default(), "nothing to tidy yet");
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default(), "nothing to tidy yet");
 
 		std::fs::create_dir_all(mine.renders.join("made-2026-11-19")).unwrap();
 		std::fs::write(mine.renders.join("made-2026-11-19").join(crate::cards_essays::VIDEO), b"mp4").unwrap();
 		sqlx::query("DELETE FROM voice_note_audio WHERE note_id = 'take-2'").execute(&pool).await.unwrap();
 		assert_eq!(
-			tidy(&pool, &mine).await.unwrap(),
+			tidy(&pool, &mine, NOW).await.unwrap(),
 			Tidied {
 				takes_removed: 1,
-				withdrawn: 1,
-				failed: 0
+				taken_back: 1,
+				..Tidied::default()
 			}
 		);
 		assert_eq!(names_in(dir.path()), ["made-2026-11-19.json", "renders"], "the made one keeps its essay alone");
@@ -1169,7 +1280,7 @@ mod tests {
 			"home now, waiting to be heard: no longer refused"
 		);
 
-		assert_eq!(tidy(&pool, &mine).await.unwrap(), Tidied::default());
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default());
 		assert!(!dir.path().join(".gone-2026-11-01.takes.partial").exists(), "a stopped pass's partial goes");
 	}
 
@@ -1195,5 +1306,161 @@ mod tests {
 		assert_eq!((seen.held, seen.waiting, seen.failed, seen.let_go), (3, 2, 1, 0));
 		assert_eq!(seen.worker_last_pass, Some(1_763_110_800));
 		assert_eq!(seen.oldest_waiting_taken, Some(clock().timestamp()));
+	}
+
+	/// Deletes `take` as My data does (`DELETE /voice-notes/:id`): the note
+	/// goes, its receipt stays.
+	async fn delete_from_my_data(pool: &SqlitePool, take: &str) {
+		let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+		let deleted = voice_repo::delete::delete(&mut tx, ME, take, voice_repo::delete::SWITCHED_ON, NOW).await.unwrap();
+		tx.commit().await.unwrap();
+		assert!(matches!(deleted, voice_repo::delete::Deleted::Gone(_)), "{take}: {deleted:?}");
+	}
+
+	/// Where a render of `key` stands when its take is deleted.
+	#[derive(Debug, Clone, Copy)]
+	enum Stage {
+		/// Given, not started: its `<key>.json` and takes wait.
+		Given,
+		/// Under way: the worker has work and a half-made folder.
+		Rendering,
+		/// Done: its video is made, its takes gone.
+		Made,
+	}
+
+	/// The worker's files of `key` at `stage`, under `given`.
+	fn stand(given: &Given, key: &str, stage: Stage) {
+		match stage {
+			Stage::Given => {}
+			Stage::Rendering => {
+				std::fs::create_dir_all(given.work.join(key)).unwrap();
+				std::fs::write(given.work.join(key).join("take-1.wav"), b"RIFF").unwrap();
+				std::fs::create_dir_all(given.renders.join(key)).unwrap();
+				std::fs::write(given.renders.join(key).join("shot-times.json"), b"{}").unwrap();
+			}
+			Stage::Made => {
+				std::fs::create_dir_all(given.renders.join(key)).unwrap();
+				std::fs::write(given.renders.join(key).join(crate::cards_essays::VIDEO), b"mp4 with my voice").unwrap();
+			}
+		}
+	}
+
+	/// paulgsc/server#1055: a take deleted from My data withdraws its essay
+	/// for good before, during or after its render, as a Rust Rounds week is
+	/// withdrawn: both receipts, its video and folder gone, never given
+	/// again, no longer listed, and the take's own receipt kept.
+	#[tokio::test]
+	async fn a_take_deleted_before_during_or_after_the_render_withdraws_its_essay_for_good() {
+		for stage in [Stage::Given, Stage::Rendering, Stage::Made] {
+			withdrawn_at(stage).await;
+		}
+	}
+
+	async fn withdrawn_at(stage: Stage) {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		let (key, other) = ("spoken-2026-11-19", "kept-2026-11-20");
+		fake.ok("index.json", &index(&[key, other]));
+		fake.ok(&(String::from(key) + ".json"), &spoken_essay("2026-11-19", &["take-1", "take-2"]));
+		fake.ok(&(String::from(other) + ".json"), &spoken_essay("2026-11-20", &["take-3"]));
+		for take in ["take-1", "take-2", "take-3"] {
+			hold_take(&pool, take).await;
+			hear(&pool, take, "Hello there.", Some("heard")).await;
+		}
+		let mut mine = given(&dir.path().join("essays"));
+		mine.subject = Some(String::from(ME));
+		assert_eq!(run_once(&pool, &fake, &mine, &clock).await.unwrap().exported, 2, "{stage:?}");
+		stand(&mine, key, stage);
+		if matches!(stage, Stage::Made) {
+			assert_eq!(tidy(&pool, &mine, NOW).await.unwrap().takes_removed, 1, "made: its takes go first");
+			let mut conn = pool.acquire().await.unwrap();
+			cards_essay_repo::record_link(&mut conn, key, "dQw4w9WgXcQ", NOW).await.unwrap();
+		}
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default(), "{stage:?}: nothing deleted, nothing to do");
+
+		delete_from_my_data(&pool, "take-2").await;
+		assert_eq!(
+			tidy(&pool, &mine, NOW).await.unwrap(),
+			Tidied {
+				withdrawn: 1,
+				..Tidied::default()
+			},
+			"{stage:?}"
+		);
+		let essays = &mine.essays;
+		assert!(
+			!essays.join(String::from(key) + ".json").exists()
+				&& !essays.join(String::from(key) + ".takes").exists()
+				&& !mine.renders.join(key).exists()
+				&& !mine.work.join(key).exists(),
+			"{stage:?}: every file of it goes"
+		);
+		assert!(essays.join(String::from(other) + ".json").exists(), "{stage:?}: another essay is not touched");
+		let mut conn = pool.acquire().await.unwrap();
+		let withdrawn = cards_essay_repo::withdrawn(&mut conn, ME).await.unwrap();
+		assert_eq!(
+			withdrawn.iter().map(|w| (w.key.as_str(), w.note.as_str(), w.youtube_id.as_deref())).collect::<Vec<_>>(),
+			[(key, "take-2", matches!(stage, Stage::Made).then_some("dQw4w9WgXcQ"))],
+			"{stage:?}: the receipt names the take, and the link it had"
+		);
+		let size = withdrawn[0].size;
+		assert_eq!(size > 0, !matches!(stage, Stage::Given), "{stage:?}: the bytes that went");
+		assert!(
+			voice_repo::delete::receipt(&mut conn, ME, "take-2").await.unwrap().is_some(),
+			"the take's own receipt stays"
+		);
+		drop(conn);
+
+		// A render under way may still finish after its essay was withdrawn:
+		// the next minute removes what it made.
+		std::fs::create_dir_all(mine.renders.join(key)).unwrap();
+		std::fs::write(mine.renders.join(key).join(crate::cards_essays::VIDEO), b"late").unwrap();
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied { removed: 1, ..Tidied::default() }, "{stage:?}");
+		assert!(!mine.renders.join(key).exists(), "{stage:?}: a late video goes within a minute");
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default(), "{stage:?}: then nothing is left");
+
+		let next = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((next.exported, next.refused, next.waiting), (0, 0, 0), "{stage:?}: never given again, nor said refused");
+		assert!(!essays.join(String::from(key) + ".json").exists());
+		assert!(!mine.status.join(String::from(key) + ".refused").exists());
+		let held: Vec<_> = crate::cards_essays::held(&pool).await.unwrap().into_iter().map(|held| held.key).collect();
+		assert_eq!(held, [other], "{stage:?}: off Studio › Renders");
+		let mut conn = pool.acquire().await.unwrap();
+		let feed: Vec<_> = crate::feeds::Feed::CardsEssay.held(&mut conn, ME).await.unwrap().into_iter().map(|held| held.key).collect();
+		assert_eq!(feed, [other], "{stage:?}: off the episodes");
+		assert!(
+			!crate::feeds::Feed::CardsEssay.holds(&mut conn, ME, key).await.unwrap(),
+			"{stage:?}: its video is no one's to fetch"
+		);
+	}
+
+	/// An essay with no spoken card, or whose takes are all held, is never
+	/// withdrawn, its video made or not; and with no subject, a made video is
+	/// left as it is.
+	#[tokio::test]
+	async fn only_a_deleted_take_an_essay_plays_withdraws_it() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&["silent-2026-11-18", "spoken-2026-11-19"]));
+		fake.ok("silent-2026-11-18.json", &essay("2026-11-18"));
+		fake.ok("spoken-2026-11-19.json", &spoken_essay("2026-11-19", &["take-1"]));
+		for take in ["take-1", "take-9"] {
+			hold_take(&pool, take).await;
+			hear(&pool, take, "Hello there.", Some("heard")).await;
+		}
+		let mut mine = given(&dir.path().join("essays"));
+		mine.subject = Some(String::from(ME));
+		assert_eq!(run_once(&pool, &fake, &mine, &clock).await.unwrap().exported, 2);
+		for key in ["silent-2026-11-18", "spoken-2026-11-19"] {
+			stand(&mine, key, Stage::Made);
+		}
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap().takes_removed, 1);
+		delete_from_my_data(&pool, "take-9").await;
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default(), "a take no essay plays");
+		mine.subject = None;
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default(), "no subject: nothing given with takes is left");
+		assert!(mine.renders.join("spoken-2026-11-19").join(crate::cards_essays::VIDEO).exists());
+		let mut conn = pool.acquire().await.unwrap();
+		assert!(cards_essay_repo::gone(&mut conn).await.unwrap().is_empty());
 	}
 }
