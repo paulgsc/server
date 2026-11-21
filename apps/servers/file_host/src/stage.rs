@@ -39,9 +39,9 @@
 //! batch in any order (fewest attempts first, say), so the batch's first is
 //! not the oldest. Each stage reads its whole queue once a pass for the
 //! oldest arrival and the count (for the transcriber,
-//! `voice_repo::transcript::backlog`: `waiting`'s own predicate, no limit,
-//! the same indexed lookups per note, so no more work than `waiting` does
-//! whenever fewer than a batch wait). Labels are the stage's and waiter's
+//! `voice_repo::transcript::backlog`: the queue's own predicate, the same
+//! indexed lookups per note that `waiting_first` makes over every candidate
+//! before it sorts, so no more work than the queue's own read). Labels are the stage's and waiter's
 //! names only, from these closed sets, never an item or a person.
 //!
 //! **The cases this contract will take next**, declared and not built

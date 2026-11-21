@@ -258,11 +258,11 @@ pub struct Backlog {
 /// Its WHERE is [`waiting_first`]'s, its candidate filter and `tried <
 /// attempts` written out flat: the same notes, whatever order a pass takes
 /// them in. A change to one is a change to both
-/// (`the_backlog_is_every_note_waiting_and_its_oldest` holds them together). Read at a pass's start and after each attempt kept: the same
-/// predicate over `voice_note`, each note's lookups by the
-/// `(subject_id, note_id, model)` index, so a read is [`waiting`]'s own work
-/// when fewer than a batch wait, and a scan of every note waiting when more
-/// do (a new model makes every note wait again).
+/// (`the_backlog_is_every_note_waiting_and_its_oldest` holds them
+/// together). Read at a pass's start and after each attempt kept, it does
+/// [`waiting_first`]'s own work: each note's lookups by the
+/// `(subject_id, note_id, model)` index, over every candidate, as that
+/// query's materialized CTE reads them before it sorts.
 ///
 /// # Errors
 /// Any `sqlx` failure.

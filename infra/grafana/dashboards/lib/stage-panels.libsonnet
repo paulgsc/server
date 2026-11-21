@@ -30,7 +30,7 @@ local stages = [
   {
     stage: 'transcriber',
     title: 'TRANSCRIBER',
-    promise: 'a note is heard within 15 minutes of reaching home (VH7)',
+    promise: 'a note is heard within 25 minutes of reaching home (VH7)',
     // Stage::Transcriber's waiters: Waiter::CardsEssays, Waiter::RenderLane.
     waiters: [
       {

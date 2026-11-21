@@ -1744,6 +1744,8 @@ tests:
         exp_alerts: []
       - eval_time: 45m
         alertname: OutboundNoAnswer
+        exp_alerts: []
+
   - name: a shared stage whose oldest item outlives its promise is degraded (VH7, some-ui#3333)
     interval: 1m
     input_series:

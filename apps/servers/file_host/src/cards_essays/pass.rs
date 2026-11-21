@@ -1104,6 +1104,24 @@ mod tests {
 		essay.to_string().into_bytes()
 	}
 
+	/// An essay held for a snip not fetched yet waits, and not on a take:
+	/// only a take not heard yet is the transcriber's waiter
+	/// (`crate::stage::Waiter::CardsEssays`).
+	#[tokio::test]
+	async fn an_essay_waiting_on_a_snip_is_not_waiting_on_a_take() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let mut mine = given(dir.path());
+		mine.subject = Some(String::from(ME));
+		mine.snips = Some(dir.path().join("snips"));
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&["snipped-2026-11-21"]));
+		let snip = serde_json::json!({ "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "at": [] } });
+		fake.ok("snipped-2026-11-21.json", &showing_essay("2026-11-21", &[snip]));
+
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.exported, done.refused, done.waiting, done.waiting_on_takes), (0, 0, 1, 0));
+	}
+
 	/// A clip frame a scene shows is given beside the essay in `<key>.clips/`
 	/// once home holds it, and the essay is taken back once the frame is gone.
 	/// A snip refuses its essay when home fetches none (no token). No subject:

@@ -774,6 +774,7 @@ groups:
         labels:
           objective: OB3
           says: "Home's game feed has been refused by {{ $labels.host }} for 30 minutes: every request it sent got a 4xx or 5xx (a 429 is a rate limit), and none was answered. The GAME FEED dashboard says what came back."
+
   # Shared stages (paulgsc/some-ui#3333): a node other pipelines wait on
   # (`crate::stage::Stage` in file_host). The same two alerts for every
   # stage, told apart by the `stage` label; each takes its `objective` from

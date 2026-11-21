@@ -12,7 +12,7 @@ a new stage is a new case or it does not build:
 
 | What | Where it lives | Transcriber |
 | --- | --- | --- |
-| Its promise: a ledger objective and its bound | `Stage::promise`, the bound a policy constant | VH7, `transcribe::HEARD_WITHIN` (15 min, C900) |
+| Its promise: a ledger objective and its bound | `Stage::promise`, the bound a policy constant | VH7, `transcribe::HEARD_WITHIN` (25 min, C900 moved by C904: a turn given to the renders, an interval and one deadline-long note fit) |
 | Its headline signal: when the oldest item still waiting arrived, and how many wait | `metrics::stage::record_waiting`, once a pass, over the whole queue | `voice_repo::transcript::backlog` |
 | How an attempt ends: done, refused (the item can't be done), failed | `stage::Ended`, mapped from the stage's own outcomes | heard/silent, unreadable/too long, deadline/failed |
 | Who waits on it | `Stage::waiters`, each a `Waiter` with its series | `cards_essays_waiting_on_takes`, `lane_busy_ticks_total{kind}` |
@@ -34,10 +34,11 @@ does not read each of its waiters.
 
 ## Invariants
 
-1. **One read a pass, over the whole queue.** A stage reads its oldest arrival and count once a
-   pass, over every item waiting, never from the pass's batch, whose order is the pass's own
-   business. The read is the queue's own predicate with no limit, so it does no more work than
-   the batch's read whenever fewer than a batch wait. No per-item series.
+1. **Read over the whole queue, never the batch.** A stage reads its oldest arrival and count
+   over every item waiting, never from the pass's batch, whose order is the pass's own business:
+   at a pass's start and after each attempt it keeps (4, below), so at most one more read than
+   attempts. Each read is the queue's own predicate and does the queue's own read's work (the
+   transcriber's `waiting_first` reads every candidate before it sorts). No per-item series.
 2. **A time, not an age.** The server exports when the oldest item arrived, never how long it
    has waited, because a broken stage's pass is long (the transcriber's: 20 notes, 600 s each)
    and an age set per pass would stand still for all of it. Prometheus ages it.

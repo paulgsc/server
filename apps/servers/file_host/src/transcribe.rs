@@ -100,12 +100,14 @@ const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && DEADLINE.a
 /// The transcriber's promise as a shared stage (`crate::stage`, VH7).
 ///
 /// A note is heard within this long of reaching home, or the stage is
-/// degraded. Policy, moved by a call (C900, paulgsc/some-ui#3333): an
-/// interval to be picked up, and one deadline-long note ahead of it, fit
-/// with room to spare.
-pub const HEARD_WITHIN: Duration = Duration::from_secs(15 * 60);
+/// degraded. Policy, moved by a call (C900, moved by C904,
+/// paulgsc/some-ui#3333): the worst a working transcriber does by design
+/// fits, with room to spare: a turn given to the renders ([`turn::GIVE`],
+/// TR4) holding every note, an interval to be picked up, and one
+/// deadline-long note ahead of it.
+pub const HEARD_WITHIN: Duration = Duration::from_secs(25 * 60);
 
-const _: () = assert!(HEARD_WITHIN.as_secs() > INTERVAL.as_secs() + DEADLINE.as_secs());
+const _: () = assert!(HEARD_WITHIN.as_secs() > turn::GIVE.as_secs() + INTERVAL.as_secs() + DEADLINE.as_secs());
 
 /// The whisper model, where compose mounts `TRANSCRIBE_MODELS_DIR`
 /// (`infra/compose/file_host.yml`) and `nix/whisper-manager` downloads it
