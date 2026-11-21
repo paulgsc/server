@@ -139,7 +139,10 @@ and no count, so the two cannot disagree about a play (tested:
 `just_happened_is_the_newest_of_the_log`). It is read in Full mode, which
 only moves the pregame window, never what a play was. Which entries are big,
 or have a bite beside them, is the reader's to choose: the engine serves the
-log, not a policy. One pass over the log, O(plays × scenarios): about 3 ms
+log, not a policy. An entry's unit is what a bite of it is about by default
+now, as in "just happened": read off its play while the game is played, and
+none once it is over (a bite then is about the game), so a finished game's
+log carries no units. One pass over the log, O(plays × scenarios): about 3 ms
 for the recorded game's 180 plays in a release build. `file_host` serves it
 to the phone as `GET /games/:id/moments`.
 

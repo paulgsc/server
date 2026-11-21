@@ -244,8 +244,9 @@ pub struct Happened {
 	/// ESPN's play id.
 	pub play_id: String,
 	pub line: String,
-	/// When home first saw the play, ISO 8601 to the second: the phone says
-	/// how long ago from its own clock and the offset.
+	/// When the play happened, ISO 8601 to the second: ESPN's wallclock, or
+	/// else when home first saw it. The phone says how long ago from its own
+	/// clock and the offset.
 	pub at: String,
 	/// For `in.big-play` only: the play by the big-play algebra (#3048), its
 	/// `size` and `kind` slugs as the scenario catalog lists them. Absent on

@@ -29,13 +29,16 @@ fn just_happened_is_the_newest_of_the_log() {
 			assert!(entries.iter().any(|e| e.happened == *happened), "{happened:?} is not in the log");
 			shown += 1;
 		}
+		// The newest: the play "just happened" leads with is the log's last.
+		if let Some(newest) = offered.just_happened.first() {
+			assert_eq!(entries.last().unwrap().happened.play_id, newest.play_id);
+		}
 	}
 	assert!(shown > 100, "only {shown} entries were shown");
 }
 
 /// The final game's log: in ESPN's order, each entry where its play was in
-/// the game, a big play with its algebra, and every play's scenarios most
-/// specific first within it.
+/// the game, and a big play with its algebra.
 #[test]
 fn the_finished_games_log_is_every_play_in_order() {
 	let plays = plays();
@@ -72,8 +75,12 @@ fn the_log_at_a_time_holds_only_what_home_had_seen() {
 	let half = &plays[plays.len() / 2];
 	let g = game(Some("CHI"), status(GameState::In, Some(half)), None);
 	let now = first_seen(&log, half);
-	for entry in moment_log(&g, &log, now) {
+	let entries = moment_log(&g, &log, now);
+	assert!(!entries.is_empty());
+	for entry in &entries {
 		let play = plays.iter().find(|p| p.id == entry.happened.play_id).unwrap();
 		assert!(first_seen(&log, play) <= now);
 	}
+	// Live, each entry carries the unit read off its play.
+	assert!(entries.iter().any(|e| e.happened.unit.is_some()));
 }

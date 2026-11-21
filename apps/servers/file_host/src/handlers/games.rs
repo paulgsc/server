@@ -69,9 +69,16 @@ pub struct Moment {
 /// The moment log of game `id` as of `now`.
 ///
 /// The game is read as the socket reads it (`offer::game_at`): from the newest
-/// scoreboard that lists it, now, or else as of when home last kept a play of
-/// it (a game of an earlier week). `None` for an id that cannot be ESPN's,
-/// a game home kept no play of, or one no kept scoreboard lists.
+/// scoreboard that lists it, now, or else from the one home had when it last
+/// kept a play of it by `now` (a game of an earlier week). Either way its
+/// status is the newest summary's kept by `now`, so both paths read a game
+/// the same, and `final` is that summary's. `None` for an id that cannot be
+/// ESPN's, a game home kept no play of by `now`, or one no kept scoreboard
+/// lists.
+///
+/// Unlike the socket, it does not read the operator's switch
+/// (`settings::GameFeed`): the log is the game's record, not a live offer, so
+/// a paused feed only stops it growing.
 ///
 /// # Errors
 /// Any storage failure.
@@ -81,18 +88,28 @@ pub async fn moment_log(db: &SqlitePool, id: &str, now: DateTime<Utc>) -> Result
 	}
 	let mut conn = db.acquire().await?;
 	let log = game_feed_repo::game_log(&mut conn, id).await?;
-	let Some(last) = log.iter().filter_map(|entry| DateTime::parse_from_rfc3339(&entry.seen_at).ok()).max() else {
+	let Some(last) = log
+		.iter()
+		.filter_map(|entry| DateTime::parse_from_rfc3339(&entry.seen_at).ok())
+		.map(|seen| seen.with_timezone(&Utc))
+		.filter(|seen| *seen <= now)
+		.max()
+	else {
 		return Ok(None);
 	};
-	let game = match offer::game_at(&mut conn, id, now).await? {
+	let mut game = match offer::game_at(&mut conn, id, now).await? {
 		Some(game) => game,
-		None => match offer::game_at(&mut conn, id, last.with_timezone(&Utc)).await? {
+		None => match offer::game_at(&mut conn, id, last).await? {
 			Some(game) => game,
 			None => return Ok(None),
 		},
 	};
 	let as_of = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-	let is_final = game_feed_repo::summary(&mut conn, id, &as_of).await?.is_some_and(|summary| summary.status.is_final());
+	let summary = game_feed_repo::summary(&mut conn, id, &as_of).await?;
+	if let Some(summary) = &summary {
+		game.status = summary.status.clone();
+	}
+	let is_final = summary.is_some_and(|summary| summary.status.is_final());
 	let moments = scenario_engine::moment_log(&game, &log, now)
 		.into_iter()
 		.map(|logged| Moment {
@@ -273,6 +290,10 @@ mod tests {
 		assert!(!sent.just_happened.is_empty());
 		let then_log = moment_log(&db, GAME, then).await.unwrap().unwrap();
 		assert!(!then_log.is_final);
+		// Live, an entry carries the unit read off its play; after the final
+		// none does, as "just happened" (a bite then is about the game, #3049).
+		assert!(then_log.moments.iter().any(|m| m.entry.unit.is_some()));
+		assert!(read.moments.iter().all(|m| m.entry.unit.is_none()));
 		for happened in &sent.just_happened {
 			assert!(then_log.moments.iter().any(|m| m.entry == *happened), "{happened:?}");
 		}
@@ -289,7 +310,8 @@ mod tests {
 		keep(&db, Fetched::Scoreboard, &board(&[("401873099", "SF", "SEA", "2026-10-30T20:25Z")]), next_week).await;
 		let later = moment_log(&db, GAME, next_week + TimeDelta::hours(1)).await.unwrap().unwrap();
 		let earlier = moment_log(&db, GAME, final_at + TimeDelta::hours(1)).await.unwrap().unwrap();
-		assert_eq!(later.moments.len(), earlier.moments.len());
+		assert_eq!(later.moments, earlier.moments, "both paths read the game the same");
+		assert_eq!(later.is_final, earlier.is_final);
 		assert!(moment_log(&db, "401873099", next_week).await.unwrap().is_none(), "no play kept");
 		assert!(moment_log(&db, "../etc", next_week).await.unwrap().is_none());
 	}
