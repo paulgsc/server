@@ -305,6 +305,78 @@ fn a_drive_bite_never_takes_the_next_halfs_score() {
 	}
 }
 
+/// A drive is not split where possession carries on: across an overtime
+/// period's break (the playoffs), and across a snap ESPN gave no period. But a
+/// later half still splits it, read past such a snap, and so does regulation's
+/// end, with or without the overtime kickoff in the log.
+#[test]
+fn a_drive_carries_across_an_overtime_break_and_a_snap_with_no_period() {
+	let ot = [
+		shaped(1, 5, "NE", "Rush", "R.Stevenson up the middle to CHI 12 for 3 yards.", (Some(1), 15), (20, 20)),
+		shaped(2, 5, "NE", "End Period", "END OF 1ST OVERTIME", (None, 12), (20, 20)),
+		shaped(3, 6, "NE", "Rush", "R.Stevenson left end to CHI 5 for 7 yards.", (Some(2), 12), (20, 20)),
+		shaped(
+			4,
+			6,
+			"NE",
+			"Passing Touchdown",
+			"D.Maye pass short right to H.Henry for 5 yards, TOUCHDOWN.",
+			(Some(1), 5),
+			(26, 20),
+		),
+	];
+	let log = recorded_log(&ot);
+	let end = wall(ot.last().unwrap()) + TimeDelta::minutes(5);
+	let over = game(Some("CHI"), status(GameState::Post, ot.last()), None);
+	let bite = wall(&ot[0]) - TimeDelta::seconds(10);
+	let picked = its_play(&over, &log, end, Scenario::RedZone, Said::BeforeTheDrive, bite, bite, ANY).map(|(w, _)| w.play_id);
+	assert_eq!(picked.as_deref(), Some("p4"), "the 2nd overtime's touchdown ends the 1st's drive");
+
+	// HOU snaps in the 2nd quarter, again with no period, then in the 3rd with
+	// neither the half's end nor the kickoff in the log: the 3rd is its own.
+	let mut halves = [
+		shaped(1, 2, "HOU", "Rush", "J.Mixon up the middle to CHI 12 for 3 yards.", (Some(1), 15), (14, 20)),
+		shaped(2, 2, "HOU", "Pass Incompletion", "C.Stroud pass incomplete.", (Some(2), 12), (14, 20)),
+		shaped(
+			3,
+			3,
+			"HOU",
+			"Passing Touchdown",
+			"C.Stroud pass short right to N.Collins for 10 yards, TOUCHDOWN.",
+			(Some(1), 10),
+			(20, 20),
+		),
+	];
+	halves[1].period = None;
+	let red = |plays: &[Play]| {
+		let log = recorded_log(plays);
+		let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+		let over = game(Some("CHI"), status(GameState::Post, plays.last()), None);
+		let bite = wall(&plays[0]) - TimeDelta::seconds(10);
+		its_play(&over, &log, end, Scenario::RedZone, Said::BeforeTheDrive, bite, bite, ANY).map(|(w, _)| w.play_id)
+	};
+	assert_eq!(red(&halves), None, "a later half splits, read past the snap with no period");
+	// The same, all in the 2nd quarter: the snap with no period splits nothing.
+	halves[2].period = Some(2);
+	assert_eq!(red(&halves).as_deref(), Some("p3"));
+	// Regulation's end splits a run though the overtime kickoff is not in the
+	// log: overtime is a half of its own.
+	let late = [
+		shaped(1, 4, "NE", "Rush", "R.Stevenson up the middle to CHI 12 for 3 yards.", (Some(1), 15), (20, 20)),
+		shaped(2, 4, "NE", "End Period", "END OF 4TH QUARTER", (None, 12), (20, 20)),
+		shaped(
+			3,
+			5,
+			"NE",
+			"Passing Touchdown",
+			"D.Maye pass short right to H.Henry for 10 yards, TOUCHDOWN.",
+			(Some(1), 10),
+			(26, 20),
+		),
+	];
+	assert_eq!(red(&late), None, "the 4th quarter's drive does not run into overtime");
+}
+
 /// #1077: a possession ends at a kickoff. CHI scores on its opening drive,
 /// kicks onside and gets it back: the drive after is not its first, so the
 /// opening drive is not on offer, and a bite on it before the onside kick

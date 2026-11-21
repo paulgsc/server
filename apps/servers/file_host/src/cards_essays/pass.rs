@@ -103,6 +103,12 @@ pub struct Pass {
 	/// Essays held back: a take a spoken card names is not heard yet, or no
 	/// subject holds takes.
 	pub waiting: usize,
+	/// Of those, the essays held back because a take is not heard yet:
+	/// what waits on the transcriber (`crate::stage`, paulgsc/some-ui#3333).
+	pub waiting_on_takes: usize,
+	/// The takes those essays wait on, by essay key and note id: the edges
+	/// `stage_want` keeps for the transcriber's queue (paulgsc/server#1091).
+	pub wanted_takes: Vec<(String, String)>,
 	/// Essays refused: an item they name is missing, unheard or gone
 	/// (`essay_media::Refusal::reason`).
 	pub refused: usize,
@@ -206,7 +212,39 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, given: &Given, clock
 	let mut pass = Pass::default();
 	take_new(db, fetch, clock, &mut pass).await?;
 	export(db, given, clock, &mut pass).await?;
+	if want(db, given, &pass).await.is_err() {
+		// What the essays wait on orders the transcriber, nothing more: the
+		// essays given stand, and the next pass says it again.
+		pass.failures.push("want");
+	}
 	Ok(pass)
+}
+
+/// Says which takes the essays held back wait on (`stage_want`, the
+/// transcriber's [`crate::stage::Waiter::CardsEssays`] edges), replacing
+/// what the last pass said, so the transcriber hears them first
+/// (paulgsc/server#1091). With no subject, nothing waits on a take. Under
+/// account deletion's hold, and only for notes the subject still holds
+/// (docs/identity.md invariant 9). A pass that failed before this leaves the
+/// last pass's rows, which only order the transcriber and leave with the
+/// account; one whose essays' folder could not be made says nothing waits.
+async fn want(db: &SqlitePool, given: &Given, pass: &Pass) -> Result<(), sqlx::Error> {
+	let subject = given.subject.as_deref().unwrap_or_default();
+	let wants: Vec<_> = pass
+		.wanted_takes
+		.iter()
+		.filter(|_| !subject.is_empty())
+		.map(|(essay, take)| stage_repo::Want {
+			waiter_key: essay,
+			stage: crate::stage::Stage::Transcriber.name(),
+			subject,
+			item: take,
+		})
+		.collect();
+	let _hold = given.deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	stage_repo::replace(&mut tx, crate::stage::Waiter::CardsEssays.name(), &wants).await?;
+	tx.commit().await
 }
 
 /// Where a pass gives the render worker its essays, and whose takes a spoken
@@ -232,6 +270,9 @@ pub struct Given {
 	/// The worker's work folder ([`super::WORK_FOLDER`]): a withdrawn
 	/// essay's waiting work goes with it.
 	pub work: PathBuf,
+	/// Account deletion's lock, held around writing what the essays wait on
+	/// (docs/identity.md invariant 9).
+	pub deletion: crate::auth::DeletionLock,
 }
 
 impl Given {
@@ -567,8 +608,14 @@ async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Ut
 		};
 		let media = match named {
 			Ok(essay_media::Given::Ready(media)) => media,
-			Ok(essay_media::Given::Waiting) => {
+			Ok(essay_media::Given::Waiting(kinds)) => {
 				pass.waiting += 1;
+				// Waiting on the transcriber, not on there being no subject.
+				let takes = kinds.into_iter().find(|(kind, _)| *kind == essay_media::Kind::Takes).map(|(_, takes)| takes);
+				if let Some(takes) = takes.filter(|_| given.subject.is_some()) {
+					pass.waiting_on_takes += 1;
+					pass.wanted_takes.extend(takes.into_iter().map(|take| (essay.key.clone(), take)));
+				}
 				// An item that was missing and is now home waits (a take to be
 				// heard): no longer a refusal.
 				clear_refused(&given.status, &essay.key).await;
@@ -703,6 +750,7 @@ mod tests {
 			frames: dir.join("frames-held"),
 			snips: None,
 			work: dir.join("work"),
+			deletion: crate::auth::DeletionLock::default(),
 		}
 	}
 
@@ -1041,15 +1089,36 @@ mod tests {
 		hear(&pool, "take-1", "I build things.", Some("heard")).await;
 
 		let none = run_once(&pool, &fake, &given(dir.path()), &clock).await.unwrap();
-		assert_eq!((none.exported, none.waiting), (0, 1), "with no subject, a spoken card waits");
+		assert_eq!(
+			(none.exported, none.waiting, none.waiting_on_takes),
+			(0, 1, 0),
+			"with no subject, a spoken card waits, and not on a take"
+		);
 		let mut mine = given(dir.path());
 		mine.subject = Some(String::from(ME));
 		let early = run_once(&pool, &fake, &mine, &clock).await.unwrap();
-		assert_eq!((early.exported, early.waiting, early.refused), (0, 1, 0), "take-2 is not heard yet");
+		assert_eq!(
+			(early.exported, early.waiting, early.waiting_on_takes, early.refused),
+			(0, 1, 1, 0),
+			"take-2 is not heard yet"
+		);
 		assert!(!dir.path().join("hello-2026-11-20.json").exists());
+		let wants = || async {
+			sqlx::query_as::<_, (String, String, String)>("SELECT waiter_key, subject_id, item_key FROM stage_want")
+				.fetch_all(&pool)
+				.await
+				.unwrap()
+		};
+		let waiting_on = vec![(String::from("hello-2026-11-20"), String::from(ME), String::from("take-2"))];
+		assert_eq!(wants().await, waiting_on, "the transcriber hears what the essay waits on first (#1091)");
+		run_once(&pool, &fake, &given(dir.path()), &clock).await.unwrap();
+		assert!(wants().await.is_empty(), "with no subject, nothing waits on a take");
+		run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!(wants().await, waiting_on, "and with one again, it does");
 
 		hear(&pool, "take-2", "From home.", None).await;
 		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert!(wants().await.is_empty(), "given: it waits on nothing");
 		assert_eq!((done.exported, done.waiting, done.failures.len()), (1, 0, 0));
 		assert_eq!(names_in(dir.path()), ["hello-2026-11-20.json", "hello-2026-11-20.takes"], "no partial is left");
 		let takes = dir.path().join("hello-2026-11-20.takes");
@@ -1088,6 +1157,26 @@ mod tests {
 		let mut essay: Value = serde_json::from_slice(&essay(day)).unwrap();
 		essay["shots"] = Value::Array(shots);
 		essay.to_string().into_bytes()
+	}
+
+	/// An essay held for a snip not fetched yet waits, and not on a take:
+	/// only a take not heard yet is the transcriber's waiter
+	/// (`crate::stage::Waiter::CardsEssays`).
+	#[tokio::test]
+	async fn an_essay_waiting_on_a_snip_is_not_waiting_on_a_take() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let mut mine = given(dir.path());
+		mine.subject = Some(String::from(ME));
+		mine.snips = Some(dir.path().join("snips"));
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&["snipped-2026-11-21"]));
+		let snip = serde_json::json!({ "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "at": [] } });
+		fake.ok("snipped-2026-11-21.json", &showing_essay("2026-11-21", &[snip]));
+
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.exported, done.refused, done.waiting, done.waiting_on_takes), (0, 0, 1, 0));
+		let wanted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stage_want").fetch_one(&pool).await.unwrap();
+		assert_eq!(wanted, 0, "a snip is not the transcriber's to hear");
 	}
 
 	/// A clip frame a scene shows is given beside the essay in `<key>.clips/`
