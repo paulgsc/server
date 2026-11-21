@@ -427,9 +427,11 @@ async fn export(db: &SqlitePool, given: &Given, pass: &mut Pass) -> Result<(), s
 
 /// Every take the essay `body`'s spoken cards name, each once.
 ///
-/// In the order first named (`@some-ui/video-render`'s `spokenTakesOf`):
-/// each `shots[].spoken.exchanges[].take` of a shot whose `spoken.role` is
-/// `spoken`. None for an essay with no spoken card, or one that does not
+/// In the order first named (`@some-ui/video-render`'s `spokenTakesOf`,
+/// C817): each exchange of a shot whose `spoken.role` is `spoken` is
+/// `{ ask, answer }`, two turns, each `{ voice: "kokoro", said }` or
+/// `{ voice: "owner", take }`; every owner turn's `take`, the asking one's
+/// included. None for an essay with no spoken card, or one that does not
 /// read: the recorder refuses that one itself, as before.
 #[must_use]
 pub fn spoken_takes(body: &[u8]) -> Vec<String> {
@@ -443,7 +445,9 @@ pub fn spoken_takes(body: &[u8]) -> Vec<String> {
 			continue;
 		}
 		let exchanges = spoken.get("exchanges").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
-		for take in exchanges.iter().filter_map(|exchange| exchange.get("take").and_then(Value::as_str)) {
+		let turns = exchanges.iter().flat_map(|exchange| [exchange.get("ask"), exchange.get("answer")]).flatten();
+		let owners = turns.filter(|turn| turn.get("voice").and_then(Value::as_str) == Some("owner"));
+		for take in owners.filter_map(|turn| turn.get("take").and_then(Value::as_str)) {
 			if !takes.iter().any(|held| held == take) {
 				takes.push(take.to_owned());
 			}
@@ -825,7 +829,10 @@ mod tests {
 	/// An essay stamped `day` whose one spoken card plays `takes`, and a
 	/// scene that is no spoken card.
 	fn spoken_essay(day: &str, takes: &[&str]) -> Vec<u8> {
-		let exchanges: Vec<Value> = takes.iter().map(|take| serde_json::json!({ "ask": "Who are you?", "take": take })).collect();
+		let exchanges: Vec<Value> = takes
+			.iter()
+			.map(|take| serde_json::json!({ "ask": { "voice": "kokoro", "said": "Who are you?" }, "answer": { "voice": "owner", "take": take } }))
+			.collect();
 		serde_json::json!({
 			"schema": "some-ui.cut-list/2",
 			"title": "Hello",
@@ -900,6 +907,50 @@ mod tests {
 		let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
 		names.sort();
 		names
+	}
+
+	/// some-ui's own `spoken-intro` sample, byte for byte
+	/// (`packages/video-render/src/sample/videos/spoken-intro/cut-list.json`
+	/// at paulgsc/some-ui@928c141), so both repos read the same essay.
+	const SPOKEN_INTRO: &[u8] = include_bytes!("testdata/spoken-intro.cut-list.json");
+
+	/// The C817 shape, as some-ui writes it: an owner turn may ask or
+	/// answer, and a Kokoro turn names no take.
+	#[test]
+	fn the_sample_spoken_cards_takes_are_its_owner_turns_asking_or_answering() {
+		assert_eq!(spoken_takes(SPOKEN_INTRO), ["sample-take-1", "sample-take-2"]);
+		let old = serde_json::json!({ "shots": [{ "spoken": { "role": "spoken", "exchanges": [{ "ask": "Who?", "take": "t" }] } }] });
+		assert!(spoken_takes(old.to_string().as_bytes()).is_empty(), "the pre-C817 shape names no owner turn");
+	}
+
+	/// The sample essay itself is given with both its takes, the one the
+	/// owner asks with included.
+	#[tokio::test]
+	async fn the_sample_essay_is_given_with_the_take_it_asks_with_and_the_one_it_answers_with() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&["spoken-intro-2026-11-14"]));
+		fake.ok("spoken-intro-2026-11-14.json", SPOKEN_INTRO);
+		for take in ["sample-take-1", "sample-take-2"] {
+			hold_take(&pool, take).await;
+			hear(&pool, take, "A made-up answer.", Some("heard")).await;
+		}
+		let mut mine = given(dir.path());
+		mine.subject = Some(String::from(ME));
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.added, done.exported, done.failures.len()), (1, 1, 0));
+		assert_eq!(std::fs::read(dir.path().join("spoken-intro-2026-11-14.json")).unwrap(), SPOKEN_INTRO);
+		assert_eq!(
+			names_in(&dir.path().join("spoken-intro-2026-11-14.takes")),
+			[
+				"sample-take-1.ogg",
+				"sample-take-1.transcript.json",
+				"sample-take-1.words.json",
+				"sample-take-2.ogg",
+				"sample-take-2.transcript.json",
+				"sample-take-2.words.json"
+			]
+		);
 	}
 
 	#[test]

@@ -1,0 +1,177 @@
+{
+  "schema": "some-ui.cut-list/2",
+  "title": "Rust scratchpad, introduced (sample)",
+  "series": {
+    "id": "cheat-sheet",
+    "version": 3
+  },
+  "look": "plain",
+  "voice": "read",
+  "shots": [
+    {
+      "id": "introduction",
+      "picture": {
+        "kind": "card"
+      },
+      "durationMs": 1000,
+      "spoken": {
+        "role": "spoken",
+        "category": "introduction",
+        "exchanges": [
+          {
+            "ask": {
+              "voice": "kokoro",
+              "said": "What is this, and who made it?"
+            },
+            "answer": {
+              "voice": "owner",
+              "take": "sample-take-1"
+            }
+          },
+          {
+            "ask": {
+              "voice": "owner",
+              "take": "sample-take-2"
+            },
+            "answer": {
+              "voice": "kokoro",
+              "said": "So the video says only what was recorded: the template lays out each frame from who spoke, and when."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "intro",
+      "picture": {
+        "kind": "card"
+      },
+      "durationMs": 12000,
+      "burnIns": [
+        {
+          "kind": "flow",
+          "params": {
+            "kicker": "FLOW · OPEN AND CLOSE",
+            "title": "prefix S, write, quit, gone",
+            "steps": [
+              {
+                "badge": "main",
+                "label": "prefix S",
+                "note": "A tmux window named scratch."
+              },
+              {
+                "badge": "main",
+                "label": "A dir in tmpfs",
+                "note": "main.rs and a rust-project.json, so rust-analyzer works with no Cargo.toml."
+              },
+              {
+                "badge": "main",
+                "label": "Vim + a watch pane",
+                "note": "The right pane compiles, lints and runs on every save."
+              },
+              {
+                "badge": "main",
+                "label": "Quit vim",
+                "note": "The directory and the pane go. Nothing is kept: copy out first."
+              }
+            ]
+          }
+        }
+      ],
+      "spoken": {
+        "role": "intro",
+        "said": "This is a spoken cheat sheet on the Rust scratchpad: a throwaway place to try a few lines of Rust without making a project. Reach for it when you want to test an idea, see how the compiler reacts, or run a small snippet, and you don't want a Cargo project left behind. By the end, you'll be able to open one with a single key binding, compile and lint as you write, and fix it when it opens the wrong editor or an old version. It is as of November fourteenth, twenty twenty-six, checked against two repositories: scratch, which holds the tool, and dotfiles, which binds it into tmux. Later commits may have moved things, and every card is stamped with the commits it was checked against."
+      }
+    },
+    {
+      "id": "C1",
+      "picture": {
+        "kind": "card"
+      },
+      "durationMs": 11300,
+      "burnIns": [
+        {
+          "kind": "flow",
+          "params": {
+            "kicker": "FLOW · OPEN AND CLOSE",
+            "title": "prefix S, write, quit, gone",
+            "steps": [
+              {
+                "badge": "main",
+                "label": "prefix S",
+                "note": "A tmux window named scratch."
+              },
+              {
+                "badge": "main",
+                "label": "A dir in tmpfs",
+                "note": "main.rs and a rust-project.json, so rust-analyzer works with no Cargo.toml."
+              },
+              {
+                "badge": "main",
+                "label": "Vim + a watch pane",
+                "note": "The right pane compiles, lints and runs on every save."
+              },
+              {
+                "badge": "main",
+                "label": "Quit vim",
+                "note": "The directory and the pane go. Nothing is kept: copy out first."
+              }
+            ]
+          }
+        }
+      ],
+      "spoken": {
+        "role": "scene",
+        "chapter": "Chapter one. Open it, write, quit, and it's gone.",
+        "narration": "In tmux, press your prefix, then a capital S. A new tmux window named scratch opens. Behind it, a directory in memory holds main dot rs and a small rust-project dot json, which is enough for rust-analyzer to work with no Cargo dot toml. Vim opens on the left, and a pane on the right compiles, lints and runs your file every time you save. When you quit vim, the directory and the pane go away. Nothing is kept, so copy out anything you want before you quit. That is the mistake to expect: losing a snippet you meant to keep."
+      }
+    },
+    {
+      "id": "close",
+      "picture": {
+        "kind": "card"
+      },
+      "durationMs": 12000,
+      "burnIns": [
+        {
+          "kind": "flow",
+          "params": {
+            "kicker": "FLOW · OPEN AND CLOSE",
+            "title": "prefix S, write, quit, gone",
+            "steps": [
+              {
+                "badge": "main",
+                "label": "prefix S",
+                "note": "A tmux window named scratch."
+              },
+              {
+                "badge": "main",
+                "label": "A dir in tmpfs",
+                "note": "main.rs and a rust-project.json, so rust-analyzer works with no Cargo.toml."
+              },
+              {
+                "badge": "main",
+                "label": "Vim + a watch pane",
+                "note": "The right pane compiles, lints and runs on every save."
+              },
+              {
+                "badge": "main",
+                "label": "Quit vim",
+                "note": "The directory and the pane go. Nothing is kept: copy out first."
+              }
+            ]
+          }
+        }
+      ],
+      "spoken": {
+        "role": "close",
+        "said": "That's the scratchpad. Next time, press your prefix and a capital S, write a few lines, and save to watch them run. If something is off, refresh the shell with nix develop dash dash refresh, then reload tmux from the config under dot config; the README in the scratch repository has the rest."
+      }
+    }
+  ],
+  "burnIns": [],
+  "stamp": {
+    "sources": ["paulgsc/scratch@35ae1e0", "paulgsc/dotfiles@91cb11b"],
+    "date": "2026-11-14"
+  }
+}
