@@ -290,10 +290,10 @@ mod tests {
 		assert!(!sent.just_happened.is_empty());
 		let then_log = moment_log(&db, GAME, then).await.unwrap().unwrap();
 		assert!(!then_log.is_final);
-		// Live, an entry carries the unit read off its play; after the final
-		// none does, as "just happened" (a bite then is about the game, #3049).
+		// An entry carries the unit read off its play, live and after the
+		// final alike (C1020).
 		assert!(then_log.moments.iter().any(|m| m.entry.unit.is_some()));
-		assert!(read.moments.iter().all(|m| m.entry.unit.is_none()));
+		assert!(read.moments.iter().any(|m| m.entry.unit.is_some()));
 		for happened in &sent.just_happened {
 			assert!(then_log.moments.iter().any(|m| m.entry == *happened), "{happened:?}");
 		}

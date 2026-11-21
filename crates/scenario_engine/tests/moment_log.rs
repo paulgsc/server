@@ -60,6 +60,12 @@ fn the_finished_games_log_is_every_play_in_order() {
 	for scenario in [Scenario::BigPlay, Scenario::Turnover, Scenario::Penalty, Scenario::ThirdAndLong, Scenario::FourthDown] {
 		assert!(entries.iter().any(|e| e.happened.scenario == scenario), "no {} in the log", scenario.id());
 	}
+	// After the final each entry keeps the unit read off its play (C1020),
+	// while the default for a new bite is the game's: none.
+	assert!(entries.iter().any(|e| e.happened.unit.is_some()));
+	assert!(entries.iter().filter(|e| e.happened.unit.is_some()).all(|e| e.happened.unit_side.is_some()));
+	let after = offer(&g, &log, pacific(wall(last) + TimeDelta::hours(1)), Mode::Full, Watching::Unknown);
+	assert!(after.ranked.iter().all(|r| r.unit.is_none() && r.unit_side.is_none()));
 	let json = serde_json::to_value(&entries[0]).unwrap();
 	for field in ["id", "play_id", "line", "period", "clock", "unit", "unit_side"] {
 		assert!(json.get(field).is_some(), "an entry has no {field}: {json}");

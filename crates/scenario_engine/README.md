@@ -107,7 +107,9 @@ is the team that kicks off next: the latest onside kick's while nothing has
 scored since, else the last scorer's. None before kickoff (until the log
 holds the opening kickoff, whatever ESPN's state says) or after the final,
 for a pregame, final or owner's scenario, or when the team it would name is
-unknown. A unit with no side is about no one team. Units are catalogue v2's
+unknown. A play in "just happened" (and the moment log) keeps the unit read
+off it after the final, a fact about the play (C1020). A unit with no side
+is about no one team. Units are catalogue v2's
 (C873): a bite said under catalogue 1 carries none. The owner can change
 it with one tap; home keeps what the phone sends, once, with the bite.
 
@@ -139,10 +141,9 @@ and no count, so the two cannot disagree about a play (tested:
 `just_happened_is_the_newest_of_the_log`). It is read in Full mode, which
 only moves the pregame window, never what a play was. Which entries are big,
 or have a bite beside them, is the reader's to choose: the engine serves the
-log, not a policy. An entry's unit is what a bite of it is about by default
-now, as in "just happened": read off its play while the game is played, and
-none once it is over (a bite then is about the game), so a finished game's
-log carries no units. One pass over the log, O(plays × scenarios): about 3 ms
+log, not a policy. An entry's unit is read off its play, as in "just happened",
+and is a fact about the play: it holds after the final too (C1020), where
+the default for a new bite on the ranked list is the game's, none. One pass over the log, O(plays × scenarios): about 3 ms
 for the recorded game's 180 plays in a release build. `file_host` serves it
 to the phone as `GET /games/:id/moments`.
 

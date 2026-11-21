@@ -394,10 +394,10 @@ impl<'s> Cx<'s> {
 	/// team's special teams (the try's, the scorer's); a return, the
 	/// returners'; a score, the scorer's (its defense or special teams when
 	/// the other team had the ball); anything else goes by the play's ball.
+	///
+	/// A fact about the play, so it holds after the final too (C1020): only
+	/// the default for a new bite, [`Cx::default_unit`], is the game's then.
 	fn happened_unit(&self, moment: Moment, i: usize) -> Option<(Unit, Option<String>)> {
-		if self.phase != Phase::Live {
-			return None;
-		}
 		let play = self.so_far.plays[i].play;
 		let offense = play.possession.as_deref();
 		let of = |unit, team: Option<&str>| Some((unit, Some(team?.to_owned())));
@@ -761,7 +761,7 @@ impl Cx<'_> {
 			.map(|(scenario, line)| {
 				let (unit, unit_side) = self
 					.happened_unit(scenario.entry().moment, i)
-					.filter(|_| self.about_a_unit(scenario))
+					.filter(|_| scenario.entry().phase == When::In)
 					.map_or((None, None), |(unit, side)| (Some(unit), side));
 				Happened {
 					scenario,
