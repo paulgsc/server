@@ -165,22 +165,27 @@ pub struct Waiting {
 pub enum Urgency {
 	/// Nothing waits on it.
 	None,
-	/// A waiter names it in `stage_want`: a cards essay held back for it.
+	/// A waiter names it in `stage_want` (a cards essay held back for it), or
+	/// the owner fast-tracked it and its first try failed.
 	Wanted,
-	/// The owner put it first by hand (`crate::fast_track`).
+	/// The owner put it first by hand (`crate::fast_track`), and it has not
+	/// been tried yet: its one try at the head of the line. Fast-tracked and
+	/// tried already, it is [`Urgency::Wanted`].
 	FastTrack,
 }
 
 /// The notes their key in `keys` has not ended (heard, or found silent).
 ///
-/// Those it has failed on fewer than `attempts` times, at most `limit`: those
-/// the owner fast-tracked first, then those tried fewest times, then those
-/// something waits on, most waited on first, then oldest first.
+/// Those it has failed on fewer than `attempts` times, at most `limit`: a
+/// fast-tracked take not tried yet first, then those tried fewest times, and
+/// among those tried as often, fast-tracked ones, then those something waits
+/// on, most waited on first, then oldest first.
 ///
-/// **A take the owner puts first goes first** (paulgsc/server#1090, C1017):
-/// a fast-tracked note goes ahead of every note but the excused one, notes
-/// tried fewer times included, the one exception to TR1 below, by the
-/// owner's own hand and bounded by `attempts`.
+/// **A take the owner puts first gets one try at the head of the line**
+/// (paulgsc/server#1090, C1017): ahead of every note but the excused one.
+/// If that try fails, it falls back among notes tried as often, still ahead
+/// of those no one waits on, so TR1 below holds whole and a fast track costs
+/// at most one deadline.
 ///
 /// **What waits on a note puts it first** (paulgsc/server#1091,
 /// docs/shared-stages.md): a note a waiter names in `stage_want` (a cards
@@ -250,9 +255,9 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		                                            WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
 		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
 		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!",
-		        wanted AS "wanted!: i64", fast AS "fast!: bool" FROM candidate
+		        wanted AS "wanted!: i64", fast AS "fast!: bool", tried AS "tried!: i64" FROM candidate
 		 WHERE tried < ?2
-		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, fast DESC, tried, wanted DESC, stored_at, subject_id, note_id
+		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, fast AND tried = 0 DESC, tried, fast DESC, wanted DESC, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
 		keys.plain,
 		attempts,
@@ -272,9 +277,9 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 				note_id: row.note_id,
 				verbatim: row.verbatim,
 				expected_language: crate::verdict::expected_language(&row.of_kind),
-				urgency: if row.fast {
+				urgency: if row.fast && row.tried == 0 {
 					Urgency::FastTrack
-				} else if row.wanted > 0 {
+				} else if row.fast || row.wanted > 0 {
 					Urgency::Wanted
 				} else {
 					Urgency::None
@@ -991,16 +996,18 @@ mod tests {
 		assert_eq!(order, named(&[(A, "most-wanted"), (A, "wanted"), (A, "old"), (A, "retried")]));
 	}
 
-	/// paulgsc/server#1090, C1017: a take the owner fast-tracked goes first,
-	/// ahead of notes tried fewer times and of wanted ones, and each note says
-	/// why it is where it is; taken back, it falls into its place again.
+	/// paulgsc/server#1090, C1017: a take the owner fast-tracked gets one try
+	/// at the head of the line, ahead of wanted notes; failed once, it falls
+	/// back among notes tried as often (TR1), still ahead of those no one
+	/// waits on; taken back, it falls into its own place.
 	#[tokio::test]
 	async fn a_take_the_owner_puts_first_goes_first_and_says_so() {
 		let pool = pool().await;
 		note(&pool, A, "fresh", "2026-10-25T01:00:00.000Z", b"fresh").await;
 		note(&pool, A, "wanted", "2026-10-25T02:00:00.000Z", b"wanted").await;
 		note(&pool, A, "chosen", "2026-10-25T03:00:00.000Z", b"chosen").await;
-		keep(&pool, A, "chosen", &attempt(SMALL, Outcome::Deadline)).await;
+		note(&pool, A, "retried", "2026-10-25T00:30:00.000Z", b"retried").await;
+		keep(&pool, A, "retried", &attempt(SMALL, Outcome::Deadline)).await;
 		sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'e1', 'transcriber', ?1, 'wanted')")
 			.bind(A)
 			.execute(&pool)
@@ -1022,16 +1029,32 @@ mod tests {
 		let owned = |rows: &[(&str, Urgency)]| rows.iter().map(|(id, urgency)| ((*id).to_owned(), *urgency)).collect::<Vec<_>>();
 		assert_eq!(
 			read().await,
-			owned(&[("chosen", Urgency::FastTrack), ("wanted", Urgency::Wanted), ("fresh", Urgency::None)]),
-			"put first by hand though tried once"
+			owned(&[
+				("chosen", Urgency::FastTrack),
+				("wanted", Urgency::Wanted),
+				("fresh", Urgency::None),
+				("retried", Urgency::None)
+			]),
+			"its one try at the head of the line"
+		);
+		keep(&pool, A, "chosen", &attempt(SMALL, Outcome::Deadline)).await;
+		assert_eq!(
+			read().await,
+			owned(&[
+				("wanted", Urgency::Wanted),
+				("fresh", Urgency::None),
+				("chosen", Urgency::Wanted),
+				("retried", Urgency::None)
+			]),
+			"failed once: among notes tried once, ahead of those no one waits on (TR1)"
 		);
 		let mut conn = pool.acquire().await.unwrap();
 		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, "now").await.unwrap();
 		drop(conn);
 		assert_eq!(
 			read().await,
-			owned(&[("wanted", Urgency::Wanted), ("fresh", Urgency::None), ("chosen", Urgency::None)]),
-			"taken back: tried once, so behind the fresh notes (TR1)"
+			owned(&[("wanted", Urgency::Wanted), ("fresh", Urgency::None), ("retried", Urgency::None), ("chosen", Urgency::None)]),
+			"taken back: in its own place, by age"
 		);
 	}
 

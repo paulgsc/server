@@ -76,14 +76,16 @@ marking them.
   (`essay_media::Given::Waiting`, takes listed by id) wants each of them.
 - **The owner's hand is a source too.** `POST /voice-notes/:id/fast-track` puts one of the
   owner's takes first (`voice_note_fast_track`, append-only, the newest act decides; #1090).
-- **The transcriber reads both.** `waiting_first` orders the excused note first, then
-  fast-tracked takes, then fewest attempts, then notes something waits on, the most waited-on
-  first, then oldest. Each note carries its `transcript::Urgency` (`None < Wanted < FastTrack`,
-  a closed set), and the pass reads it: a fast-tracked take is not held by the lane's give (the
-  owner, 2026-11-21, on #1090).
-- **TR1 and its one exception.** Wanted sits after `tried`: a wanted note that keeps failing
-  would otherwise hold the queue, which TR1 forbids (C1015). A fast-tracked take sits before
-  it: the owner chose it by hand, and its retries are bounded by `ATTEMPTS` (C1017).
+- **The transcriber reads both.** `waiting_first` orders the excused note first, then a
+  fast-tracked take not tried yet, then fewest attempts, and among notes tried as often,
+  fast-tracked ones, then notes something waits on (the most waited-on first), then oldest.
+  Each note carries its `transcript::Urgency` (`None < Wanted < FastTrack`, a closed set), and
+  the pass reads it: a fast-tracked take's first try is not held by the lane's give (the owner,
+  2026-11-21, on #1090).
+- **TR1 holds whole.** Wanted sits after `tried` (C1015), and a fast-tracked take holds the head
+  of the line for one try only (C1017): failed once, it falls back among notes tried as often,
+  still ahead of those no one waits on. Holding the head across retries would loosen TR1,
+  which is the owner's to decide and the ledger's to amend.
 - **Not yet built:** urgency passing through more than one edge, which arrives with the first
   stage whose waiter is itself waited on.
 
