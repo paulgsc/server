@@ -220,6 +220,7 @@ above the button that deletes (invariant 22):
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
 | A week of mock interview's essay videos: the same, for its essay (IW6; invariant 23) | `interview_essay_video_link`, `interview_essay_video_deletion` |
+| Cards essays withdrawn because a take their spoken cards played was deleted: which, and that take's id (the essay and its link are no one's and stay; invariant 23) | `cards_essay_video_deletion` |
 | How each recording ended | `app_event` |
 | Each week's engagement report, as written for its video, and that video's links and what was let go (its files on the drive go too: invariant 34) | `report_week`, `report_video_link`, `report_video_deletion` |
 | Sign-in | `account`, `passkey`, `auth_session` |
@@ -1378,15 +1379,38 @@ nowhere is marked as such and belongs to review.
     subject's only, and with no subject home's tidy takes back every essay
     given with takes within a minute; (b) holds: the takes folder goes once
     the video is made, and a folder a stopped pass left half written goes
-    too; (c) holds **only until the worker starts its render**: a take
-    deleted from My data before then takes the essay and its takes back
-    from the worker within a minute, and it is refused from then on, but a
-    render already under way may still make the video, and a video made
-    keeps the owner's voice, both open in paulgsc/server#1055; (d) is
+    too; (c) holds (paulgsc/server#1055): a take an essay's spoken cards
+    play that is deleted from My data, or whose recording is let go, takes
+    that essay's video and folder with it within a minute, whether its
+    render has not started, is under way or is done, by the same steps as
+    the Rust Rounds essay's: both receipts in `cards_essay_video_deletion`
+    (`cards_essay_repo::withdraw`, cause `take-deleted`, naming the note
+    beside the note's own receipt, and the link it had), then its input,
+    takes, renders and work folders; it is never given to the worker again
+    and no list shows it (`cards_essay_repo::gone`), and a video a render
+    under way finishes after that is removed by the next minute's tidy,
+    while its cut list stays in `cards_essay`; `GET /cards-essays/:key/video`
+    never serves a withdrawn one meanwhile, and an essay never given is
+    withdrawn by the pass the same way. Receipts are read as the mailbox
+    subject's (`mailbox::pass_subject`), so while none resolves nothing is
+    withdrawn; a made video once the account is gone is
+    paulgsc/server#1064. Home has no `YouTube` access, so a copy the owner
+    uploaded stays theirs to take down: the receipt keeps its link (no
+    route serves it yet), and some-ui's My data and Renders words say the
+    copy is theirs (the owner, 2026-11-21, via the coordinator
+    of run paulgsc/some-ui#3311: "A copy you uploaded to YouTube is yours to
+    take down"). A cards essay is kept once,
+    so what it plays is its one body's, and a spoken card has no silence to
+    play in a take's place (C812): any such take withdraws it. (d) is
     some-ui's side (what My data says of a cards video). *Enforced by*
     `cards_essays::pass`' `no_copy_of_a_take_outlives_its_video_or_its_note`,
-    `every_kind_of_unheard_or_gone_take_is_said_and_a_wait_is_no_refusal`
-    and `a_spoken_card_is_given_its_takes_once_each_is_heard`. A note
+    `every_kind_of_unheard_or_gone_take_is_said_and_a_wait_is_no_refusal`,
+    `a_spoken_card_is_given_its_takes_once_each_is_heard`,
+    `a_take_deleted_before_during_or_after_the_render_withdraws_its_essay_for_good`,
+    `an_essay_never_given_is_withdrawn_by_the_pass_not_refused`
+    and `only_a_deleted_take_an_essay_plays_withdraws_it`, and
+    `cards_essay_repo`'s
+    `an_essay_whose_take_is_deleted_is_withdrawn_both_steps_at_once_linked_or_not_and_leaves_with_the_account`. A note
     is never updated (each table's trigger aborts an `UPDATE`) or replaced
     (other bytes or another description under a held id is a `409`), and
     never deleted but with the account, after it is transcribed as before
