@@ -121,14 +121,17 @@ pub async fn run_once_telling<H: Hear>(
 	heard: &(dyn Fn() + Sync),
 ) -> Result<Pass, VoiceError> {
 	let mut pass = Pass::default();
-	if let Some(embed) = meaning {
-		pass.indexed += catch_up(db, embed, deletion).await?;
-	}
 	let verbatim_key = verbatim::key(hear.model());
 	let keys = Keys {
 		plain: hear.model(),
 		verbatim: &verbatim_key,
 	};
+	// The stage's headline signal first, so nothing the pass does after it
+	// can leave it standing from an earlier pass (#3333).
+	tell_backlog(db, keys).await?;
+	if let Some(embed) = meaning {
+		pass.indexed += catch_up(db, embed, deletion).await?;
+	}
 	let waiting = {
 		let mut conn = db.acquire().await?;
 		let first = guard.streak.current().map(|(subject, note_id)| (subject.as_str(), note_id.as_str()));
@@ -199,8 +202,10 @@ pub async fn run_once_telling<H: Hear>(
 		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n >= ATTEMPTS);
 		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
-			crate::metrics::transcribe::record_attempt(kind, took);
+			crate::metrics::transcribe::record_attempt(&attempt.outcome, took);
 			super::log_attempt(kind, note.verbatim, took, attempt.duration_ms, attempted.work);
+			// A note that left the queue may have been its oldest.
+			tell_backlog(db, keys).await?;
 			if let Some(verdict) = &verdict {
 				crate::metrics::transcribe::record_verdict(verdict.kind);
 			}
@@ -254,6 +259,16 @@ fn gives_way(turn: &mut Turn, pass: &mut Pass) -> bool {
 	}
 	pass.gave_way = !was_giving;
 	true
+}
+
+/// Every note still waiting on `keys`, told as the transcriber's headline
+/// signal as a shared stage (`crate::stage`): read at a pass's start and
+/// after each attempt kept, so a pass hours long never shows the age of a
+/// note it has already heard.
+async fn tell_backlog(db: &SqlitePool, keys: Keys<'_>) -> Result<(), VoiceError> {
+	let mut conn = db.acquire().await?;
+	crate::metrics::transcribe::record_backlog(&transcript::backlog(&mut conn, keys, ATTEMPTS).await?);
+	Ok(())
 }
 
 /// One write, under the deletion hold (docs/identity.md invariant 9):

@@ -133,6 +133,7 @@ async fn main() -> Result<()> {
 	// startup so a restart shows as a discontinuity rather than an inference
 	// from a gap in an unrelated series.
 	file_host::metrics::build_info::record();
+	file_host::metrics::stage::record_started();
 
 	// Every refusal series at 0 from the start, so "never refused" reads as
 	// zero rather than as a missing family — see `refusals::register_all`.

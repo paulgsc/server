@@ -6,6 +6,7 @@ local clients = import 'lib/clients-panels.libsonnet';
 local nudge = import 'lib/nudge-panels.libsonnet';
 local abuse = import 'lib/abuse-panels.libsonnet';
 local overview = import 'lib/overview-panels.libsonnet';
+local stagePanels = import 'lib/stage-panels.libsonnet';
 
 local row(title, y, id) = { type: 'row', title: title, id: id, collapsed: false, gridPos: utils.gridPos(0, y, 24, 1), panels: [] };
 
@@ -13,6 +14,13 @@ local row(title, y, id) = { type: 'row', title: title, id: id, collapsed: false,
 // stores one); `hardenAll` is applied to them here because the dashboard-level
 // `hardenAll` below only walks the top-level list.
 local collapsedRow(title, y, id, children) = row(title, y, id) { collapsed: true, panels: panelDefaults.hardenAll(children) };
+
+// Everything below SHARED STAGES moves down by its height, a collapsed row's
+// own panels with it, so the rows keep their order whatever that height is.
+local shift(dy, list) = [
+  p { gridPos+: { y: p.gridPos.y + dy } } + (if std.objectHas(p, 'panels') then { panels: [c { gridPos+: { y: c.gridPos.y + dy } } for c in p.panels] } else {})
+  for p in list
+];
 
 local dashboard = {
   annotations: {
@@ -54,13 +62,18 @@ local dashboard = {
   id: 1,
   links: [],
   liveNow: false,
-  // Top to bottom in the order an operator asks: is it broken (HEALTH), how
+  // Top to bottom in the order an operator asks: is a stage other work
+  // waits on slow or stuck, and what waits on it (SHARED STAGES,
+  // paulgsc/some-ui#3333, lib/stage-panels), is it broken (HEALTH), how
   // is it doing (GOLDEN SIGNALS), are the other services up and were they
   // (SERVICES) — all on the first screen, no scrolling. Below that, one
   // uncollapsed section each for traffic/latency/errors, the metal and
   // realtime; the drill-downs nobody needs at a glance are collapsed rows,
   // which Grafana doesn't even query until opened.
-  panels: panelDefaults.hardenAll([
+  // HEALTH and what follows sit under their own row header, so collapsing
+  // SHARED STAGES hides only its own tiles (a row owns every panel below
+  // it, up to the next row).
+  panels: panelDefaults.hardenAll(stagePanels.row(0, 970) + shift(stagePanels.height, [row('file_host', 0, 967)] + shift(1, [
     // =============== HEALTH (#213/#225) ===============
     // Six conditions, six panels, ordered by diagnostic precedence — UP
     // before DEPS before the rest, so the leftmost red is the one to
@@ -148,7 +161,7 @@ local dashboard = {
       panels.operationDuration { gridPos: utils.gridPos(0, 54, 12, 6) },
       panels.probeDuration { gridPos: utils.gridPos(12, 54, 12, 6), id: 11 },
     ]),
-  ]),
+  ]))),
   refresh: '5s',
   schemaVersion: 38,
   tags: ['rust', 'axum', 'prometheus', 'sla', 'health'],

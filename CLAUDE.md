@@ -172,7 +172,9 @@ class sets who is killed first. For which images home runs and how they move
 is `docs/release.md`, "Invariants": one source, reconciled rather than carried, by digest. For any
 environment variable a binary or compose reads (a new one, or a class change) it is README.md,
 "Configuration", ENV-CLASS: env holds deployment constants only, and a switch is policy, not env
-(`infra/env-classes.json` only shrinks). For Studio takes on the conveyor (`studio_take_move`,
+(`infra/env-classes.json` only shrinks). For a shared stage (`crate::stage`, a node other
+pipelines wait on) it is `docs/shared-stages.md`, "Invariants": one read a pass over the whole
+queue, a time not an age, the bound is policy. For Studio takes on the conveyor (`studio_take_move`,
 `voice_repo::conveyor`) it is `docs/conveyor.md`, "Invariants": moves are ordered by their
 number, never by a clock. Those sections are the source of truth;
 this list is only a pointer to them. If the change

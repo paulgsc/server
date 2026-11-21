@@ -97,6 +97,16 @@ pub const DEADLINE: Duration = Duration::from_secs(600);
 
 const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && DEADLINE.as_secs() >= MIN_DEADLINE.as_secs());
 
+/// The transcriber's promise as a shared stage (`crate::stage`, VH7).
+///
+/// A note is heard within this long of reaching home, or the stage is
+/// degraded. Policy, moved by a call (C900, paulgsc/some-ui#3333): an
+/// interval to be picked up, and one deadline-long note ahead of it, fit
+/// with room to spare.
+pub const HEARD_WITHIN: Duration = Duration::from_secs(15 * 60);
+
+const _: () = assert!(HEARD_WITHIN.as_secs() > INTERVAL.as_secs() + DEADLINE.as_secs());
+
 /// The whisper model, where compose mounts `TRANSCRIBE_MODELS_DIR`
 /// (`infra/compose/file_host.yml`) and `nix/whisper-manager` downloads it
 /// (`TRANSCRIBE_MODEL`).
@@ -183,7 +193,7 @@ impl<H: Hear> Hear for Held<H> {
 	}
 
 	fn hear(&self, audio: &[u8], decode: Decode, language: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
-		let _hold = self.interactive.hold();
+		let _hold = self.interactive.hold(crate::call_weeks::lane::Kind::Voice);
 		self.inner.hear(audio, decode, language, deadline, cancel)
 	}
 }

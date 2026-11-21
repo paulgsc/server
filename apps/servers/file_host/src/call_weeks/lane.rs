@@ -100,11 +100,54 @@ pub const PEAK: &str = "peak";
 pub const MEMINFO: &str = "/proc/meminfo";
 pub const PRESSURE: &str = "/proc/pressure/memory";
 
-/// Interactive work in progress: held while a note is heard or a program
-/// recorded, read each tick by the lane (LA1). Cloned into each worker; all
-/// clones count together.
+/// Interactive work in progress, read each tick by the lane (LA1).
+///
+/// Held while a note is heard or a program recorded. Cloned into each
+/// worker; all clones count together, each [`Kind`] apart, so the lane can
+/// say which kind of work it paused for (paulgsc/some-ui#3332).
 #[derive(Debug, Clone, Default)]
-pub struct Interactive(Arc<Counts>);
+pub struct Interactive(Arc<Shared>);
+
+/// What every clone of [`Interactive`] shares.
+#[derive(Debug, Default)]
+struct Shared {
+	/// Each [`Kind`]'s holds.
+	kinds: ByKind<Counts>,
+	/// What [`Interactive::batch_waits`] reads.
+	batch: AtomicBool,
+}
+
+/// What interactive work is: a closed set, each its own `lane_busy_ticks_total` kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+	/// A voice note heard by the transcriber.
+	Voice,
+	/// A Rust Rounds program recorded by the runner.
+	RustRounds,
+}
+
+impl Kind {
+	pub const ALL: [Self; 2] = [Self::Voice, Self::RustRounds];
+
+	/// The `kind` label of `lane_busy_ticks_total`.
+	#[must_use]
+	pub const fn name(self) -> &'static str {
+		match self {
+			Self::Voice => "voice",
+			Self::RustRounds => "rust_rounds",
+		}
+	}
+
+	const fn index(self) -> usize {
+		match self {
+			Self::Voice => 0,
+			Self::RustRounds => 1,
+		}
+	}
+}
+
+/// Each [`Kind`]'s, in [`Kind::ALL`]'s order.
+pub type ByKind<T> = [T; Kind::ALL.len()];
 
 #[derive(Debug, Default)]
 struct Counts {
@@ -113,33 +156,32 @@ struct Counts {
 	/// Holds ever taken, so the lane sees work that came and went between
 	/// two ticks.
 	started: AtomicU64,
-	/// What [`Interactive::batch_waits`] reads.
-	batch: AtomicBool,
 }
 
 /// One piece of interactive work, until it is dropped.
 #[derive(Debug)]
 #[must_use = "interactive work counts only while its hold is kept"]
-pub struct Hold(Arc<Counts>);
+pub struct Hold(Arc<Shared>, Kind);
 
 impl Drop for Hold {
 	fn drop(&mut self) {
-		self.0.held.fetch_sub(1, Ordering::SeqCst);
+		self.0.kinds[self.1.index()].held.fetch_sub(1, Ordering::SeqCst);
 	}
 }
 
 impl Interactive {
-	/// Count interactive work from now until the hold is dropped.
-	pub fn hold(&self) -> Hold {
-		self.0.started.fetch_add(1, Ordering::SeqCst);
-		self.0.held.fetch_add(1, Ordering::SeqCst);
-		Hold(Arc::clone(&self.0))
+	/// Count interactive work of `kind` from now until the hold is dropped.
+	pub fn hold(&self, kind: Kind) -> Hold {
+		let counts = &self.0.kinds[kind.index()];
+		counts.started.fetch_add(1, Ordering::SeqCst);
+		counts.held.fetch_add(1, Ordering::SeqCst);
+		Hold(Arc::clone(&self.0), kind)
 	}
 
 	/// Whether any interactive work is held right now.
 	#[cfg(test)]
 	pub(crate) fn is_held(&self) -> bool {
-		self.0.held.load(Ordering::SeqCst) > 0
+		self.0.kinds.iter().any(|counts| counts.held.load(Ordering::SeqCst) > 0)
 	}
 
 	/// Whether batch work was known to wait at the lane's last tick
@@ -155,8 +197,11 @@ impl Interactive {
 		self.0.batch.store(waits, Ordering::SeqCst);
 	}
 
-	fn reading(&self) -> (usize, u64) {
-		(self.0.held.load(Ordering::SeqCst), self.0.started.load(Ordering::SeqCst))
+	fn reading(&self) -> ByKind<(usize, u64)> {
+		Kind::ALL.map(|kind| {
+			let counts = &self.0.kinds[kind.index()];
+			(counts.held.load(Ordering::SeqCst), counts.started.load(Ordering::SeqCst))
+		})
 	}
 }
 
@@ -168,19 +213,22 @@ pub struct Held<T> {
 	pub interactive: Interactive,
 }
 
-/// What the lane saw of interactive work at its last tick.
+/// What the lane saw of interactive work at its last tick, each kind apart.
 #[derive(Debug, Default, Clone, Copy)]
 struct Since {
-	started: u64,
+	started: ByKind<u64>,
 }
 
 impl Since {
-	/// Whether interactive work is held now, or was taken since the last
-	/// tick and has already ended.
-	const fn waiting(&mut self, (held, started): (usize, u64)) -> bool {
-		let new = started != self.started;
-		self.started = started;
-		held > 0 || new
+	/// Of each kind, whether interactive work is held now, or was taken
+	/// since the last tick and has already ended.
+	fn waiting(&mut self, reading: ByKind<(usize, u64)>) -> ByKind<bool> {
+		Kind::ALL.map(|kind| {
+			let (held, started) = reading[kind.index()];
+			let new = started != self.started[kind.index()];
+			self.started[kind.index()] = started;
+			held > 0 || new
+		})
 	}
 }
 
@@ -393,6 +441,8 @@ struct Ticked {
 	readable: Readable,
 	/// Nothing was being worked on: no interactive work, and no batch work.
 	idle: bool,
+	/// Of each kind, whether interactive work was waiting this tick.
+	busy_by: ByKind<bool>,
 	batch_active: bool,
 	/// When the decision was written, or `None` when it could not be.
 	written_at: Option<i64>,
@@ -417,7 +467,8 @@ impl Lane {
 	async fn tick(&mut self, paths: &Paths, interactive: &Interactive, now: i64) -> Ticked {
 		let meminfo = tokio::fs::read_to_string(&paths.meminfo).await.ok();
 		let pressure = tokio::fs::read_to_string(&paths.pressure).await.ok();
-		let waiting = self.since.waiting(interactive.reading());
+		let busy_by = self.since.waiting(interactive.reading());
+		let waiting = busy_by.contains(&true);
 		let batch = Batch::read(&paths.status, &paths.attempts).await;
 		interactive.set_batch_waits(batch.known_to_wait());
 		let now_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -430,6 +481,7 @@ impl Lane {
 			signals,
 			readable,
 			idle: !waiting && !batch.active(),
+			busy_by,
 			batch_active: batch.active(),
 			written_at,
 		}
@@ -459,6 +511,7 @@ pub fn spawn(state: &AppState) {
 				_ = ticker.tick() => {
 					let done = lane.tick(&paths, &interactive, chrono::Utc::now().timestamp()).await;
 					crate::metrics::lane::record(&done.decision, &done.signals, &done.readable, done.idle, done.batch_active, done.written_at);
+					crate::metrics::lane::record_busy_by(done.busy_by);
 					let now = (done.decision.verb, done.decision.why, done.decision.stuck, done.written_at.is_some());
 					if said != Some(now) {
 						log_change(&done);
@@ -525,16 +578,41 @@ mod tests {
 	fn a_hold_counts_until_dropped_and_work_between_ticks_is_still_seen() {
 		let interactive = Interactive::default();
 		let mut since = Since::default();
-		assert!(!since.waiting(interactive.reading()), "nothing held, nothing taken");
-		let hold = interactive.hold();
+		let busy = |since: &mut Since, interactive: &Interactive| since.waiting(interactive.reading()).contains(&true);
+		assert!(!busy(&mut since, &interactive), "nothing held, nothing taken");
+		let hold = interactive.hold(Kind::Voice);
 		let clone = interactive.clone();
-		assert!(since.waiting(clone.reading()), "a clone counts with the rest");
-		assert!(since.waiting(interactive.reading()), "still held");
+		assert!(busy(&mut since, &clone), "a clone counts with the rest");
+		assert!(busy(&mut since, &interactive), "still held");
 		drop(hold);
-		assert!(!since.waiting(interactive.reading()), "dropped, and seen while held");
-		drop(interactive.hold());
-		assert!(since.waiting(interactive.reading()), "taken and dropped between two ticks");
-		assert!(!since.waiting(interactive.reading()), "and only at the next one");
+		assert!(!busy(&mut since, &interactive), "dropped, and seen while held");
+		drop(interactive.hold(Kind::RustRounds));
+		assert!(busy(&mut since, &interactive), "taken and dropped between two ticks");
+		assert!(!busy(&mut since, &interactive), "and only at the next one");
+	}
+
+	/// Each kind is seen apart, so the lane can say which work it paused
+	/// for (paulgsc/some-ui#3332).
+	#[test]
+	fn each_kind_of_interactive_work_is_seen_apart() {
+		for kind in Kind::ALL {
+			match kind {
+				Kind::Voice | Kind::RustRounds => {}
+			}
+		}
+		let interactive = Interactive::default();
+		let mut since = Since::default();
+		let voice = interactive.hold(Kind::Voice);
+		assert_eq!(since.waiting(interactive.reading()), [true, false]);
+		let round = interactive.hold(Kind::RustRounds);
+		assert_eq!(since.waiting(interactive.reading()), [true, true]);
+		drop(voice);
+		assert_eq!(since.waiting(interactive.reading()), [false, true]);
+		drop(round);
+		assert_eq!(since.waiting(interactive.reading()), [false, false]);
+		let names: std::collections::BTreeSet<_> = Kind::ALL.iter().map(|kind| kind.name()).collect();
+		assert_eq!(names.len(), Kind::ALL.len(), "each named once");
+		assert_eq!(Kind::ALL.map(Kind::index), [0, 1], "in ALL's order");
 	}
 
 	#[test]
@@ -646,9 +724,10 @@ mod tests {
 		let paths = paths(dir.path());
 		let interactive = Interactive::default();
 		let mut lane = Lane::new();
-		let hold = interactive.hold();
+		let hold = interactive.hold(Kind::Voice);
 		let ticked = lane.tick(&paths, &interactive, 1).await;
 		assert_eq!(ticked.decision.why, Why::Busy);
+		assert_eq!(ticked.busy_by, [true, false], "busy hearing a note");
 		assert!(!ticked.idle);
 		drop(hold);
 		std::fs::write(paths.status.join(".2026-10-30.log"), b"rendering").unwrap();

@@ -256,7 +256,10 @@ pub enum Given {
 	/// Each kind it names, with its folder's files; empty for an essay that
 	/// names nothing.
 	Ready(Vec<(Kind, Vec<File>)>),
-	Waiting,
+	/// Not ready yet, for each kind listed (a take not heard yet, a snip
+	/// not fetched yet), in [`Kind::ALL`]'s order: the kinds say what the
+	/// essay waits on (`crate::stage::Waiter::CardsEssays`).
+	Waiting(Vec<Kind>),
 	Refused(Refusal),
 }
 
@@ -267,7 +270,7 @@ pub enum Given {
 /// [`Failed`].
 pub async fn for_essay(conn: &mut SqliteConnection, sources: &Sources, essay: &Value) -> Result<Given, Failed> {
 	let mut ready = Vec::new();
-	let mut waiting = false;
+	let mut waiting = Vec::new();
 	for kind in Kind::ALL {
 		let items = named(kind, essay);
 		if items.is_empty() {
@@ -275,11 +278,11 @@ pub async fn for_essay(conn: &mut SqliteConnection, sources: &Sources, essay: &V
 		}
 		match hand(conn, sources, kind, &items).await? {
 			Handed::Ready(files) => ready.push((kind, files)),
-			Handed::Waiting => waiting = true,
+			Handed::Waiting => waiting.push(kind),
 			Handed::Refused(refusal) => return Ok(Given::Refused(refusal)),
 		}
 	}
-	Ok(if waiting { Given::Waiting } else { Given::Ready(ready) })
+	Ok(if waiting.is_empty() { Given::Ready(ready) } else { Given::Waiting(waiting) })
 }
 
 /// Whether home still holds every item of `kind` the cut list `essay` names.
