@@ -131,6 +131,9 @@ pub fn start(state: &AppState) {
 	}
 	let context = state.cards_essays.clone();
 	let configured = state.mailbox.as_ref().and_then(|mailbox| mailbox.subject.clone());
+	// The mailbox pass fetches a waiting essay's snips when the deployment
+	// gave it a token (`snips`); without one, a snip is missing.
+	let fetching = state.mailbox.as_ref().is_some_and(|mailbox| mailbox.snips.is_some());
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
 
@@ -150,13 +153,13 @@ pub fn start(state: &AppState) {
 				}
 				_ = ticker.tick() => {
 					observe_renders(&db).await;
-					tidy_tick(&db, configured.as_deref()).await;
+					tidy_tick(&db, configured.as_deref(), fetching).await;
 					let now = chrono::Utc::now();
 					if !schedule.due(now) {
 						continue;
 					}
 					crate::metrics::cards_essays::record_pass_started();
-					let result = match given(&db, configured.as_deref()).await {
+					let result = match given(&db, configured.as_deref(), fetching).await {
 						Ok(given) => pass::run_once(&db, &context.fetch, &given, &chrono::Utc::now).await,
 						Err(err) => Err(err),
 					};
@@ -176,7 +179,7 @@ pub fn start(state: &AppState) {
 /// Where this pass gives its essays, and whose takes a spoken card plays:
 /// the mailbox's subject (`mailbox::pass_subject`), as `rust_essays`' takes
 /// are, or none.
-async fn given(db: &SqlitePool, configured: Option<&str>) -> Result<pass::Given, sqlx::Error> {
+async fn given(db: &SqlitePool, configured: Option<&str>, fetching: bool) -> Result<pass::Given, sqlx::Error> {
 	let subject = match crate::mailbox::pass_subject(db, configured).await? {
 		crate::auth::owner::Owner::Subject(subject) => Some(subject),
 		_ => None,
@@ -187,13 +190,14 @@ async fn given(db: &SqlitePool, configured: Option<&str>) -> Result<pass::Given,
 		subject,
 		renders: std::path::PathBuf::from(RENDERS_FOLDER),
 		frames: std::path::PathBuf::from(crate::clips::FRAMES_FOLDER),
+		snips: fetching.then(|| std::path::PathBuf::from(crate::snips::FOLDER)),
 	})
 }
 
 /// Each minute, [`pass::tidy`]: no copy of a take outlives its need. Logged
 /// only when it did something, by counts.
-async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) {
-	let tidied = match given(db, configured).await {
+async fn tidy_tick(db: &SqlitePool, configured: Option<&str>, fetching: bool) {
+	let tidied = match given(db, configured, fetching).await {
 		Ok(given) => pass::tidy(db, &given).await,
 		Err(err) => Err(err),
 	};

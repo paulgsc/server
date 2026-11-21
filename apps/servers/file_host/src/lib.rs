@@ -47,6 +47,7 @@ pub mod rust_essays;
 pub mod rust_rounds;
 pub mod schema;
 pub mod settings;
+pub mod snips;
 pub mod storage;
 pub mod subject;
 pub mod trace;

@@ -167,6 +167,9 @@ pub struct MailboxContext {
 	pub wake: Arc<bell::Wake>,
 	/// The mailbox's bell, through `MAILBOX_TOKEN`.
 	pub bell: Arc<bell::Bell>,
+	/// The snips pickup, through `SNIPS_GITHUB_TOKEN`, or `None` when the
+	/// deployment picks up none (`crate::snips`).
+	pub snips: Option<Arc<crate::snips::GitHub>>,
 }
 
 /// Wakes the mailbox's pass loop when home files something for the mailbox,
@@ -256,7 +259,12 @@ impl MailboxContext {
 			info!("FCM_SERVICE_ACCOUNT_FILE is not set; home will tell no phone when a run arrives");
 			None
 		};
+		let snips = crate::snips::GitHub::new(config.snips_github_token.as_deref())?.map(Arc::new);
+		if snips.is_none() {
+			info!("SNIPS_GITHUB_TOKEN is not set; home will pick up no snips");
+		}
 		Ok(Some(Self {
+			snips,
 			mailbox: Arc::new(mailbox),
 			subject,
 			interval,
@@ -452,6 +460,18 @@ async fn watch(db: &SqlitePool, context: &MailboxContext) {
 	}
 }
 
+/// The snips pickup's pass (`crate::snips`), after the mailbox's own work:
+/// counts and kinds, never a token, URL or record.
+async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) {
+	let (essays, folder) = (std::path::Path::new(crate::cards_essays::ESSAYS_FOLDER), std::path::Path::new(crate::snips::FOLDER));
+	match crate::snips::run_once(db, capture, essays, folder).await {
+		Ok(picked) if picked == crate::snips::Picked::default() => {}
+		Ok(picked) if picked.failures.is_empty() => info!(fetched = picked.fetched, gone = picked.gone, dropped = picked.dropped, "Snips pickup pass"),
+		Ok(picked) => warn!(fetched = picked.fetched, gone = picked.gone, failures = ?picked.failures, "Snips pickup pass did not finish; asked again next pass"),
+		Err(err) => error!(error = %err, "Snips pickup pass failed"),
+	}
+}
+
 /// One pass of the poller: find whose copy to keep, run a pass for it, then
 /// stamp the routine watch and tell the phones. True when it settled: no
 /// phase failed, there was an account to keep the files for, and no phase
@@ -509,6 +529,10 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 	}
 	log_pass(&result, cause);
 	let settled = result.as_ref().is_ok_and(|outcome| !outcome.no_account && !outcome.more);
+	// A snip names no person: picked up whether or not there is an account.
+	if let Some(capture) = context.snips.as_deref() {
+		pick_up_snips(db, capture).await;
+	}
 	let Some(subject) = subject else {
 		return settled;
 	};

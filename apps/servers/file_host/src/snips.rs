@@ -1,0 +1,578 @@
+//! Home fetches the snips bundle an essay names (SNIPS2, paulgsc/some-ui#3116;
+//! epic paulgsc/some-ui#3114).
+//!
+//! some-ui's `Snips Capture` workflow photographs every screen of the app on
+//! sample data into one bundle per run, the artifact `snips-bundle-<commit>`,
+//! kept one day on GitHub (some-ui's `docs/snips.md` is the contract). A cards
+//! essay shows a snip by its id and the commit its bundle was captured at
+//! (`{"kind": "screen", "of": {"from": "snips", "id", "commit", …}}`, C868).
+//!
+//! - **No picture library** (the owner, 2026-11-21: nothing a CI run can make
+//!   again is kept twice on home). Home fetches a commit's bundle only while
+//!   an essay not yet given names it, into `<FOLDER>/<commit>/` ([`FOLDER`]), a cache the
+//!   hand-off reads (`essay_media::snips`) and copies into `<key>.snips/`. A
+//!   commit no waiting essay names leaves the cache at the next pass, and the
+//!   copies go with the video. Home keeps no table of snips: which snip and
+//!   commit each essay used is its cut list, which `cards_essay` keeps.
+//! - **It rides the mailbox pass** (the coordinator for the owner, 2026-11-17;
+//!   home-compute invariant 6): no timer of its own. [`run_once`] runs after
+//!   the mailbox's own work.
+//! - **Bounded.** A pass looks up at most [`COMMITS_LOOKED`] commits (one list
+//!   call each) and downloads at most one bundle, of at most [`MAX_BUNDLE`]
+//!   bytes, streamed to the drive and never held in memory whole, each file
+//!   in it at most [`MAX_FILE`].
+//! - **Checked whole, or refused whole.** The manifest must be
+//!   `some-ui.snips/1` of the run's own commit; `SHA256SUMS` must name the
+//!   manifest and every file its records name, and nothing else, and the
+//!   bundle hold exactly those and `SHA256SUMS`; every file must be its sum,
+//!   and every record its file (bytes, sum, the id's hash and app version).
+//!   One mismatch refuses the bundle.
+//! - **Gone is said, not retried** (C875, `docs/snips.md`). A commit with no successful run,
+//!   whose newest run's artifact has expired, or whose bundle was refused,
+//!   gets `<commit>.gone`, naming that run: the essay is refused
+//!   `snip-gone`, and the owner re-runs `Snips Capture` at that commit. Home
+//!   never dispatches a run itself: its token is Actions: read only. A newer
+//!   run, or a newer attempt of the same run, of that commit clears the mark
+//!   and is fetched.
+//! - **A failure that may clear** (a timeout, the drive) is recorded nowhere
+//!   and asked again next pass.
+//! - **Off without its token.** `SNIPS_GITHUB_TOKEN`, a fine-grained token
+//!   with Actions: read on paulgsc/some-ui only. Unset, nothing is fetched,
+//!   and an essay that shows a snip is refused `snip-missing`.
+//! - **Counts and kinds, never bytes.** No token, URL or record reaches a log.
+//! - **No network in tests.** GitHub is the [`Capture`] port.
+//!
+//! Not yet: putting each record in the mailbox for the routine (SNIPS2's
+//! fourth step) waits on the mailbox Worker gaining a folder for it.
+
+use regex::Regex;
+use serde::Deserialize;
+use serde_json::value::RawValue;
+use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+/// Where home keeps the bundles waiting essays name, as this server sees it:
+/// `<commit>/` (its `manifest.json` and pictures) or `<commit>.gone`.
+pub const FOLDER: &str = "/app/dbs/renders/snips";
+
+/// The capture's repository on GitHub's API.
+pub const REPOSITORY: &str = "https://api.github.com/repos/paulgsc/some-ui";
+
+/// The capture's workflow file.
+pub const WORKFLOW: &str = "snips-capture.yml";
+
+/// What the manifest must be (`docs/snips.md`); home refuses any other.
+pub const MANIFEST_SCHEMA: &str = "some-ui.snips/1";
+
+/// The most commits a pass looks up.
+pub const COMMITS_LOOKED: usize = 5;
+
+/// The most bytes home downloads of one bundle. The first green run's 101
+/// snips were well under this.
+pub const MAX_BUNDLE: u64 = 256 * 1024 * 1024;
+
+/// The most bytes of one file in a bundle.
+pub const MAX_FILE: u64 = 16 * 1024 * 1024;
+
+/// The most files a bundle may hold.
+pub const MAX_FILES: usize = 4096;
+
+/// A snip's id, as the capture names it (`@some-ui/video-render`'s
+/// `SNIP_ID`, the same pattern): `<surface>:<path>:<viewport>:<appVersion>:<hash12>`.
+static SNIP_ID: LazyLock<Regex> = LazyLock::new(|| {
+	#[allow(clippy::unwrap_used)]
+	Regex::new(r"^(apk|web):(/\S*|@[a-z0-9-]+(?:/[a-z0-9-]+)?):([a-z][a-z0-9-]*):([0-9A-Za-z.+-]+):([0-9a-f]{12})$").unwrap()
+});
+
+/// A file a record names (`SnipFileSchema`'s `name`).
+static SNIP_FILE: LazyLock<Regex> = LazyLock::new(|| {
+	#[allow(clippy::unwrap_used)]
+	Regex::new(r"^(apk|web)/[a-z0-9-]+/[A-Za-z0-9._~-]+\.(png|webm|mp4)$").unwrap()
+});
+
+/// Whether `id` is a snip's id.
+#[must_use]
+pub fn is_snip_id(id: &str) -> bool {
+	SNIP_ID.is_match(id)
+}
+
+/// Whether `commit` is a commit's 40 lowercase hex digits.
+#[must_use]
+pub fn is_commit(commit: &str) -> bool {
+	commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A snip's id's app version and picture hash, when it is one.
+fn id_parts(id: &str) -> Option<(&str, &str)> {
+	let parts = SNIP_ID.captures(id)?;
+	Some((parts.get(4)?.as_str(), parts.get(5)?.as_str()))
+}
+
+/// `<commit>/`, a fetched bundle in `folder`.
+#[must_use]
+pub fn bundle_of(folder: &Path, commit: &str) -> PathBuf {
+	folder.join(commit)
+}
+
+/// `<commit>.gone`, the mark of a commit home cannot fetch.
+#[must_use]
+pub fn gone_of(folder: &Path, commit: &str) -> PathBuf {
+	folder.join(String::from(commit) + ".gone")
+}
+
+/// One successful run of the capture.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Run {
+	pub id: i64,
+	/// The commit it captured.
+	pub head_sha: String,
+	/// Which attempt: a re-run keeps its id and makes a new attempt.
+	pub run_attempt: i64,
+}
+
+impl Run {
+	/// How a `.gone` mark names it.
+	fn mark(&self) -> String {
+		self.id.to_string() + "." + &self.run_attempt.to_string()
+	}
+}
+
+/// What became of a bundle asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bundle {
+	/// Saved whole to the path asked.
+	Saved,
+	/// Its artifact is gone: expired, or the run made none.
+	Gone,
+	/// Past [`MAX_BUNDLE`].
+	TooBig,
+}
+
+/// GitHub, as the pickup sees it. A failure is a kind, never a URL or body.
+pub trait Capture: Send + Sync {
+	/// The capture's successful runs of `commit`, in any order.
+	fn runs(&self, commit: &str) -> impl Future<Output = Result<Vec<Run>, &'static str>> + Send;
+
+	/// `run`'s bundle, saved to `into`, at most [`MAX_BUNDLE`] bytes.
+	fn bundle(&self, run: &Run, into: &Path) -> impl Future<Output = Result<Bundle, &'static str>> + Send;
+}
+
+/// [`Capture`] over GitHub's REST API with `SNIPS_GITHUB_TOKEN`.
+#[derive(Clone)]
+pub struct GitHub {
+	client: reqwest::Client,
+	token: String,
+}
+
+impl std::fmt::Debug for GitHub {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("GitHub").finish_non_exhaustive()
+	}
+}
+
+/// A request's failure, by kind.
+fn kind_of(err: &reqwest::Error) -> &'static str {
+	if err.is_timeout() {
+		"timeout"
+	} else if err.is_connect() {
+		"connect"
+	} else {
+		"transport"
+	}
+}
+
+impl GitHub {
+	/// The pickup with `token`, or `None` when it is unset or empty.
+	///
+	/// # Errors
+	/// A client that cannot be built.
+	pub fn new(token: Option<&str>) -> anyhow::Result<Option<Self>> {
+		let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
+			return Ok(None);
+		};
+		// A generic client name: nothing of the owner goes to GitHub. A
+		// download is bounded in time as in bytes, so the mailbox pass it
+		// rides waits at most that.
+		let client = reqwest::Client::builder()
+			.user_agent("home-file-host")
+			.connect_timeout(std::time::Duration::from_secs(30))
+			.timeout(std::time::Duration::from_secs(300))
+			.build()?;
+		Ok(Some(Self { client, token: token.to_owned() }))
+	}
+
+	fn get(&self, url: &str) -> reqwest::RequestBuilder {
+		self
+			.client
+			.get(url)
+			.bearer_auth(&self.token)
+			.header(reqwest::header::ACCEPT, "application/vnd.github+json")
+			.header("X-GitHub-Api-Version", "2022-11-28")
+	}
+
+	async fn json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, &'static str> {
+		let answer = self.get(url).send().await.map_err(|err| kind_of(&err))?;
+		if !answer.status().is_success() {
+			return Err("refused");
+		}
+		let body = answer.bytes().await.map_err(|err| kind_of(&err))?;
+		serde_json::from_slice(&body).map_err(|_| "unreadable")
+	}
+}
+
+#[derive(Deserialize)]
+struct Runs {
+	workflow_runs: Vec<Run>,
+}
+
+#[derive(Deserialize)]
+struct Artifacts {
+	artifacts: Vec<Artifact>,
+}
+
+#[derive(Deserialize)]
+struct Artifact {
+	name: String,
+	expired: bool,
+	size_in_bytes: u64,
+	archive_download_url: String,
+}
+
+impl Capture for GitHub {
+	async fn runs(&self, commit: &str) -> Result<Vec<Run>, &'static str> {
+		let url = String::from(REPOSITORY) + "/actions/workflows/" + WORKFLOW + "/runs?status=success&per_page=20&head_sha=" + commit;
+		Ok(self.json::<Runs>(&url).await?.workflow_runs)
+	}
+
+	async fn bundle(&self, run: &Run, into: &Path) -> Result<Bundle, &'static str> {
+		let url = String::from(REPOSITORY) + "/actions/runs/" + &run.id.to_string() + "/artifacts";
+		let wanted = String::from("snips-bundle-") + &run.head_sha;
+		let Some(artifact) = self.json::<Artifacts>(&url).await?.artifacts.into_iter().find(|artifact| artifact.name == wanted) else {
+			return Ok(Bundle::Gone);
+		};
+		if artifact.expired {
+			return Ok(Bundle::Gone);
+		}
+		if artifact.size_in_bytes > MAX_BUNDLE {
+			return Ok(Bundle::TooBig);
+		}
+		// GitHub answers with a redirect to storage, which reqwest follows
+		// without the token.
+		let mut answer = self.get(&artifact.archive_download_url).send().await.map_err(|err| kind_of(&err))?;
+		match answer.status().as_u16() {
+			200 => {}
+			404 | 410 => return Ok(Bundle::Gone),
+			_ => return Err("refused"),
+		}
+		let mut file = tokio::fs::File::create(into).await.map_err(|_| "drive")?;
+		let mut written: u64 = 0;
+		while let Some(chunk) = answer.chunk().await.map_err(|err| kind_of(&err))? {
+			written += chunk.len() as u64;
+			if written > MAX_BUNDLE {
+				return Ok(Bundle::TooBig);
+			}
+			tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await.map_err(|_| "drive")?;
+		}
+		tokio::io::AsyncWriteExt::flush(&mut file).await.map_err(|_| "drive")?;
+		Ok(Bundle::Saved)
+	}
+}
+
+/// What a pass of the pickup did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Picked {
+	/// Bundles fetched, checked and put in the cache.
+	pub fetched: usize,
+	/// Commits marked gone: no run, an expired artifact, or a refused bundle.
+	pub gone: usize,
+	/// Cached bundles and marks no waiting essay names, removed.
+	pub dropped: usize,
+	/// Each failure, by kind (`timeout`, `connect`, `transport`, `refused`,
+	/// `unreadable`, `drive`): asked again next pass.
+	pub failures: Vec<&'static str>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Manifest<'a> {
+	schema: String,
+	app_version: String,
+	commit: String,
+	#[serde(borrow)]
+	snips: Vec<&'a RawValue>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Record {
+	id: String,
+	app_version: String,
+	image: FileOf,
+	recording: Option<FileOf>,
+}
+
+#[derive(Deserialize)]
+struct FileOf {
+	name: String,
+	bytes: u64,
+	sha256: String,
+}
+
+/// Each line of `SHA256SUMS` (`<sum>  <name>`), by name; `None` when one is
+/// not such a line, or a name is listed twice.
+fn sums(text: &str) -> Option<BTreeMap<String, String>> {
+	let mut sums = BTreeMap::new();
+	for line in text.lines() {
+		let (sum, name) = line.split_once("  ")?;
+		let plain = sum.len() == 64 && sum.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+		if !plain || sums.insert(name.to_owned(), sum.to_owned()).is_some() {
+			return None;
+		}
+	}
+	Some(sums)
+}
+
+/// `name`'s bytes in `archive`, at most [`MAX_FILE`].
+fn read(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Vec<u8>, Why> {
+	let entry = archive.by_name(name).map_err(|_| Why::Refused)?;
+	let mut bytes = Vec::new();
+	entry.take(MAX_FILE + 1).read_to_end(&mut bytes).map_err(|_| Why::Refused)?;
+	if bytes.len() as u64 > MAX_FILE {
+		return Err(Why::Refused);
+	}
+	Ok(bytes)
+}
+
+/// Why a bundle was not opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+	/// It does not check out: never to be opened.
+	Refused,
+	/// The drive failed: asked again.
+	Drive,
+}
+
+/// Writes `bytes` to `name` under `stage`.
+fn stage_file(stage: &Path, name: &str, bytes: &[u8]) -> Result<(), Why> {
+	let to = stage.join(name);
+	if let Some(parent) = to.parent() {
+		std::fs::create_dir_all(parent).map_err(|_| Why::Drive)?;
+	}
+	std::fs::write(to, bytes).map_err(|_| Why::Drive)
+}
+
+/// Checks the bundle at `zip` against `run`, as the module doc says, and
+/// stages its manifest and pictures in `stage` under their names.
+fn open(zip: &Path, stage: &Path, run: &Run) -> Result<(), Why> {
+	let file = std::fs::File::open(zip).map_err(|_| Why::Drive)?;
+	let mut archive = zip::ZipArchive::new(file).map_err(|_| Why::Refused)?;
+	if archive.len() > MAX_FILES {
+		return Err(Why::Refused);
+	}
+	let sums = sums(std::str::from_utf8(&read(&mut archive, "SHA256SUMS")?).map_err(|_| Why::Refused)?).ok_or(Why::Refused)?;
+	let manifest_bytes = read(&mut archive, "manifest.json")?;
+	if sums.get("manifest.json") != Some(&hex::encode(Sha256::digest(&manifest_bytes))) {
+		return Err(Why::Refused);
+	}
+	let manifest: Manifest<'_> = serde_json::from_slice(&manifest_bytes).map_err(|_| Why::Refused)?;
+	if manifest.schema != MANIFEST_SCHEMA || manifest.commit != run.head_sha {
+		return Err(Why::Refused);
+	}
+	// Every file the records name, and the manifest: exactly what the sums list.
+	let mut named = BTreeSet::from([String::from("manifest.json")]);
+	let mut ids = BTreeSet::new();
+	let mut records = Vec::with_capacity(manifest.snips.len());
+	for raw in &manifest.snips {
+		let record: Record = serde_json::from_str(raw.get()).map_err(|_| Why::Refused)?;
+		let (version, hash) = id_parts(&record.id).ok_or(Why::Refused)?;
+		let files = std::iter::once(&record.image).chain(record.recording.as_ref());
+		let plain = files
+			.clone()
+			.all(|file| SNIP_FILE.is_match(&file.name) && sums.get(&file.name) == Some(&file.sha256) && file.bytes <= MAX_FILE);
+		let ok = plain
+			&& version == manifest.app_version
+			&& record.app_version == manifest.app_version
+			&& record.image.name.rsplit_once('.').is_some_and(|(_, extension)| extension == "png")
+			&& record.image.sha256.starts_with(hash)
+			&& ids.insert(record.id.clone());
+		if !ok {
+			return Err(Why::Refused);
+		}
+		for file in files {
+			if !named.insert(file.name.clone()) {
+				return Err(Why::Refused);
+			}
+		}
+		records.push(record);
+	}
+	if named.iter().ne(sums.keys()) {
+		return Err(Why::Refused);
+	}
+	let listed: Result<Vec<String>, _> = archive.file_names().map(|entry| entry.map(std::borrow::Cow::into_owned)).collect();
+	let held: BTreeSet<String> = listed.map_err(|_| Why::Refused)?.into_iter().filter(|name| !name.ends_with('/')).collect();
+	if held.len() != named.len() + 1 || !held.contains("SHA256SUMS") || !named.iter().all(|name| held.contains(name)) {
+		return Err(Why::Refused);
+	}
+	for record in &records {
+		// Only the pictures are handed; a recording is checked, not kept.
+		for (file, kept) in std::iter::once((&record.image, true)).chain(record.recording.as_ref().map(|file| (file, false))) {
+			let bytes = read(&mut archive, &file.name)?;
+			if bytes.len() as u64 != file.bytes || hex::encode(Sha256::digest(&bytes)) != file.sha256 {
+				return Err(Why::Refused);
+			}
+			if kept {
+				stage_file(stage, &file.name, &bytes)?;
+			}
+		}
+	}
+	stage_file(stage, "manifest.json", &manifest_bytes)
+}
+
+/// Every commit a snip names in an essay home holds that the essays' folder
+/// has not been given yet.
+async fn wanted(db: &SqlitePool, essays: &Path) -> Result<BTreeSet<String>, sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	let mut commits = BTreeSet::new();
+	for essay in cards_essay_repo::held(&mut conn).await? {
+		if essays.join(String::from(&essay.key) + ".json").exists() {
+			continue;
+		}
+		let Some(body) = cards_essay_repo::body(&mut conn, &essay.key).await? else {
+			continue;
+		};
+		let essay = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+		for item in crate::essay_media::named(crate::essay_media::Kind::Snips, &essay) {
+			if let Some((commit, _)) = item.split_once(' ').filter(|(commit, _)| is_commit(commit)) {
+				commits.insert(commit.to_owned());
+			}
+		}
+	}
+	Ok(commits)
+}
+
+/// The run a `.gone` mark names, or `None` without one.
+async fn marked(folder: &Path, commit: &str) -> Option<String> {
+	let text = tokio::fs::read_to_string(gone_of(folder, commit)).await.ok()?;
+	Some(text.lines().find_map(|line| line.strip_prefix("run=")).unwrap_or_default().to_owned())
+}
+
+/// Marks `commit` gone, naming `run` and why.
+async fn mark_gone(folder: &Path, commit: &str, run: Option<&Run>, reason: &str) -> std::io::Result<()> {
+	let partial = folder.join(String::from(".") + commit + ".gone.partial");
+	let text = String::from("reason=") + reason + "\nrun=" + &run.map_or_else(String::new, Run::mark) + "\n";
+	tokio::fs::write(&partial, text).await?;
+	tokio::fs::rename(&partial, gone_of(folder, commit)).await
+}
+
+/// Removes the cache's entries no waiting essay names, and what a stopped
+/// pass left: the pickup is the cache's one writer, and runs in one task.
+async fn drop_unwanted(folder: &Path, wanted: &BTreeSet<String>, picked: &mut Picked) {
+	let Ok(mut entries) = tokio::fs::read_dir(folder).await else {
+		return;
+	};
+	while let Ok(Some(entry)) = entries.next_entry().await {
+		let name = entry.file_name().to_string_lossy().into_owned();
+		let commit = name.strip_suffix(".gone").unwrap_or(&name);
+		if !name.starts_with('.') && wanted.contains(commit) {
+			continue;
+		}
+		let path = entry.path();
+		let removed = if path.is_dir() {
+			tokio::fs::remove_dir_all(&path).await
+		} else {
+			tokio::fs::remove_file(&path).await
+		};
+		if removed.is_ok() && !name.starts_with('.') {
+			picked.dropped += 1;
+		}
+	}
+}
+
+/// One pass of the pickup, as the module doc says: the bundles of the essays
+/// home holds and has not given to `essays`, cached in `folder`.
+///
+/// # Errors
+/// A storage failure.
+pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, folder: &Path) -> Result<Picked, sqlx::Error> {
+	let mut picked = Picked::default();
+	let wanted = wanted(db, essays).await?;
+	drop_unwanted(folder, &wanted, &mut picked).await;
+	let missing: Vec<&String> = wanted.iter().filter(|commit| !bundle_of(folder, commit).is_dir()).collect();
+	if missing.is_empty() {
+		return Ok(picked);
+	}
+	if tokio::fs::create_dir_all(folder).await.is_err() {
+		picked.failures.push("drive");
+		return Ok(picked);
+	}
+	for commit in missing.into_iter().take(COMMITS_LOOKED) {
+		let runs = match capture.runs(commit).await {
+			Ok(runs) => runs,
+			Err(kind) => {
+				picked.failures.push(kind);
+				break;
+			}
+		};
+		let newest = runs.into_iter().filter(|run| &run.head_sha == commit).max_by_key(|run| (run.id, run.run_attempt));
+		let mark = marked(folder, commit).await;
+		let Some(run) = newest else {
+			if mark.is_none() {
+				picked.gone += 1;
+				if mark_gone(folder, commit, None, "no-run").await.is_err() {
+					picked.failures.push("drive");
+				}
+			}
+			continue;
+		};
+		if mark.as_deref() == Some(run.mark().as_str()) {
+			// Gone as this run, and no newer one: said, not asked again.
+			continue;
+		}
+		let zip = folder.join(String::from(".") + commit + ".zip.partial");
+		let stage = folder.join(String::from(".") + commit + ".partial");
+		let _ = tokio::fs::remove_dir_all(&stage).await;
+		let outcome = match capture.bundle(&run, &zip).await {
+			Err(kind) => Err(kind),
+			Ok(Bundle::Gone) => Ok(Some("gone")),
+			Ok(Bundle::TooBig) => Ok(Some("refused")),
+			Ok(Bundle::Saved) => {
+				let (zip_at, stage_at, asked) = (zip.clone(), stage.clone(), run.clone());
+				match tokio::task::spawn_blocking(move || open(&zip_at, &stage_at, &asked)).await {
+					Ok(Ok(())) => match tokio::fs::rename(&stage, bundle_of(folder, commit)).await {
+						Ok(()) => Ok(None),
+						Err(_) => Err("drive"),
+					},
+					Ok(Err(Why::Refused)) => Ok(Some("refused")),
+					// A panic is as a drive's failure: nothing is said of it.
+					Ok(Err(Why::Drive)) | Err(_) => Err("drive"),
+				}
+			}
+		};
+		let _ = tokio::fs::remove_file(&zip).await;
+		let _ = tokio::fs::remove_dir_all(&stage).await;
+		match outcome {
+			Ok(None) => {
+				let _ = tokio::fs::remove_file(gone_of(folder, commit)).await;
+				picked.fetched += 1;
+			}
+			Ok(Some(reason)) => {
+				picked.gone += 1;
+				if mark_gone(folder, commit, Some(&run), reason).await.is_err() {
+					picked.failures.push("drive");
+				}
+			}
+			Err(kind) => picked.failures.push(kind),
+		}
+		// One bundle a pass.
+		break;
+	}
+	Ok(picked)
+}
+
+#[cfg(test)]
+mod tests;

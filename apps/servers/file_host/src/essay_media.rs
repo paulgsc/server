@@ -88,6 +88,9 @@ pub enum Why {
 	Missing,
 	/// A take home couldn't make out, or heard nothing said in.
 	Unheard,
+	/// A snip whose bundle home cannot fetch: no run of its commit, its
+	/// artifact expired, or its bundle refused (`snips`, C875).
+	Gone,
 }
 
 /// One file of a kind's folder: its name there (a relative path of plain
@@ -99,6 +102,9 @@ pub type File = (String, Vec<u8>);
 pub enum Held {
 	/// Its files.
 	Files(Vec<File>),
+	/// A snip: its commit, its record as its bundle's manifest has it, and
+	/// its picture. Its kind's `snips.json` names it ([`snips::given`]).
+	Snip { commit: String, record: Value, picture: File },
 	/// Not ready yet: asked again next pass.
 	Waiting,
 	/// Never to be given as home holds it now.
@@ -118,8 +124,10 @@ impl Refusal {
 	#[must_use]
 	pub const fn reason(&self) -> &'static str {
 		match (self.kind, self.why) {
-			(Kind::Takes, Why::Missing) => "take-missing",
+			// A take is never gone: that is a snip's bundle.
+			(Kind::Takes, Why::Missing | Why::Gone) => "take-missing",
 			(Kind::Takes, Why::Unheard) => "take-unheard",
+			(Kind::Snips, Why::Gone) => "snip-gone",
 			(Kind::Snips, _) => "snip-missing",
 			(Kind::ClipFrames, _) => "clip-missing",
 		}
@@ -129,9 +137,10 @@ impl Refusal {
 	#[must_use]
 	pub const fn words(&self) -> &'static str {
 		match (self.kind, self.why) {
-			(Kind::Takes, Why::Missing) => "a spoken card names a take home doesn't hold (never sent, deleted, or its recording let go)",
+			(Kind::Takes, Why::Missing | Why::Gone) => "a spoken card names a take home doesn't hold (never sent, deleted, or its recording let go)",
 			(Kind::Takes, Why::Unheard) => "home couldn't make out a take a spoken card plays, or heard nothing said in it, and a spoken card has no silence to play in its place",
-			(Kind::Snips, _) => "a scene shows a snip home doesn't hold (never picked up, or its picture gone), and a scene is never a blank frame",
+			(Kind::Snips, Why::Gone) => "a scene shows a snip whose bundle GitHub no longer has (no run of its commit, its artifact expired, or its bundle didn't check out): run Snips Capture again at that commit",
+			(Kind::Snips, _) => "a scene shows a snip its commit's bundle doesn't hold, or home fetches no snips (no SNIPS_GITHUB_TOKEN), and a scene is never a blank frame",
 			(Kind::ClipFrames, _) => "a scene shows a clip frame home doesn't hold, and a scene is never a blank frame",
 		}
 	}
@@ -170,6 +179,9 @@ pub struct Sources {
 	pub subject: Option<String>,
 	/// The clips' frames (`clips::FRAMES_FOLDER`).
 	pub frames: PathBuf,
+	/// The bundles home fetches for waiting essays ([`crate::snips::FOLDER`]),
+	/// or `None` when it fetches none (no `SNIPS_GITHUB_TOKEN`).
+	pub snips: Option<PathBuf>,
 }
 
 /// The `of` of `shot`'s `screen` picture, when it is one `from` `source`.
@@ -201,8 +213,8 @@ pub fn named(kind: Kind, essay: &Value) -> Vec<String> {
 /// # Errors
 /// [`Failed`].
 pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, items: &[String]) -> Result<Handed, Failed> {
-	let mut files = Vec::new();
-	let (mut missing, mut unheard, mut waiting) = (Vec::new(), Vec::new(), false);
+	let (mut files, mut snipped) = (Vec::new(), Vec::new());
+	let (mut missing, mut unheard, mut gone, mut waiting) = (Vec::new(), Vec::new(), Vec::new(), false);
 	for item in items {
 		let held = match kind {
 			Kind::Takes => takes::hold(conn, sources, item).await?,
@@ -211,9 +223,14 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 		};
 		match held {
 			Held::Files(handed) => files.extend(handed),
+			Held::Snip { commit, record, picture } => {
+				files.push(picture);
+				snipped.push((commit, record));
+			}
 			Held::Waiting => waiting = true,
 			Held::Refused(Why::Missing) => missing.push(item.clone()),
 			Held::Refused(Why::Unheard) => unheard.push(item.clone()),
+			Held::Refused(Why::Gone) => gone.push(item.clone()),
 		}
 	}
 	let refusal = |why, items| Handed::Refused(Refusal { kind, why, items });
@@ -221,9 +238,14 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 		refusal(Why::Missing, missing)
 	} else if !unheard.is_empty() {
 		refusal(Why::Unheard, unheard)
+	} else if !gone.is_empty() {
+		refusal(Why::Gone, gone)
 	} else if waiting {
 		Handed::Waiting
 	} else {
+		if !snipped.is_empty() {
+			files.insert(0, snips::given(snipped));
+		}
 		Handed::Ready(files)
 	})
 }
@@ -384,12 +406,13 @@ mod tests {
 			(Kind::Takes, Why::Missing),
 			(Kind::Takes, Why::Unheard),
 			(Kind::Snips, Why::Missing),
+			(Kind::Snips, Why::Gone),
 			(Kind::ClipFrames, Why::Missing),
 		]
 		.into_iter()
 		.map(|(kind, why)| Refusal { kind, why, items: Vec::new() }.reason())
 		.collect();
-		assert_eq!(reasons, ["take-missing", "take-unheard", "snip-missing", "clip-missing"]);
+		assert_eq!(reasons, ["take-missing", "take-unheard", "snip-missing", "snip-gone", "clip-missing"]);
 	}
 
 	#[tokio::test]
@@ -413,13 +436,21 @@ mod tests {
 	#[test]
 	fn a_cut_list_names_each_item_once_by_kind() {
 		let essay = serde_json::json!({ "shots": [
-			{ "picture": { "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "at": [] } } },
-			{ "picture": { "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab" } } },
+			{ "picture": { "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "at": [] } } },
+			{ "picture": { "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } } },
+			{ "picture": { "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } } },
 			{ "picture": { "kind": "screen", "of": { "from": "clips", "clip": "studio-promo", "side": "after", "file": "01.png" } } },
 			{ "picture": { "kind": "snip", "id": "web:/old:phone:1.2.3:0123456789ab" } },
 			{ "picture": { "kind": "still", "source": "a.png" } },
 		]});
-		assert_eq!(named(Kind::Snips, &essay), ["web:/settings:phone:1.2.3:0123456789ab"]);
+		assert_eq!(
+			named(Kind::Snips, &essay),
+			[
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa web:/settings:phone:1.2.3:0123456789ab",
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb web:/settings:phone:1.2.3:0123456789ab"
+			],
+			"a snip by its commit and id: the same id of another commit is another"
+		);
 		assert_eq!(named(Kind::ClipFrames, &essay), ["studio-promo/after/01.png"]);
 		assert!(named(Kind::Takes, &essay).is_empty());
 		assert!(named(Kind::Snips, &serde_json::json!("not a cut list")).is_empty());

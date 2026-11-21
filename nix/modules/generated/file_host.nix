@@ -158,7 +158,7 @@
   # The variables the binary refuses to start without.
   required = [ "ALLOWED_ORIGINS" "REDIS_URL" "DATABASE_URL" "APP_BASE_URL" "NATS_URL" ];
   # Its secrets: no option, only `environmentFiles`.
-  secrets = [ "DATABASE_URL" "VAPID_PRIVATE_KEY" "MAILBOX_TOKEN" "MAILBOX_ARCHIVE_TOKEN" ];
+  secrets = [ "DATABASE_URL" "VAPID_PRIVATE_KEY" "MAILBOX_TOKEN" "MAILBOX_ARCHIVE_TOKEN" "SNIPS_GITHUB_TOKEN" ];
   # The binary's defaults, for the conditions below.
   defaults = {
     RATE_LIMIT = "60";

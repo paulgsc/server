@@ -439,6 +439,21 @@
       "why": "How long a file stays live: a lever, clamped to the mailbox's consts (confirmed on #617)."
     },
     {
+      "name": "SNIPS_GITHUB_TOKEN",
+      "group": "Jobs mailbox",
+      "required": false,
+      "default": null,
+      "kind": "string",
+      "values": [],
+      "delimiter": null,
+      "secret": true,
+      "help": "A fine-grained GitHub token with Actions: read on paulgsc/some-ui only: with it, each mailbox pass fetches the `Snips Capture` bundle of each commit a waiting cards essay's snips name (`snips`, SNIPS2). Unset, nothing is fetched and an essay showing a snip is refused. Never logged",
+      "required_when": null,
+      "bounds": null,
+      "class": "deployment",
+      "why": "A secret."
+    },
+    {
       "name": "FCM_SERVICE_ACCOUNT_FILE",
       "group": "Jobs arrival notice",
       "required": false,

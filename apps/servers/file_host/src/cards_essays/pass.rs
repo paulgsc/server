@@ -41,7 +41,7 @@
 //!   failed row on Studio › Renders, as the worker's own refusals are:
 //!   `<key>.failed.log` (the reason in words and the items by id, never what
 //!   they hold) and `<key>.refused` (`reason=take-missing`, `take-unheard`,
-//!   `snip-missing` or `clip-missing`) in [`super::STATUS_FOLDER`], both gone
+//!   `snip-missing`, `snip-gone` or `clip-missing`) in [`super::STATUS_FOLDER`], both gone
 //!   once the essay is given. Every pass looks again at an essay not given.
 //! - **No copy outlives its need** ([`tidy`], each minute, as
 //!   `rust_essays::tidy`): once an essay's video is made its media folders
@@ -210,6 +210,9 @@ pub struct Given {
 	pub renders: PathBuf,
 	/// The clips' frames (`clips::FRAMES_FOLDER`), which a scene may show.
 	pub frames: PathBuf,
+	/// The snips bundles home fetches for waiting essays (`snips::FOLDER`),
+	/// or `None` when it fetches none.
+	pub snips: Option<PathBuf>,
 }
 
 impl Given {
@@ -218,6 +221,7 @@ impl Given {
 		essay_media::Sources {
 			subject: self.subject.clone(),
 			frames: self.frames.clone(),
+			snips: self.snips.clone(),
 		}
 	}
 }
@@ -533,6 +537,7 @@ mod tests {
 			subject: None,
 			renders: dir.join("renders"),
 			frames: dir.join("frames-held"),
+			snips: None,
 		}
 	}
 
@@ -924,7 +929,7 @@ mod tests {
 
 	/// A clip frame a scene shows is given beside the essay in `<key>.clips/`
 	/// once home holds it, and the essay is taken back once the frame is gone.
-	/// A snip refuses its essay: home holds none until SNIPS2. No subject:
+	/// A snip refuses its essay when home fetches none (no token). No subject:
 	/// neither is a person's.
 	#[tokio::test]
 	async fn a_scene_is_given_the_clip_frames_it_shows_and_refused_a_snip() {
@@ -933,7 +938,7 @@ mod tests {
 		let fake = Fake::default();
 		fake.ok("index.json", &index(&["framed-2026-11-20", "snipped-2026-11-21"]));
 		let frame = serde_json::json!({ "kind": "screen", "of": { "from": "clips", "clip": "studio-promo", "side": "after", "file": "01.png" } });
-		let snip = serde_json::json!({ "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "at": [] } });
+		let snip = serde_json::json!({ "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "at": [] } });
 		fake.ok("framed-2026-11-20.json", &showing_essay("2026-11-20", &[frame]));
 		fake.ok("snipped-2026-11-21.json", &showing_essay("2026-11-21", &[snip]));
 		let status = dir.path().join("status");
