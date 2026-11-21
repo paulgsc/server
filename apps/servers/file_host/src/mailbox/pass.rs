@@ -701,7 +701,7 @@ async fn file_transcripts(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	outcome.more |= heard.len() >= ITEMS_PER_PASS as usize;
 	for transcript in &heard {
 		match file_transcript(db, deletion, subject, transcript, &now()).await.map_err(storage)? {
-			// Set aside since it was read above: filed for no routine.
+			// Set aside, or superseded, since it was read above: filed for no routine.
 			None => {}
 			Some(Change::NoAccount) => {
 				outcome.no_account = true;
@@ -1200,6 +1200,14 @@ async fn file_transcript(db: &SqlitePool, deletion: &DeletionLock, subject: &str
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let held = voice_repo::holds(&mut tx, subject, &heard.note_id).await.map_err(mailbox_repo::MailboxError::Storage)?;
 	if !held || mailbox_repo::set_aside_from_routines(&mut tx, subject, &heard.note_id).await? {
+		return Ok(None);
+	}
+	// Superseded since it was read above: the owner asked home to hear the
+	// note again (some-ui#3339), and its fresh key is filed in its turn.
+	if voice_repo::transcript::superseded(&mut tx, subject, &heard.note_id, &heard.model)
+		.await
+		.map_err(mailbox_repo::MailboxError::Storage)?
+	{
 		return Ok(None);
 	}
 	let words = voice_repo::transcript::words_heard_by(&mut tx, subject, &heard.note_id, &heard.model)

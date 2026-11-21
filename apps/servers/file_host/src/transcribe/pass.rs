@@ -297,7 +297,7 @@ async fn keep(
 		voice_repo::verdict::keep(&mut tx, judged, verdict, now).await?;
 	}
 	let indexed = match (&kept, &attempt.outcome, meaning) {
-		(Kept::Added(_), Outcome::Heard { .. }, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
+		(Kept::Added(_), Outcome::Heard { .. } | Outcome::Silent, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
 		_ => Indexed::NoWords,
 	};
 	tx.commit().await?;
@@ -1015,9 +1015,9 @@ mod tests {
 	}
 
 	/// paulgsc/some-ui#3339: once the owner asks home to hear a failed note
-	/// again, the transcriber hears it under a fresh key with its own set of `ATTEMPTS`, numbered
-	/// on from its old ones, and judges the last of that set final; nothing
-	/// it kept before is rewritten.
+	/// again, the transcriber hears it under a fresh key with its own set of
+	/// `ATTEMPTS`, numbered from 1 beside its old ones, and judges the last of
+	/// that set final; nothing it kept before is rewritten.
 	#[tokio::test]
 	async fn a_note_the_owner_asks_to_hear_again_gets_a_fresh_set_of_attempts() {
 		let pool = pool().await;
@@ -1030,9 +1030,12 @@ mod tests {
 		assert_eq!(fake.heard().len(), 3, "its first set spent");
 
 		let mut conn = pool.acquire().await.unwrap();
-		let acted = voice_repo::attention::act(&mut conn, A, "broken", voice_repo::attention::Act::HearAgain, "2026-10-26T00:00:00.000Z")
-			.await
-			.unwrap();
+		let verbatim = crate::transcribe::verbatim::key("ggml-small-q5_1.bin");
+		let keys = voice_repo::transcript::Keys {
+			plain: "ggml-small-q5_1.bin",
+			verbatim: &verbatim,
+		};
+		let acted = voice_repo::attention::hear_again(&mut conn, A, "broken", keys, "2026-10-26T00:00:00.000Z").await.unwrap();
 		assert!(matches!(acted, voice_repo::attention::Acted::Recorded(_)), "{acted:?}");
 		drop(conn);
 		for _ in 0..=ATTEMPTS {

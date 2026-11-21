@@ -145,9 +145,11 @@ pub struct Keys<'a> {
 /// to hear a note again: `<key>+again<k>`.
 pub const AGAIN: &str = "+again";
 
-/// The key a note `base` would be heard under is heard under once the owner
-/// has asked home to hear it again `asked` times: `base` itself for none.
-/// [`waiting_first`] builds the same in SQL.
+/// The key a note heard under `base` is heard under once asked again.
+///
+/// After the owner has asked home to hear it again `asked` times under
+/// `base`; `base` itself for none.
+/// `crate::attention::hear_again` names it; [`waiting_first`] reads it back.
 #[must_use]
 pub fn again(base: &str, asked: i64) -> String {
 	if asked == 0 {
@@ -179,9 +181,9 @@ pub struct Waiting {
 	/// ([`crate::verdict::expected_language`], HEARD1).
 	pub expected_language: Option<&'static str>,
 	/// The key it is heard and kept under: [`Keys::plain`] or
-	/// [`Keys::verbatim`], and, once the owner has asked home to hear it
-	/// again ([`crate::attention::Act::HearAgain`]) `k` times, that key with
-	/// [`AGAIN`] and `k` (`ggml-small-q5_1.bin+again1`): each request a fresh
+	/// [`Keys::verbatim`], or the key the owner's standing request to hear it
+	/// again named ([`crate::attention::hear_again`]), that key with [`AGAIN`]
+	/// and a number (`ggml-small-q5_1.bin+again1`): each request a fresh
 	/// transcription beside the old rows, as a changed prompt is.
 	pub key: String,
 }
@@ -198,9 +200,12 @@ pub struct Waiting {
 /// order only decides who goes first, never how much work there is.
 ///
 /// **A request to hear a note again is a fresh transcription**
-/// (paulgsc/some-ui#3339): a note the owner has asked `k` times waits on its
-/// key with [`AGAIN`] and `k` ([`Waiting::key`], [`again`]), with a fresh set
-/// of `attempts`, whatever the old key made of it. A model ends a note once
+/// (paulgsc/some-ui#3339): a note with a standing request
+/// (`voice_note_superseding`) waits on the key the request named,
+/// `hears_under` ([`Waiting::key`], [`again`]), with a fresh set of
+/// `attempts`, whatever the old key made of it; a request named under
+/// another model's key (made before a change of model) is moot, and the note
+/// waits on its base key as every note does. A model ends a note once
 /// under a key (`voice_transcript_one_ending`), so the old ending, words and
 /// verdict stay as they are beside the new, and a reader skips what a
 /// request superseded. No row is rewritten and no clock is read.
@@ -245,15 +250,13 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		   SELECT k.subject_id, k.note_id, k.verbatim, k.of_kind, k.of_ref, k.stored_at, k.key,
 		          (SELECT COUNT(*) FROM voice_transcript t
 		           WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id AND t.model = k.key) AS tried
-		   FROM (SELECT a.subject_id, a.note_id, a.of_kind, a.of_ref, a.stored_at, a.verbatim,
-		                CASE WHEN a.asked = 0 THEN a.base ELSE a.base || '+again' || a.asked END AS key
-		         FROM (SELECT b.*,
-		                      (SELECT COUNT(*) FROM voice_note_attention h
-		                       WHERE h.subject_id = b.subject_id AND h.note_id = b.note_id AND h.act = 'hear_again'
-		                         AND (h.model = b.base OR substr(h.model, 1, length(b.base) + 6) = b.base || '+again')) AS asked
-		               FROM (SELECT n.subject_id, n.note_id, n.of_kind, n.of_ref, n.stored_at, n.of_kind = ?5 AS verbatim,
-		                            CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END AS base
-		                     FROM voice_note n) b) a) k
+		   FROM (SELECT b.subject_id, b.note_id, b.of_kind, b.of_ref, b.stored_at, b.verbatim,
+		                COALESCE((SELECT sup.hears_under FROM voice_note_superseding sup
+		                          WHERE sup.subject_id = b.subject_id AND sup.note_id = b.note_id
+		                            AND substr(sup.hears_under, 1, length(b.base) + 6) = b.base || '+again'), b.base) AS key
+		         FROM (SELECT n.subject_id, n.note_id, n.of_kind, n.of_ref, n.stored_at, n.of_kind = ?5 AS verbatim,
+		                      CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END AS base
+		               FROM voice_note n) b) k
 		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
 		                     WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id
 		                       AND t.model = k.key
@@ -288,6 +291,25 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 			})
 			.collect(),
 	)
+}
+
+/// Whether what `model` made of `subject`'s note `note_id` is superseded.
+///
+/// It is when a standing request to hear the note again names another key
+/// (`voice_note_superseding`), so no reader chooses it. A filer that read the
+/// row before the request asks this again in the transaction that files it.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn superseded(conn: &mut SqliteConnection, subject: &str, note_id: &str, model: &str) -> Result<bool, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = ?1 AND sup.note_id = ?2 AND sup.hears_under <> ?3) AS "superseded!: bool""#,
+		subject,
+		note_id,
+		model
+	)
+	.fetch_one(&mut *conn)
+	.await
 }
 
 /// The audio `subject` holds under `note_id`, if any.
@@ -432,7 +454,7 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 			 WHERE w.subject_id = ?1 AND w.note_id = ?2
 			   AND w.model = (SELECT t.model FROM voice_transcript t
 			                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
-			                    AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt)
+			                    AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model)
 			                  ORDER BY t.heard_at DESC, t.model DESC LIMIT 1)
 			 ORDER BY w.word_index"#,
 			subject,
@@ -490,7 +512,7 @@ pub async fn heard(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 		   FROM voice_note n
 		   LEFT JOIN voice_transcript t
 		     ON t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')
-		       AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt)
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model)
 		   WHERE n.subject_id = ?1 AND n.note_id = ?2
 		   ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
 		   LIMIT 1"#,
@@ -1166,30 +1188,40 @@ mod tests {
 	}
 
 	/// paulgsc/some-ui#3339: every read that chooses a take's ending or its
-	/// final verdict skips the attempts a request to hear it again superseded,
-	/// by one predicate written the same way in each, so no reader can pick a
-	/// stale ending another reader skips. Counted per file, so a new chooser
-	/// that leaves it out, or a removed one, fails here until this is changed.
+	/// final verdict skips what a standing request to hear the take again
+	/// superseded (`voice_note_superseding`), by one predicate written the
+	/// same way in each. Asserted per function, by its name, so a chooser
+	/// that leaves it out fails here though another in its file has it, and
+	/// a new chooser must be listed.
 	#[test]
 	fn every_reader_skips_what_a_request_to_hear_again_superseded() {
-		const PREDICATE: &str = "AND h.act = 'hear_again' AND h.model = ";
+		const PREDICATE: &str = "FROM voice_note_superseding sup WHERE sup.subject_id = ";
+		/// The body of the function `signature` opens in `source`.
+		fn body<'a>(source: &'a str, signature: &str) -> &'a str {
+			let from = source.find(signature).unwrap_or_else(|| panic!("no {signature}"));
+			let to = from + source[from..].find("\n}\n").unwrap_or(source.len() - from);
+			&source[from..to]
+		}
+		let transcript = include_str!("transcript.rs");
+		let verdict = include_str!("verdict.rs");
+		let mailbox = include_str!("../../mailbox/src/lib.rs");
 		let readers = [
-			("transcript.rs", include_str!("transcript.rs"), 2),
-			("verdict.rs", include_str!("verdict.rs"), 3),
-			("kept.rs", include_str!("kept.rs"), 4),
-			("takes.rs", include_str!("takes.rs"), 1),
-			("meaning.rs", include_str!("meaning.rs"), 2),
-			("interview.rs", include_str!("interview.rs"), 1),
-			("attention.rs", include_str!("attention.rs"), 4),
-			("mailbox's lib.rs", include_str!("../../mailbox/src/lib.rs"), 1),
+			(transcript, "pub async fn words(", 1),
+			(transcript, "pub async fn heard(", 1),
+			(transcript, "pub async fn superseded(", 1),
+			(verdict, "pub async fn newest(", 2),
+			(verdict, "pub async fn of_ending(", 1),
+			(include_str!("kept.rs"), "pub async fn newest(", 4),
+			(include_str!("takes.rs"), "async fn chosen(", 1),
+			(include_str!("meaning.rs"), "pub async fn index(", 1),
+			(include_str!("meaning.rs"), "pub async fn unindexed(", 1),
+			(include_str!("interview.rs"), "async fn held(", 1),
+			(include_str!("attention.rs"), "pub async fn needing(", 4),
+			(mailbox, "pub async fn unfiled_transcripts(", 3),
+			(mailbox, "pub async fn unfiled_pickups(", 1),
 		];
-		for (file, source, readers) in readers {
-			// This test's own copy of the predicate is not a reader.
-			let own = usize::from(file == "transcript.rs");
-			let found = source.matches(PREDICATE).count() - own;
-			assert_eq!(found, readers, "{file}");
-			let skipped = source.matches("h.attempt >= ").count() - own;
-			assert_eq!(skipped, readers, "{file}: each says the attempt it answered, and those before it");
+		for (source, signature, readers) in readers {
+			assert_eq!(body(source, signature).matches(PREDICATE).count(), readers, "{signature}");
 		}
 	}
 }

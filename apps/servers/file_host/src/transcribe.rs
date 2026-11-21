@@ -99,6 +99,18 @@ pub const DEADLINE: Duration = Duration::from_secs(600);
 
 const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && DEADLINE.as_secs() >= MIN_DEADLINE.as_secs());
 
+/// The keys home hears and keeps transcriptions under.
+///
+/// [`MODEL`]'s file name, as the engine names it (`engine::Whisper::load`),
+/// and its verbatim key. What a request to hear a take again is named under
+/// (`voice_repo::attention::hear_again`), whether or not the transcriber runs.
+#[must_use]
+pub fn keys() -> (String, String) {
+	let plain = std::path::Path::new(MODEL).file_name().and_then(std::ffi::OsStr::to_str).unwrap_or(MODEL).to_owned();
+	let verbatim = verbatim::key(&plain);
+	(plain, verbatim)
+}
+
 /// The whisper model, where compose mounts `TRANSCRIBE_MODELS_DIR`
 /// (`infra/compose/file_host.yml`) and `nix/whisper-manager` downloads it
 /// (`TRANSCRIBE_MODEL`).

@@ -1222,7 +1222,11 @@ mod tests {
 		assert_eq!((done.refused, done.waiting), (1, 0), "every attempt failed: refused");
 
 		let mut conn = pool.acquire().await.unwrap();
-		let acted = voice_repo::attention::act(&mut conn, ME, "t-failed", voice_repo::attention::Act::HearAgain, "2026-11-21T09:00:00.000Z")
+		let keys = voice_repo::transcript::Keys {
+			plain: "m",
+			verbatim: "m+verbatim-1",
+		};
+		let acted = voice_repo::attention::hear_again(&mut conn, ME, "t-failed", keys, "2026-11-21T09:00:00.000Z")
 			.await
 			.unwrap();
 		assert!(matches!(acted, voice_repo::attention::Acted::Recorded(_)), "{acted:?}");

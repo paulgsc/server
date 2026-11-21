@@ -3,17 +3,28 @@
 -- `voice_note_attention`'s closed set, `hear_again`, beside `kept`,
 -- `record_again` and `deleted`.
 --
--- A `hear_again` act answers a note's newest verdict, which must be `failed`
--- (no attempt ended it), and names it by its key (model, attempt, rule), as
--- every act does. The transcriber then counts a fresh set of its attempts on
--- that note: only those numbered after the act's `attempt`, by the act's
--- `model` (`voice_repo::transcript::waiting`). No attempt is rewritten, and
--- the old verdict stays. Asked again only once the policy's snooze has passed
--- (`voice_repo::attention::HEAR_AGAIN_SNOOZE`).
+-- A `hear_again` act answers a note's newest verdict, whatever it is, a heard
+-- one included, names it by its key (model, attempt, rule) as every act does,
+-- and says the key the note is heard again under, `hears_under`: the note's
+-- key with `+again<k>`, `k` the requests made under that key
+-- (`voice_repo::transcript::again`). A fresh transcription, the way the
+-- interview's verbatim prompt is a key of its own: a model ends a note once
+-- under a key (`voice_transcript_one_ending`), so nothing is rewritten and the
+-- old ending, words and verdict stay beside the new. Asked again only once the
+-- policy's snooze has passed (`voice_repo::attention::HEAR_AGAIN_SNOOZE`).
 --
--- SQLite cannot change a CHECK in place, so the table is rebuilt with the
--- same columns, rows, key, triggers and append-only rule, the act's CHECK
--- widened by the one name. Nothing else changes.
+-- `voice_note_superseding` is the one place a reader learns what a request
+-- superseded: each note's newest request, while home would still hear the
+-- note (its recording held, and not set aside but for a Jobs note). Every
+-- read that chooses a note's ending or final verdict skips a row whose model
+-- is not its request's `hears_under`, whatever model wrote it; a mark set
+-- aside or a recording let go ends the supersession, and the old rows read
+-- again.
+--
+-- SQLite cannot change a CHECK in place or add a checked column, so the table
+-- is rebuilt with the same rows, key, triggers and append-only rule, the act's
+-- CHECK widened by the one name and `hears_under` added, NULL for every other
+-- act. Nothing else changes.
 CREATE TABLE voice_note_attention_next (
     subject_id TEXT    NOT NULL,
     note_id    TEXT    NOT NULL,
@@ -23,7 +34,9 @@ CREATE TABLE voice_note_attention_next (
     attempt    INTEGER NOT NULL CHECK (attempt >= 1),
     rule       TEXT    NOT NULL,
     acted_at   TEXT    NOT NULL,
-    PRIMARY KEY (subject_id, note_id, n)
+    hears_under TEXT,
+    PRIMARY KEY (subject_id, note_id, n),
+    CHECK ((act = 'hear_again') = (hears_under IS NOT NULL))
 );
 
 INSERT INTO voice_note_attention_next (subject_id, note_id, n, act, model, attempt, rule, acted_at)
@@ -48,3 +61,17 @@ AFTER DELETE ON account
 BEGIN
     DELETE FROM voice_note_attention WHERE subject_id = OLD.subject_id;
 END;
+
+-- Each note's newest request to hear it again, while home would still hear
+-- the note: what every reader that chooses an ending or a verdict skips the
+-- note's other keys for (`voice_repo::transcript::SUPERSEDED`).
+CREATE VIEW voice_note_superseding AS
+SELECT h.subject_id, h.note_id, h.hears_under
+FROM voice_note_attention h
+JOIN voice_note n ON n.subject_id = h.subject_id AND n.note_id = h.note_id
+WHERE h.act = 'hear_again'
+  AND h.n = (SELECT MAX(l.n) FROM voice_note_attention l
+             WHERE l.subject_id = h.subject_id AND l.note_id = h.note_id AND l.act = 'hear_again')
+  AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = h.subject_id AND a.note_id = h.note_id)
+  AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+                                         WHERE s.subject_id = h.subject_id AND s.note_id = h.note_id));

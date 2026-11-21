@@ -59,7 +59,8 @@ pub enum Indexed {
 }
 
 /// Embeds the chosen words of `subject`'s take `note_id` with `embed`, and
-/// keeps the vector under its model, replacing the one kept before.
+/// keeps the vector under its model, replacing the one kept before; with no
+/// words chosen, removes it.
 ///
 /// Run it in the transaction that keeps a hearing, or in a `BEGIN
 /// IMMEDIATE` transaction of its own under the deletion hold
@@ -87,7 +88,7 @@ pub async fn index(conn: &mut SqliteConnection, subject: &str, note_id: &str, em
 	let words = sqlx::query_scalar!(
 		r#"SELECT t.text AS "text!: String" FROM voice_transcript t
 		   WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
-		     AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt)
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model)
 		   ORDER BY t.heard_at DESC, t.model DESC
 		   LIMIT 1"#,
 		subject,
@@ -96,6 +97,18 @@ pub async fn index(conn: &mut SqliteConnection, subject: &str, note_id: &str, em
 	.fetch_optional(&mut *conn)
 	.await?;
 	let Some(words) = words else {
+		// No words to search by now, as when a take heard again ended in a
+		// silence (paulgsc/some-ui#3339): its old vector goes, so a search
+		// never finds what the take no longer says.
+		let model = embed.model();
+		sqlx::query!(
+			"DELETE FROM voice_note_meaning WHERE subject_id = ?1 AND note_id = ?2 AND model = ?3",
+			subject,
+			note_id,
+			model
+		)
+		.execute(&mut *conn)
+		.await?;
 		return Ok(Indexed::NoWords);
 	};
 	let vector = to_blob(&embed.embed(&words));
@@ -136,7 +149,7 @@ pub async fn unindexed(conn: &mut SqliteConnection, model: &str, limit: i64) -> 
 		 WHERE n.of_kind = ?1
 		   AND EXISTS (SELECT 1 FROM voice_transcript t
 		               WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome = 'heard'
-		                 AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt))
+		                 AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model))
 		   AND NOT EXISTS (SELECT 1 FROM voice_note_meaning m
 		                   WHERE m.subject_id = n.subject_id AND m.note_id = n.note_id AND m.model = ?2)
 		 ORDER BY n.stored_at, n.subject_id, n.note_id

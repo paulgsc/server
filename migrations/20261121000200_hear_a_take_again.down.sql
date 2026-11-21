@@ -7,6 +7,8 @@ CREATE TEMP TABLE voice_note_attention_hears_none_again (n INTEGER NOT NULL CHEC
 INSERT INTO voice_note_attention_hears_none_again (n) SELECT COUNT(*) FROM voice_note_attention WHERE act = 'hear_again';
 DROP TABLE voice_note_attention_hears_none_again;
 
+DROP VIEW voice_note_superseding;
+
 CREATE TABLE voice_note_attention_prev (
     subject_id TEXT    NOT NULL,
     note_id    TEXT    NOT NULL,

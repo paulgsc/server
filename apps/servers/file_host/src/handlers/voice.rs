@@ -463,7 +463,12 @@ pub async fn get_takes(
 	};
 	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
 	let mut conn = db.begin().await?;
-	voice_repo::takes::library(&mut conn, paired.subject.as_str(), &now(), &ask)
+	let (plain, verbatim) = crate::transcribe::keys();
+	let keys = voice_repo::transcript::Keys {
+		plain: &plain,
+		verbatim: &verbatim,
+	};
+	voice_repo::takes::library(&mut conn, paired.subject.as_str(), keys, &now(), &ask)
 		.await
 		.map_err(refusal)?
 		.map(Json)
@@ -796,7 +801,12 @@ pub struct Attention {
 #[instrument(name = "voice_attention_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_attention(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Attention>, FileHostError> {
 	let mut tx = db.begin().await?;
-	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str(), &now()).await.map_err(refusal)?;
+	let (plain, verbatim) = crate::transcribe::keys();
+	let keys = voice_repo::transcript::Keys {
+		plain: &plain,
+		verbatim: &verbatim,
+	};
+	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str(), keys, &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(Attention { takes, total }))
 }
@@ -821,6 +831,9 @@ pub struct Reconciled {
 
 /// What an act on a take that asks for none answers with.
 const NOTHING_ASKED: &str = "home heard this take, or has not judged it yet: there is nothing to reconcile";
+
+/// What a request to hear again a take home has not judged yet answers with.
+const NOT_JUDGED: &str = "home has not judged this take yet: it is still hearing it the first time";
 
 /// What a request to hear again a take home would not hear answers with.
 const NOT_HEARABLE: &str = "home would not hear this take again: its recording was let go, or it was set aside";
@@ -868,11 +881,22 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 		_ => return Err(FileHostError::unprocessable_entity([("act", "keep, again or hear-again")])),
 	};
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let acted = voice_repo::attention::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await.map_err(refusal)?;
+	let acted = if act == Act::HearAgain {
+		let (plain, verbatim) = crate::transcribe::keys();
+		let keys = voice_repo::transcript::Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		voice_repo::attention::hear_again(&mut tx, paired.subject.as_str(), &id, keys, &now()).await
+	} else {
+		voice_repo::attention::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await
+	}
+	.map_err(refusal)?;
 	tx.commit().await?;
 	let (status, change, verdict) = match acted {
 		Acted::Recorded(verdict) => (StatusCode::CREATED, "recorded", verdict),
 		Acted::Unchanged(verdict) => (StatusCode::OK, "unchanged", verdict),
+		Acted::NothingAsked if act == Act::HearAgain => return Err(FileHostError::Conflict(NOT_JUDGED)),
 		Acted::NothingAsked => return Err(FileHostError::Conflict(NOTHING_ASKED)),
 		Acted::NotHearable(_) => return Err(FileHostError::Conflict(NOT_HEARABLE)),
 		Acted::Snoozed { next_at, .. } => {
@@ -1386,8 +1410,10 @@ mod tests {
 
 		// Its fresh set fails too: back on the list, asked again inside the
 		// snooze.
+		// Heard again under the key home hears with, `+again1`.
+		let fresh = crate::transcribe::keys().0 + "+again1";
 		for n in 1..=3 {
-			failed(&pool, "t1", "m+again1", n, n == 3, "2026-11-14T01:00:00Z").await;
+			failed(&pool, "t1", &fresh, n, n == 3, "2026-11-14T01:00:00Z").await;
 		}
 		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
 		let t1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
