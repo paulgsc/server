@@ -1196,4 +1196,39 @@ mod tests {
 		assert_eq!(seen.worker_last_pass, Some(1_763_110_800));
 		assert_eq!(seen.oldest_waiting_taken, Some(clock().timestamp()));
 	}
+
+	/// paulgsc/some-ui#3339: a take every attempt failed on refuses its
+	/// essay (`take-unheard`); once the owner asks home to hear it again, the
+	/// essay waits for its fresh attempts instead of being refused.
+	#[tokio::test]
+	async fn a_take_home_hears_again_holds_its_essay_back_rather_than_refusing_it() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		let key = "again-2026-11-21";
+		fake.ok("index.json", &index(&[key]));
+		fake.ok(&(String::from(key) + ".json"), &spoken_essay("2026-11-21", &["t-failed"]));
+		hold_take(&pool, "t-failed").await;
+		for statement in [
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+			 VALUES (?1, 't-failed', 'm', 'e', 3, 'deadline', 1, 'then')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES (?1, 't-failed', 'm', 3, 'heard-1', 'failed', '[\"deadline\"]', 'now')",
+		] {
+			sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+		}
+		let mut mine = given(dir.path());
+		mine.subject = Some(String::from(ME));
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.refused, done.waiting), (1, 0), "every attempt failed: refused");
+
+		let mut conn = pool.acquire().await.unwrap();
+		let acted = voice_repo::attention::act(&mut conn, ME, "t-failed", voice_repo::attention::Act::HearAgain, "2026-11-21T09:00:00.000Z")
+			.await
+			.unwrap();
+		assert!(matches!(acted, voice_repo::attention::Acted::Recorded(_)), "{acted:?}");
+		drop(conn);
+		let later = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((later.refused, later.waiting), (0, 1), "heard again: it waits");
+		assert!(!dir.path().join("status").join(String::from(key) + ".refused").exists(), "no longer said refused");
+	}
 }

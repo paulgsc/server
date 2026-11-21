@@ -694,7 +694,7 @@ mod tests {
 			run(&pool, statement, A, "take").await;
 		}
 		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(crate::attention::needing(&mut conn, A).await.unwrap().1, 1);
+		assert_eq!(crate::attention::needing(&mut conn, A, "2026-11-21T00:00:00.000Z").await.unwrap().1, 1);
 		drop(conn);
 		let Deleted::Gone(first) = gone(&pool, A, "take", ON).await else {
 			panic!("the take is gone");
@@ -709,7 +709,11 @@ mod tests {
 		assert_eq!(gone(&pool, A, "take", ON).await, Deleted::Gone(first), "a repeat reads the receipt, and acts no more");
 		assert_eq!(rows(&pool, "voice_note_attention", A, "take").await, 1);
 		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(crate::attention::needing(&mut conn, A).await.unwrap(), (Vec::new(), 0), "gone from the list");
+		assert_eq!(
+			crate::attention::needing(&mut conn, A, "2026-11-21T00:00:00.000Z").await.unwrap(),
+			(Vec::new(), 0),
+			"gone from the list"
+		);
 	}
 
 	/// Home's ending of note `id` judged `verdict` (paulgsc/server#908).

@@ -777,8 +777,13 @@ pub struct Attention {
 /// Every note home holds, of any kind, whose newest verdict (HEARD1) is
 /// `garbled`, `failed` or `nothing_said` and that no act answers yet
 /// (`voice_repo::attention::needing`): its id, kind, `ref`, when it was
-/// recorded, what home heard in it (null when no attempt ended it) and that
-/// verdict, codes and signals. Not paged: the newest
+/// recorded, what home heard in it (null when no attempt ended it), that
+/// verdict, codes and signals, and `hearAgain` (paulgsc/some-ui#3339):
+/// `open` when `hear-again` would be taken now, `hearing` while home hears
+/// it again, `askedAt`, and `nextAt` while the snooze lasts. Its `of` and
+/// `ref` are the take's source, as the take library keeps them (a Studio
+/// take's `<project>:<shot>:<take>`). A take home hears again stays listed
+/// until its new verdict. Not paged: the newest
 /// `voice_repo::attention::LISTED` and how many in all, read in one
 /// transaction so the two agree. Reads only, and no audio; the span skips
 /// every argument, so no word reaches a log line.
@@ -790,7 +795,7 @@ pub struct Attention {
 #[instrument(name = "voice_attention_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_attention(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Attention>, FileHostError> {
 	let mut tx = db.begin().await?;
-	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str()).await.map_err(refusal)?;
+	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str(), &now()).await.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(Attention { takes, total }))
 }
@@ -816,11 +821,23 @@ pub struct Reconciled {
 /// What an act on a take that asks for none answers with.
 const NOTHING_ASKED: &str = "home heard this take, or has not judged it yet: there is nothing to reconcile";
 
+/// What a request to hear again a take an attempt ended answers with.
+const ENDED: &str = "home heard this take through, garbled or with nothing said: hearing it again gives the same, so record it again instead";
+
+/// What a request to hear a take again inside the snooze answers with; its
+/// `details.nextAt` says when it may be asked.
+const SNOOZED: &str = "home was asked to hear this take again a short while ago: ask again from nextAt";
+
 /// `POST /voice-notes/:id/attention`: the owner's act on their take `id`
 /// that home could not hear (paulgsc/server#912, HEARD3).
 ///
-/// The body is `{"act": "keep" | "again"}`: the owner keeps the take as it
-/// is, or will record it again. The act answers the take's newest verdict
+/// The body is `{"act": "keep" | "again" | "hear-again"}`: the owner keeps
+/// the take as it is, will record it again, or asks home to hear it again
+/// (paulgsc/some-ui#3339): a take no attempt ended (its verdict `failed`)
+/// gets a fresh set of the transcriber's attempts, and stays on the list,
+/// `hearAgain.hearing`, until a new verdict comes. Asked at most once per
+/// `voice_repo::attention::HEAR_AGAIN_SNOOZE` on a take: inside it, a `409`
+/// whose `details.nextAt` says when; on a take an attempt ended, a `409`. The act answers the take's newest verdict
 /// and is appended to `voice_note_attention` with that verdict's key and
 /// when home recorded it (`voice_repo::attention::act`): `201` with
 /// `change: "recorded"`. Nothing is edited: a different act later is a new
@@ -834,7 +851,8 @@ const NOTHING_ASKED: &str = "home heard this take, or has not judged it yet: the
 /// 401 without a session, 403 for a browser's or an untrusted origin, 422
 /// naming `act` when the body is not one, 404 for a note the caller's
 /// subject does not hold, 409 for one whose newest verdict asks for nothing
-/// (heard, or not judged yet), and 500 for a storage failure.
+/// (heard, or not judged yet), or, for `hear-again`, one an attempt ended or
+/// one asked within the snooze, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_attention_post", skip_all, fields(otel.kind = "server"))]
 pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
@@ -842,7 +860,8 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 	let (act, name) = match said.as_ref().map(|body| body.act.as_str()) {
 		Some("keep") => (Act::Kept, "keep"),
 		Some("again") => (Act::RecordAgain, "again"),
-		_ => return Err(FileHostError::unprocessable_entity([("act", "keep or again")])),
+		Some("hear-again") => (Act::HearAgain, "hear-again"),
+		_ => return Err(FileHostError::unprocessable_entity([("act", "keep, again or hear-again")])),
 	};
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let acted = voice_repo::attention::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await.map_err(refusal)?;
@@ -851,6 +870,13 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 		Acted::Recorded(verdict) => (StatusCode::CREATED, "recorded", verdict),
 		Acted::Unchanged(verdict) => (StatusCode::OK, "unchanged", verdict),
 		Acted::NothingAsked => return Err(FileHostError::Conflict(NOTHING_ASKED)),
+		Acted::Ended(_) => return Err(FileHostError::Conflict(ENDED)),
+		Acted::Snoozed { next_at, .. } => {
+			return Err(FileHostError::ConflictNaming {
+				reason: SNOOZED,
+				details: std::collections::HashMap::from([(std::borrow::Cow::Borrowed("nextAt"), vec![std::borrow::Cow::Owned(next_at)])]),
+			})
+		}
 		Acted::NotHeld => return Err(FileHostError::NotFound),
 	};
 	Ok((status, Json(Reconciled { change, act: name, verdict })).into_response())
@@ -1272,6 +1298,92 @@ mod tests {
 		judged(&pool, "n1", "better", "heard", "", "2026-11-15T00:00:00Z").await;
 		assert_eq!(post(&app, "/voice-notes/n1/attention", Some(&phone), &keep).await.0, StatusCode::CONFLICT);
 		assert_eq!(remove(&app, "/voice-notes/n1", &phone).await.0, StatusCode::CONFLICT, "heard: kept for good");
+	}
+
+	/// Model `m`'s failed attempt `n` on `id`, judged `failed` when `last`.
+	async fn failed(pool: &SqlitePool, id: &str, n: i64, last: bool, at: &str) {
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+			 VALUES (?1, ?2, 'm', 'e', ?3, 'deadline', 1, ?4)",
+		)
+		.bind(A)
+		.bind(id)
+		.bind(n)
+		.bind(at)
+		.execute(pool)
+		.await
+		.unwrap();
+		if last {
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+				 VALUES (?1, ?2, 'm', ?3, 'heard-1', 'failed', 'deadline', ?4)",
+			)
+			.bind(A)
+			.bind(id)
+			.bind(n)
+			.bind(at)
+			.execute(pool)
+			.await
+			.unwrap();
+		}
+	}
+
+	/// paulgsc/some-ui#3339: the owner asks home to hear a failed take again.
+	/// It is a 201 that keeps the take listed as being heard again, a resend
+	/// a 200, a take an attempt ended a 409, and, once the fresh set has
+	/// failed too, a second ask inside the snooze a 409 naming `nextAt`.
+	#[tokio::test]
+	async fn the_owner_asks_home_to_hear_a_failed_take_again_once_per_snooze() {
+		const ATTENTION: &str = "/voice-notes/attention";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		for path in [NOTE, "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z"] {
+			assert_eq!(put(&app, path, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		}
+		for n in 1..=3 {
+			failed(&pool, "t1", n, n == 3, "2026-11-14T00:00:00Z").await;
+		}
+		judged(&pool, "n1", "m", "garbled", "low_confidence", "2026-11-14T00:00:00Z").await;
+		let again = json!({ "act": "hear-again" });
+
+		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
+		let t1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
+		assert_eq!(t1["hearAgain"], json!({ "open": true, "hearing": false, "askedAt": null, "nextAt": null }));
+		assert_eq!((&t1["of"], &t1["ref"]), (&json!("studio"), &json!("ep05:s1:1")), "its source, as the take carries it");
+		let n1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "n1").unwrap().clone();
+		assert_eq!(n1["hearAgain"]["open"], json!(false), "an attempt ended it");
+
+		let (status, answer) = post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await;
+		assert_eq!((status, &answer["change"], &answer["act"]), (StatusCode::CREATED, &json!("recorded"), &json!("hear-again")));
+		assert_eq!(post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await.0, StatusCode::OK, "a resend");
+		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
+		let t1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
+		assert_eq!(
+			(&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"]),
+			(&json!(true), &json!(false)),
+			"still listed, being heard"
+		);
+		assert!(t1["hearAgain"]["nextAt"].is_string());
+		assert_eq!(
+			post(&app, "/voice-notes/n1/attention", Some(&phone), &again).await.0,
+			StatusCode::CONFLICT,
+			"garbled: heard through"
+		);
+
+		// Its fresh set fails too: asked again inside the snooze.
+		for n in 4..=6 {
+			failed(&pool, "t1", n, n == 6, "2026-11-14T01:00:00Z").await;
+		}
+		let (status, refused) = post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await;
+		assert_eq!((status, &refused["error"]["code"]), (StatusCode::CONFLICT, &json!("conflict")));
+		assert!(refused["error"]["details"]["nextAt"][0].is_string(), "{refused}");
+		let acts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_attention WHERE act = 'hear_again'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(acts, 1, "a refusal writes nothing");
 	}
 
 	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves

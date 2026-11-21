@@ -122,13 +122,27 @@ pub struct Verdict {
 	pub signals: Option<Signals>,
 }
 
-/// The language a note said for `of_kind` is said in, when its kind has one.
+/// The language a note said for `of_kind`, under `of_ref`, is said in, when
+/// its source has one.
 ///
-/// A Rust Rounds answer and an interview take are English. Every other kind
-/// may mix languages (a reflection's Korean), so has none.
+/// One arm per kind, and no wildcard, so a new kind says its language before
+/// it compiles. A Rust Rounds answer and an interview take are English, and so
+/// is a Studio take of a script's scene (`<project>:<shot>:<take>`) or of a
+/// spoken card's part (`spoken:<card>.<part>`): each is read or said for an
+/// English video (the owner, 2026-11-21, paulgsc/some-ui#3339, after a spoken
+/// card's take was heard as German). Every other kind, and a Studio idea's
+/// answer or a take with no scene, may mix languages (a reflection's Korean),
+/// so has none. With a language, the engine hears the whole take in it, and a
+/// verdict flags `off_language` when the take says otherwise.
 #[must_use]
-pub fn expected_language(of_kind: &str) -> Option<&'static str> {
-	(of_kind == crate::Of::RustRound.as_str() || of_kind == crate::Of::Interview.as_str()).then_some("en")
+pub fn expected_language(of_kind: &str, of_ref: &str) -> Option<&'static str> {
+	let of = crate::Of::named(of_kind)?;
+	let english = match of {
+		crate::Of::RustRound | crate::Of::Interview => true,
+		crate::Of::Studio => crate::about::studio_script_or_spoken(of_ref),
+		crate::Of::Reflection | crate::Of::Jobs | crate::Of::Scene | crate::Of::Game | crate::Of::Soundbite | crate::Of::Lens | crate::Of::Leetype => false,
+	};
+	english.then_some("en")
 }
 
 /// One attempt, as [`keep`] names it.
@@ -507,10 +521,16 @@ mod tests {
 	}
 
 	#[test]
-	fn a_rust_rounds_answer_and_an_interview_take_are_english_and_nothing_else_is() {
-		assert_eq!(expected_language("rust-round"), Some("en"));
-		assert_eq!(expected_language("interview"), Some("en"));
-		assert_eq!(expected_language("reflection"), None, "a reflection mixes Korean in");
+	fn a_take_is_english_when_its_source_is_and_a_reflection_never_is() {
+		assert_eq!(expected_language("rust-round", "2026-w47:QM-311"), Some("en"));
+		assert_eq!(expected_language("interview", "2026-w47:about-you"), Some("en"));
+		assert_eq!(expected_language("studio", "build-journal-ep04:s3:2"), Some("en"), "a script's scene");
+		assert_eq!(expected_language("studio", "spoken:sc1a2b3c.0"), Some("en"), "a spoken card's part");
+		assert_eq!(expected_language("studio", "idea:i1:q2"), None, "an idea's answer");
+		assert_eq!(expected_language("studio", "loose"), None, "a take with no scene");
+		assert_eq!(expected_language("reflection", "session-7f2a"), None, "a reflection mixes Korean in");
+		assert_eq!(expected_language("soundbite", "direct"), None);
+		assert_eq!(expected_language("no-such-kind", "x"), None);
 		assert!(Kind::Garbled.unheard() && Kind::Failed.unheard());
 		assert!(!Kind::Heard.unheard() && !Kind::NothingSaid.unheard());
 	}

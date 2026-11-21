@@ -1739,15 +1739,34 @@ nowhere is marked as such and belongs to review.
     paulgsc/server#911), and its receipt says `verdict` stayed. **The owner's
     reconciliation of each note home could not hear is
     `voice_note_attention`, append-only too** (paulgsc/server#912, HEARD3):
-    one row per act (`kept`, `record_again`, `deleted`) on a note whose
-    newest verdict is `garbled`, `failed` or `nothing_said`, naming that
-    verdict by its key, numbered per note, and when home recorded it; never
-    anything said. Written only by `POST /voice-notes/:id/attention` and
-    `DELETE /voice-notes/:id` (`voice_repo::attention::act`), never updated
-    (its trigger aborts an `UPDATE`), it outlives its note as the verdicts do
-    and leaves with the account alone (sweep and trigger). `GET
-    /voice-notes/attention` lists the notes held whose newest verdict no act
-    answers. Every read that gives
+    one row per act (`kept`, `record_again`, `deleted`, `hear_again`) on a
+    note whose newest verdict is `garbled`, `failed` or `nothing_said`,
+    naming that verdict by its key, numbered per note, and when home
+    recorded it; never anything said. Written only by
+    `POST /voice-notes/:id/attention` and `DELETE /voice-notes/:id`
+    (`voice_repo::attention::act`), never updated (its trigger aborts an
+    `UPDATE`), it outlives its note as the verdicts do and leaves with the
+    account alone (sweep and trigger). `GET /voice-notes/attention` lists the
+    notes held whose newest verdict no act answers but a request to hear it
+    again. **The owner may ask home to hear a take again**
+    (paulgsc/some-ui#3339; the owner, 2026-11-21: "it's what we have, except
+    the retry"): `hear-again` is a fourth act in the same closed set, not a
+    table of its own (C923). It is taken only for a take no attempt ended,
+    its newest verdict `failed`; one an attempt ended, `garbled` or
+    `nothing_said`, is a `409`, since the same model hears the same words
+    again (C924). The transcriber then counts a fresh set of its `ATTEMPTS`
+    on the note, those numbered after the attempt the act answered
+    (`voice_repo::transcript::waiting`'s `spent`), and judges the last of
+    that set final: no attempt or verdict is rewritten, the old verdict
+    stays, and the transcriber reads no clock for it (C925). A take is asked
+    again at most once per `voice_repo::attention::HEAR_AGAIN_SNOOZE`, six
+    hours, a policy constant and not a setting; inside it the answer is a
+    `409` whose `details.nextAt` says when (C926). While home hears it again
+    the take stays listed, its `hearAgain` saying so (`open`, `hearing`,
+    `askedAt`, `nextAt`), and an essay waiting on it waits for its words
+    rather than refusing it (`take_files::hand_off`); its `of` and `ref` are
+    its source, as the take library keeps them, and no new link is made
+    (C927). Every read that gives
     a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
     the mailbox's transcript and pickup files) gives its verdict beside it,
     so no reader judges a transcript for itself. A reader

@@ -152,6 +152,10 @@ pub struct Waiting {
 	/// The language its kind is said in, when it has one
 	/// ([`crate::verdict::expected_language`], HEARD1).
 	pub expected_language: Option<&'static str>,
+	/// The attempts its key had made before the owner last asked home to
+	/// hear it again ([`crate::attention::Act::HearAgain`]), or 0: the
+	/// attempts that count are those numbered after it, a fresh set.
+	pub spent: i64,
 }
 
 /// The notes their key in `keys` has not ended (heard, or found silent) and
@@ -164,6 +168,12 @@ pub struct Waiting {
 /// its turn, and no run of one note's failures stands between a take and its
 /// first hearing. Each note is still tried at most `attempts` times, so the
 /// order only decides who goes first, never how much work there is.
+///
+/// Counted from the owner's newest request to hear the note again, when
+/// there is one (paulgsc/some-ui#3339): its act names the attempt it
+/// answered, and only the key's attempts numbered after it count, so a
+/// request opens a fresh set without rewriting a row or reading a clock
+/// ([`Waiting::spent`]).
 ///
 /// A [`VERBATIM`] note waits on [`Keys::verbatim`] alone, and any other note
 /// on [`Keys::plain`] alone; [`Waiting::verbatim`] says which.
@@ -202,19 +212,25 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 	// `(subject_id, note_id, model)` index reads as it reads a bound one.
 	let rows = sqlx::query!(
 		r#"WITH candidate AS MATERIALIZED (
-		   SELECT n.subject_id, n.note_id, n.of_kind = ?5 AS verbatim, n.of_kind, n.stored_at,
+		   SELECT k.subject_id, k.note_id, k.verbatim, k.of_kind, k.of_ref, k.stored_at, k.spent,
 		          (SELECT COUNT(*) FROM voice_transcript t
-		           WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried
-		   FROM voice_note n
+		           WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id
+		             AND t.model = k.key AND t.attempt > k.spent) AS tried
+		   FROM (SELECT n.subject_id, n.note_id, n.of_kind, n.of_ref, n.stored_at, n.of_kind = ?5 AS verbatim,
+		                CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END AS key,
+		                COALESCE((SELECT MAX(h.attempt) FROM voice_note_attention h
+		                          WHERE h.subject_id = n.subject_id AND h.note_id = n.note_id AND h.act = 'hear_again'
+		                            AND h.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END), 0) AS spent
+		         FROM voice_note n) k
 		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
-		                     WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		                       AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
+		                     WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id
+		                       AND t.model = k.key AND t.attempt > k.spent
 		                       AND t.outcome IN ('heard', 'silent'))
-		     AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
-		                                            WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
-		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
-		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!" FROM candidate
+		     AND (k.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                            WHERE s.subject_id = k.subject_id AND s.note_id = k.note_id))
+		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = k.subject_id AND a.note_id = k.note_id))
+		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!",
+		        of_ref AS "of_ref!", spent AS "spent!: i64" FROM candidate
 		 WHERE tried < ?2
 		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, tried, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
@@ -235,7 +251,8 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 				subject: row.subject_id,
 				note_id: row.note_id,
 				verbatim: row.verbatim,
-				expected_language: crate::verdict::expected_language(&row.of_kind),
+				expected_language: crate::verdict::expected_language(&row.of_kind, &row.of_ref),
+				spent: row.spent,
 			})
 			.collect(),
 	)
@@ -710,7 +727,8 @@ mod tests {
 	}
 
 	/// The key is decided per note, and both lookups still search the
-	/// `(subject_id, note_id, model)` index rather than scan transcripts.
+	/// `(subject_id, note_id, model)` index rather than scan transcripts, as
+	/// the request lookup searches the attention table's key.
 	/// The plan is of `waiting`'s own SQL, read from this file.
 	#[tokio::test]
 	async fn the_queue_searches_transcripts_by_their_index() {
@@ -735,6 +753,10 @@ mod tests {
 		let searched = details.iter().filter(|detail| detail.starts_with("SEARCH t USING")).count();
 		assert_eq!(searched, 2, "{details:?}");
 		assert!(!details.iter().any(|detail| detail.starts_with("SCAN t")), "{details:?}");
+		// The owner's newest request to hear a note again is read by the
+		// attention table's own key, never a scan (paulgsc/some-ui#3339).
+		assert!(details.iter().any(|detail| detail.starts_with("SEARCH h USING")), "{details:?}");
+		assert!(!details.iter().any(|detail| detail.starts_with("SCAN h")), "{details:?}");
 	}
 
 	/// A Studio take is heard as any note is: it waits until heard, by each

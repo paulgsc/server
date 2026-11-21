@@ -11,7 +11,9 @@
 //! - **Bounded.** A pass takes at most [`BATCH`] notes, each heard on a
 //!   blocking thread by its deadline, and gives each one attempt, so a note
 //!   that fails is retried a pass later, not at once, and at most
-//!   [`ATTEMPTS`] times by one model (`voice_repo::transcript::waiting`).
+//!   [`ATTEMPTS`] times by one model (`voice_repo::transcript::waiting`),
+//!   until the owner asks home to hear it again, which opens a fresh set of
+//!   [`ATTEMPTS`] (paulgsc/some-ui#3339): the last of that set is final.
 //! - **An interview take is heard verbatim** ([`super::verbatim`], IW2):
 //!   decoded with the prompt that keeps fillers, and kept under the model's
 //!   verbatim key, which is the only key it waits on. Every other note is
@@ -200,7 +202,10 @@ pub async fn run_once_telling<H: Hear>(
 			duration_ms: attempted.duration_ms,
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
-		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n >= ATTEMPTS);
+		// Final once the note's set is spent: its attempts since the owner
+		// last asked home to hear it again, or all of them (some-ui#3339).
+		let spent = note.spent;
+		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n - spent >= ATTEMPTS);
 		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(kind, took);
@@ -1013,5 +1018,39 @@ mod tests {
 				assert!(!line.contains(heard), "what a note said, its audio, id or subject reached a log line");
 			}
 		}
+	}
+
+	/// paulgsc/some-ui#3339: once the owner asks home to hear a failed note
+	/// again, the transcriber gives it a fresh set of `ATTEMPTS`, numbered
+	/// on from its old ones, and judges the last of that set final; nothing
+	/// it kept before is rewritten.
+	#[tokio::test]
+	async fn a_note_the_owner_asks_to_hear_again_gets_a_fresh_set_of_attempts() {
+		let pool = pool().await;
+		note(&pool, A, "broken", "2026-10-25T01:00:00.000Z", b"noise").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		for _ in 0..=ATTEMPTS {
+			pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		}
+		assert_eq!(fake.heard().len(), 3, "its first set spent");
+
+		let mut conn = pool.acquire().await.unwrap();
+		let acted = voice_repo::attention::act(&mut conn, A, "broken", voice_repo::attention::Act::HearAgain, "2026-10-26T00:00:00.000Z")
+			.await
+			.unwrap();
+		assert!(matches!(acted, voice_repo::attention::Acted::Recorded(_)), "{acted:?}");
+		drop(conn);
+		for _ in 0..=ATTEMPTS {
+			pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		}
+		assert_eq!(fake.heard().len(), 6, "three more tries and no more");
+		let attempts: Vec<i64> = rows(&pool).await.into_iter().map(|(_, _, n, _, _)| n).collect();
+		assert_eq!(attempts, [1, 2, 3, 4, 5, 6], "numbered on, none rewritten");
+		let judged: Vec<(i64, String)> = sqlx::query_as("SELECT attempt, verdict FROM voice_transcript_verdict ORDER BY attempt")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(judged, [(3, String::from("failed")), (6, String::from("failed"))], "each set's last is final");
 	}
 }

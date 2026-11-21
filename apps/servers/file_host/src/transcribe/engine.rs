@@ -37,7 +37,8 @@
 //! word keeps the language it was heard in, and the note's language is the
 //! one heard for longest. **Except a kind said in one language**
 //! (`voice_repo::verdict::expected_language`: a Rust Rounds answer, an
-//! interview take; paulgsc/server#908, HEARD1): its speech is heard as one run
+//! interview take, and a Studio take of a script's scene or a spoken card's
+//! part; paulgsc/server#908, HEARD1; paulgsc/some-ui#3339): its speech is heard as one run
 //! in that language, as a short cut misdetected would otherwise be heard as
 //! words of a language nobody spoke (w46's QM-312 opened in "Portuguese").
 //! Its cuts are still detected, and the language detected for longest is
