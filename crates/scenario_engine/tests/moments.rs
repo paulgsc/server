@@ -576,6 +576,9 @@ fn a_big_play_is_the_side_that_gained_it() {
 	);
 	assert_eq!(play.good, Some(false), "read through NE");
 	assert_eq!(line, "CHI 45-yard interception return, touchdown");
+	// Read through NE, a pick-six is about NE's offense, which threw it.
+	let unit = o.ranked.iter().find(|r| r.scenario == Scenario::BigPlay).map(|r| (r.unit, r.unit_side.clone()));
+	assert_eq!(unit, Some((Some(game_scenarios::Unit::Offense), Some("NE".to_owned()))));
 
 	// The same play with the return stopped short of 20 is no big play.
 	let short = Play {
@@ -769,42 +772,49 @@ fn halftime_is_on_offer_until_the_second_half_kicks_off() {
 	assert!(!ids(&at_half(half - 1, Some("NE"))).contains(&"in.halftime"), "not before the half ends");
 }
 
-/// #3049: the ranked list holds every scenario once, the moment's own first,
-/// then the always plausible, then the rest; and each says what a bite of it
-/// is about by default, read through the side wanted.
+/// #3049: the ranked list holds every scenario once: the cards exactly, then
+/// the always plausible, then the rest; and each says what a bite of it is
+/// about by default, as a unit and the team's code.
 #[test]
 fn every_scenario_is_ranked_once_with_what_it_is_about() {
-	use game_scenarios::{About, Side, Unit};
+	use game_scenarios::Unit;
 	use scenario_engine::Tier;
 	let plays = plays();
 	let log = recorded_log(&plays);
-	// CHI wanted; NE on 4th down: the call is theirs.
+	// NE on 4th down.
 	let fourth = plays.iter().position(|p| is_snap(p) && p.down == Some(4) && p.possession.as_deref() == Some("NE")).unwrap();
-	let g = game(Some("CHI"), status(GameState::In, Some(&plays[fourth])), Some(Situation::before(&plays[fourth])));
-	let o = offer(&g, &log, pacific(wall(&plays[fourth]) - TimeDelta::seconds(10)), Mode::Light, Watching::Unknown);
-	assert_eq!(o.ranked.len(), Scenario::ALL.len());
-	for scenario in Scenario::ALL {
-		assert_eq!(o.ranked.iter().filter(|r| r.scenario == scenario).count(), 1, "{scenario:?} once");
+	let at = pacific(wall(&plays[fourth]) - TimeDelta::seconds(10));
+	let at_fourth = |want: Option<&str>, mode| {
+		let g = game(want, status(GameState::In, Some(&plays[fourth])), Some(Situation::before(&plays[fourth])));
+		offer(&g, &log, at, mode, Watching::Unknown)
+	};
+	for mode in [Mode::Light, Mode::Standard, Mode::Full] {
+		let o = at_fourth(Some("CHI"), mode);
+		assert_eq!(o.ranked.len(), Scenario::ALL.len());
+		for scenario in Scenario::ALL {
+			assert_eq!(o.ranked.iter().filter(|r| r.scenario == scenario).count(), 1, "{scenario:?} once");
+		}
+		let now: Vec<Scenario> = o.ranked.iter().filter(|r| r.tier == Tier::Now).map(|r| r.scenario).collect();
+		assert_eq!(now, o.scenarios.iter().map(|s| s.scenario).collect::<Vec<_>>(), "now is the cards, in their order");
+		let tiers: Vec<Tier> = o.ranked.iter().map(|r| r.tier).collect();
+		assert!(tiers.windows(2).all(|w| (w[0] as u8) <= (w[1] as u8)), "now, then always, then the rest");
 	}
-	let tiers: Vec<Tier> = o.ranked.iter().map(|r| r.tier).collect();
-	assert!(tiers.windows(2).all(|w| (w[0] as u8) <= (w[1] as u8)), "now, then always, then the rest");
-	assert!(o.ranked.len() > o.scenarios.len(), "the list is not cut to the mode's cards");
+	let about = |o: &Offer, scenario: Scenario| o.ranked.iter().find(|r| r.scenario == scenario).map(|r| (r.unit, r.unit_side.clone())).unwrap();
+	let team = |unit, side: &str| (Some(unit), Some(side.to_owned()));
+	let o = at_fourth(Some("CHI"), Mode::Full);
+	assert_eq!(about(&o, Scenario::FourthDown), team(Unit::Coaching, "NE"), "the call is NE's");
 	assert_eq!(
-		&o.ranked[..o.scenarios.len()].iter().map(|r| r.scenario).collect::<Vec<_>>(),
-		&o.scenarios.iter().map(|s| s.scenario).collect::<Vec<_>>(),
-		"the offers first, in their order"
+		about(&o, Scenario::PlayCall),
+		team(Unit::Defense, "CHI"),
+		"NE has the ball: CHI's defense, as the owner says it"
 	);
-	let about = |scenario: Scenario| o.ranked.iter().find(|r| r.scenario == scenario).unwrap().unit;
-	let (ours, theirs) = (|unit| Some(About { unit, side: Side::Ours }), |unit| Some(About { unit, side: Side::Theirs }));
-	assert_eq!(about(Scenario::FourthDown), theirs(Unit::Coaching), "their call");
-	assert_eq!(about(Scenario::PlayCall), ours(Unit::Defense), "NE has the ball: our defense");
-	assert_eq!(about(Scenario::Kick), ours(Unit::SpecialTeams));
-	assert_eq!(about(Scenario::Weather), None, "pregame is about no unit");
-	assert_eq!(about(Scenario::CaughtIt), None, "nor is the owner's own watching");
+	assert_eq!(about(&o, Scenario::Kick), team(Unit::SpecialTeams, "NE"), "the team kicking");
+	assert_eq!(about(&o, Scenario::Weather), (None, None), "pregame is about no unit");
+	assert_eq!(about(&o, Scenario::CaughtIt), (None, None), "nor is the owner's own watching");
 	assert_eq!(o.ranked.iter().find(|r| r.scenario == Scenario::Stakes).unwrap().tier, Tier::Always);
-
-	// No side wanted: no unit to be ours or theirs.
-	let neither = game(None, status(GameState::In, Some(&plays[fourth])), Some(Situation::before(&plays[fourth])));
-	let o = offer(&neither, &log, pacific(wall(&plays[fourth]) - TimeDelta::seconds(10)), Mode::Light, Watching::Unknown);
-	assert!(o.ranked.iter().all(|r| r.unit.is_none()));
+	// No side wanted: still a defense to talk about, named by the team.
+	let o = at_fourth(None, Mode::Full);
+	assert_eq!(about(&o, Scenario::FourthDown), team(Unit::Coaching, "NE"));
+	assert_eq!(about(&o, Scenario::PlayCall), team(Unit::Offense, "NE"), "the team with the ball's offense");
+	assert_eq!(about(&o, Scenario::Halftime), (Some(Unit::Coaching), None), "halftime is no one team's");
 }

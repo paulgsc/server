@@ -16,9 +16,9 @@ along (version 2, #3048): `halves` (`first`, `second`, `overtime`: the half
 an in-game bite was in) and `big_play`, the big-play algebra's `sizes` (each
 with the fewest yards it starts at) and `kinds` (each with the smallest size
 it counts from), and `units` (#3049: `offense`, `defense`, `special-teams`,
-`coaching`: what part of a team a bite is about, `ours` or `theirs`). Each is
-an enum here (`Half`, `Size`, `Kind`, `Unit`, `Side`), so the engine and the
-phone's words agree on every value.
+`coaching`: what part of a team a bite is about; whose is the team's code
+beside it). Each is an enum here (`Half`, `Size`, `Kind`, `Unit`), so the
+engine and the phone's words agree on every value.
 
 ## One set, two readers
 

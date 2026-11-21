@@ -11,7 +11,7 @@ use crate::{
 	words, BigPlay, Game, Happened, Mode, Offered, Ranked, Situation, Tier, Watching,
 };
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, Utc};
-use game_scenarios::{About, Kind, Moment, Phase as When, Scenario, Side, Unit};
+use game_scenarios::{Kind, Moment, Phase as When, Scenario, Unit};
 use nfl_feed::GameState;
 use std::cmp::Reverse;
 
@@ -310,39 +310,63 @@ impl<'s> Cx<'s> {
 		})
 	}
 
-	/// What a bite of `scenario` is about by default, now (#3049): a call (a
-	/// fourth down, the try, the clock, the half) is the deciding team's
-	/// coaching; a kick or a return is our special teams; anything else is our
-	/// offense when we had the ball and our defense when they did. For the
-	/// moments known only once they have happened, "had the ball" is the
-	/// latest play's; for the rest, the snap to come's.
-	fn default_unit(&self, scenario: Scenario) -> Option<About> {
-		let us = self.us?;
-		let entry = scenario.entry();
-		if entry.phase != When::In {
+	/// What a bite of `scenario` is about by default, now (#3049, C874): a
+	/// unit, and whose as the team's code.
+	///
+	/// - A call (4th down, the try, the two-minute drill) is the coaching of
+	///   the team with the decision; halftime is the side wanted's, or no one
+	///   team's.
+	/// - A kick is the special teams of the team kicking; a kick or punt
+	///   return big play, of the returners.
+	/// - Anything else in the game: with a side wanted, its offense when it
+	///   had the ball and its defense when the other team did (how the owner
+	///   says it); with none, the offense of the team with the ball. "Had the
+	///   ball" is the snap to come's for what is offered ahead, and the latest
+	///   play's for what just happened.
+	///
+	/// None before kickoff, after the final, or about the owner.
+	fn default_unit(&self, scenario: Scenario) -> Option<(Unit, Option<String>)> {
+		if scenario.entry().phase != When::In {
 			return None;
 		}
-		let side = |team: &str| if team == us { Side::Ours } else { Side::Theirs };
-		let ours = |unit| Some(About { unit, side: Side::Ours });
+		let us = self.us;
 		let to_come = self.game.situation.as_ref().and_then(|s| s.possession.as_deref());
-		let last = self.so_far.last_snap().and_then(|i| self.so_far.plays[i].play.possession.as_deref());
-		let by_the_ball = |team: Option<&str>| team.and_then(|team| ours(if team == us { Unit::Offense } else { Unit::Defense }));
-		match entry.moment {
-			Moment::FourthDown | Moment::TwoMinute => to_come.or(last).map(|team| About {
-				unit: Unit::Coaching,
-				side: side(team),
-			}),
-			Moment::Try => self.try_pending().or(last).map(|team| About {
-				unit: Unit::Coaching,
-				side: side(team),
-			}),
-			Moment::Halftime => ours(Unit::Coaching),
-			Moment::Kick | Moment::Kickoff | Moment::OnsideKick => ours(Unit::SpecialTeams),
+		let last = self.so_far.plays.iter().rev().find_map(|seen| seen.play.possession.as_deref());
+		let of = |unit, team: Option<&str>| Some((unit, team.map(str::to_owned)));
+		// Offense or defense as the owner says it: ours, with a side wanted.
+		let by_the_ball = |team: Option<&str>| {
+			let team = team?;
+			match us {
+				Some(us) if us != team => of(Unit::Defense, Some(us)),
+				_ => of(Unit::Offense, Some(team)),
+			}
+		};
+		match scenario.entry().moment {
+			Moment::FourthDown | Moment::TwoMinute => of(Unit::Coaching, Some(to_come.or(last)?)),
+			Moment::Try => of(Unit::Coaching, Some(self.try_pending().or(last)?)),
+			Moment::Halftime => of(Unit::Coaching, us),
+			Moment::Kick => of(Unit::SpecialTeams, to_come.or(last)),
+			Moment::Kickoff | Moment::OnsideKick => {
+				let kicking = self
+					.so_far
+					.plays
+					.iter()
+					.rev()
+					.find(|seen| read::kind(seen.play).contains("kickoff"))
+					.and_then(|seen| seen.play.possession.as_deref());
+				of(Unit::SpecialTeams, kicking.or(us))
+			}
 			Moment::BigPlay => {
 				let big = (0..self.so_far.plays.len()).rev().find_map(|i| self.big_play(i))?;
 				match big.kind {
-					Kind::KickReturn | Kind::PuntReturn => ours(Unit::SpecialTeams),
-					Kind::Pass | Kind::Run | Kind::InterceptionReturn | Kind::FumbleReturn => ours(if big.by == us { Unit::Offense } else { Unit::Defense }),
+					Kind::KickReturn | Kind::PuntReturn => of(Unit::SpecialTeams, Some(&big.by)),
+					Kind::Pass | Kind::Run => by_the_ball(Some(&big.by)),
+					// The defense returned it: the gaining side had no ball.
+					Kind::InterceptionReturn | Kind::FumbleReturn => match us {
+						Some(us) if us == big.by => of(Unit::Defense, Some(us)),
+						Some(us) => of(Unit::Offense, Some(us)),
+						None => of(Unit::Defense, Some(&big.by)),
+					},
 				}
 			}
 			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury | Moment::LeadChange => by_the_ball(last),
@@ -582,31 +606,20 @@ pub(crate) fn just_happened(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, 
 /// the game means for the paths, and whether it fits a pattern.
 const ALWAYS: [Scenario; 2] = [Scenario::Stakes, Scenario::Pattern];
 
-/// Every scenario of the set once (#3049): what is on offer now in its order
-/// (`offered`, untruncated), then what just happened, then the always
-/// plausible, then the rest in the set's order. Each with its default unit.
-pub(crate) fn every_scenario(
-	game: &Game,
-	so_far: &SoFar<'_>,
-	at: DateTime<Utc>,
-	local: FixedOffset,
-	watching: Watching,
-	offered: &[Offered],
-	happened: &[Happened],
-) -> Vec<Ranked> {
+/// Every scenario of the set once (#3049): the cards on offer now, exactly
+/// as `offered` lists them (the mode's count), then the always plausible,
+/// then the rest in the set's order. Each with its default unit.
+pub(crate) fn every_scenario(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, local: FixedOffset, watching: Watching, offered: &[Offered]) -> Vec<Ranked> {
 	let cx = Cx::new(game, so_far, at, Mode::Full, local, watching);
 	let mut out: Vec<Ranked> = Vec::with_capacity(Scenario::ALL.len());
 	let mut add = |scenario: Scenario, tier: Tier| {
 		if !out.iter().any(|r| r.scenario == scenario) {
-			out.push(Ranked {
-				scenario,
-				tier,
-				unit: cx.default_unit(scenario),
-			});
+			let (unit, unit_side) = cx.default_unit(scenario).map_or((None, None), |(unit, side)| (Some(unit), side));
+			out.push(Ranked { scenario, tier, unit, unit_side });
 		}
 	};
-	for scenario in offered.iter().map(|o| o.scenario).chain(happened.iter().map(|h| h.scenario)) {
-		add(scenario, Tier::Now);
+	for offered in offered {
+		add(offered.scenario, Tier::Now);
 	}
 	for scenario in ALWAYS {
 		add(scenario, Tier::Always);

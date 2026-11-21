@@ -67,20 +67,27 @@ the 25 (`Kind::least`). `read::gain_by` reads which side gained and how far.
 ### One ranked list, and what a bite is about (#3049)
 
 `Offer::ranked` holds every scenario of the set once, for the phone's "what
-was that about" list: what is on offer now (untruncated) and what just
-happened, in the engine's own order (`now`); then the always plausible,
-what the game means for the paths and whether it fits a pattern
-(`always`); then the rest in the set's order, least plausible last but
-still pickable (`rest`). Code ranks it, never a model.
+was that about" list: the cards on offer now, exactly as `scenarios` lists
+them (`now`); then the always plausible, what the game means for the paths
+and whether it fits a pattern (`always`); then the rest in the set's order,
+least plausible last but still pickable (`rest`). Code ranks it, never a
+model.
 
-Each entry carries its default unit (`game_scenarios::About`): a call (4th
-down, the try, the two-minute drill, halftime) is the deciding team's
-`coaching`; a kick, a kickoff, an onside kick or a kick or punt return is our
-`special-teams`; anything else in the game is our `offense` when we had the
-ball and our `defense` when they did (the snap to come's possession, or for
-what just happened the latest play's, or the big play's side). None before
-kickoff, after the final, about the owner, or with no side wanted. The
-owner can change it with one tap; home keeps what the phone sends.
+Each entry carries its default unit (`game_scenarios::Unit`) and whose, the
+team's code (`unit_side`), never ours or theirs (the phone reads that from
+the side wanted, and a game with none still has a defense):
+
+- a call (4th down, the try, the two-minute drill) is the deciding team's
+  `coaching`; halftime is the side wanted's, or no one team's;
+- a kick is the kicking team's `special-teams`; a kick or punt return big
+  play, the returners';
+- anything else in the game is, with a side wanted, its `offense` when it
+  had the ball and its `defense` when the other team did; with none, the
+  `offense` of the team with the ball (the snap to come's, or for what just
+  happened the latest play's).
+
+None before kickoff, after the final, or about the owner. The owner can
+change it with one tap; home keeps what the phone sends, once, with the bite.
 
 A game ESPN calls over that was not completed (postponed or cancelled), with
 no play in the log, offers nothing, and its strip says "Not played".

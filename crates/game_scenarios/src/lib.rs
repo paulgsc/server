@@ -491,8 +491,10 @@ pub struct BigPlays {
 	pub kinds: Vec<KindEntry>,
 }
 
-/// What part of a team a bite is about (#3049): the side's offense, defense,
-/// special teams, or its coaching (a call: go for it, the try, the clock).
+/// What part of a team a bite is about (#3049): its offense, defense, special
+/// teams, or its coaching (a call: go for it, the try, the clock). Whose is
+/// the team's code beside it, never ours or theirs: a game no side is wanted
+/// in still has a defense.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Unit {
@@ -521,40 +523,6 @@ impl Unit {
 	pub fn named(name: &str) -> Option<Self> {
 		Self::ALL.into_iter().find(|unit| unit.as_str() == name)
 	}
-}
-
-/// Whose unit: the side the game is read for, or the other.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Side {
-	Ours,
-	Theirs,
-}
-
-impl Side {
-	pub const ALL: [Self; 2] = [Self::Ours, Self::Theirs];
-
-	/// The stored name.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Ours => "ours",
-			Self::Theirs => "theirs",
-		}
-	}
-
-	/// The side stored as `name`.
-	#[must_use]
-	pub fn named(name: &str) -> Option<Self> {
-		Self::ALL.into_iter().find(|side| side.as_str() == name)
-	}
-}
-
-/// A bite's unit and whose it is (#3049): `{ "unit": "defense", "side": "ours" }`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
-pub struct About {
-	pub unit: Unit,
-	pub side: Side,
 }
 
 /// The whole set, as `dump-game-scenarios` writes it.

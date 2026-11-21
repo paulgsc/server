@@ -263,7 +263,9 @@ pub struct Offer {
 	/// Newest first, at most the mode's count.
 	pub just_happened: Vec<Happened>,
 	/// Every scenario of the set once, the most plausible first (#3049): what
-	/// the "what was that about" list shows, each with its default unit.
+	/// the "what was that about" list shows, each with its default unit. The
+	/// `now` entries are exactly `scenarios`, in its order: every `now` id is
+	/// a card and every card a `now` id. Then `always`, then `rest`.
 	pub ranked: Vec<Ranked>,
 }
 
@@ -275,8 +277,12 @@ pub struct Ranked {
 	pub id: String,
 	/// `now`, `always` or `rest`.
 	pub tier: scenario_engine::Tier,
-	/// `{ unit, side }` (the catalog's `units`, `ours` or `theirs`), or null.
-	pub unit: Option<game_scenarios::About>,
+	/// The catalog's `units`, or null (before kickoff, after the final, about
+	/// the owner).
+	pub unit: Option<game_scenarios::Unit>,
+	/// Whose unit: the team's code (`CHI`), or null when about no one team.
+	/// The phone reads ours or theirs from the side wanted.
+	pub unit_side: Option<String>,
 }
 
 impl Offer {
@@ -317,6 +323,7 @@ impl Offer {
 					id: ranked.scenario.id().to_owned(),
 					tier: ranked.tier,
 					unit: ranked.unit,
+					unit_side: ranked.unit_side,
 				})
 				.collect(),
 		}
@@ -485,32 +492,22 @@ fn home_examples() -> [Outbound; 4] {
 				}),
 			},
 		],
-		// A few of the 29: one of each tier, with and without a unit.
+		// The cards, then a few of the rest: one of each tier, with and
+		// without a unit.
 		ranked: [
-			(
-				"in.third-long",
-				scenario_engine::Tier::Now,
-				Some((game_scenarios::Unit::Defense, game_scenarios::Side::Ours)),
-			),
-			(
-				"in.play-call",
-				scenario_engine::Tier::Now,
-				Some((game_scenarios::Unit::Defense, game_scenarios::Side::Ours)),
-			),
-			("in.sack", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Offense, game_scenarios::Side::Ours))),
-			(
-				"in.fourth-down",
-				scenario_engine::Tier::Rest,
-				Some((game_scenarios::Unit::Coaching, game_scenarios::Side::Theirs)),
-			),
+			("in.third-long", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Defense, Some("CHI")))),
+			("in.play-call", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Defense, Some("CHI")))),
 			("pre.stakes", scenario_engine::Tier::Always, None),
+			("in.fourth-down", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, Some("NE")))),
+			("in.halftime", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, None))),
 			("pre.weather", scenario_engine::Tier::Rest, None),
 		]
 		.into_iter()
 		.map(|(id, tier, unit)| Ranked {
 			id: id.to_owned(),
 			tier,
-			unit: unit.map(|(unit, side)| game_scenarios::About { unit, side }),
+			unit: unit.map(|(unit, _)| unit),
+			unit_side: unit.and_then(|(_, side)| side.map(str::to_owned)),
 		})
 		.collect(),
 	};

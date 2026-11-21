@@ -310,9 +310,12 @@ pub struct Bite {
 	pub mode: Mode,
 	/// The version of the scenario set it was said under.
 	pub catalog: i64,
-	/// What the bite is about (#3049): a unit and whose, as the phone said;
+	/// What part of a team the bite is about (#3049), as the phone said;
 	/// `None` when it said none.
-	pub unit: Option<game_scenarios::About>,
+	pub unit: Option<game_scenarios::Unit>,
+	/// Whose unit: the team's code (`CHI`); `None` when the bite is about no
+	/// one team, or said no unit.
+	pub unit_side: Option<String>,
 }
 
 /// The containers the phone records in, and the transcriber reads.
@@ -403,10 +406,13 @@ pub struct SaidBite<'a> {
 	pub mode: Option<&'a str>,
 	/// The scenario set's version, a whole number from 1.
 	pub catalog: Option<&'a str>,
-	/// What the bite is about (#3049), as `<unit>:<side>` (`defense:ours`):
-	/// `game_scenarios::Unit` and `Side`. Optional; part of what a replay
-	/// must match.
+	/// What part of a team the bite is about (#3049): `offense`, `defense`,
+	/// `special-teams` or `coaching` (`game_scenarios::Unit`). Optional; part
+	/// of what a replay must match.
 	pub unit: Option<&'a str>,
+	/// Whose unit (`unitSide`): a team's code as ESPN writes it, 2 to 4
+	/// capital letters (`CHI`). Optional, and only with `unit`.
+	pub unit_side: Option<&'a str>,
 }
 
 impl SaidBite<'_> {
@@ -424,6 +430,7 @@ impl SaidBite<'_> {
 			("mode", self.mode),
 			("catalog", self.catalog),
 			("unit", self.unit),
+			("unitSide", self.unit_side),
 		]
 		.into_iter()
 		.filter_map(|(field, value)| value.map(|_| field))
@@ -645,12 +652,23 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 	if catalog.is_none() {
 		problems.push(("catalog", "not a catalogue version: a whole number from 1"));
 	}
-	let unit = said.unit.map(|unit| {
-		let parsed = parse_unit(unit);
+	let unit = said.unit.and_then(|unit| {
+		let parsed = game_scenarios::Unit::named(unit);
 		if parsed.is_none() {
-			problems.push(("unit", "not what a bite is about: <offense|defense|special-teams|coaching>:<ours|theirs>"));
+			problems.push(("unit", "not what a bite is about: offense, defense, special-teams or coaching"));
 		}
 		parsed
+	});
+	let unit_side = said.unit_side.and_then(|side| {
+		if !is_team(side) {
+			problems.push(("unitSide", "not a team's code: 2 to 4 capital letters"));
+			None
+		} else if said.unit.is_none() {
+			problems.push(("unitSide", "a team's unit names the unit"));
+			None
+		} else {
+			Some(side.to_owned())
+		}
 	});
 	match (how, strip, watching, started, mode, catalog) {
 		(Some(how), Some(strip), Some(watching), Some(started), Some(mode), Some(catalog)) if problems.len() == before => Some(Bite {
@@ -664,24 +682,17 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 			offset,
 			mode,
 			catalog,
-			unit: unit.flatten(),
+			unit,
+			unit_side,
 		}),
 		_ => None,
 	}
 }
 
-/// `defense:ours` as a unit and whose.
-pub(crate) fn parse_unit(said: &str) -> Option<game_scenarios::About> {
-	let (unit, side) = said.split_once(':')?;
-	Some(game_scenarios::About {
-		unit: game_scenarios::Unit::named(unit)?,
-		side: game_scenarios::Side::named(side)?,
-	})
-}
-
-/// A unit and whose as `game_bite.unit` stores it.
-pub(crate) fn unit_name(about: game_scenarios::About) -> String {
-	[about.unit.as_str(), ":", about.side.as_str()].concat()
+/// A team's code as ESPN writes it: 2 to 4 capital letters (`SF`, `CHI`,
+/// `WSH`).
+fn is_team(code: &str) -> bool {
+	(2..=4).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_uppercase())
 }
 
 /// The note `body` is, as the phone `said`, under id `id`; or every problem
@@ -950,11 +961,11 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 		.await?;
 	if let Some(bite) = &note.bite {
 		let (how, mode, watching) = (bite.how.as_str(), bite.mode.as_str(), i64::from(bite.watching));
-		let unit = bite.unit.map(unit_name);
+		let unit = bite.unit.map(game_scenarios::Unit::as_str);
 		sqlx::query!(
 			"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, offer_seq, live_strip, context_line, watching,
-			                        started_at, clock_offset_ms, mode, catalog_version, unit)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+			                        started_at, clock_offset_ms, mode, catalog_version, unit, unit_side)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
 			subject,
 			note.id,
 			bite.scenario,
@@ -967,7 +978,8 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 			bite.offset,
 			mode,
 			bite.catalog,
-			unit
+			unit,
+			bite.unit_side
 		)
 		.execute(&mut *conn)
 		.await?;
@@ -1088,7 +1100,7 @@ pub async fn audio_body(conn: &mut SqliteConnection, subject: &str, note_id: &st
 /// `sqlx` failure.
 async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Bite, VoiceError> {
 	let row = sqlx::query!(
-		r#"SELECT scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version, unit
+		r#"SELECT scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version, unit, unit_side
 		   FROM game_bite WHERE subject_id = ?1 AND note_id = ?2"#,
 		subject,
 		note_id
@@ -1107,7 +1119,8 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 		offset: row.clock_offset_ms,
 		mode: Mode::named(&row.mode).ok_or(VoiceError::Unreadable)?,
 		catalog: row.catalog_version,
-		unit: row.unit.map(|unit| parse_unit(&unit).ok_or(VoiceError::Unreadable)).transpose()?,
+		unit: row.unit.map(|unit| game_scenarios::Unit::named(&unit).ok_or(VoiceError::Unreadable)).transpose()?,
+		unit_side: row.unit_side,
 	})
 }
 
@@ -1180,7 +1193,8 @@ mod tests {
 			offset: Some("-1350"),
 			mode: Some("standard"),
 			catalog: Some("1"),
-			unit: Some("defense:ours"),
+			unit: Some("defense"),
+			unit_side: Some("BUF"),
 		}
 	}
 
@@ -1270,6 +1284,7 @@ mod tests {
 					"mode",
 					"catalog_version",
 					"unit",
+					"unit_side",
 				][..],
 			),
 		] {
@@ -1467,17 +1482,29 @@ mod tests {
 			offset: Some("86400001"),
 			mode: Some("loud"),
 			catalog: Some("0"),
-			unit: Some("defense"),
+			unit: Some("defence"),
+			unit_side: Some("Buffalo"),
 		};
 		assert_eq!(
 			fields(describe("b1", said_game(wrong), b"take").unwrap_err()),
-			["how", "scenario", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog", "unit"]
+			["how", "scenario", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog", "unit", "unitSide"]
 		);
-		for odd in ["defence:ours", "defense:mine", "defense:", ":ours", "DEFENSE:OURS"] {
+		for odd in ["defense:ours", "DEFENSE", "special teams", ""] {
 			let mut unit = said_bite();
 			unit.unit = Some(odd);
 			assert_eq!(fields(describe("b1", said_game(unit), b"take").unwrap_err()), ["unit"], "{odd}");
 		}
+		for odd in ["buf", "B", "BUFFA", "B1"] {
+			let mut side = said_bite();
+			side.unit_side = Some(odd);
+			assert_eq!(fields(describe("b1", said_game(side), b"take").unwrap_err()), ["unitSide"], "{odd}");
+		}
+		let mut no_unit = said_bite();
+		no_unit.unit = None;
+		assert_eq!(fields(describe("b1", said_game(no_unit), b"take").unwrap_err()), ["unitSide"], "a side names its unit");
+		let mut no_side = said_bite();
+		no_side.unit_side = None;
+		assert!(describe("b1", said_game(no_side), b"take").is_ok(), "a unit about no one team");
 
 		let long = "x".repeat(MAX_LINE_CHARS + 1);
 		let too_long = SaidBite {
@@ -1524,7 +1551,7 @@ mod tests {
 			with_bite.bite = said_bite();
 			assert_eq!(
 				fields(describe("n1", with_bite, b"take").unwrap_err()),
-				["scenario", "how", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog", "unit"],
+				["scenario", "how", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog", "unit", "unitSide"],
 				"{of}"
 			);
 			with_bite.bite = SaidBite {
@@ -1621,14 +1648,11 @@ mod tests {
 		if let Some(bite) = other_strip.bite.as_mut() {
 			bite.strip.push('!');
 		}
-		let unit: Option<String> = sqlx::query_scalar("SELECT unit FROM game_bite WHERE note_id = 'b1'").fetch_one(&pool).await.unwrap();
-		assert_eq!(unit.as_deref(), Some("defense:ours"), "what the bite is about, as said");
+		let unit: (Option<String>, Option<String>) = sqlx::query_as("SELECT unit, unit_side FROM game_bite WHERE note_id = 'b1'").fetch_one(&pool).await.unwrap();
+		assert_eq!(unit, (Some("defense".to_owned()), Some("BUF".to_owned())), "what the bite is about, as said");
 		let mut other_unit = first.clone();
 		if let Some(bite) = other_unit.bite.as_mut() {
-			bite.unit = Some(game_scenarios::About {
-				unit: game_scenarios::Unit::Coaching,
-				side: game_scenarios::Side::Theirs,
-			});
+			bite.unit_side = Some("KC".to_owned());
 		}
 		let mut other_game = first.clone();
 		other_game.of_ref = String::from("401772982");
