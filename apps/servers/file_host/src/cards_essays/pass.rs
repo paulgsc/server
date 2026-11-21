@@ -45,12 +45,11 @@
 //!   once the essay is given. Every pass looks again at an essay not given.
 //! - **No copy outlives its need** ([`tidy`], each minute, as
 //!   `rust_essays::tidy`): once an essay's video is made its media folders
-//!   go, and an essay given with an item home no longer holds (a take deleted
-//!   from My data, its recording let go, or its account gone; a clip frame
-//!   gone; never a snip, which is no one's record) is withdrawn from the worker, its `<key>.json` and media
-//!   folders removed, so the next pass refuses it. A `.<key>.<kind>.partial`
-//!   a stopped pass left goes too.
-
+//!   go, and before then an essay given with an item home no longer holds
+//!   otherwise (its account gone; a clip frame gone; never a snip, which is
+//!   no one's record) is taken back from the worker, its `<key>.json` and
+//!   media folders removed, so the next pass refuses it. A
+//!   `.<key>.<kind>.partial` a stopped pass left goes too.
 //! - **A take deleted withdraws its essay for good** (paulgsc/server#1055,
 //!   as the Rust Rounds essay's: docs/identity.md's essay-render exception,
 //!   rule (c)): an essay whose spoken cards play a take deleted from My data
@@ -343,9 +342,13 @@ pub async fn tidy(db: &SqlitePool, given: &Given, now: &str) -> Result<Tidied, s
 				let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 				let withdrew = cards_essay_repo::withdraw(&mut tx, &key, subject, &note, size, now).await?;
 				tx.commit().await?;
-				done.withdrawn += usize::from(withdrew);
-				done.failed += remove_all(&essay, &folders, &[&render, &work]).await;
-				clear_refused(&given.status, &key).await;
+				// Not withdrawn here: gone already by another cause (a let-go,
+				// some-ui#2999), whose own writer removes it step by step.
+				if withdrew {
+					done.withdrawn += 1;
+					done.failed += remove_all(&essay, &folders, &[&render, &work]).await;
+					clear_refused(&given.status, &key).await;
+				}
 				continue;
 			}
 		}
@@ -369,7 +372,8 @@ pub async fn tidy(db: &SqlitePool, given: &Given, now: &str) -> Result<Tidied, s
 
 /// Removes `essay` and any `.<essay>.partial` a stopped export left, then
 /// its media `folders` and each of `dirs`; how many could not be removed.
-/// The essay first, so the worker never finds it without its media.
+/// The essay first, so the worker never finds it without its media: while
+/// it stays, nothing else goes, and the next minute tries again.
 async fn remove_all(essay: &Path, folders: &[PathBuf], dirs: &[&PathBuf]) -> usize {
 	let mut failed = 0;
 	let partial = essay.file_name().map(|name| essay.with_file_name(String::from(".") + &name.to_string_lossy() + ".partial"));
@@ -379,6 +383,9 @@ async fn remove_all(essay: &Path, folders: &[PathBuf], dirs: &[&PathBuf]) -> usi
 			Ok(()) => true,
 		};
 		failed += usize::from(!gone);
+	}
+	if failed > 0 {
+		return failed;
 	}
 	for dir in folders.iter().chain(dirs.iter().copied()) {
 		failed += usize::from(essay_media::remove_dir(dir).await.is_err());
@@ -531,14 +538,17 @@ async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Ut
 		let Some(body) = body else { continue };
 		// Never given, or taken back before, and now a take it plays was
 		// deleted: withdrawn for good, as one given would be by the tidy,
-		// with nothing of it on the drive to remove. Asked before its media
+		// which removes what of it is left on the drive (a render taken back
+		// mid-way, counted in its receipt's size). Asked before its media
 		// are read, so another take that does not read back never holds it.
 		let wanted = spoken_takes(&body);
 		if let Some(subject) = given.subject.as_deref().filter(|_| !wanted.is_empty()) {
 			if let Some(note) = deleted_of(db, subject, &wanted).await? {
 				let now = clock().to_rfc3339_opts(SecondsFormat::Millis, true);
+				// What a render taken back mid-way left, which the tidy removes.
+				let size = i64::try_from(crate::call_weeks::render::bytes_under(&given.renders.join(&essay.key)).await).unwrap_or(i64::MAX);
 				let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-				let withdrew = cards_essay_repo::withdraw(&mut tx, &essay.key, subject, &note, 0, &now).await?;
+				let withdrew = cards_essay_repo::withdraw(&mut tx, &essay.key, subject, &note, size, &now).await?;
 				tx.commit().await?;
 				pass.withdrawn += usize::from(withdrew);
 				clear_refused(&given.status, &essay.key).await;
@@ -1187,7 +1197,8 @@ mod tests {
 	}
 
 	/// A given essay's takes go once its video is made; one whose take home
-	/// no longer holds is taken back from the worker, and refused next pass.
+	/// no longer holds (its audio gone, no receipt) is taken back from the
+	/// worker, and refused next pass.
 	#[tokio::test]
 	async fn no_copy_of_a_take_outlives_its_video_or_its_note() {
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
@@ -1217,7 +1228,7 @@ mod tests {
 		);
 		assert_eq!(names_in(dir.path()), ["made-2026-11-19.json", "renders"], "the made one keeps its essay alone");
 		let next = run_once(&pool, &fake, &mine, &clock).await.unwrap();
-		assert_eq!((next.exported, next.refused), (0, 1), "the withdrawn one is refused, not given again");
+		assert_eq!((next.exported, next.refused), (0, 1), "the taken-back one is refused, not given again");
 		assert_eq!(
 			std::fs::read_to_string(dir.path().join("status").join("kept-2026-11-20.refused")).unwrap(),
 			"reason=take-missing\n"
