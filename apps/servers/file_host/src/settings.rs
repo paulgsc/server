@@ -90,13 +90,21 @@ impl Namespace for GameFeed {
 /// The most teams [`Teams`] may name: every NFL team is 32.
 pub const MAX_TEAMS: usize = 32;
 
-/// The teams whose games the game feed follows live (paulgsc/some-ui#3329,
-/// GWB15), each as ESPN spells its abbreviation on the scoreboard (`SF`,
+/// Why more than [`MAX_TEAMS`] are refused.
+const TOO_MANY: &str = "at most 32 teams, each named once";
+const _: () = assert!(MAX_TEAMS == 32, "TOO_MANY says 32");
+
+/// The teams whose games the game feed follows live (paulgsc/some-ui#3329).
+///
+/// Each is named as ESPN spells its abbreviation on the scoreboard (`SF`,
 /// `WSH`, `LAR`: `nfl_feed::scoreboard::Side::team`), the same names the
 /// phone's game day labels a game by (`SF vs SEA`). Empty means every game.
 ///
 /// Each is 2 to 4 capital letters, at most [`MAX_TEAMS`]; held sorted and
-/// once each, so the same choice is always stored the same way.
+/// once each, so the same choice is always stored the same way. These rules
+/// are checked when a value is read, so they may be loosened but never
+/// tightened: a stored revision they then refuse is unreadable, and the game
+/// feed skips every pass until the operator sets the teams again.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<String>", into = "Vec<String>")]
 pub struct Teams(Vec<String>);
@@ -111,31 +119,31 @@ impl Teams {
 
 	/// How many teams are named: 0 is every game.
 	#[must_use]
-	pub fn len(&self) -> usize {
+	pub const fn len(&self) -> usize {
 		self.0.len()
 	}
 
 	/// Whether no team is named, so every game is followed.
 	#[must_use]
-	pub fn is_empty(&self) -> bool {
+	pub const fn is_empty(&self) -> bool {
 		self.0.is_empty()
 	}
 }
 
 impl TryFrom<Vec<String>> for Teams {
-	type Error = String;
+	type Error = &'static str;
 
 	fn try_from(mut teams: Vec<String>) -> Result<Self, Self::Error> {
-		if let Some(bad) = teams
+		if teams
 			.iter()
-			.find(|team| !(2..=4).contains(&team.len()) || !team.bytes().all(|byte| byte.is_ascii_uppercase()))
+			.any(|team| !(2..=4).contains(&team.len()) || !team.bytes().all(|byte| byte.is_ascii_uppercase()))
 		{
-			return Err(format!("a team is 2 to 4 capital letters, as ESPN abbreviates it, not {bad:?}"));
+			return Err("a team is 2 to 4 capital letters, as ESPN abbreviates it");
 		}
 		teams.sort_unstable();
 		teams.dedup();
 		if teams.len() > MAX_TEAMS {
-			return Err(format!("at most {MAX_TEAMS} teams"));
+			return Err(TOO_MANY);
 		}
 		Ok(Self(teams))
 	}
@@ -274,7 +282,7 @@ mod tests {
 		// Held sorted and once each.
 		assert_eq!((entry.accept)(br#"{"teams":["SF","KC","SF"]}"#).unwrap(), r#"{"teams":["KC","SF"]}"#);
 		let letter = |n: usize| char::from(b'A' + u8::try_from(n).unwrap());
-		let too_many: Vec<String> = (0..=MAX_TEAMS).map(|n| format!("T{}{}", letter(n / 26), letter(n % 26))).collect();
+		let too_many: Vec<String> = (0..=MAX_TEAMS).map(|n| ['T', letter(n / 26), letter(n % 26)].into_iter().collect()).collect();
 		let too_many = serde_json::json!({ "teams": too_many }).to_string();
 		for refused in [
 			&br#"{"teams":["sf"]}"#[..],

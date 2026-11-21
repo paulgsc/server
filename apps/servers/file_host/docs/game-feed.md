@@ -38,16 +38,23 @@ those two indexed reads:
     or `game_feed::CADENCE.refresh` (86,400 s) after the last read, whichever
     is sooner, and never sooner than awake would be. A day with no game near
     costs one read (paulgsc/some-ui#3329). The daily read learns a game added,
-    flexed or rescheduled; one moved sooner by less than a day is learnt at
-    that read, so in the worst case its first hour is missed. A game still
-    `pre` past its grace (postponed) leaves the scoreboard asleep until a read
-    says its new kickoff.
+    flexed or rescheduled. One added, or moved sooner, to within a day of the
+    last read is learnt only at the next one: in the worst case the whole game
+    is missed live and fetched once, as over. So is a chosen game whose kickoff
+    the scoreboard does not give, or one still `pre` past its grace that then
+    starts. A game still `pre` past its grace (postponed) leaves the scoreboard
+    asleep until a read says its new kickoff; one called off (`post`, not
+    completed) before its kickoff is not followed before that kickoff.
   - **Backing off** after a read that failed, as below, whatever the games.
 - **Only the chosen teams' games.** `settings::GameTeams` (below, "Turning it
   on") names teams; a game is chosen when either side is named, or always when
   none is. Only a chosen game's summary is fetched and only its kickoff wakes
   the scoreboard. Every listed game is still learnt, so a change of teams
-  takes effect at the next pass.
+  takes effect at the next pass; one no team chose is dropped once it leaves
+  the scoreboard, never fetched. So with teams named, a game not chosen has
+  no summary kept: the phone's game day shows it from the scoreboard alone,
+  and a bite about it is never matched to a play (`reconcile`, which reads
+  only games held final).
 - **A game's summary** (`/summary?event=<id>`) every `game_feed::CADENCE.live`
   (15) while the game is live, and from its kickoff while the scoreboard still
   calls it `pre`, since the scoreboard can be ten minutes stale at kickoff. A

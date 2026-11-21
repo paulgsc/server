@@ -57,7 +57,8 @@ pub fn record_pass(pass: Option<&Pass>, followed: usize) {
 	}
 }
 
-/// Where the scoreboard stands after a pass that ran (paulgsc/some-ui#3329):
+/// Where the scoreboard stands after a pass that ran (paulgsc/some-ui#3329).
+///
 /// `game_feed_asleep` 1 while no chosen game is near ([`Watch::Asleep`]),
 /// else 0; `game_feed_next_fetch_timestamp_seconds`, when the scoreboard is
 /// next read, asleep or not; and `game_feed_teams_chosen`, how many teams the

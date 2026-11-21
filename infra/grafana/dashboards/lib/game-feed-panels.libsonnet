@@ -78,7 +78,7 @@ local series(title, description, targets, unit) = {
 
   scoreboard: stat(
     'SCOREBOARD',
-    'Whether the scoreboard is asleep: no chosen team\'s game is live or within an hour of kickoff, so it is next read an hour before the next chosen kickoff or a day after its last read, whichever is sooner. AWAKE reads it every 10 minutes. Asleep is not a fault; SINCE LAST LOOK says whether the worker is alive.',
+    'Whether the scoreboard is asleep: no chosen team\'s game is live or within an hour of kickoff, so it is next read an hour before the next chosen kickoff or a day after its last read, whichever is sooner. AWAKE reads it every 10 minutes, or as its backoff says after a failed read. Asleep is not a fault; SINCE LAST LOOK says whether the worker is alive.',
     { expr: 'game_feed_asleep' },
     'none',
     [{ color: 'green', value: null }],

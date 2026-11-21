@@ -7,24 +7,26 @@
 //!
 //! **Why this is a poll.** ESPN pushes nothing to home, and home makes only
 //! outbound requests. The worker wakes every [`TICK`], fetches only what its
-//! [`pass::Schedule`] says is due, and an idle wake does no I/O but reading
-//! its two settings: the scoreboard every 10 minutes ([`CADENCE`]) while a
-//! chosen game is near, a chosen game's summary every 15 seconds while it is
-//! live, once more after it goes final.
+//! [`pass::Schedule`] says is due: the scoreboard every 10 minutes
+//! ([`CADENCE`]) while a chosen game is near, a chosen game's summary every
+//! 15 seconds while it is live, once more after it goes final. An idle
+//! wake's only I/O is reading its two settings. GW6 asks for a play within a
+//! minute, 8 times in 10; the live cadence plus one tick is 20 s, which
+//! leaves the rest to ESPN's own delay.
 //!
 //! **It sleeps between games** (paulgsc/some-ui#3329, GWB15). With no chosen
 //! game live, past kickoff and not final, or within an hour of kickoff
-//! ([`CADENCE`]`.margin`), the scoreboard is next read at that hour before
-//! the next chosen kickoff, or a day after its last read
-//! ([`CADENCE`]`.refresh`), whichever is sooner ([`pass::Watch::Asleep`]).
-//! The daily read is what learns a game added, moved, flexed or postponed
-//! while asleep; one moved sooner by less than a day can be missed until it.
+//! (`CADENCE.margin`), the scoreboard is next read at that hour before the
+//! next chosen kickoff, or a day after its last read (`CADENCE.refresh`),
+//! whichever is sooner ([`pass::Watch::Asleep`]). The daily read is what
+//! learns a game added, moved, flexed or postponed while asleep: one added,
+//! or moved sooner, within a day of the last read can be missed, whole, until
+//! the next read, which then fetches it once as over.
 //! Asleep, the worker still wakes every [`TICK`] and stamps each wake, so
 //! `GameFeedStale` still means the worker died, never that it sleeps.
 //! **Which games are chosen** is the operator's other lever,
 //! `settings::GameTeams` (every game by default): only a named team's games
-//! get summaries, and only their kickoffs wake the scoreboard. GW6 asks for a play within a minute, 8 times in 10; the live
-//! cadence plus one tick is 20 s, which leaves the rest to ESPN's own delay.
+//! get summaries, and only their kickoffs wake the scoreboard.
 //!
 //! What this module promises (`docs/game-feed.md` in this app):
 //!
@@ -165,6 +167,15 @@ impl Seen {
 	}
 }
 
+/// A pass skipped on a setting it could not read: counted, said, and the
+/// pass failing, with home following as `following` says.
+fn skipped(err: &settings::ReadError, following: bool, followed: usize) {
+	crate::metrics::instruments::record_error("game_feed", "setting");
+	crate::metrics::game_feed::record_enabled(following);
+	crate::metrics::game_feed::record_pass(None, followed);
+	error!(error = %err, "game feed pass skipped: a setting it follows could not be read");
+}
+
 fn say(change: Change) {
 	match change {
 		Change::Paused => info!("the game feed is paused by the operator: home fetches nothing and keeps what it has"),
@@ -202,39 +213,39 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 				}
 				_ = ticker.tick() => {
 					crate::metrics::game_feed::record_pass_started();
-					// The switch and the teams, once a pass (`settings::GameFeed`,
-					// `settings::GameTeams`).
-					let levers = match settings::read::<GameFeed>(&db).await {
-						Ok(switch) => settings::read::<GameTeams>(&db).await.map(|teams| (switch.value, teams.value.teams)),
-						Err(err) => Err(err),
-					};
-					let (switch, teams) = match levers {
-						Ok(levers) => levers,
+					// The switch, then the teams while it follows, once a pass
+					// (`settings::GameFeed`, `settings::GameTeams`).
+					let switch = match settings::read::<GameFeed>(&db).await {
+						Ok(standing) => standing.value,
 						Err(err) => {
-							crate::metrics::instruments::record_error("game_feed", "setting");
 							// A switch that does not read is home's storage failing, as
 							// a pass that ends on it is. Its alert (`GameFeedFailing`)
 							// counts only while home follows, so an unread switch
 							// reads as its default, following: else a switch broken
 							// from boot, or after a pause, would fail unseen.
-							crate::metrics::game_feed::record_enabled(GameFeed::default().following);
-							crate::metrics::game_feed::record_pass(None, schedule.followed(chrono::Utc::now(), &chosen));
-							error!(error = %err, "game feed pass skipped: a setting it follows could not be read");
+							skipped(&err, GameFeed::default().following, schedule.followed(chrono::Utc::now(), &chosen));
 							continue;
 						}
 					};
-					chosen.clone_from(&teams);
 					crate::metrics::game_feed::record_enabled(switch.following);
 					if let Some(change) = seen.switch(!switch.following) {
 						say(change);
 					}
-					// Paused: nothing fetched, and the schedule and every
-					// kept row stay as they are. A paused pass follows no
-					// game and has not failed.
+					// Paused: nothing fetched, the teams unread, and the
+					// schedule and every kept row stay as they are. A paused
+					// pass follows no game and has not failed.
 					if !switch.following {
 						crate::metrics::game_feed::record_pass(Some(&pass::Pass::default()), 0);
 						continue;
 					}
+					let teams = match settings::read::<GameTeams>(&db).await {
+						Ok(standing) => standing.value.teams,
+						Err(err) => {
+							skipped(&err, switch.following, schedule.followed(chrono::Utc::now(), &chosen));
+							continue;
+						}
+					};
+					chosen.clone_from(&teams);
 					let result = pass::run_once(&db, &context.fetch, &mut schedule, context.cadence, &teams, &chrono::Utc::now).await;
 					let now = chrono::Utc::now();
 					crate::metrics::game_feed::record_pass(result.as_ref().ok(), schedule.followed(now, &teams));
