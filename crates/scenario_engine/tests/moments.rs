@@ -694,8 +694,31 @@ fn a_big_play_is_read_as_it_stood() {
 		),
 		..plays[pass].clone()
 	};
-	let o = just_after(&plays[..pass], taken_away);
-	assert!(big(&o).is_none_or(|(play, _)| !play.scored), "a touchdown taken away did not score");
+	assert!(big(&just_after(&plays[..pass], taken_away)).is_none(), "a gain the flag took away is none");
+	// Every flag is read, and a declined one is none: an accepted block in
+	// the back on the returners, beside a declined face mask on the kickers.
+	let two_flags = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 40 for 50 yards. PENALTY on NE-D.Muasau, Face Mask, declined. PENALTY on CHI-J.Brisker, Illegal Block Above the Waist, 10 yards, enforced at CHI 35.".to_owned()),
+		..plays[punt].clone()
+	};
+	assert!(big(&just_after(&plays[..punt], two_flags)).is_none());
+	let kickers_flag = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 40 for 50 yards. PENALTY on CHI-J.Brisker, Illegal Block Above the Waist, declined. PENALTY on NE-D.Muasau, Face Mask, 15 yards, enforced at NE 40.".to_owned()),
+		..plays[punt].clone()
+	};
+	let o = just_after(&plays[..punt], kickers_flag);
+	assert_eq!(
+		big(&o).map(|(play, _)| (play.kind, play.yards)),
+		Some((Kind::PuntReturn, 50)),
+		"a flag on the kickers leaves the return"
+	);
+	// A return a review reversed is not what its first yards say.
+	let pick = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("INTERCEPTED"))).unwrap();
+	let reversed = Play {
+		text: Some("D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 20 for 25 yards. The Replay Official reviewed the pass completion ruling, and the play was REVERSED. D.Maye pass short left to H.Henry to NE 50 for 5 yards.".to_owned()),
+		..plays[pick].clone()
+	};
+	assert!(big(&just_after(&plays[..pick], reversed)).is_none_or(|(play, _)| play.kind != Kind::InterceptionReturn));
 }
 
 /// #3048 (#2908): an onside kick is in "just happened", with who got it back:

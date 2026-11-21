@@ -292,7 +292,7 @@ fn gain_in(text: &str) -> Option<i64> {
 /// offense's pass, whose text names the target with "intended for" and the
 /// return's yards after it.
 pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
-	if wiped_out(play) || field_goal(play).is_some() {
+	if wiped_out(play) || field_goal(play).is_some() || touchdown_nullified(play) {
 		return None;
 	}
 	let text = text(play);
@@ -301,7 +301,7 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 	// flag on the returning side (not the team ESPN gave the ball: the kicking
 	// team, or the offense that lost it) is enforced from a spot ESPN does not
 	// restate as yards, and a muff or fumble on it is the kicking team's ball.
-	let clean_return = text.contains("declined") || penalty(play).is_none_or(|(team, _)| play.possession.as_deref() == Some(team.as_str()));
+	let clean_return = !flagged_against_the_returners(play) && !text.contains("reversed.");
 	let kept = !text.contains("muff") && !text.contains("fumble");
 	if kind(play).contains("kickoff") {
 		return (!is_onside(play) && clean_return && kept)
@@ -334,6 +334,21 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 		Kind::Run
 	};
 	gain(play).map(|y| (kind, y, true))
+}
+
+/// Whether an accepted flag on the play is on the side ESPN did not give the
+/// ball (the receivers of a kick, the defense on a turnover): every "PENALTY
+/// on" clause is read, and one its text declines is no flag.
+fn flagged_against_the_returners(play: &Play) -> bool {
+	let original = play.text.as_deref().unwrap_or_default();
+	let lower = original.to_ascii_lowercase();
+	let starts: Vec<usize> = lower.match_indices("penalty on ").map(|(at, _)| at).collect();
+	starts.iter().enumerate().any(|(n, start)| {
+		let end = starts.get(n + 1).copied().unwrap_or(lower.len());
+		let clause = &lower[*start..end];
+		let team = original[start + "penalty on ".len()..end].split(['-', ',', ' ']).next().unwrap_or_default();
+		!clause.contains("declined") && !team.is_empty() && play.possession.as_deref() != Some(team)
+	})
 }
 
 /// The yards of the return a kick's or turnover's text tells after its

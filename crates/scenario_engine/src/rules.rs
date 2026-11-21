@@ -285,7 +285,7 @@ impl<'s> Cx<'s> {
 		}
 		let plays = &self.so_far.plays;
 		let end = plays.iter().rposition(|seen| read::ends_the_half(seen.play))?;
-		if plays[end + 1..].iter().any(|seen| read::kind(seen.play) == "kickoff" || read::is_snap(seen.play)) {
+		if plays[end + 1..].iter().any(|seen| read::kind(seen.play).contains("kickoff") || read::is_snap(seen.play)) {
 			return None;
 		}
 		let score = words::score(self.game, self.so_far.score());
@@ -305,7 +305,7 @@ impl<'s> Cx<'s> {
 			kind,
 			by: by.to_owned(),
 			yards,
-			scored: read::is_touchdown(play) && !read::touchdown_nullified(play),
+			scored: read::is_touchdown(play),
 			good: self.us.map(|us| us == by),
 		})
 	}
