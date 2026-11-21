@@ -362,19 +362,23 @@ pub async fn with_game(conn: &mut SqliteConnection, subject: &str, note_id: &str
 	Ok(())
 }
 
-/// The quarter of the newest play home had seen of `game` by `at` (its own
+/// The latest quarter of any play home had seen of `game` by `at` (its own
 /// stamp, RFC 3339 to the millisecond, as the feed writes `seen_at`), or
-/// none before the first play and after the final: an indexed read back
-/// from the game's newest row by `game_feed_play_by_game`.
+/// none before the first play and once ESPN's End of Game was in.
+///
+/// The latest quarter, not the newest row's: ESPN revises an older play
+/// later, and its revision is a newer row. It reads the game's rows by
+/// `game_feed_play_by_game`, a few hundred at most.
 async fn period_seen_by(conn: &mut SqliteConnection, game: &str, at: &str) -> Result<Option<i64>, VoiceError> {
 	let row = sqlx::query!(
-		r#"SELECT period, play_type FROM game_feed_play WHERE game_id = ?1 AND seen_at <= ?2 ORDER BY row_id DESC LIMIT 1"#,
+		r#"SELECT MAX(period) AS "period: i64", MAX(play_type = 'End of Game') AS "over: i64"
+		   FROM game_feed_play WHERE game_id = ?1 AND seen_at <= ?2"#,
 		game,
 		at
 	)
-	.fetch_optional(&mut *conn)
+	.fetch_one(&mut *conn)
 	.await?;
-	Ok(row.filter(|row| row.play_type.as_deref() != Some("End of Game")).and_then(|row| row.period))
+	Ok(row.period.filter(|_| row.over != Some(1)))
 }
 
 /// `game`'s name from the newest summary home fetched of it, an indexed
@@ -591,10 +595,11 @@ mod tests {
 			.unwrap();
 		run("INSERT INTO game_feed_response (kind, game_id, url, fetched_at, status, sha256, size) VALUES ('summary', 'g', 'u', 'then', 200, '0000000000000000000000000000000000000000000000000000000000000000', 2)").await.unwrap();
 		run(
-			"INSERT INTO game_feed_play (game_id, espn_play_id, period, play_type, response_id, seen_at) VALUES
-			 ('g', 'q2', 2, 'Rush', 1, '2026-10-23T01:00:00.000Z'),
-			 ('g', 'q3', 3, 'Rush', 1, '2026-10-23T02:00:00.000Z'),
-			 ('g', 'end', 4, 'End of Game', 1, '2026-10-23T03:00:00.000Z')",
+			"INSERT INTO game_feed_play (game_id, espn_play_id, period, play_type, response_id, supersedes, seen_at) VALUES
+			 ('g', 'q2', 2, 'Rush', 1, NULL, '2026-10-23T01:00:00.000Z'),
+			 ('g', 'q3', 3, 'Rush', 1, NULL, '2026-10-23T02:00:00.000Z'),
+			 ('g', 'q2', 2, 'Rush', 1, 1, '2026-10-23T02:05:00.000Z'),
+			 ('g', 'end', 4, 'End of Game', 1, NULL, '2026-10-23T03:00:00.000Z')",
 		)
 		.await
 		.unwrap();
@@ -602,7 +607,8 @@ mod tests {
 		let bites = [
 			("matched", Some("in.third-long"), "offered", "2026-10-23T01:30:00.000Z", 0),
 			("said-at-1-30", Some("in.sack"), "just-happened", "2026-10-23T01:30:00.000Z", 0),
-			// The phone's clock 40 minutes slow: on home's it was 2:10, in the 3rd.
+			// The phone's clock 40 minutes slow: on home's it was 2:10, in the 3rd,
+			// after ESPN revised a 2nd-quarter play (a newer row, an older quarter).
 			("slow-phone", None, "said-first", "2026-10-23T01:30:00.000Z", 2_400_000),
 			("before-kickoff", Some("in.sack"), "just-happened", "2026-10-23T00:30:00.000Z", 0),
 			("pregame", Some("pre.weather"), "offered", "2026-10-23T01:30:00.000Z", 0),

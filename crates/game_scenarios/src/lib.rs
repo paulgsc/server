@@ -481,9 +481,10 @@ pub struct SizeEntry {
 	pub yards: i64,
 }
 
-/// The big-play algebra (#3048): a big play is a size, a kind, the side that
-/// gained, whether it scored, and whether it was good for the side wanted.
-/// The dump lists the closed parts; the other two are yes or no.
+/// The big-play algebra's closed parts (#3048), as the dump lists them.
+///
+/// A big play is a size, a kind, the side that gained, whether it scored,
+/// and whether it was good for the side wanted; the last two are yes or no.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BigPlays {
 	pub sizes: Vec<SizeEntry>,

@@ -615,7 +615,12 @@ fn a_big_play_is_the_side_that_gained_it() {
 		(Kind::Pass, Size::Memorable, "NE", true, Some(true))
 	);
 	assert_eq!(line, "NE 62-yard touchdown");
+}
 
+/// #3048: a kick return is big from 40 (C871), however ESPN types it.
+#[test]
+fn a_kick_return_is_big_from_40() {
+	let plays = plays();
 	// The ordinary kick return, out to about the 25, is not big; 47 is.
 	let kickoffs: Vec<usize> = plays
 		.iter()
@@ -629,6 +634,68 @@ fn a_big_play_is_the_side_that_gained_it() {
 	let o = just_after(&plays[..*long_return], plays[*long_return].clone());
 	let (play, _) = big(&o).unwrap();
 	assert_eq!((play.kind, play.size, play.by.as_str()), (Kind::KickReturn, Size::Huge, "CHI"));
+
+	// ESPN's own type for a kickoff run back all the way.
+	let all_the_way = Play {
+		play_type: Some("Kickoff Return Touchdown".to_owned()),
+		text: Some("C.Santos kicks 65 yards from CHI 35 to NE 0. C.Kiner to CHI 0 for 100 yards, TOUCHDOWN.".to_owned()),
+		..plays[*ordinary].clone()
+	};
+	let o = just_after(&plays[..*ordinary], all_the_way);
+	let (play, line) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.scored), (Kind::KickReturn, Size::Memorable, "NE", true));
+	assert_eq!(line, "NE 100-yard kick return, touchdown");
+}
+
+/// #3048: a gain is read as it stood: a fumble the offense fell on keeps its
+/// run, and a flag on a return, a muff, or a touchdown taken away are not
+/// what the yards say.
+#[test]
+fn a_big_play_is_read_as_it_stood() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let pass = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Pass Reception") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	// A run whose fumble the offense fell on is still its run.
+	let run = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Rush") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let own = Play {
+		play_type: Some("Fumble Recovery (Own)".to_owned()),
+		text: Some("R.Stevenson left end to CHI 30 for 35 yards. FUMBLES, RECOVERED by NE-R.Stevenson at CHI 30.".to_owned()),
+		..plays[run].clone()
+	};
+	let o = just_after(&plays[..run], own);
+	let (play, _) = big(&o).unwrap();
+	assert_eq!((play.kind, play.yards, play.by.as_str()), (Kind::Run, 35, "NE"));
+
+	// A flag on a return, a muffed punt, and a touchdown taken away are not
+	// what the yards say.
+	let flagged = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 20 for 70 yards. PENALTY on CHI-J.Brisker, Illegal Block Above the Waist, 10 yards, enforced at CHI 35.".to_owned()),
+		..plays[punt].clone()
+	};
+	assert!(big(&just_after(&plays[..punt], flagged)).is_none());
+	let muffed = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond MUFFS catch, RECOVERED by NE-D.Muasau at CHI 30. D.Muasau to CHI 5 for 25 yards.".to_owned()),
+		..plays[punt].clone()
+	};
+	assert!(big(&just_after(&plays[..punt], muffed)).is_none());
+	let taken_away = Play {
+		text: Some(
+			"(Shotgun) D.Maye pass deep right to S.Diggs for 62 yards, TOUCHDOWN NULLIFIED by Penalty. PENALTY on NE-M.Onwenu, Offensive Holding, 10 yards, enforced at NE 38."
+				.to_owned(),
+		),
+		..plays[pass].clone()
+	};
+	let o = just_after(&plays[..pass], taken_away);
+	assert!(big(&o).is_none_or(|(play, _)| !play.scored), "a touchdown taken away did not score");
 }
 
 /// #3048 (#2908): an onside kick is in "just happened", with who got it back:

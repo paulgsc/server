@@ -297,29 +297,41 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 	}
 	let text = text(play);
 	let after = |word: &str| text.find(word).map(|at| &text[at + word.len()..]);
-	if kind(play) == "kickoff" {
-		return (!is_onside(play))
+	// A return's yards are the returner's only while nothing undid them: a
+	// flag on the returning side (not the team ESPN gave the ball: the kicking
+	// team, or the offense that lost it) is enforced from a spot ESPN does not
+	// restate as yards, and a muff or fumble on it is the kicking team's ball.
+	let clean_return = text.contains("declined") || penalty(play).is_none_or(|(team, _)| play.possession.as_deref() == Some(team.as_str()));
+	let kept = !text.contains("muff") && !text.contains("fumble");
+	if kind(play).contains("kickoff") {
+		return (!is_onside(play) && clean_return && kept)
 			.then(|| after("kicks").and_then(return_yards).map(|y| (Kind::KickReturn, y, false)))
 			.flatten();
 	}
 	if is_punt(play) {
-		return after("punts").and_then(return_yards).map(|y| (Kind::PuntReturn, y, false));
+		return (clean_return && kept)
+			.then(|| after("punts").and_then(return_yards).map(|y| (Kind::PuntReturn, y, false)))
+			.flatten();
 	}
 	if let Some(rest) = after("intercepted by") {
-		return return_yards(rest).map(|y| (Kind::InterceptionReturn, y, false));
+		return clean_return.then(|| return_yards(rest).map(|y| (Kind::InterceptionReturn, y, false))).flatten();
 	}
 	if lost_fumble(play, &text) {
-		return after("recovered by").and_then(return_yards).map(|y| (Kind::FumbleReturn, y, false));
+		return clean_return
+			.then(|| after("recovered by").and_then(return_yards).map(|y| (Kind::FumbleReturn, y, false)))
+			.flatten();
 	}
 	if !is_snap(play) {
 		return None;
 	}
+	// ESPN types some gains by what came after them ("Fumble Recovery
+	// (Own)", "Penalty" with the play standing): read the kind from the text.
 	let kind = if is_run(play) {
 		Kind::Run
-	} else if is_pass(play) {
+	} else if is_pass(play) || text.contains(" pass ") {
 		Kind::Pass
 	} else {
-		return None;
+		Kind::Run
 	};
 	gain(play).map(|y| (kind, y, true))
 }
@@ -340,16 +352,24 @@ pub(crate) fn is_onside(play: &Play) -> bool {
 }
 
 /// The team that recovered an onside kick, from "recovered by NE-B.Bolden":
-/// ESPN's team, or none when the text names none.
+/// ESPN's team, or none when the text names none ("recovered by B.Bolden").
 pub(crate) fn recovered_by(play: &Play) -> Option<String> {
 	let original = play.text.as_deref()?;
 	let at = original.to_ascii_lowercase().find("recovered by ")? + "recovered by ".len();
-	original[at..].split(['-', ' ']).next().filter(|team| !team.is_empty()).map(str::to_owned)
+	let (team, _) = original[at..].split_once('-')?;
+	(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase())).then(|| team.to_owned())
 }
 
-/// Whether play `play` ends the first half: ESPN's "End of Half".
+/// Whether ESPN's text says a touchdown on the play was taken away.
+pub(crate) fn touchdown_nullified(play: &Play) -> bool {
+	text(play).contains("touchdown nullified")
+}
+
+/// Whether play `play` ends the first half: ESPN's "End of Half", or its
+/// end of the 2nd quarter by another name.
 pub(crate) fn ends_the_half(play: &Play) -> bool {
-	kind(play) == "end of half"
+	let kind = kind(play);
+	play.period == Some(2) && (kind == "end of half" || kind == "end period")
 }
 
 /// The team flagged and the foul, from "PENALTY on NE-W.Campbell, False

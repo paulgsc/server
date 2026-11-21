@@ -305,7 +305,7 @@ impl<'s> Cx<'s> {
 			kind,
 			by: by.to_owned(),
 			yards,
-			scored: read::is_touchdown(play),
+			scored: read::is_touchdown(play) && !read::touchdown_nullified(play),
 			good: self.us.map(|us| us == by),
 		})
 	}
@@ -404,7 +404,7 @@ impl<'s> Cx<'s> {
 			}
 			Moment::Sack => read::is_sack(play).then(|| (70, words::sacked(offense.unwrap_or("The quarterback"), situation().as_deref()))),
 			Moment::BigPlay => self.big_play(i).map(|big| (65, words::big_play(&big))),
-			Moment::OnsideKick if read::is_onside(play) => {
+			Moment::OnsideKick if read::is_onside(play) && !wiped_out => {
 				let kicking = offense?;
 				// A kick the receivers fielded is theirs; ESPN names a recovery
 				// only when it was loose.
