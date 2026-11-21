@@ -462,7 +462,7 @@ pub struct Logged {
 /// same [`Happened`]. Each play is read at its latest version seen by `now`
 /// (SE2); a play that was no scenario has no entry. Which entries are big,
 /// or which have a bite beside them, is the reader's to choose. One pass
-/// over the log: O(plays × scenarios).
+/// over the log, each play against every scenario.
 #[must_use]
 pub fn moment_log(game: &Game, log: &[Entry], now: DateTime<Utc>) -> Vec<Logged> {
 	let so_far = read::SoFar::new(game, log, now);

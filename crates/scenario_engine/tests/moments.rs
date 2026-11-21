@@ -1111,3 +1111,80 @@ fn a_blocked_kick_run_back_is_the_returners_and_a_special_teams_score_is_big() {
 	)))
 	.is_none());
 }
+
+/// A big play is read as the play stood (C967's "a turnover a review
+/// reversed is read only as it stood", for every kind of play): after a
+/// review that reversed it, only ESPN's ruling after "REVERSED." counts. A
+/// fumble before the kick is the kicking team's, from scrimmage, and a return
+/// touchdown under an accepted flag on the returners was not the play.
+#[test]
+fn a_big_play_is_the_play_as_it_stood() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let pass = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Pass Reception") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let at = |k: usize, kind: &str, text: &str| {
+		big(&just_after(
+			&plays[..k],
+			Play {
+				play_type: Some(kind.to_owned()),
+				text: Some(text.to_owned()),
+				..plays[k].clone()
+			},
+		))
+		.map(|(p, line)| (p.kind, p.by.clone(), line.to_owned()))
+	};
+	// A punt return touchdown a review took back is no big play.
+	assert_eq!(
+		at(
+			punt,
+			"Punt Return Touchdown",
+			"R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond to NE 0 for 90 yards, TOUCHDOWN. The Replay Official reviewed the runner was out of bounds ruling, and the play was REVERSED. R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond pushed ob at CHI 30 for 20 yards (R.Dixon)."
+		)
+		.map(|(kind, ..)| kind),
+		None,
+		"20 yards is no punt return of note, and the touchdown never stood"
+	);
+	// A pass reversed into an interception is a turnover, so big.
+	let reversed_into = at(
+		pass,
+		"Pass Incompletion",
+		"D.Maye pass incomplete short left to H.Henry. The Replay Official reviewed the pass incomplete ruling, and the play was REVERSED. D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 40 for 5 yards (H.Henry).",
+	);
+	assert_eq!(reversed_into.map(|(kind, by, _)| (kind, by)), Some((Kind::InterceptionReturn, "CHI".to_owned())));
+	// An interception a review reversed is no big play.
+	assert_eq!(
+		at(
+			pass,
+			"Interception Return",
+			"D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 40 for 5 yards. The Replay Official reviewed the interception ruling, and the play was REVERSED. D.Maye pass incomplete short left to H.Henry."
+		),
+		None
+	);
+	// The punter's own fumble, which his team fell on, turned nothing over.
+	assert_eq!(
+		at(
+			punt,
+			"Punt",
+			"R.Dixon FUMBLES (Aborted) at NE 30, recovered by NE-R.Dixon at NE 28. R.Dixon punts 40 yards to CHI 32, fair catch by K.Raymond."
+		),
+		None
+	);
+	// The punter's fumble the other side fell on is a turnover, so big.
+	let lost = at(punt, "Punt", "R.Dixon FUMBLES (Aborted) at NE 30, RECOVERED by CHI-S.Brown at NE 28.");
+	assert_eq!(lost.map(|(kind, by, _)| (kind, by)), Some((Kind::FumbleReturn, "CHI".to_owned())));
+	// A return touchdown under an accepted flag on the returners is no big play.
+	assert_eq!(
+		at(
+			punt,
+			"Punt Return Touchdown",
+			"R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond to NE 0 for 90 yards, TOUCHDOWN. PENALTY on CHI-J.Brisker, Illegal Block Above the Waist, 10 yards, enforced at CHI 30."
+		),
+		None
+	);
+}

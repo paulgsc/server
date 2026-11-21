@@ -416,32 +416,54 @@ pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
 	if wiped_out(play) || touchdown_nullified(play) {
 		return None;
 	}
+	// Read the play as it stood: after a review that reversed it, only the
+	// ruling ESPN writes after "REVERSED." counts, and its type (written for
+	// the play as first ruled) is not read for a score or a turnover.
+	let stood = as_it_stood(play);
+	let text = text(&stood);
 	let kickoff = kind(play).contains("kickoff");
 	if kickoff || is_punt(play) || is_blocked_kick(play) {
-		// On a kick ESPN gives the ball to the kickers, so a ball the
-		// returners muffed or fumbled is turned over when the kickers
-		// recover it.
-		let text = text(play);
-		let kickers = recovered_by(play).is_some_and(|team| play.possession.as_deref() == Some(team.as_str()));
-		if (text.contains("muff") || text.contains("fumble")) && kickers && !is_onside(play) {
-			return Some((Kind::FumbleReturn, true));
+		let kicked = ["kicks", "punts", "punt is", "field goal"].iter().filter_map(|word| text.find(word)).min();
+		let fumbled = ["muff", "fumble"].iter().filter_map(|word| text.find(word)).min();
+		// A fumble before the kick (the punter's, a bad snap) is the kicking
+		// team's from scrimmage: a turnover only if the other side has it,
+		// read below.
+		if fumbled.is_none_or(|fumbled| kicked.is_some_and(|kicked| fumbled >= kicked)) {
+			// On a kick ESPN gives the ball to the kickers, so a ball the
+			// returners muffed or fumbled is turned over when the kickers
+			// recover it.
+			let kickers = recovered_by(&stood).is_some_and(|team| play.possession.as_deref() == Some(team.as_str()));
+			if fumbled.is_some() && kickers && !is_onside(play) {
+				return Some((Kind::FumbleReturn, true));
+			}
+			let returned = !is_blocked_kick(play) || recovered_by_the_other_side(&stood);
+			let kind = if kickoff || !is_punt(play) { Kind::KickReturn } else { Kind::PuntReturn };
+			// A return under an accepted flag on the returners was not the play.
+			let scored = is_touchdown(&stood) && !flagged_against_the_returners(&stood);
+			return (scored && returned && !kickers).then_some((kind, false));
 		}
-		let returned = !is_blocked_kick(play) || recovered_by_the_other_side(play);
-		let kind = if kickoff || !is_punt(play) { Kind::KickReturn } else { Kind::PuntReturn };
-		return (is_touchdown(play) && returned && !kickers).then_some((kind, false));
 	}
-	// A review that reversed the play may have undone the turnover; read only
-	// one that stood, as a return's yards are (`gain_by`).
-	if text(play).contains("reversed.") {
-		return None;
-	}
-	match turnover(play)? {
+	match turnover(&stood)? {
 		Turnover::Interception => Some((Kind::InterceptionReturn, false)),
 		Turnover::Fumble => Some((Kind::FumbleReturn, false)),
-		// Open with the owner (C967): no kind in catalog v2 names a stop, and
-		// a released catalog never changes, so on downs stays a turnover only.
+		// Not a big play (the owner, 2026-11-21, C967 closed): no kind in
+		// catalog v2 names a stop.
 		Turnover::OnDowns => None,
 	}
+}
+
+/// `play` as it stood after a review that reversed it: ESPN's text after the
+/// last "REVERSED.", and no type, which ESPN writes for the play as first
+/// ruled. A play no review reversed is itself.
+fn as_it_stood(play: &Play) -> std::borrow::Cow<'_, Play> {
+	let original = play.text.as_deref().unwrap_or_default();
+	original.to_ascii_lowercase().rfind("reversed.").map_or(std::borrow::Cow::Borrowed(play), |at| {
+		std::borrow::Cow::Owned(Play {
+			text: Some(original[at + "reversed.".len()..].trim().to_owned()),
+			play_type: None,
+			..play.clone()
+		})
+	})
 }
 
 /// Whether an accepted flag on the play is on the side ESPN did not give the

@@ -46,7 +46,7 @@ catalog order.
 | `two-minute` | `in.two-minute` | 2nd or 4th quarter, 2:00 or less | |
 | `kick` | `in.kick` | the try is to come, or 4th down within a 57-yard field goal | is a field goal, or a missed extra point |
 | `turnover`, `sack`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.penalty`, `in.injury` | never ahead of time | was an interception or lost fumble, a sack, a flag, a player hurt or back |
-| `big-play` | `in.big-play` | never ahead of time | gained 20+ by the big-play algebra (below) |
+| `big-play` | `in.big-play` | never ahead of time | gained 20+, or was a turnover or a special-teams touchdown, by the big-play algebra (below) |
 | `halftime` | `in.halftime` | from ESPN's end of the half until the second half's kickoff | |
 | `onside-kick` | `in.onside-kick` | never ahead of time | was a kickoff ESPN calls onside, with who recovered it (ESPN's "recovered by", else the receivers) |
 | `final` | `post.result`, `post.paths`, `post.pattern` | the game is final (paths only with a side wanted) | |
@@ -68,10 +68,16 @@ Any turnover (an interception, or a fumble lost, a muffed kick the kickers
 recover included) and any special-teams touchdown (a kick, punt or
 blocked-kick return) is a big play whatever its yards: big at least, and
 bigger if its yards earn it (the owner, 2026-11-21, C967). A turnover on
-downs is not one yet: no kind in catalog v2 names a stop (C967 is open on
-it). Everything else is big by its yards alone (D8). A blocked punt the
+downs is not one (the owner, C967 closed), and a field goal never is. Everything else is big by its yards alone (D8). A blocked punt the
 other side runs back is its punt return, a blocked field goal its kick
 return (#3334); the kickers' own recovery gains nothing.
+
+A play is read as it stood. After a review that reversed it, only ESPN's
+ruling after "REVERSED." counts, so a return touchdown taken back is not
+big, and a pass reversed into an interception is. A fumble before the kick
+(the punter's, a bad snap) is the kicking team's play from scrimmage, a
+turnover only if the other side recovers it. A return touchdown under an
+accepted flag on the returners was not the play.
 
 ### One ranked list, and what a bite is about (#3049)
 
@@ -143,7 +149,8 @@ only moves the pregame window, never what a play was. Which entries are big,
 or have a bite beside them, is the reader's to choose: the engine serves the
 log, not a policy. An entry's unit is read off its play, as in "just happened",
 and is a fact about the play: it holds after the final too (C1020), where
-the default for a new bite on the ranked list is the game's, none. One pass over the log, O(plays × scenarios): about 3 ms
+the default for a new bite on the ranked list is the game's, none. One pass over the log, each play read against every scenario (a
+few rules look back over the log, so it grows faster than the plays): about 3 ms
 for the recorded game's 180 plays in a release build. `file_host` serves it
 to the phone as `GET /games/:id/moments`.
 
