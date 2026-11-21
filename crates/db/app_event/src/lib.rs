@@ -28,7 +28,12 @@
 //!   of each ended week as `file_host`'s `report_weeks` worker gave it to the
 //!   render worker, in its own table (`report_week`), never in `app_event`;
 //!   [`report_video`] keeps each week's video link and what was let go.
+//! - **The walkthrough's friction, beside it.** [`weekly`] also carries the
+//!   28-day friction measures a published walkthrough may say (paulgsc/
+//!   some-ui WALK5, C861), read by [`friction`]; the one read here of another
+//!   crate's table is Applying's debrief friction, through `jobs_repo`.
 
+pub mod friction;
 mod model;
 pub mod report;
 pub mod report_video;
@@ -708,10 +713,21 @@ mod tests {
 						"complete": true, "measured": false, "affordances": [] }
 				],
 				"seen": [
-					{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "firstDay": "2026-08-12", "lastTakenDay": "2026-11-09" },
-					{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": "2026-11-15" },
-					{ "pipeline": "topik", "affordance": "sentence-feedback", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": null }
-				]
+					{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "firstDay": "2026-08-12", "lastTakenDay": "2026-11-09", "lastOpenedDay": "2026-11-09" },
+					{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": "2026-11-15", "lastOpenedDay": "2026-11-15" },
+					{ "pipeline": "topik", "affordance": "sentence-feedback", "surface": "apk", "firstDay": "2026-11-12", "lastTakenDay": null, "lastOpenedDay": null }
+				],
+				"friction": {
+					"from": "2026-10-19T07:00:00.000Z", "to": "2026-11-16T08:00:00.000Z", "measuredDays": 28,
+					"opened": [
+						{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "days": 3 },
+						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "days": 1 }
+					],
+					"places": [
+						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "place": "quiz", "left": 1, "movedOn": 0, "medianMs": null }
+					],
+					"partial": false, "debrief": { "said": 0, "median": null }
+				}
 			}),
 			"Sunday evening Pacific is last week's, a take late on Sunday Pacific is Sunday's though Monday in UTC, the said answer is seen but never counted, w9 is the next week's, and B's drama is B's"
 		);
@@ -719,6 +735,96 @@ mod tests {
 		assert!(later.weeks[0].complete);
 		assert_eq!(later.seen, held.seen, "a later ask of the same week reads the same records");
 		assert_eq!(later.weeks[0].affordances, held.weeks[0].affordances);
+	}
+
+	/// The walkthrough's friction (WALK5, C861): days opened per affordance
+	/// on the owner's days, each place's lefts and moves with a median only
+	/// from five, Applying's debrief median, and a day before home held
+	/// anything is not measured.
+	#[tokio::test]
+	async fn the_friction_read_counts_days_places_and_debriefs_in_the_window() {
+		let pool = pool().await;
+		let step = |id: &str, at: &str, kind: &str, place: Option<(&str, &str)>| {
+			let mut event = engaged(id, at, "todays-pick", kind);
+			event["pipeline"] = json!("jobs");
+			if let Some((started, place)) = place {
+				event["startedAt"] = json!(started);
+				event["place"] = json!(place);
+			}
+			event
+		};
+		let mut events = vec![
+			// Before the window: counts nowhere, and sets the first event.
+			step("p0", "2026-10-18T09:00:00.000Z", "offered", None),
+			// Two offers on one owner's day, a Sunday evening that is Monday in UTC.
+			step("p1", "2026-11-15T20:00:00.000Z", "offered", None),
+			step("p2", "2026-11-16T07:00:00.000Z", "offered", None),
+			// The week after: not this report's.
+			step("p3", "2026-11-16T08:00:00.000Z", "offered", None),
+			// Passed over and said are not openings.
+			engaged("p4", "2026-11-02T09:00:00.000Z", "routine-lens", "passed-over"),
+		];
+		// Five reads, each moved on to `decide` at the same instant, and one
+		// decide stopped there (the screen went).
+		for (n, secs) in [10, 20, 30, 40, 50].into_iter().enumerate() {
+			let day = 3 + n;
+			let at = format!("2026-11-{day:02}T09:00:{secs:02}.000Z");
+			let start = format!("2026-11-{day:02}T09:00:00.000Z");
+			events.push(step(&format!("t{n}"), &start, "taken", None));
+			events.push(step(&format!("r{n}"), &at, "left", Some((&start, "read"))));
+			events.push(step(&format!("d{n}"), &at, "taken", None));
+		}
+		events.push(step("x1", "2026-11-03T09:02:00.000Z", "left", Some(("2026-11-03T09:00:10.000Z", "decide"))));
+		for event in &events {
+			put(&pool, A, event).await.unwrap();
+		}
+		put(&pool, B, &step("b1", "2026-11-10T09:00:00.000Z", "offered", None)).await.unwrap();
+		for (n, friction) in [Some(2), Some(4), Some(3), Some(5), None, Some(4), Some(1)].into_iter().enumerate() {
+			let at = if n == 6 {
+				"2026-10-01T09:00:00.000Z".to_owned()
+			} else {
+				format!("2026-11-{:02}T09:00:00.000Z", 3 + n)
+			};
+			sqlx::query("INSERT INTO jobs_event (subject_id, event_id, at, body, written_at) VALUES (?1, ?2, ?3, ?4, ?3)")
+				.bind(A)
+				.bind(format!("j{n}"))
+				.bind(&at)
+				.bind(json!({ "type": "debrief", "friction": friction }).to_string())
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let week = super::IsoWeek::parse("2026-W46").unwrap();
+		let read = super::weekly(&mut pool.acquire().await.unwrap(), A, week, "2026-12-01T00:00:00.000Z").await.unwrap();
+		assert_eq!(
+			serde_json::to_value(&read.friction).unwrap(),
+			json!({
+				"from": "2026-10-19T07:00:00.000Z", "to": "2026-11-16T08:00:00.000Z", "measuredDays": 28,
+				"opened": [
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "days": 6 }
+				],
+				"places": [
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "decide", "left": 1, "movedOn": 0, "medianMs": null },
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "read", "left": 5, "movedOn": 5, "medianMs": 30_000 }
+				],
+				"partial": false,
+				"debrief": { "said": 5, "median": 4.0 }
+			}),
+			"five taken days and one Sunday of two offers; B's and next week's are not counted; the unsaid and the earlier debrief are not said"
+		);
+
+		let fresh = pool_with(&[step("f1", "2026-11-14T09:00:00.000Z", "taken", None)]).await;
+		let read = super::weekly(&mut fresh.acquire().await.unwrap(), A, week, "2026-12-01T00:00:00.000Z").await.unwrap();
+		assert_eq!(read.friction.measured_days, 2, "the first event's day, Saturday the 14th, and Sunday");
+		assert_eq!(read.friction.debrief.median, None);
+	}
+
+	async fn pool_with(events: &[Value]) -> SqlitePool {
+		let pool = pool().await;
+		for event in events {
+			put(&pool, A, event).await.unwrap();
+		}
+		pool
 	}
 
 	#[tokio::test]

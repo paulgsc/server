@@ -2475,7 +2475,11 @@ nowhere is marked as such and belongs to review.
     ENG12, #2700; #821). `report_week` holds, per subject and ISO week, the
     period read `GET /app-events/weeks/:week` answers, exactly as
     `report_weeks` gave it to the render worker: counts per pipeline,
-    affordance and surface, and days, nothing more than that read holds. It
+    affordance and surface, and days, and the walkthrough's friction
+    measures over the 28 days ending with the week (paulgsc/some-ui WALK5,
+    the owner's C861: days opened per affordance, lefts per place with their
+    median time, Applying's median debrief friction from `jobs_event`; a
+    median of fewer than 5 is not said), nothing more than that read holds. It
     is written once a week has ended, never updated (a trigger aborts an
     `UPDATE`), and deleted only with the account; its file on the drive,
     `report-weeks/<week>.json`, and the video and work made from it, leave
