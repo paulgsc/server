@@ -1711,8 +1711,10 @@ nowhere is marked as such and belongs to review.
     was said is `voice_transcript_word`, append-only too**
     (paulgsc/server#462; words since paulgsc/some-ui#2085). `file_host`'s `transcribe` worker, on only when
     `TRANSCRIBE_ENABLED`, reads each note's audio and hears it on home's CPU
-    with whisper.cpp: oldest first, one at a time, on a blocking thread by a
-    deadline, never on a request's path. Each attempt is a row: the model
+    with whisper.cpp: the note the contention guard is excusing first, then
+    those tried fewest times, then oldest first, one
+    at a time, on a blocking thread by a deadline, never on a request's path
+    (so a note that keeps failing never keeps a newer one waiting: TR1). Each attempt is a row: the model
     file and engine, the attempt's number, its outcome (`heard`, with the
     text, the language and its probability; `silent`, when the VAD found no
     speech; or why not: `unreadable`, `too_long`, `deadline`, `failed`), the
@@ -1787,8 +1789,10 @@ nowhere is marked as such and belongs to review.
     the attempt ends; that file is the one place audio is held outside these
     tables, for the length of one decode. Neither the text, its words nor
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
-    output is discarded, and a pass logs only how many attempts of each kind
-    it kept. The text leaves home in five ways only. One is a transcript
+    output is discarded, and the worker logs only each attempt's kind, whether
+    it was heard verbatim (so of an interview take), how long it took, how
+    long its audio and speech are, and how many detections and runs it made,
+    as it ends, and how many attempts of each kind a pass kept (TR3). The text leaves home in five ways only. One is a transcript
     filed for the Jobs mailbox (invariant 19), for the routines to read, and since
     paulgsc/server#577 that file carries that model's words too, each with
     its time, how sure the model was and its language (`words`). Another,
