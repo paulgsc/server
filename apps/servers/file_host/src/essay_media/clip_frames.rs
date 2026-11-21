@@ -25,10 +25,10 @@ pub fn named(shot: &Value) -> Vec<String> {
 	vec![[part("clip"), part("side"), part("file")].join("/")]
 }
 
-/// `item`'s clip, side and file, when each is one `clip_frame` could hold:
-/// a clip id as some-ui names one (`^[a-z0-9][a-z0-9-]{0,63}$`), `before`
-/// or `after`, and a plain `.png` name of at most 80 bytes, as `clip_frame`
-/// holds them.
+/// `item`'s clip, side and file, when each is one home hands: a clip id as
+/// some-ui names one (`^[a-z0-9][a-z0-9-]{0,63}$`, stricter than
+/// `clip_frame`'s own 80-byte check), `before` or `after`, and a plain `.png`
+/// name of at most 80 bytes, as `clip_frame` holds them.
 fn parts(item: &str) -> Option<(&str, &str, &str)> {
 	let mut parts = item.split('/');
 	let (clip, side, file) = (parts.next()?, parts.next()?, parts.next()?);

@@ -112,7 +112,7 @@ local perMinute(by) = '60 * sum by (' + by + ') (rate(outbound_requests_total[5m
 
   byCaller: series(
     'Requests per minute, by caller',
-    'Each worker that reaches outside home: game_feed (ESPN), call_weeks and cards_essays (paulgsc/testing on GitHub), mailbox (the Jobs mailbox Worker), notice (FCM), nudge (Web Push), health_probe (file_host asking itself; never scraped).',
+    'Each worker that reaches outside home: game_feed (ESPN), call_weeks and cards_essays (paulgsc/testing on GitHub), mailbox (the Jobs mailbox Worker), notice (FCM), nudge (Web Push), snips (a commit's snips bundle from GitHub's Actions API), health_probe (file_host asking itself; never scraped).',
     [{ expr: perMinute('caller'), legendFormat: '{{caller}}', refId: 'A' }],
     'none',
     true,
@@ -120,7 +120,7 @@ local perMinute(by) = '60 * sum by (' + by + ') (rate(outbound_requests_total[5m
 
   byHost: series(
     'Requests per minute, by host',
-    'Where the requests go. The host is a fixed name per caller, never read from a URL: github_raw is call_weeks and cards_essays together.',
+    'Where the requests go. The host is a fixed name per caller, never read from a URL: github_raw is call_weeks and cards_essays together; github_api is snips, the storage its downloads redirect to included.',
     [{ expr: perMinute('host'), legendFormat: '{{host}}', refId: 'A' }],
     'none',
     true,

@@ -61,8 +61,10 @@ MENTION = re.compile(
 	r'"(?P<literal>(?i:' + "|".join(re.escape(name) for name in HEADER_NAMES) + r'))"'
 	r"|(?<![A-Za-z0-9_])(?P<constant>" + "|".join(HEADER_CONSTANTS) + r")(?![A-Za-z0-9_])"
 )
-# What immediately precedes a mention that is a write's first argument.
-WRITE = re.compile(r"\.(?:insert|append)\(\s*&?\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*$")
+# What immediately precedes a mention that is a write's first argument: a
+# header map's `insert`/`append`, or a request or response builder's
+# `.header(` (home naming its own outgoing user agent, never reading one).
+WRITE = re.compile(r"\.(?:insert|append|header)\(\s*&?\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*$")
 
 
 def reads(source: str) -> list[tuple[int, str]]:
@@ -108,6 +110,8 @@ SHOULD_PASS = [
 	'headers["content-type"]',
 	'headers.insert(header::USER_AGENT, "test".parse().unwrap())',
 	'req.headers_mut().append( &"x-real-ip", value)',
+	'client.get(url).header(reqwest::header::USER_AGENT, "home-file-host")',
+	'request.header("User-Agent", "home-file-host")',
 	"let forwarded = crate::net::forwarded_peer_key(&headers);",
 	"const X_FORWARDED_FOR_ISH: u8 = 0;",
 ]

@@ -64,6 +64,9 @@ pub enum Caller {
 	Notice,
 	/// `file_host::nudge`: Web Push to each browser's push service.
 	Nudge,
+	/// `file_host::snips`: the snips bundle of a commit a waiting cards essay
+	/// names, from GitHub's Actions API (SNIPS2), with `SNIPS_GITHUB_TOKEN`.
+	Snips,
 	/// `file_host --health-check`: its own `/ready`, on loopback. The probe
 	/// exits straight after, so nothing scrapes it; it is a case so that the
 	/// probe's client is built here like every other.
@@ -72,13 +75,14 @@ pub enum Caller {
 
 impl Caller {
 	/// Every caller, for a test or a check that walks the family.
-	pub const ALL: [Self; 7] = [
+	pub const ALL: [Self; 8] = [
 		Self::GameFeed,
 		Self::CallWeeks,
 		Self::CardsEssays,
 		Self::Mailbox,
 		Self::Notice,
 		Self::Nudge,
+		Self::Snips,
 		Self::HealthProbe,
 	];
 
@@ -92,6 +96,7 @@ impl Caller {
 			Self::Mailbox => "mailbox",
 			Self::Notice => "notice",
 			Self::Nudge => "nudge",
+			Self::Snips => "snips",
 			Self::HealthProbe => "health_probe",
 		}
 	}
@@ -105,6 +110,7 @@ impl Caller {
 			Self::Mailbox => Host::MailboxWorker,
 			Self::Notice => Host::Googleapis,
 			Self::Nudge => Host::WebPush,
+			Self::Snips => Host::GithubApi,
 			Self::HealthProbe => Host::Loopback,
 		}
 	}
@@ -117,6 +123,9 @@ pub enum Host {
 	Espn,
 	/// `raw.githubusercontent.com`.
 	GithubRaw,
+	/// `api.github.com`, and the storage an artifact's download redirects
+	/// to: one name, since the redirect is GitHub's to choose.
+	GithubApi,
 	/// The owner's Jobs mailbox Worker on `workers.dev` (`MAILBOX_URL`).
 	MailboxWorker,
 	/// `oauth2.googleapis.com` and `fcm.googleapis.com`.
@@ -135,6 +144,7 @@ impl Host {
 		match self {
 			Self::Espn => "espn",
 			Self::GithubRaw => "github_raw",
+			Self::GithubApi => "github_api",
 			Self::MailboxWorker => "mailbox_worker",
 			Self::Googleapis => "googleapis",
 			Self::WebPush => "web_push",

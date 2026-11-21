@@ -107,6 +107,10 @@ NOT_BACKGROUND: dict[str, tuple[int, str]] = {
 	),
 	"apps/servers/file_host/src/websocket/broadcast/handlers.rs": (2, "a connection's event forwarder and its NATS subscriptions; per connection, ended with it"),
 	"apps/servers/file_host/src/websocket/message/handlers.rs": (1, "a connection's incoming-message loop; per connection, ended with it"),
+	"apps/servers/file_host/src/snips.rs": (
+		1,
+		"the blocking check of one downloaded snips bundle, awaited at once by the mailbox pass's pickup; it owes nothing after it returns",
+	),
 }
 
 # Real background tasks the ledger has not placed yet: warned, not failed
@@ -645,6 +649,7 @@ BASE_FILES = {
 	f"{SRC}/mailbox.rs": "fn spawn(s: &S) { tokio::spawn(async move { pass().await }); }\nfn start() { spawn(s); }\n",
 	f"{SRC}/mailbox/pass.rs": "/// `tokio::spawn(` in a doc comment\nfn every_failed_phase_is_reported() {}\n",
 	f"{SRC}/storage.rs": "fn spawn() { tokio::spawn(async {}); }\n",
+	f"{SRC}/snips.rs": "async fn f() { tokio::task::spawn_blocking(move || open()).await; }\n",
 	f"{SRC}/metrics/periodic.rs": "fn spawn() { tokio::spawn(async {}); }\n",
 	f"{SRC}/transcribe/engine.rs": 'fn f() { let s = "tokio::spawn("; let c = \'{\'; let child = ffmpeg().spawn(); }\n',
 	f"{SRC}/lib.rs": "#[cfg(test)]\nmod privacy;\npub mod mailbox;\n",
@@ -687,7 +692,7 @@ def self_test() -> int:
 	good = run(ledger(*GOOD_FAMILIES))
 	expect("compliant ledger", good, [], warnings=1)
 	spawning = {line.split(" ")[0] for line in good.notes if line.startswith(SRC)}
-	if spawning != {f"{SRC}/{f}" for f in ("main.rs", "websocket.rs", "websocket/broadcast/handlers.rs", "websocket/message/handlers.rs", "mailbox.rs", "storage.rs", "metrics/periodic.rs", "transcribe/engine.rs")} - {f"{SRC}/metrics/periodic.rs"}:
+	if spawning != {f"{SRC}/{f}" for f in ("main.rs", "websocket.rs", "websocket/broadcast/handlers.rs", "websocket/message/handlers.rs", "mailbox.rs", "storage.rs", "snips.rs", "metrics/periodic.rs", "transcribe/engine.rs")} - {f"{SRC}/metrics/periodic.rs"}:
 		failures.append(f"the files read as spawning (placed or exempt) are {sorted(spawning)}")
 	# Fields the rules do not read are ignored, never rejected.
 	expect("unknown fields", run(ledger(*GOOD_FAMILIES, stores=[{**e, "later": [1]} for e in STORES], future={"a": 1})), [])
