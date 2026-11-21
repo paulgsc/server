@@ -40,7 +40,9 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    note, a take recorded during it included, for at most `GIVE`, with one
    exception: a note the owner fast-tracked (`POST /voice-notes/:id/fast-track`,
    paulgsc/server#1090) is heard through the give on its first try after the
-   mark, and only that one (C1017). It is bounded by the owner's own hand: at
+   mark, and only that one. The authority is the owner's ruling on
+   paulgsc/server#1090 (2026-11-21): "a fast-tracked take skips the give";
+   C1017 bounds it to one try. It is bounded by the owner's own hand: at
    most one deadline per mark set, and a note excused by the contention guard
    gives way as every other note does. Its retries wait for the give like the
    rest. And a job

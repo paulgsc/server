@@ -52,7 +52,8 @@ does not read each of its waiters.
    enums; no label names an item or a person.
 6. **Who waits orders, it never adds work.** What waits on an item decides only when the
    stage takes it, after the stage's own fairness rules (TR1's fewest attempts first); how much
-   runs at once stays with the lane. One bounded exception, the owner's (C1017): a note the
+   runs at once stays with the lane. One bounded exception, by the owner's ruling on
+   paulgsc/server#1090 (2026-11-21, "a fast-tracked take skips the give"; C1017 bounds it): a note the
    owner fast-tracks is heard through the lane's give on its first try after the mark, at most
    one deadline per mark set; a note excused by the contention guard gives way as before, and
    the note's retries are held like the rest (`docs/home-compute.md`, invariant 2).
