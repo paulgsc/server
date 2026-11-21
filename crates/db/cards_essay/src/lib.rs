@@ -253,6 +253,18 @@ pub async fn withdrawn(conn: &mut SqliteConnection, subject: &str) -> Result<Vec
 	.await
 }
 
+/// The essays withdrawn for a deleted take, by key, whoever's take it was:
+/// every file of each goes at once (`cards_essays::pass::tidy`), unlike a
+/// let-go's, which goes step by step.
+///
+/// # Errors
+/// A storage failure.
+pub async fn withdrawn_keys(conn: &mut SqliteConnection) -> Result<Vec<String>, sqlx::Error> {
+	sqlx::query_scalar!(r#"SELECT essay_key AS "key!" FROM cards_essay_video_deletion WHERE cause = 'take-deleted' AND step = 'video' ORDER BY essay_key"#)
+		.fetch_all(&mut *conn)
+		.await
+}
+
 /// The essays whose video went, withdrawn or (once some-ui#2999 lets one
 /// go) let go: the render worker is never given them again, and no list
 /// shows them. Keys alone, whoever's take it was.

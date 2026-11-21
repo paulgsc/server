@@ -251,7 +251,8 @@ pub struct Tidied {
 /// Under `feeds::FOLDERS`, as `rust_essays::tidy`, for each essay with a
 /// file on the drive (its `<key>.json` or `<key>.takes/` for the worker, or
 /// its renders or work folder):
-/// - an essay gone (`cards_essay_repo::gone`) has all of them removed, and
+/// - an essay withdrawn (`cards_essay_repo::withdrawn_keys`) has all of
+///   them removed, its status files too, and
 ///   is tried again each minute until it has, so a video a render under way
 ///   finishes after its essay was withdrawn goes within a minute too;
 /// - an essay a take of whose was deleted from My data or let go
@@ -271,15 +272,19 @@ pub struct Tidied {
 pub async fn tidy(db: &SqlitePool, given: &Given, now: &str) -> Result<Tidied, sqlx::Error> {
 	let _folders = crate::feeds::FOLDERS.lock().await;
 	let mut done = Tidied::default();
+	// Withdrawn only: a let-go (some-ui#2999) will go step by step, by its
+	// own writer, never all at once here.
 	let gone = {
 		let mut conn = db.acquire().await?;
-		cards_essay_repo::gone(&mut conn).await?
+		cards_essay_repo::withdrawn_keys(&mut conn).await?
 	};
 	let mut keys = std::collections::BTreeSet::new();
 	if let Ok(mut entries) = tokio::fs::read_dir(&given.essays).await {
 		while let Ok(Some(entry)) = entries.next_entry().await {
 			let name = entry.file_name().to_string_lossy().into_owned();
 			if let Some(key) = name.strip_suffix(".takes").or_else(|| name.strip_suffix(".json")).filter(|key| is_key(key)) {
+				keys.insert(key.to_owned());
+			} else if let Some(key) = name.strip_prefix('.').and_then(|name| name.strip_suffix(".json.partial")).filter(|key| is_key(key)) {
 				keys.insert(key.to_owned());
 			} else if name.starts_with('.') && name.ends_with(".takes.partial") {
 				// What a stopped pass left: the export and this run in one task,
@@ -305,6 +310,9 @@ pub async fn tidy(db: &SqlitePool, given: &Given, now: &str) -> Result<Tidied, s
 		if gone.contains(&key) {
 			done.removed += 1;
 			done.failed += remove_all(&essay, &[&takes, &render, &work]).await;
+			// What the worker said of it after, or before a crash let the
+			// withdrawal clear it.
+			clear_refused(&given.status, &key).await;
 			continue;
 		}
 		if let Some(subject) = given.subject.as_deref() {
@@ -335,14 +343,19 @@ pub async fn tidy(db: &SqlitePool, given: &Given, now: &str) -> Result<Tidied, s
 	Ok(done)
 }
 
-/// Removes `essay`, then each of `dirs`; how many could not be removed.
-/// The essay first, so the worker never finds it without its takes.
+/// Removes `essay` and any `.<essay>.partial` a stopped export left, then
+/// each of `dirs`; how many could not be removed. The essay first, so the
+/// worker never finds it without its takes.
 async fn remove_all(essay: &Path, dirs: &[&PathBuf]) -> usize {
-	let gone = match tokio::fs::remove_file(essay).await {
-		Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-		Ok(()) => true,
-	};
-	let mut failed = usize::from(!gone);
+	let mut failed = 0;
+	let partial = essay.file_name().map(|name| essay.with_file_name(String::from(".") + &name.to_string_lossy() + ".partial"));
+	for file in std::iter::once(essay.to_path_buf()).chain(partial) {
+		let gone = match tokio::fs::remove_file(&file).await {
+			Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+			Ok(()) => true,
+		};
+		failed += usize::from(!gone);
+	}
 	for dir in dirs {
 		failed += usize::from(remove_dir(dir).await.is_err());
 	}
@@ -357,16 +370,25 @@ async fn remove_all(essay: &Path, dirs: &[&PathBuf]) -> usize {
 /// any such take withdraws it, as one the Rust Rounds essay plays does
 /// (`rust_essays`' `deleted_take`).
 async fn deleted_take(db: &SqlitePool, subject: &str, key: &str) -> Result<Option<String>, sqlx::Error> {
-	let mut conn = db.acquire().await?;
-	let Some(body) = cards_essay_repo::body(&mut conn, key).await? else {
-		return Ok(None);
+	let body = {
+		let mut conn = db.acquire().await?;
+		cards_essay_repo::body(&mut conn, key).await?
 	};
-	for take in spoken_takes(&body) {
-		match voice_repo::delete::receipt(&mut conn, subject, &take).await {
+	match body {
+		Some(body) => deleted_of(db, subject, &spoken_takes(&body)).await,
+		None => Ok(None),
+	}
+}
+
+/// The first of `takes` that `subject` deleted or let go ([`deleted_take`]).
+async fn deleted_of(db: &SqlitePool, subject: &str, takes: &[String]) -> Result<Option<String>, sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	for take in takes {
+		match voice_repo::delete::receipt(&mut conn, subject, take).await {
 			Ok(None) => {}
 			Err(voice_repo::VoiceError::Storage(err)) => return Err(err),
 			// A receipt that does not read back is still a receipt.
-			Ok(Some(_)) | Err(_) => return Ok(Some(take)),
+			Ok(Some(_)) | Err(_) => return Ok(Some(take.clone())),
 		}
 	}
 	Ok(None)
@@ -490,6 +512,21 @@ async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Ut
 		};
 		let Some(body) = body else { continue };
 		let wanted = spoken_takes(&body);
+		// Never given, or taken back before, and now a take it plays was
+		// deleted: withdrawn for good, as one given would be by the tidy,
+		// with nothing of it on the drive to remove. Asked before its takes
+		// are read, so another take that does not read back never holds it.
+		if let Some(subject) = given.subject.as_deref().filter(|_| !wanted.is_empty()) {
+			if let Some(note) = deleted_of(db, subject, &wanted).await? {
+				let now = clock().to_rfc3339_opts(SecondsFormat::Millis, true);
+				let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+				let withdrew = cards_essay_repo::withdraw(&mut tx, &essay.key, subject, &note, 0, &now).await?;
+				tx.commit().await?;
+				pass.withdrawn += usize::from(withdrew);
+				clear_refused(&given.status, &essay.key).await;
+				continue;
+			}
+		}
 		let takes = if wanted.is_empty() {
 			None
 		} else {
@@ -507,20 +544,6 @@ async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Ut
 					continue;
 				}
 				Takes::Refused(refusal) => {
-					// Never given, or taken back before, and now a take it plays
-					// was deleted: withdrawn for good, as one given would be by
-					// the tidy, with nothing of it on the drive to remove.
-					if let Some(subject) = given.subject.as_deref() {
-						if let Some(note) = deleted_take(db, subject, &essay.key).await? {
-							let now = clock().to_rfc3339_opts(SecondsFormat::Millis, true);
-							let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-							let withdrew = cards_essay_repo::withdraw(&mut tx, &essay.key, subject, &note, 0, &now).await?;
-							tx.commit().await?;
-							pass.withdrawn += usize::from(withdrew);
-							clear_refused(&given.status, &essay.key).await;
-							continue;
-						}
-					}
 					pass.refused += 1;
 					if say_refused(&given.status, &essay.key, &refusal).await.is_err() {
 						pass.failures.push("export");
@@ -1486,6 +1509,53 @@ mod tests {
 		let again = run_once(&pool, &fake, &mine, &clock).await.unwrap();
 		assert_eq!((again.exported, again.refused, again.withdrawn), (0, 0, 0), "never looked at again");
 		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap(), Tidied::default());
+	}
+
+	/// A deleted take withdraws an essay never given though another take it
+	/// plays does not read back; and a withdrawn essay's status files and a
+	/// stopped export's partial go with the rest of it.
+	#[tokio::test]
+	async fn a_deleted_take_withdraws_past_an_unreadable_one_and_nothing_of_it_is_left() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		let key = "mixed-2026-11-19";
+		fake.ok("index.json", &index(&[key]));
+		fake.ok(&(String::from(key) + ".json"), &spoken_essay("2026-11-19", &["take-2", "take-1"]));
+		for take in ["take-1", "take-2"] {
+			hold_take(&pool, take).await;
+		}
+		hear(&pool, "take-1", "Hello there.", Some("heard")).await;
+		// Heard, and its words gone: it does not read back. The table's check
+		// refuses such a row, so it is written past it, as a damaged drive
+		// might leave one.
+		sqlx::query("PRAGMA ignore_check_constraints = ON").execute(&pool).await.unwrap();
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 'take-2', 'm', 'e', 1, 'heard', 'en', 1.0, 900, NULL, 1, '2026-11-20T10:01:00.000Z')",
+		)
+		.bind(ME)
+		.execute(&pool)
+		.await
+		.unwrap();
+		sqlx::query("PRAGMA ignore_check_constraints = OFF").execute(&pool).await.unwrap();
+		let mut mine = given(&dir.path().join("essays"));
+		mine.subject = Some(String::from(ME));
+		assert_eq!(run_once(&pool, &fake, &mine, &clock).await.unwrap().failures, ["unreadable"], "take-2 does not read back");
+
+		delete_from_my_data(&pool, "take-1").await;
+		let next = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((next.withdrawn, next.failures.len()), (1, 0), "withdrawn, not held by take-2");
+
+		// What a worker said of it after its folders went, and a partial a
+		// stopped export left.
+		std::fs::create_dir_all(&mine.status).unwrap();
+		std::fs::write(mine.status.join(String::from(key) + ".failed.log"), b"gone").unwrap();
+		std::fs::write(mine.essays.join(String::from(".") + key + ".json.partial"), b"{").unwrap();
+		std::fs::create_dir_all(mine.work.join(key)).unwrap();
+		assert_eq!(tidy(&pool, &mine, NOW).await.unwrap().removed, 1);
+		assert!(!mine.status.join(String::from(key) + ".failed.log").exists(), "its status goes");
+		assert!(!mine.essays.join(String::from(".") + key + ".json.partial").exists(), "its partial goes");
+		assert!(!mine.work.join(key).exists());
 	}
 
 	/// An essay with no spoken card, or whose takes are all held, is never

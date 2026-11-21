@@ -1393,8 +1393,9 @@ nowhere is marked as such and belongs to review.
     subject's (`mailbox::pass_subject`), so while none resolves nothing is
     withdrawn; a made video once the account is gone is
     paulgsc/server#1064. Home has no `YouTube` access, so a copy the owner
-    uploaded stays theirs to take down: the receipt keeps its link, and
-    My data and Renders say so (the owner, 2026-11-21, via the coordinator
+    uploaded stays theirs to take down: the receipt keeps its link (no
+    route serves it yet), and some-ui's My data and Renders words say the
+    copy is theirs (the owner, 2026-11-21, via the coordinator
     of run paulgsc/some-ui#3311: "A copy you uploaded to YouTube is yours to
     take down"). A cards essay is kept once,
     so what it plays is its one body's, and a spoken card has no silence to
