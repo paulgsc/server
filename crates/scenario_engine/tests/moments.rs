@@ -935,3 +935,48 @@ fn an_onside_kick_long_ago_is_not_the_next_kick() {
 	let ranked = o.ranked.iter().find(|r| r.scenario == Scenario::OnsideKick).unwrap();
 	assert_eq!((ranked.unit, ranked.unit_side.as_deref()), (Some(Unit::SpecialTeams), Some("CHI")), "CHI kicks off next");
 }
+
+/// A fake is typed by what the ball did ("Rush", "Pass Reception"), its text
+/// opening "(Field Goal formation)" or "(Punt formation)": the offense's run
+/// or pass, never a kick, and a turnover on downs when it comes up short on
+/// 4th down. The texts are ESPN's own, from 2025's regular season, with the
+/// teams changed to this game's.
+#[test]
+fn a_fake_is_the_offenses_run_or_pass_never_a_kick() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let shaped = |kind: &str, text: &str| Play {
+		play_type: Some(kind.to_owned()),
+		text: Some(text.to_owned()),
+		..plays[punt].clone()
+	};
+	let at_the_punt = |play: Play| just_after(&plays[..punt], play);
+	let happened = |o: &Offer, scenario: Scenario| o.just_happened.iter().any(|j| j.scenario == scenario);
+
+	// MIN at DAL, 2025 (6 yards there): a fake field goal run is a run.
+	let o = at_the_punt(shaped("Rush", "(Field Goal formation) B.Aubrey right end to CHI 23 for 26 yards (I.Pace)."));
+	let (play, _) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.yards), (Kind::Run, Size::Big, "NE", 26));
+	assert!(!happened(&o, Scenario::Kick), "a fake is no field goal");
+	// NYG at NE, 2025: a fake that loses 13 on 4th down turns it over.
+	let short = Play {
+		down: Some(4),
+		distance: Some(5),
+		..shaped("Rush", "(Field Goal formation) J.Gillan right end to CHI 42 for -13 yards (J.Pharms).")
+	};
+	let o = at_the_punt(short);
+	assert!(happened(&o, Scenario::Turnover), "a fake that comes up short is a turnover on downs");
+	assert!(!happened(&o, Scenario::Kick));
+	// KC at LV, 2025: a fake punt run is the offense's run.
+	let o = at_the_punt(shaped("Rush", "(Punt formation) M.Araiza right end to CHI 22 for 32 yards (C.Heyward)."));
+	assert_eq!(big(&o).map(|(p, _)| (p.kind, p.by.as_str())), Some((Kind::Run, "NE")));
+	// CIN at HOU, 2025: a flag before the kick, then the kick, is a field goal.
+	let kicked = shaped(
+		"Field Goal Good",
+		"(Field Goal formation) PENALTY on CHI-D.Risner, Offside, 5 yards. J.Slye 40 yard field goal is GOOD, Center-L.Rhodes, Holder-R.Sanchez.",
+	);
+	assert!(happened(&at_the_punt(kicked), Scenario::Kick));
+}

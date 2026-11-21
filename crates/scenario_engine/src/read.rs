@@ -435,7 +435,13 @@ pub(crate) fn field_goal(play: &Play) -> Option<(Kick, Option<i64>)> {
 		return None;
 	}
 	let text = text(play);
-	let at = text.find("yard field goal").or_else(|| text.find("field goal"))?;
+	// "(Field Goal formation)" opens a fake, or a flag before the kick: the
+	// kick is a later "field goal", if there is one.
+	let kick = text
+		.match_indices("field goal")
+		.map(|(at, _)| at)
+		.find(|at| !text[*at..].starts_with("field goal formation"))?;
+	let at = text[..kick].strip_suffix("yard ").map_or(kick, str::len);
 	let distance = text[..at].trim_end().rsplit(' ').next().and_then(|word| word.parse().ok());
 	Some((kick_result(&text[at..]), distance))
 }
