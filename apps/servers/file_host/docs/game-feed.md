@@ -296,15 +296,29 @@ which reads bites and writes `bite_match`, is a separate worker (call C160,
 - **How.** A bite's time on home's clock is its `started_at` plus its
   `clock_offset_ms`. `scenario_engine::plays_that_were` gives every play the
   bite's scenario's rule says was one (the rule "just happened" uses, SE3,
-  replayed over the whole log), and the match is the nearest at or before
-  that time, within `reconcile::WINDOW` (90 s, the broadcast's delay plus
-  the time to start talking, to be tuned on real Sundays). Otherwise the bite
-  is kept and marked: `unmatched`, `not-a-play` (pregame, the two-minute
-  drill, the final, the owner's own) or `no-scenario` (said first, not
-  mapped).
+  replayed over the whole log), and the match depends on when the bite was
+  said (#3040, BM5; `scenario_engine`'s README, "Which play a bite is
+  about"). A bite taken on an offer of the snap to come (a third and long, a
+  fourth down, a field goal try, a play call) is `next`: that snap, the
+  first home had not seen when the offer was on its screen, if the rule
+  accepts it, within `reconcile::WINDOW` either side. The offer was on
+  home's screen at the bite's start, or `reconcile::LAG` (5 s) before it if
+  home was no longer offering it then (the phone had not heard yet). A bite
+  on a first possession or a red-zone trip is `next` to the play that ends
+  that drive; one on the coin toss, to the opening kickoff. A bite picked
+  from the whole set, or said first and mapped, takes the nearer of the
+  plays either side (`next` if after it). A bite from just happened is
+  `nearest`: the nearest at or before that time,
+  within `reconcile::WINDOW` (90 s, the broadcast's delay plus the time to
+  start talking, to be tuned on real
+  Sundays). Otherwise the bite is kept and marked: `unmatched`, `not-a-play`
+  (pregame, the two-minute drill, the final, the owner's own) or
+  `no-scenario` (said first, not mapped).
 - **A said-first proposal** (`reconcile::propose`, for the shot writer,
   GWB9) is a `bite_mapping` row only if the scenario is in home's set and
   `scenario_engine::could_be` at the bite's time holds it; a refused one adds
   nothing, so the bite stays unmapped, never mislabelled.
 - **Append-only.** A pass adds a `bite_match` row only for a bite whose match
-  changed; a reader takes a bite's newest. Logs carry counts only.
+  changed; a reader takes a bite's newest. A bite whose newest match was made
+  under an older `ENGINE_VERSION` is matched again once, whatever its week, so
+  a rule change reaches every bite. Logs carry counts only.

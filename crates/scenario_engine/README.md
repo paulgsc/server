@@ -79,6 +79,53 @@ play, passes `Situation::before(next)`. ESPN's timeouts left are carried by
 `nfl_feed` but not read here: the two-minute line still counts them from the
 log's timeout plays.
 
+## Which play a bite is about (#3040)
+
+The reconciler (GWB7, `file_host`'s `reconcile`) matches each bite to a
+play with three calls here:
+
+```rust
+on_offer(&game_then, &log, t, scenario) -> bool        // which offer the bite took
+offered_said(&game_then, &log, offered, scenario) -> Said
+its_play(&game, &log, now, scenario, said, bite_at, offered, window) -> Option<(Was, gap)>
+```
+
+A bite taken on an offer is said **before** its play when the moment's rule
+offers the snap to come, and **after** it when the rule offers a play already
+in the log. `rules::offered_said` has one arm per `Moment`, so a new moment
+must say which. A bite from "just happened" is said after. One picked from
+the whole set, or said first and mapped later, is `Either`: nothing says
+which side of its play it was said on, so it takes the nearer in time of
+the nearest accepted play before it and the first after it.
+
+| Moment | An offered bite is said | Its play |
+| --- | --- | --- |
+| `third-and-long`, `fourth-down`, `snap`, `kick` on 4th down | before the snap (`BeforeTheSnap`) | the snap to come, if the rule accepts it; else none |
+| `kickoff` | before the kickoff (`BeforeTheKickoff`) | the opening kickoff, however long after: it is offered up to a quarter hour ahead |
+| `opening-drive`, `red-zone` | before the drive (`BeforeTheDrive`) | the first play the rule accepts from the snap to come on, in that possession, however long after |
+| `kick` while a try is to come, `try`, `lead-change` | after (`After`) | the nearest the rule accepts at or before the bite (the try is written into its touchdown's own play) |
+| the rest | never offered ahead of time, or about no one play | |
+
+The snap to come is the first play from scrimmage (never a kickoff) that home
+had not seen when the offer was on its screen and that no flag wiped out (a
+false start replays the down). Its time must be within `window` of the
+bite's start either side (a delayed broadcast can put it before); a drive's
+end and the opening kickoff are not bounded by it. The gap is
+the bite's start minus the play's time, so negative for a play after.
+
+**BM5** (the promise #3040 declared): every bite said on an offer of the
+snap to come is matched to that snap when its scenario's rule accepts it,
+to none when the rule does not, and never to a play before it; every bite
+offered on a drive to a play of that possession from the snap on; every
+bite from just happened to the nearest play at or before it, and every bite
+not tied to an offer to the nearer of the plays either side. Family: when a bite is said
+relative to its snap, by the moment's rule. Proof: `tests/its_play.rs`, every
+snap of the recorded game with every scenario offered before it in Full
+mode, and every touchdown with its try to come. Tolerance: in
+`reconcile::LAG` after home sees a snap, a scenario still on offer for the
+next one (a play call, a drive) is read as the newer offer; nothing the bite
+keeps says which the phone showed.
+
 ## Invariants
 
 - **SE1: pure.** No I/O, no clock, no randomness: `now` is an argument, and
