@@ -22,6 +22,7 @@ pub mod refusals;
 pub mod report_weeks;
 pub mod routine;
 pub mod rust_essays;
+pub mod stage;
 pub mod storage;
 pub mod transcribe;
 pub mod waker;
