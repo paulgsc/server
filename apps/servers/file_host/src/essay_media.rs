@@ -151,8 +151,8 @@ impl Refusal {
 pub enum Handed {
 	/// Each file of `<key>.<kind>/`.
 	Ready(Vec<File>),
-	/// An item is not ready yet.
-	Waiting,
+	/// Items not ready yet, by id: what the essay waits on of this kind.
+	Waiting(Vec<String>),
 	/// Never to be given as home holds them now.
 	Refused(Refusal),
 }
@@ -214,7 +214,7 @@ pub fn named(kind: Kind, essay: &Value) -> Vec<String> {
 /// [`Failed`].
 pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, items: &[String]) -> Result<Handed, Failed> {
 	let (mut files, mut snipped) = (Vec::new(), Vec::new());
-	let (mut missing, mut unheard, mut gone, mut waiting) = (Vec::new(), Vec::new(), Vec::new(), false);
+	let (mut missing, mut unheard, mut gone, mut waiting) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
 	for item in items {
 		let held = match kind {
 			Kind::Takes => takes::hold(conn, sources, item).await?,
@@ -227,7 +227,7 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 				files.push(picture);
 				snipped.push((commit, record));
 			}
-			Held::Waiting => waiting = true,
+			Held::Waiting => waiting.push(item.clone()),
 			Held::Refused(Why::Missing) => missing.push(item.clone()),
 			Held::Refused(Why::Unheard) => unheard.push(item.clone()),
 			Held::Refused(Why::Gone) => gone.push(item.clone()),
@@ -240,8 +240,8 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 		refusal(Why::Unheard, unheard)
 	} else if !gone.is_empty() {
 		refusal(Why::Gone, gone)
-	} else if waiting {
-		Handed::Waiting
+	} else if !waiting.is_empty() {
+		Handed::Waiting(waiting)
 	} else {
 		if !snipped.is_empty() {
 			files.insert(0, snips::given(snipped));
@@ -256,10 +256,10 @@ pub enum Given {
 	/// Each kind it names, with its folder's files; empty for an essay that
 	/// names nothing.
 	Ready(Vec<(Kind, Vec<File>)>),
-	/// Not ready yet, for each kind listed (a take not heard yet, a snip
-	/// not fetched yet), in [`Kind::ALL`]'s order: the kinds say what the
-	/// essay waits on (`crate::stage::Waiter::CardsEssays`).
-	Waiting(Vec<Kind>),
+	/// Not ready yet: for each kind with an item not ready (a take not heard
+	/// yet, a snip not fetched yet), in [`Kind::ALL`]'s order, those items by
+	/// id. What the essay waits on (`crate::stage::Waiter::CardsEssays`).
+	Waiting(Vec<(Kind, Vec<String>)>),
 	Refused(Refusal),
 }
 
@@ -278,7 +278,7 @@ pub async fn for_essay(conn: &mut SqliteConnection, sources: &Sources, essay: &V
 		}
 		match hand(conn, sources, kind, &items).await? {
 			Handed::Ready(files) => ready.push((kind, files)),
-			Handed::Waiting => waiting.push(kind),
+			Handed::Waiting(items) => waiting.push((kind, items)),
 			Handed::Refused(refusal) => return Ok(Given::Refused(refusal)),
 		}
 	}

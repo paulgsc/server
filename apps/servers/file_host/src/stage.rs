@@ -110,6 +110,29 @@ pub enum Waiter {
 }
 
 impl Waiter {
+	pub const ALL: [Self; 2] = [Self::CardsEssays, Self::RenderLane];
+
+	/// Its name, as `stage_want.waiter` holds it.
+	#[must_use]
+	pub const fn name(self) -> &'static str {
+		match self {
+			Self::CardsEssays => "cards_essays",
+			Self::RenderLane => "render_lane",
+		}
+	}
+
+	/// Whether it says which items it waits on (`stage_want`,
+	/// paulgsc/server#1091), so the stage hears those first. A cards essay
+	/// names its takes; the lane waits on whatever interactive work is
+	/// running, never on one item, so it names none.
+	#[must_use]
+	pub const fn names_its_items(self) -> bool {
+		match self {
+			Self::CardsEssays => true,
+			Self::RenderLane => false,
+		}
+	}
+
 	/// The series that says how much is waiting.
 	#[must_use]
 	pub const fn series(self) -> &'static str {
@@ -167,6 +190,25 @@ mod tests {
 	const RULES: &str = include_str!("../../../../infra/prometheus/rules/home.yml");
 	const TESTS: &str = include_str!("../../../../infra/prometheus/rules/home.test.yml");
 	const OVERVIEW: &str = include_str!("../../../../infra/grafana/dashboards/lib/stage-panels.libsonnet");
+	const WANTS: &str = include_str!("../../../../migrations/20261121000400_create_stage_want.up.sql");
+
+	/// The quoted names in `stage_want`'s check on `column`.
+	fn checked(column: &str) -> std::collections::BTreeSet<&'static str> {
+		let start = ["    ", column, " "].concat();
+		let line = WANTS.lines().find(|line| line.starts_with(&start)).unwrap();
+		let list = line.split(" IN (").nth(1).unwrap().split(')').next().unwrap();
+		list.split(',').map(|name| name.trim().trim_matches('\'')).collect()
+	}
+
+	/// `stage_want`'s checks hold the same closed sets as `Stage` and the
+	/// waiters that name their items: a case added in one fails here.
+	#[test]
+	fn the_want_table_checks_the_same_stages_and_waiters() {
+		let stages: std::collections::BTreeSet<_> = Stage::ALL.iter().map(|stage| stage.name()).collect();
+		let waiters: std::collections::BTreeSet<_> = Waiter::ALL.iter().filter(|waiter| waiter.names_its_items()).map(|waiter| waiter.name()).collect();
+		assert_eq!(checked("stage"), stages);
+		assert_eq!(checked("waiter"), waiters);
+	}
 
 	/// Every stage is listed once, with a promise the alerts can carry.
 	#[test]

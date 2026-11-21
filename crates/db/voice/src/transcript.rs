@@ -154,9 +154,18 @@ pub struct Waiting {
 	pub expected_language: Option<&'static str>,
 }
 
-/// The notes their key in `keys` has not ended (heard, or found silent) and
-/// has failed on fewer than `attempts` times, at most `limit`: those tried
-/// fewest times first, then oldest first.
+/// The notes their key in `keys` has not ended (heard, or found silent).
+///
+/// Those it has failed on fewer than `attempts` times, at most `limit`: those
+/// tried fewest times first, then those something waits on, most waited on
+/// first, then oldest first.
+///
+/// **What waits on a note puts it first** (paulgsc/server#1091,
+/// docs/shared-stages.md): a note a waiter names in `stage_want` (a cards
+/// essay held back for its take) goes before every note no one waits on,
+/// and the most waited-on before the rest, among notes tried as often, so
+/// the essay's takes are heard first and TR1 below still holds whole. One
+/// indexed lookup per candidate, by `stage_want`'s key.
 ///
 /// **A note that keeps failing never holds the queue** (TR1, C895): a note
 /// already tried waits behind every note tried fewer times, so a take that
@@ -205,7 +214,9 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		   SELECT n.subject_id, n.note_id, n.of_kind = ?5 AS verbatim, n.of_kind, n.stored_at,
 		          (SELECT COUNT(*) FROM voice_transcript t
 		           WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried
+		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried,
+		          (SELECT COUNT(*) FROM stage_want w
+		           WHERE w.stage = 'transcriber' AND w.subject_id = n.subject_id AND w.item_key = n.note_id) AS wanted
 		   FROM voice_note n
 		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
 		                     WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
@@ -216,7 +227,7 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
 		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!" FROM candidate
 		 WHERE tried < ?2
-		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, tried, stored_at, subject_id, note_id
+		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, tried, wanted DESC, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
 		keys.plain,
 		attempts,
@@ -915,6 +926,37 @@ mod tests {
 				assert_eq!(order, expected, "{failed} failures, the fresh note stored at {fresh_at}");
 			}
 		}
+	}
+
+	/// paulgsc/server#1091: among notes tried as often, one a waiter wants
+	/// (a cards essay held back for it, `stage_want`) goes before older notes
+	/// no one waits on, the most wanted first; a wanted note tried more often
+	/// still waits behind a fresher one (TR1).
+	#[tokio::test]
+	async fn a_note_something_waits_on_goes_first_among_notes_tried_as_often() {
+		let pool = pool().await;
+		note(&pool, A, "old", "2026-10-25T01:00:00.000Z", b"old").await;
+		note(&pool, A, "wanted", "2026-10-25T03:00:00.000Z", b"wanted").await;
+		note(&pool, A, "most-wanted", "2026-10-25T04:00:00.000Z", b"most").await;
+		note(&pool, A, "retried", "2026-10-25T00:30:00.000Z", b"retried").await;
+		keep(&pool, A, "retried", &attempt(SMALL, Outcome::Deadline)).await;
+		// B waiting on a note of the same id is B's, not A's.
+		sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'e9', 'transcriber', ?1, 'old')")
+			.bind(B)
+			.execute(&pool)
+			.await
+			.unwrap();
+		for (essay, take) in [("e1", "wanted"), ("e1", "most-wanted"), ("e2", "most-wanted"), ("e3", "retried")] {
+			sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', ?1, 'transcriber', ?2, ?3)")
+				.bind(essay)
+				.bind(A)
+				.bind(take)
+				.execute(&pool)
+				.await
+				.unwrap();
+		}
+		let order = waiting_for(&pool, SMALL).await;
+		assert_eq!(order, named(&[(A, "most-wanted"), (A, "wanted"), (A, "old"), (A, "retried")]));
 	}
 
 	/// C896: the note named first goes ahead of every other while it waits,

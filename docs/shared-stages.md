@@ -50,8 +50,39 @@ does not read each of its waiters.
    fails on storage leaves the last reading; `TranscriberFailing` says so.
 5. **Closed labels.** `stage`, `objective`, `result` and the lane's `kind` come from closed
    enums; no label names an item or a person.
-6. **The bound is policy.** It is a constant in the source, moved by a call, and reaches the
+6. **Who waits orders, it never adds work.** What waits on an item decides only when the
+   stage takes it, after the stage's own fairness rules (TR1's fewest attempts first); how much
+   runs at once stays with the lane.
+7. **The bound is policy.** It is a constant in the source, moved by a call, and reaches the
    alerts as `stage_promise_seconds`; it is never written into a rule.
+
+## Who waits drives order
+
+A waiter is not only counted: one that knows which items it waits on says so, and the stage's
+queue hears those first (paulgsc/server#1091, calls C1012–C1015). It is the owner's
+"covariant" work: an essay held back for its takes makes those takes urgent, without anyone
+marking them.
+
+- **The edge is a row.** `stage_want` (`stage_repo`) holds one row per item a waiter waits on
+  now: the waiter (`Waiter::name`, only those with `Waiter::names_its_items`), its key, the
+  stage, the subject and the item. Each waiter's pass replaces all its own rows in one
+  transaction, under account deletion's hold, so a row lives only while its wait does; a row is
+  written only for an item its subject still holds, in the same statement, and rows leave with
+  the account and with the note itself (`voice_repo::delete`). No time is kept: that a wait is
+  there is what orders the queue. A failed write is counted on the pass (`want`), never undoes
+  what the pass gave. The table's
+  checks hold the same closed sets as `Stage` and `Waiter` (`stage::tests`).
+- **The cards essays name their takes.** An essay held back for a take not heard yet
+  (`essay_media::Given::Waiting`, takes listed by id) wants each of them.
+- **The transcriber reads it.** `waiting_first` orders the excused note first, then fewest
+  attempts, then notes something waits on, the most waited-on first, then oldest. Urgency sits
+  after `tried` on purpose: a wanted note that keeps failing would otherwise hold the queue,
+  which TR1 forbids.
+- **Not yet built:** the next source is the owner's fast-track (#1090), a take marked by hand,
+  one more term of the same order; the owner ruled that a fast-tracked take also skips the
+  lane's give (TR4). With two sources the order gets its closed type (`None`, `Wanted`,
+  `FastTrack`). Urgency passing through more than one edge arrives with the first stage whose
+  waiter is itself waited on.
 
 ## The cases to come
 

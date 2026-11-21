@@ -214,7 +214,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent, card-era log and work spans | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log`, `rust_work_span_event` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -546,7 +546,7 @@ nowhere is marked as such and belongs to review.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
    exists and its write.** A deletion, or a sign-out everywhere, holds it
-   exclusively for its one transaction. There are six such writers today:
+   exclusively for its one transaction. There are seven such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
@@ -574,6 +574,11 @@ nowhere is marked as such and belongs to review.
      then a connection, around keeping each week, in one statement that
      checks the subject's `account` row (`app_event_repo::report::keep`;
      `no_owner_writes_nothing_and_a_week_no_longer_the_owners_leaves_the_drive`).
+   - the cards essays' pass, which takes the lock around writing which of the
+     subject's notes its held-back essays wait on (`cards_essays::pass::want`,
+     `stage_want`), in one statement per note that checks the subject still
+     holds it (`stage_repo::replace`;
+     `an_unknown_waiter_is_refused_and_an_unknown_item_is_not_wanted`).
 
    A new writer of subject-scoped rows outside a request must do the same,
    or its rows can outlive a deleted account. Every hold is short, so a
