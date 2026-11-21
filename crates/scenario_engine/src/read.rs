@@ -56,21 +56,28 @@ impl<'a> SoFar<'a> {
 		}
 		let mut runs = Vec::with_capacity(plays.len());
 		let mut first_run = HashMap::new();
-		// The run going: its index, the team snapping, and its half. A kick-off
-		// (an onside kick the kickers recover included) or the end of a half
-		// closes it, so the next snap starts a new one even by the same team.
-		let mut run: Option<(usize, &str, Option<i64>)> = None;
+		// The run going: its index and the team snapping. A kick-off (an onside
+		// kick the kickers recover included) or the end of a half closes it, so
+		// the next snap starts a new one even by the same team; so does a snap
+		// in a later half than the last snap whose half is known, in case the
+		// log lacks both. Only regulation's halves count: an overtime period's
+		// break carries possession over (the playoffs), and the 4th quarter's
+		// end is followed by a kick-off.
+		let mut run: Option<(usize, &str)> = None;
+		let mut last_half: Option<i64> = None;
 		let mut closed = false;
 		for seen in &plays {
 			let team = seen.play.possession.as_deref().filter(|_| is_snap(seen.play));
-			let its_half = seen.play.period.map(half);
+			let its_half = seen.play.period.filter(|period| *period <= 4).map(half);
 			runs.push(team.map(|team| {
+				let new_half = matches!((last_half, its_half), (Some(last), Some(now)) if last != now);
 				let index = match run {
-					Some((index, held, held_half)) if held == team && !closed && (held_half == its_half || held_half.is_none() || its_half.is_none()) => index,
-					Some((index, ..)) => index + 1,
+					Some((index, held)) if held == team && !closed && !new_half => index,
+					Some((index, _)) => index + 1,
 					None => 0,
 				};
-				run = Some((index, team, its_half));
+				run = Some((index, team));
+				last_half = its_half.or(last_half);
 				closed = false;
 				first_run.entry(team).or_insert(index);
 				index

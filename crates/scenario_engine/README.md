@@ -165,7 +165,10 @@ A possession is the snaps one team has in a row with no kickoff between
 them, within one half (#1077): a kickoff (an onside kick the kickers get
 back included) or the end of a half ends it even when the same team snaps
 next, so a drive bite late in the 2nd quarter is never about the third's
-score, and the drive after a recovered onside kick is not the first.
+score, and the drive after a recovered onside kick is not the first. A
+later regulation half ends it too, when the log lacks both plays (a snap
+ESPN gave no period keeps the last known half). An overtime period's break
+does not: possession carries over it, as in the playoffs.
 
 The snap to come is the first play from scrimmage (never a kickoff) that home
 had not seen when the offer was on its screen and that no flag wiped out (a
