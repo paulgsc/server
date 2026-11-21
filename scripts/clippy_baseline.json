@@ -328,28 +328,6 @@
       }
     }
   },
-  "apps/servers/file_host/src/handlers/pipeline.rs": {
-    "clippy::doc_markdown": {
-      "<file scope>": {
-        "/// Shared \"cache-key \u2192 timer \u2192 dedup_cache.get_or_fetch \u2192 record_cache_hit\"": 2
-      }
-    },
-    "clippy::future_not_send": {
-      "fn fetch_cached": {
-        "pub async fn fetch_cached<T, F, Fut>(state: &AppState, operation: &'static str, cache_key: &str, fetch: F) -> Result<(T, bool), FileHostError>": 1
-      }
-    },
-    "clippy::missing_errors_doc": {
-      "fn fetch_cached": {
-        "pub async fn fetch_cached<T, F, Fut>(state: &AppState, operation: &'static str, cache_key: &str, fetch: F) -> Result<(T, bool), FileHostError> where T: Serialize + for<'de> Deserialize<'de>, F: FnOnce() -> Fut + Send, Fut: Future<Output = Result<T, DedupCacheError>> + Send,": 1
-      }
-    },
-    "clippy::too_long_first_doc_paragraph": {
-      "<file scope>": {
-        "/// Shared \"cache-key \u2192 timer \u2192 dedup_cache.get_or_fetch \u2192 record_cache_hit\" /// shape used by every read handler that fronts an upstream fetch (Sheets or /// Drive) with the dedup cache. This only removes that wrapping boilerplate \u2014 /// callers still own the fetch closure, including any transform that needs /// to happen inside it (so it's covered by the cache) or after the call /// returns (so it re-runs on every request, cache hit or not).": 1
-      }
-    }
-  },
   "apps/servers/file_host/src/handlers/presence.rs": {
     "clippy::missing_errors_doc": {
       "fn observe_lease": {
@@ -442,11 +420,6 @@
     }
   },
   "apps/servers/file_host/src/metrics/instruments.rs": {
-    "clippy::cast_precision_loss": {
-      "fn record_file_download": {
-        ".record(size_bytes as f64);": 1
-      }
-    },
     "clippy::doc_markdown": {
       "<file scope>": {
         "//! OTel in this crate is tracing-only from here on; see": 1,
@@ -497,44 +470,6 @@
       },
       "fn set_failing": {
         "/// The terminal outcome one due subject reached this pass, and \u2014 for /// `verdict == \"suppressed\"` only \u2014 which `nudge::constraints::Suppressed` /// reason it was. `reason` is `\"n/a\"` for every other verdict so the label /// set stays fixed regardless of which branch fired, rather than growing an /// optional label Prometheus would show as absent on some series and /// present on others. /// /// This is the gap LOOPS (`nudge_waker_last_attempt_timestamp_seconds`) cannot": 1
-      }
-    }
-  },
-  "apps/servers/file_host/src/models/utils.rs": {
-    "clippy::disallowed_macros": {
-      "fn validate_color": {
-        "Err(format!(\"Invalid COLOR: {}\", color))": 1
-      },
-      "fn validate_url": {
-        "Err(format!(\"Invalid URL: {}\", url))": 1
-      }
-    },
-    "clippy::missing_errors_doc": {
-      "fn deserialize_color": {
-        "pub fn deserialize_color<'de, D>(deserializer: D) -> Result<String, D::Error> where D: Deserializer<'de>,": 1
-      },
-      "fn deserialize_url": {
-        "pub fn deserialize_url<'de, D>(deserializer: D) -> Result<String, D::Error> where D: Deserializer<'de>,": 1
-      }
-    },
-    "clippy::non_std_lazy_statics": {
-      "<file scope>": {
-        "lazy_static::lazy_static! { static ref COLOR_REGEX: Regex = Regex::new( r\"^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$\" ).unwrap(); }": 1,
-        "lazy_static::lazy_static! { static ref URL_REGEX: Regex = Regex::new( r\"^(https?://)([a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})(/.*)?$\" ).unwrap(); }": 1
-      }
-    },
-    "clippy::uninlined_format_args": {
-      "fn validate_color": {
-        "Err(format!(\"Invalid COLOR: {}\", color))": 1
-      },
-      "fn validate_url": {
-        "Err(format!(\"Invalid URL: {}\", url))": 1
-      }
-    },
-    "clippy::unwrap_used": {
-      "<file scope>": {
-        "static ref COLOR_REGEX: Regex = Regex::new( r\"^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$\" ).unwrap();": 1,
-        "static ref URL_REGEX: Regex = Regex::new( r\"^(https?://)([a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})(/.*)?$\" ).unwrap();": 1
       }
     }
   },
@@ -634,10 +569,6 @@
       }
     },
     "clippy::disallowed_macros": {
-      "fn generate_uuid": {
-        "let now_str = format!(\"{:x}\", now);": 1,
-        "let pid_str = format!(\"{:x}\", pid);": 1
-      },
       "fn sample_random_rows": {
         "println!(\"random_value: {}\", random_value);": 1
       }
@@ -653,22 +584,13 @@
       }
     },
     "clippy::missing_panics_doc": {
-      "fn generate_uuid": {
-        "pub fn generate_uuid() -> [u8; 32] {": 1
-      },
       "fn sample_random_rows": {
         "pub fn sample_random_rows(ranges: &[Range2D], k: usize) -> Vec<[u64; 2]> {": 1
       }
     },
     "clippy::must_use_candidate": {
-      "fn generate_uuid": {
-        "pub fn generate_uuid() -> [u8; 32] {": 1
-      },
       "fn sample_random_rows": {
         "pub fn sample_random_rows(ranges: &[Range2D], k: usize) -> Vec<[u64; 2]> {": 1
-      },
-      "fn string_to_buffer": {
-        "pub fn string_to_buffer(input: &str) -> [u8; 32] {": 1
       }
     },
     "clippy::should_panic_without_expect": {
@@ -677,10 +599,6 @@
       }
     },
     "clippy::uninlined_format_args": {
-      "fn generate_uuid": {
-        "let now_str = format!(\"{:x}\", now);": 1,
-        "let pid_str = format!(\"{:x}\", pid);": 1
-      },
       "fn sample_random_rows": {
         "println!(\"random_value: {}\", random_value);": 1
       },
@@ -695,23 +613,8 @@
       }
     },
     "clippy::unwrap_used": {
-      "fn generate_uuid": {
-        "let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();": 1
-      },
       "fn sample_random_rows": {
         "let mut rng_seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;": 1
-      }
-    }
-  },
-  "apps/servers/file_host/src/utils/retry.rs": {
-    "clippy::cast_possible_truncation": {
-      "fn retry_async": {
-        "let backoff = base_delay * factor.pow((attempt - 1) as u32);": 1
-      }
-    },
-    "clippy::missing_errors_doc": {
-      "fn retry_async": {
-        "pub async fn retry_async<F, Fut, T, E>(mut operation: F, max_attempts: usize, base_delay: Duration, factor: u32) -> Result<T, E> where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<T, E>>,": 1
       }
     }
   },
@@ -834,11 +737,6 @@
         "handle.subscribe(add_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;": 1,
         "handle.unsubscribe(remove_types).await.map_err(|e| ConnectionError::SubscriptionFailed(e))?;": 1
       }
-    },
-    "clippy::unused_async": {
-      "fn get_client_connections": {
-        "pub async fn get_client_connections(&self, client_id: &ClientId) -> Vec<String> { let start = Instant::now(); let connections: Vec<String> = self .store .keys() .into_iter() .filter(|key| { if let Some(handle) = self.store.get(key) { &handle.connection.client_id == client_id } else { false } }) .collect(); let elapsed = start.elapsed(); if !connections.is_empty() { info!( client_id = %client_id, connection_count = connections.len(), query_duration_ms = elapsed.as_millis(), \"Retrieved client connections\" ); } connections }": 1
-      }
     }
   },
   "apps/servers/file_host/src/websocket/connection/errors.rs": {
@@ -862,41 +760,6 @@
       },
       "fn set_guard_occupancy": {
         "/// `ConnectionGuard`'s configured global capacity (`ws_conn_manager::MAX_GLOBAL`). /// Set once at startup, the same \"fixed value, dashboarded so it doesn't /// have to be memorised\" shape as `metrics::build_info::record`.": 1
-      }
-    }
-  },
-  "apps/servers/file_host/src/websocket/heartbeat.rs": {
-    "clippy::missing_const_for_fn": {
-      "fn with_remove_timeout": {
-        "pub fn with_remove_timeout(mut self, timeout: Duration) -> Self { self.remove_after_stale = timeout; self }": 1
-      },
-      "fn with_scan_interval": {
-        "pub fn with_scan_interval(mut self, interval: Duration) -> Self { self.scan_interval = interval; self }": 1
-      },
-      "fn with_stale_timeout": {
-        "pub fn with_stale_timeout(mut self, timeout: Duration) -> Self { self.stale_after = timeout; self }": 1
-      }
-    },
-    "clippy::must_use_candidate": {
-      "fn with_remove_timeout": {
-        "pub fn with_remove_timeout(mut self, timeout: Duration) -> Self {": 1
-      },
-      "fn with_scan_interval": {
-        "pub fn with_scan_interval(mut self, interval: Duration) -> Self {": 1
-      },
-      "fn with_stale_timeout": {
-        "pub fn with_stale_timeout(mut self, timeout: Duration) -> Self {": 1
-      }
-    },
-    "clippy::return_self_not_must_use": {
-      "fn with_remove_timeout": {
-        "pub fn with_remove_timeout(mut self, timeout: Duration) -> Self { self.remove_after_stale = timeout; self }": 1
-      },
-      "fn with_scan_interval": {
-        "pub fn with_scan_interval(mut self, interval: Duration) -> Self { self.scan_interval = interval; self }": 1
-      },
-      "fn with_stale_timeout": {
-        "pub fn with_stale_timeout(mut self, timeout: Duration) -> Self { self.stale_after = timeout; self }": 1
       }
     }
   },

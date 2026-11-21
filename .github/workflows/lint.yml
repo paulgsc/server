@@ -80,6 +80,20 @@ jobs:
           python3 scripts/check_artifact_retention.py --self-test
           python3 scripts/check_artifact_retention.py
 
+  # S11 (#491): every `readme`, `license-file` and `build` a manifest names
+  # exists. Clippy's cargo_common_metadata wants the key and never opens the
+  # file, so 36 manifests named a README nobody wrote. No path gate: stdlib
+  # python3, under a second.
+  manifests:
+    name: Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Every file a manifest names exists
+        run: |
+          python3 scripts/check_manifests.py --self-test
+          python3 scripts/check_manifests.py
+
   # No path gate either: a compose file or a deploy/ file can come with any
   # kind of PR. Whether the JSON matches each binary's Config is `cargo
   # test`'s part (test.yml), and so are envctl's own tests. CI holds no key:

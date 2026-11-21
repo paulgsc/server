@@ -114,6 +114,9 @@ repository = "https://github.com/paulgsc/server"
 homepage = "https://maishatu.com/"
 license = "MIT"
 edition = "2021"
+# For a package with no README of its own; scripts/check_manifests.py fails a
+# `readme` that names no file, which clippy's cargo_common_metadata never looks for.
+readme = "README.md"
 
 # The one home for release codegen (#205). These used to live in each
 # Dockerfile's RUSTFLAGS, set *after* `cargo chef cook` — so cook compiled
@@ -219,7 +222,6 @@ axum = { version = "0.7.5", features = ["http2", "macros", "matched-path"] }
 clap = { version = "4.5.8", features = ["derive", "env"] }
 chrono = "0.4.23"
 futures = "0.3.26"
-lazy_static = "1.4.0"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 # Test-only: `metrics_util::debugging::DebuggingRecorder`, used to assert

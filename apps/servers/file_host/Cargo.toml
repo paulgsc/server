@@ -3,7 +3,7 @@ name = "file_host"
 description = "File hosting server"
 categories = ["web-programming::http-server"]
 keywords = ["file", "host", "server"]
-readme = "README.md"
+readme.workspace = true
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -84,7 +84,6 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 anyhow = { workspace = true }
 app-config = { workspace = true }
 clap = { workspace = true }
-lazy_static = { workspace = true }
 futures = { workspace = true }
 redis = { version = "0.28.2", features = ["aio", "tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }

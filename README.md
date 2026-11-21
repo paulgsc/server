@@ -762,7 +762,6 @@ compose stack, `NATS_URL=nats://localhost:4222` and
 
 ### Development environment
 * [Nix setup & shells](./nix/README.md)
-* [WSL / PowerShell cheat sheet](./docs/WSL-CHEATSHEET.md)
 * [Redis & RedisInsight setup](./docs/REDIS_INSIGHT_SETUP.md)
 
 ### Backend design
@@ -771,7 +770,6 @@ compose stack, `NATS_URL=nats://localhost:4222` and
 * [Dashboard honesty](./docs/dashboard-honesty.md) – why missing data must never render as healthy
 * [WebSocket Service SLA](./apps/servers/file_host/docs/sla/WebsSocket_Service_SLA.md)
 * [Study nudge design](./docs/study-nudge.md)
-* [Google Sheets ingestion pipeline](./docs/system_design/gsheets_webhook/README.md)
 
 ### Caveats
 * [⚠️ Important Warnings](./docs/WARNING.md)
