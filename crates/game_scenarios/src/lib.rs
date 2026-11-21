@@ -491,6 +491,72 @@ pub struct BigPlays {
 	pub kinds: Vec<KindEntry>,
 }
 
+/// What part of a team a bite is about (#3049): the side's offense, defense,
+/// special teams, or its coaching (a call: go for it, the try, the clock).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Unit {
+	Offense,
+	Defense,
+	SpecialTeams,
+	Coaching,
+}
+
+impl Unit {
+	pub const ALL: [Self; 4] = [Self::Offense, Self::Defense, Self::SpecialTeams, Self::Coaching];
+
+	/// The stored name.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Offense => "offense",
+			Self::Defense => "defense",
+			Self::SpecialTeams => "special-teams",
+			Self::Coaching => "coaching",
+		}
+	}
+
+	/// The unit stored as `name`.
+	#[must_use]
+	pub fn named(name: &str) -> Option<Self> {
+		Self::ALL.into_iter().find(|unit| unit.as_str() == name)
+	}
+}
+
+/// Whose unit: the side the game is read for, or the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Side {
+	Ours,
+	Theirs,
+}
+
+impl Side {
+	pub const ALL: [Self; 2] = [Self::Ours, Self::Theirs];
+
+	/// The stored name.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Ours => "ours",
+			Self::Theirs => "theirs",
+		}
+	}
+
+	/// The side stored as `name`.
+	#[must_use]
+	pub fn named(name: &str) -> Option<Self> {
+		Self::ALL.into_iter().find(|side| side.as_str() == name)
+	}
+}
+
+/// A bite's unit and whose it is (#3049): `{ "unit": "defense", "side": "ours" }`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+pub struct About {
+	pub unit: Unit,
+	pub side: Side,
+}
+
 /// The whole set, as `dump-game-scenarios` writes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Catalog {
@@ -498,6 +564,8 @@ pub struct Catalog {
 	pub scenarios: Vec<Entry>,
 	pub halves: Vec<Half>,
 	pub big_play: BigPlays,
+	/// What a bite can be about (#3049).
+	pub units: Vec<Unit>,
 }
 
 /// The set at [`CATALOG_VERSION`].
@@ -511,6 +579,7 @@ pub fn catalog() -> Catalog {
 			sizes: Size::ALL.into_iter().map(|id| SizeEntry { id, yards: id.yards() }).collect(),
 			kinds: Kind::ALL.into_iter().map(|id| KindEntry { id, least: id.least() }).collect(),
 		},
+		units: Unit::ALL.to_vec(),
 	}
 }
 

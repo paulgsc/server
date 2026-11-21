@@ -18,7 +18,7 @@ mod rules;
 mod words;
 
 use chrono::{DateTime, FixedOffset, NaiveTime, TimeDelta, TimeZone, Utc};
-use game_scenarios::{Kind, Scenario, Size, CATALOG_VERSION};
+use game_scenarios::{About, Kind, Scenario, Size, CATALOG_VERSION};
 use nfl_feed::{log::Entry, summary::Play, Status, Weather};
 use serde::{Serialize, Serializer};
 
@@ -182,6 +182,34 @@ pub struct Offer {
 	pub scenarios: Vec<Offered>,
 	/// Recent plays as scenarios, newest first, at most the mode's count.
 	pub just_happened: Vec<Happened>,
+	/// Every scenario of the set once, the most plausible first (#3049).
+	pub ranked: Vec<Ranked>,
+}
+
+/// How plausible a scenario is at the moment, as [`Offer::ranked`] orders
+/// them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Tier {
+	/// On offer now, or what just happened, in the engine's own order.
+	Now,
+	/// Plausible at any time of a game week: the stakes, the pattern.
+	Always,
+	/// The rest of the set, in its order, still pickable.
+	Rest,
+}
+
+/// One scenario of the ranked list, with what a bite of it is about by
+/// default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Ranked {
+	#[serde(rename = "id", serialize_with = "scenario_id")]
+	pub scenario: Scenario,
+	pub tier: Tier,
+	/// The unit a bite of it is about unless the owner changes it; `None`
+	/// before kickoff, after the final, about the owner, or with no side
+	/// wanted.
+	pub unit: Option<About>,
 }
 
 /// The live strip, in words.
@@ -253,8 +281,10 @@ pub fn offer(game: &Game, log: &[Entry], now: DateTime<FixedOffset>, mode: Mode,
 	let at = now.with_timezone(&Utc);
 	let so_far = read::SoFar::new(game, log, at);
 	let mut scenarios = rules::now(game, &so_far, at, mode, *now.offset(), watching);
-	scenarios.truncate(mode.cards());
 	let mut just_happened = rules::just_happened(game, &so_far, at, mode);
+	// Ranked before the mode's counts: the list holds every scenario.
+	let ranked = rules::every_scenario(game, &so_far, at, *now.offset(), watching, &scenarios, &just_happened);
+	scenarios.truncate(mode.cards());
 	just_happened.truncate(mode.just_happened());
 	Offer {
 		engine_version: ENGINE_VERSION,
@@ -263,6 +293,7 @@ pub fn offer(game: &Game, log: &[Entry], now: DateTime<FixedOffset>, mode: Mode,
 		strip: words::strip(game, &so_far, at),
 		scenarios,
 		just_happened,
+		ranked,
 	}
 }
 

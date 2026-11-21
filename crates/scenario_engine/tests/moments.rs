@@ -768,3 +768,43 @@ fn halftime_is_on_offer_until_the_second_half_kicks_off() {
 	assert!(!ids(&at_half(kickoff, Some("NE"))).contains(&"in.halftime"), "the second half is under way");
 	assert!(!ids(&at_half(half - 1, Some("NE"))).contains(&"in.halftime"), "not before the half ends");
 }
+
+/// #3049: the ranked list holds every scenario once, the moment's own first,
+/// then the always plausible, then the rest; and each says what a bite of it
+/// is about by default, read through the side wanted.
+#[test]
+fn every_scenario_is_ranked_once_with_what_it_is_about() {
+	use game_scenarios::{About, Side, Unit};
+	use scenario_engine::Tier;
+	let plays = plays();
+	let log = recorded_log(&plays);
+	// CHI wanted; NE on 4th down: the call is theirs.
+	let fourth = plays.iter().position(|p| is_snap(p) && p.down == Some(4) && p.possession.as_deref() == Some("NE")).unwrap();
+	let g = game(Some("CHI"), status(GameState::In, Some(&plays[fourth])), Some(Situation::before(&plays[fourth])));
+	let o = offer(&g, &log, pacific(wall(&plays[fourth]) - TimeDelta::seconds(10)), Mode::Light, Watching::Unknown);
+	assert_eq!(o.ranked.len(), Scenario::ALL.len());
+	for scenario in Scenario::ALL {
+		assert_eq!(o.ranked.iter().filter(|r| r.scenario == scenario).count(), 1, "{scenario:?} once");
+	}
+	let tiers: Vec<Tier> = o.ranked.iter().map(|r| r.tier).collect();
+	assert!(tiers.windows(2).all(|w| (w[0] as u8) <= (w[1] as u8)), "now, then always, then the rest");
+	assert!(o.ranked.len() > o.scenarios.len(), "the list is not cut to the mode's cards");
+	assert_eq!(
+		&o.ranked[..o.scenarios.len()].iter().map(|r| r.scenario).collect::<Vec<_>>(),
+		&o.scenarios.iter().map(|s| s.scenario).collect::<Vec<_>>(),
+		"the offers first, in their order"
+	);
+	let about = |scenario: Scenario| o.ranked.iter().find(|r| r.scenario == scenario).unwrap().unit;
+	let (ours, theirs) = (|unit| Some(About { unit, side: Side::Ours }), |unit| Some(About { unit, side: Side::Theirs }));
+	assert_eq!(about(Scenario::FourthDown), theirs(Unit::Coaching), "their call");
+	assert_eq!(about(Scenario::PlayCall), ours(Unit::Defense), "NE has the ball: our defense");
+	assert_eq!(about(Scenario::Kick), ours(Unit::SpecialTeams));
+	assert_eq!(about(Scenario::Weather), None, "pregame is about no unit");
+	assert_eq!(about(Scenario::CaughtIt), None, "nor is the owner's own watching");
+	assert_eq!(o.ranked.iter().find(|r| r.scenario == Scenario::Stakes).unwrap().tier, Tier::Always);
+
+	// No side wanted: no unit to be ours or theirs.
+	let neither = game(None, status(GameState::In, Some(&plays[fourth])), Some(Situation::before(&plays[fourth])));
+	let o = offer(&neither, &log, pacific(wall(&plays[fourth]) - TimeDelta::seconds(10)), Mode::Light, Watching::Unknown);
+	assert!(o.ranked.iter().all(|r| r.unit.is_none()));
+}

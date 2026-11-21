@@ -38,7 +38,7 @@ impl GameBite {
 pub async fn bites_of_game(conn: &mut SqliteConnection, game: &str) -> Result<Vec<GameBite>, VoiceError> {
 	let rows = sqlx::query!(
 		r#"SELECT b.subject_id AS "subject_id!", b.note_id AS "note_id!", b.scenario_id, b.how, b.offer_seq, b.live_strip,
-		          b.context_line, b.watching, b.started_at, b.clock_offset_ms, b.mode, b.catalog_version,
+		          b.context_line, b.watching, b.started_at, b.clock_offset_ms, b.mode, b.catalog_version, b.unit,
 		          (SELECT m.scenario_id FROM bite_mapping m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id
 		           ORDER BY m.mapping_id DESC LIMIT 1) AS "mapped?: String"
 		   FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
@@ -65,6 +65,7 @@ pub async fn bites_of_game(conn: &mut SqliteConnection, game: &str) -> Result<Ve
 					offset: row.clock_offset_ms,
 					mode: Mode::named(&row.mode).ok_or(VoiceError::Unreadable)?,
 					catalog: row.catalog_version,
+					unit: row.unit.map(|unit| crate::parse_unit(&unit).ok_or(VoiceError::Unreadable)).transpose()?,
 				},
 				mapped: row.mapped,
 			})

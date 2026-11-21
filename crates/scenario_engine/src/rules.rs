@@ -8,10 +8,10 @@
 
 use crate::{
 	read::{self, Kick, SoFar, Turnover},
-	words, BigPlay, Game, Happened, Mode, Offered, Situation, Watching,
+	words, BigPlay, Game, Happened, Mode, Offered, Ranked, Situation, Tier, Watching,
 };
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, Utc};
-use game_scenarios::{Moment, Scenario};
+use game_scenarios::{About, Kind, Moment, Phase as When, Scenario, Side, Unit};
 use nfl_feed::GameState;
 use std::cmp::Reverse;
 
@@ -310,6 +310,47 @@ impl<'s> Cx<'s> {
 		})
 	}
 
+	/// What a bite of `scenario` is about by default, now (#3049): a call (a
+	/// fourth down, the try, the clock, the half) is the deciding team's
+	/// coaching; a kick or a return is our special teams; anything else is our
+	/// offense when we had the ball and our defense when they did. For the
+	/// moments known only once they have happened, "had the ball" is the
+	/// latest play's; for the rest, the snap to come's.
+	fn default_unit(&self, scenario: Scenario) -> Option<About> {
+		let us = self.us?;
+		let entry = scenario.entry();
+		if entry.phase != When::In {
+			return None;
+		}
+		let side = |team: &str| if team == us { Side::Ours } else { Side::Theirs };
+		let ours = |unit| Some(About { unit, side: Side::Ours });
+		let to_come = self.game.situation.as_ref().and_then(|s| s.possession.as_deref());
+		let last = self.so_far.last_snap().and_then(|i| self.so_far.plays[i].play.possession.as_deref());
+		let by_the_ball = |team: Option<&str>| team.and_then(|team| ours(if team == us { Unit::Offense } else { Unit::Defense }));
+		match entry.moment {
+			Moment::FourthDown | Moment::TwoMinute => to_come.or(last).map(|team| About {
+				unit: Unit::Coaching,
+				side: side(team),
+			}),
+			Moment::Try => self.try_pending().or(last).map(|team| About {
+				unit: Unit::Coaching,
+				side: side(team),
+			}),
+			Moment::Halftime => ours(Unit::Coaching),
+			Moment::Kick | Moment::Kickoff | Moment::OnsideKick => ours(Unit::SpecialTeams),
+			Moment::BigPlay => {
+				let big = (0..self.so_far.plays.len()).rev().find_map(|i| self.big_play(i))?;
+				match big.kind {
+					Kind::KickReturn | Kind::PuntReturn => ours(Unit::SpecialTeams),
+					Kind::Pass | Kind::Run | Kind::InterceptionReturn | Kind::FumbleReturn => ours(if big.by == us { Unit::Offense } else { Unit::Defense }),
+				}
+			}
+			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury | Moment::LeadChange => by_the_ball(last),
+			Moment::ThirdAndLong | Moment::Snap | Moment::RedZone | Moment::OpeningDrive => by_the_ball(to_come.or(last)),
+			Moment::Pregame | Moment::Final | Moment::Watching => None,
+		}
+	}
+
 	/// After the final.
 	fn final_(&self, scenario: Scenario) -> Found {
 		if self.phase != Phase::Over {
@@ -533,6 +574,45 @@ pub(crate) fn just_happened(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, 
 			ago: words::ago(ago_seconds),
 			big_play: (scenario == Scenario::BigPlay).then(|| cx.big_play(i)).flatten(),
 		}));
+	}
+	out
+}
+
+/// The scenarios plausible at any time of a game week (#3049, C874): what
+/// the game means for the paths, and whether it fits a pattern.
+const ALWAYS: [Scenario; 2] = [Scenario::Stakes, Scenario::Pattern];
+
+/// Every scenario of the set once (#3049): what is on offer now in its order
+/// (`offered`, untruncated), then what just happened, then the always
+/// plausible, then the rest in the set's order. Each with its default unit.
+pub(crate) fn every_scenario(
+	game: &Game,
+	so_far: &SoFar<'_>,
+	at: DateTime<Utc>,
+	local: FixedOffset,
+	watching: Watching,
+	offered: &[Offered],
+	happened: &[Happened],
+) -> Vec<Ranked> {
+	let cx = Cx::new(game, so_far, at, Mode::Full, local, watching);
+	let mut out: Vec<Ranked> = Vec::with_capacity(Scenario::ALL.len());
+	let mut add = |scenario: Scenario, tier: Tier| {
+		if !out.iter().any(|r| r.scenario == scenario) {
+			out.push(Ranked {
+				scenario,
+				tier,
+				unit: cx.default_unit(scenario),
+			});
+		}
+	};
+	for scenario in offered.iter().map(|o| o.scenario).chain(happened.iter().map(|h| h.scenario)) {
+		add(scenario, Tier::Now);
+	}
+	for scenario in ALWAYS {
+		add(scenario, Tier::Always);
+	}
+	for scenario in Scenario::ALL {
+		add(scenario, Tier::Rest);
 	}
 	out
 }

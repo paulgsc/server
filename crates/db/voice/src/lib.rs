@@ -310,6 +310,9 @@ pub struct Bite {
 	pub mode: Mode,
 	/// The version of the scenario set it was said under.
 	pub catalog: i64,
+	/// What the bite is about (#3049): a unit and whose, as the phone said;
+	/// `None` when it said none.
+	pub unit: Option<game_scenarios::About>,
 }
 
 /// The containers the phone records in, and the transcriber reads.
@@ -400,6 +403,10 @@ pub struct SaidBite<'a> {
 	pub mode: Option<&'a str>,
 	/// The scenario set's version, a whole number from 1.
 	pub catalog: Option<&'a str>,
+	/// What the bite is about (#3049), as `<unit>:<side>` (`defense:ours`):
+	/// `game_scenarios::Unit` and `Side`. Optional; part of what a replay
+	/// must match.
+	pub unit: Option<&'a str>,
 }
 
 impl SaidBite<'_> {
@@ -416,6 +423,7 @@ impl SaidBite<'_> {
 			("offset", self.offset),
 			("mode", self.mode),
 			("catalog", self.catalog),
+			("unit", self.unit),
 		]
 		.into_iter()
 		.filter_map(|(field, value)| value.map(|_| field))
@@ -637,6 +645,13 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 	if catalog.is_none() {
 		problems.push(("catalog", "not a catalogue version: a whole number from 1"));
 	}
+	let unit = said.unit.map(|unit| {
+		let parsed = parse_unit(unit);
+		if parsed.is_none() {
+			problems.push(("unit", "not what a bite is about: <offense|defense|special-teams|coaching>:<ours|theirs>"));
+		}
+		parsed
+	});
 	match (how, strip, watching, started, mode, catalog) {
 		(Some(how), Some(strip), Some(watching), Some(started), Some(mode), Some(catalog)) if problems.len() == before => Some(Bite {
 			scenario,
@@ -649,9 +664,24 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 			offset,
 			mode,
 			catalog,
+			unit: unit.flatten(),
 		}),
 		_ => None,
 	}
+}
+
+/// `defense:ours` as a unit and whose.
+pub(crate) fn parse_unit(said: &str) -> Option<game_scenarios::About> {
+	let (unit, side) = said.split_once(':')?;
+	Some(game_scenarios::About {
+		unit: game_scenarios::Unit::named(unit)?,
+		side: game_scenarios::Side::named(side)?,
+	})
+}
+
+/// A unit and whose as `game_bite.unit` stores it.
+pub(crate) fn unit_name(about: game_scenarios::About) -> String {
+	[about.unit.as_str(), ":", about.side.as_str()].concat()
 }
 
 /// The note `body` is, as the phone `said`, under id `id`; or every problem
@@ -920,10 +950,11 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 		.await?;
 	if let Some(bite) = &note.bite {
 		let (how, mode, watching) = (bite.how.as_str(), bite.mode.as_str(), i64::from(bite.watching));
+		let unit = bite.unit.map(unit_name);
 		sqlx::query!(
 			"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, offer_seq, live_strip, context_line, watching,
-			                        started_at, clock_offset_ms, mode, catalog_version)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+			                        started_at, clock_offset_ms, mode, catalog_version, unit)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
 			subject,
 			note.id,
 			bite.scenario,
@@ -935,7 +966,8 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 			bite.started,
 			bite.offset,
 			mode,
-			bite.catalog
+			bite.catalog,
+			unit
 		)
 		.execute(&mut *conn)
 		.await?;
@@ -1056,7 +1088,7 @@ pub async fn audio_body(conn: &mut SqliteConnection, subject: &str, note_id: &st
 /// `sqlx` failure.
 async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Bite, VoiceError> {
 	let row = sqlx::query!(
-		r#"SELECT scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version
+		r#"SELECT scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version, unit
 		   FROM game_bite WHERE subject_id = ?1 AND note_id = ?2"#,
 		subject,
 		note_id
@@ -1075,6 +1107,7 @@ async fn held_bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 		offset: row.clock_offset_ms,
 		mode: Mode::named(&row.mode).ok_or(VoiceError::Unreadable)?,
 		catalog: row.catalog_version,
+		unit: row.unit.map(|unit| parse_unit(&unit).ok_or(VoiceError::Unreadable)).transpose()?,
 	})
 }
 
@@ -1147,6 +1180,7 @@ mod tests {
 			offset: Some("-1350"),
 			mode: Some("standard"),
 			catalog: Some("1"),
+			unit: Some("defense:ours"),
 		}
 	}
 
@@ -1235,6 +1269,7 @@ mod tests {
 					"clock_offset_ms",
 					"mode",
 					"catalog_version",
+					"unit",
 				][..],
 			),
 		] {
@@ -1432,11 +1467,17 @@ mod tests {
 			offset: Some("86400001"),
 			mode: Some("loud"),
 			catalog: Some("0"),
+			unit: Some("defense"),
 		};
 		assert_eq!(
 			fields(describe("b1", said_game(wrong), b"take").unwrap_err()),
-			["how", "scenario", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog"]
+			["how", "scenario", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog", "unit"]
 		);
+		for odd in ["defence:ours", "defense:mine", "defense:", ":ours", "DEFENSE:OURS"] {
+			let mut unit = said_bite();
+			unit.unit = Some(odd);
+			assert_eq!(fields(describe("b1", said_game(unit), b"take").unwrap_err()), ["unit"], "{odd}");
+		}
 
 		let long = "x".repeat(MAX_LINE_CHARS + 1);
 		let too_long = SaidBite {
@@ -1483,7 +1524,7 @@ mod tests {
 			with_bite.bite = said_bite();
 			assert_eq!(
 				fields(describe("n1", with_bite, b"take").unwrap_err()),
-				["scenario", "how", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog"],
+				["scenario", "how", "seq", "strip", "context", "watching", "started", "offset", "mode", "catalog", "unit"],
 				"{of}"
 			);
 			with_bite.bite = SaidBite {
@@ -1580,9 +1621,18 @@ mod tests {
 		if let Some(bite) = other_strip.bite.as_mut() {
 			bite.strip.push('!');
 		}
+		let unit: Option<String> = sqlx::query_scalar("SELECT unit FROM game_bite WHERE note_id = 'b1'").fetch_one(&pool).await.unwrap();
+		assert_eq!(unit.as_deref(), Some("defense:ours"), "what the bite is about, as said");
+		let mut other_unit = first.clone();
+		if let Some(bite) = other_unit.bite.as_mut() {
+			bite.unit = Some(game_scenarios::About {
+				unit: game_scenarios::Unit::Coaching,
+				side: game_scenarios::Side::Theirs,
+			});
+		}
 		let mut other_game = first.clone();
 		other_game.of_ref = String::from("401772982");
-		for (changed, what) in [(other_strip, "another strip"), (other_game, "another game")] {
+		for (changed, what) in [(other_strip, "another strip"), (other_unit, "another unit"), (other_game, "another game")] {
 			assert!(matches!(put(&pool, A, &changed, b"take one").await, Err(VoiceError::Rewritten)), "{what} under a held id");
 		}
 		assert!(
@@ -1933,7 +1983,34 @@ mod tests {
 			"before the rebuild a take is refused"
 		);
 		put(&pool, A, &note("n1", b"take"), b"take").await.unwrap();
-		put(&pool, A, &game("b1", b"bite"), b"bite").await.unwrap();
+		// Today's code writes a bite's unit, a column this schema predates: a
+		// bite as the code of then kept it.
+		let then = game("b1", b"bite");
+		let bite = then.bite.as_ref().unwrap();
+		sqlx::query(
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, ?2, 'game', ?3, ?4, ?5, ?6, ?7, 'now');
+			 INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, ?2, ?8);
+			 INSERT INTO game_bite (subject_id, note_id, scenario_id, how, live_strip, watching, started_at, mode, catalog_version)
+			 VALUES (?1, ?2, ?9, ?10, ?11, 1, ?12, ?13, ?14)",
+		)
+		.bind(A)
+		.bind(&then.id)
+		.bind(&then.of_ref)
+		.bind(&then.at)
+		.bind(&then.content_type)
+		.bind(then.size)
+		.bind(&then.sha256)
+		.bind(&b"bite"[..])
+		.bind(&bite.scenario)
+		.bind(bite.how.as_str())
+		.bind(&bite.strip)
+		.bind(&bite.started)
+		.bind(bite.mode.as_str())
+		.bind(bite.catalog)
+		.execute(&pool)
+		.await
+		.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
 
 		let held: Vec<(String, String, String, i64, String)> = sqlx::query_as("SELECT note_id, of_kind, of_ref, size, sha256 FROM voice_note ORDER BY note_id")

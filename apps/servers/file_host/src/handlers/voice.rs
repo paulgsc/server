@@ -104,6 +104,7 @@ pub struct NoteQuery {
 	offset: Option<String>,
 	mode: Option<String>,
 	catalog: Option<String>,
+	unit: Option<String>,
 }
 
 /// `PUT /voice-notes/:id`
@@ -177,6 +178,7 @@ pub async fn put_note(
 			offset: query.offset.as_deref(),
 			mode: query.mode.as_deref(),
 			catalog: query.catalog.as_deref(),
+			unit: query.unit.as_deref(),
 		},
 	};
 	let note = voice_repo::describe(&id, said, &body).map_err(FileHostError::unprocessable_entity)?;
@@ -2069,7 +2071,7 @@ mod tests {
 	async fn a_game_bite_reaches_home_with_its_metadata() {
 		const BITE: &str = "/voice-notes/b1?of=game&ref=401772981&at=2026-10-26T20:41:09Z&scenario=in.third-long&how=offered&seq=12\
 			&strip=KC%2017%20%E2%80%93%20BUF%2014%20%C2%B7%20Q3%204%3A12&context=Mahomes%209%2F14&watching=1\
-			&started=2026-10-26T20:41:07.250Z&offset=-1350&mode=standard&catalog=1";
+			&started=2026-10-26T20:41:07.250Z&offset=-1350&mode=standard&catalog=1&unit=coaching:theirs";
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
@@ -2081,7 +2083,7 @@ mod tests {
 			json!({
 				"scenario": "in.third-long", "how": "offered", "seq": 12, "strip": "KC 17 – BUF 14 · Q3 4:12",
 				"context": "Mahomes 9/14", "watching": true, "started": "2026-10-26T20:41:07.250Z", "offset": -1350,
-				"mode": "standard", "catalog": 1
+				"mode": "standard", "catalog": 1, "unit": { "unit": "coaching", "side": "theirs" }
 			})
 		);
 	}

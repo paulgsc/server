@@ -1,0 +1,12 @@
+-- What a game bite is about (paulgsc/some-ui#3049, GWB18): which unit, and
+-- whose, as `<unit>:<side>` (`defense:ours`): `offense`, `defense`,
+-- `special-teams` or `coaching`, of the side the game is read for (`ours`)
+-- or the other (`theirs`) -- `game_scenarios::Unit` and `Side`. The phone
+-- defaults it from the moment and the owner changes it with one tap; home
+-- keeps what the phone said. NULL for a bite that said none (a phone from
+-- before, or a bite before kickoff).
+--
+-- Additive: SQLite adds a column with its CHECK in place, so no rebuild. A
+-- bite is still never rewritten (`game_bite_is_append_only`); the unit is
+-- part of what a replay must match, as the scenario is.
+ALTER TABLE game_bite ADD COLUMN unit TEXT CHECK (unit IN ('offense:ours', 'offense:theirs', 'defense:ours', 'defense:theirs', 'special-teams:ours', 'special-teams:theirs', 'coaching:ours', 'coaching:theirs'));

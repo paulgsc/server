@@ -262,6 +262,21 @@ pub struct Offer {
 	pub scenarios: Vec<Offered>,
 	/// Newest first, at most the mode's count.
 	pub just_happened: Vec<Happened>,
+	/// Every scenario of the set once, the most plausible first (#3049): what
+	/// the "what was that about" list shows, each with its default unit.
+	pub ranked: Vec<Ranked>,
+}
+
+/// One scenario of the ranked list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ranked {
+	/// The catalog's id.
+	pub id: String,
+	/// `now`, `always` or `rest`.
+	pub tier: scenario_engine::Tier,
+	/// `{ unit, side }` (the catalog's `units`, `ours` or `theirs`), or null.
+	pub unit: Option<game_scenarios::About>,
 }
 
 impl Offer {
@@ -293,6 +308,15 @@ impl Offer {
 					line: happened.line,
 					at: stamp(now - chrono::TimeDelta::seconds(happened.ago_seconds)),
 					big_play: happened.big_play,
+				})
+				.collect(),
+			ranked: offer
+				.ranked
+				.into_iter()
+				.map(|ranked| Ranked {
+					id: ranked.scenario.id().to_owned(),
+					tier: ranked.tier,
+					unit: ranked.unit,
 				})
 				.collect(),
 		}
@@ -461,6 +485,34 @@ fn home_examples() -> [Outbound; 4] {
 				}),
 			},
 		],
+		// A few of the 29: one of each tier, with and without a unit.
+		ranked: [
+			(
+				"in.third-long",
+				scenario_engine::Tier::Now,
+				Some((game_scenarios::Unit::Defense, game_scenarios::Side::Ours)),
+			),
+			(
+				"in.play-call",
+				scenario_engine::Tier::Now,
+				Some((game_scenarios::Unit::Defense, game_scenarios::Side::Ours)),
+			),
+			("in.sack", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Offense, game_scenarios::Side::Ours))),
+			(
+				"in.fourth-down",
+				scenario_engine::Tier::Rest,
+				Some((game_scenarios::Unit::Coaching, game_scenarios::Side::Theirs)),
+			),
+			("pre.stakes", scenario_engine::Tier::Always, None),
+			("pre.weather", scenario_engine::Tier::Rest, None),
+		]
+		.into_iter()
+		.map(|(id, tier, unit)| Ranked {
+			id: id.to_owned(),
+			tier,
+			unit: unit.map(|(unit, side)| game_scenarios::About { unit, side }),
+		})
+		.collect(),
 	};
 	let before = Offer {
 		game_id: "401873023".to_owned(),
@@ -472,6 +524,7 @@ fn home_examples() -> [Outbound; 4] {
 		},
 		scenarios: Vec::new(),
 		just_happened: Vec::new(),
+		ranked: Vec::new(),
 	};
 	[
 		Outbound::Offer {
@@ -567,6 +620,7 @@ mod tests {
 					at: "2026-10-23T01:52:20Z".to_owned(),
 					big_play: None,
 				}],
+				ranked: Vec::new(),
 			}),
 		};
 		let mut later = state.clone();

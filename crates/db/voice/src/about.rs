@@ -143,6 +143,9 @@ pub struct BiteAbout {
 	pub started: String,
 	/// How much the screen offered.
 	pub mode: Mode,
+	/// What the bite is about (#3049): `{ unit, side }`, as the phone said;
+	/// null when it said none.
+	pub unit: Option<game_scenarios::About>,
 }
 
 /// The play a bite was matched to, or why none was.
@@ -403,7 +406,7 @@ async fn label(conn: &mut SqliteConnection, game: &str) -> Result<Option<String>
 /// time plus the offset the live connection measured), as the feed stamps.
 async fn bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<(BiteAbout, Option<String>)>, VoiceError> {
 	let row = sqlx::query!(
-		r#"SELECT b.scenario_id, b.how, b.live_strip, b.context_line, b.watching, b.started_at, b.mode, b.clock_offset_ms,
+		r#"SELECT b.scenario_id, b.how, b.live_strip, b.context_line, b.watching, b.started_at, b.mode, b.clock_offset_ms, b.unit,
 		          (SELECT m.scenario_id FROM bite_mapping m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id
 		           ORDER BY m.mapping_id DESC LIMIT 1) AS "mapped?: String"
 		   FROM game_bite b WHERE b.subject_id = ?1 AND b.note_id = ?2"#,
@@ -425,6 +428,7 @@ async fn bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Resu
 				watching: row.watching != 0,
 				started: row.started_at,
 				mode: Mode::named(&row.mode).ok_or(VoiceError::Unreadable)?,
+				unit: row.unit.map(|unit| crate::parse_unit(&unit).ok_or(VoiceError::Unreadable)).transpose()?,
 			};
 			Ok((about, said_at))
 		})
