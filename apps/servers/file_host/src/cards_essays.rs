@@ -39,8 +39,15 @@
 //! once a confirmed link is recorded (`feeds::videos`), which is a later
 //! story.
 //!
+//! **A spoken card's takes** (WALK7, paulgsc/server#1052): an essay with a
+//! spoken card is given with the owner's takes it names, held back until
+//! each is heard, or refused (a failed row on Studio › Renders) when one is
+//! missing or home couldn't hear it ([`pass`]'s module doc has the rest).
+//!
 //! Cost: one request an hour, plus one per essay home lacks (a cut list is a
-//! few KB); one `stat` per essay each minute.
+//! few KB); per essay not yet given with a spoken card, a few indexed reads
+//! per take it names, each pass until it is given; one `stat` per essay
+//! each minute.
 
 pub mod pass;
 
@@ -123,6 +130,7 @@ pub fn start(state: &AppState) {
 		}
 	}
 	let context = state.cards_essays.clone();
+	let configured = state.mailbox.as_ref().and_then(|mailbox| mailbox.subject.clone());
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
 
@@ -142,12 +150,16 @@ pub fn start(state: &AppState) {
 				}
 				_ = ticker.tick() => {
 					observe_renders(&db).await;
+					tidy_tick(&db, configured.as_deref()).await;
 					let now = chrono::Utc::now();
 					if !schedule.due(now) {
 						continue;
 					}
 					crate::metrics::cards_essays::record_pass_started();
-					let result = pass::run_once(&db, &context.fetch, Path::new(ESSAYS_FOLDER), &chrono::Utc::now).await;
+					let result = match given(&db, configured.as_deref()).await {
+						Ok(given) => pass::run_once(&db, &context.fetch, &given, &chrono::Utc::now).await,
+						Err(err) => Err(err),
+					};
 					crate::metrics::cards_essays::record_pass(&result);
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
 						schedule.succeeded(now, INTERVAL);
@@ -159,6 +171,36 @@ pub fn start(state: &AppState) {
 			}
 		}
 	});
+}
+
+/// Where this pass gives its essays, and whose takes a spoken card plays:
+/// the mailbox's subject (`mailbox::pass_subject`), as `rust_essays`' takes
+/// are, or none.
+async fn given(db: &SqlitePool, configured: Option<&str>) -> Result<pass::Given, sqlx::Error> {
+	let subject = match crate::mailbox::pass_subject(db, configured).await? {
+		crate::auth::owner::Owner::Subject(subject) => Some(subject),
+		_ => None,
+	};
+	Ok(pass::Given {
+		essays: std::path::PathBuf::from(ESSAYS_FOLDER),
+		status: std::path::PathBuf::from(STATUS_FOLDER),
+		subject,
+		renders: std::path::PathBuf::from(RENDERS_FOLDER),
+	})
+}
+
+/// Each minute, [`pass::tidy`]: no copy of a take outlives its need. Logged
+/// only when it did something, by counts.
+async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) {
+	let tidied = match given(db, configured).await {
+		Ok(given) => pass::tidy(db, &given).await,
+		Err(err) => Err(err),
+	};
+	match tidied {
+		Ok(done) if done == pass::Tidied::default() => {}
+		Ok(done) => info!(takes_removed = done.takes_removed, withdrawn = done.withdrawn, failed = done.failed, "cards essays tidied"),
+		Err(_) => error!(error = "storage", "cards essays tidy failed"),
+	}
 }
 
 /// What the render worker has made of the essays home holds.
@@ -213,9 +255,24 @@ async fn observe_renders(db: &SqlitePool) {
 /// It counts; it never names an essay's words.
 fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	match result {
-		Ok(done) if done.added == 0 && done.exported == 0 && done.failures.is_empty() => {}
-		Ok(done) if done.failures.is_empty() => info!(added = done.added, held = done.held, exported = done.exported, "cards essays pass"),
-		Ok(done) => warn!(added = done.added, held = done.held, exported = done.exported, failures = ?done.failures, "cards essays pass"),
+		Ok(done) if done.added == 0 && done.exported == 0 && done.refused == 0 && done.failures.is_empty() => {}
+		Ok(done) if done.failures.is_empty() => info!(
+			added = done.added,
+			held = done.held,
+			exported = done.exported,
+			waiting = done.waiting,
+			refused = done.refused,
+			"cards essays pass"
+		),
+		Ok(done) => warn!(
+			added = done.added,
+			held = done.held,
+			exported = done.exported,
+			waiting = done.waiting,
+			refused = done.refused,
+			failures = ?done.failures,
+			"cards essays pass"
+		),
 		Err(_) => error!(error = "storage", "cards essays pass failed"),
 	}
 }

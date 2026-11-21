@@ -635,30 +635,18 @@ async fn takes(db: &SqlitePool, kind: Kind, subject: &str, played: &[Played]) ->
 	let mut conn = db.acquire().await?;
 	let mut files = Vec::with_capacity(played.len() * 2);
 	for take in played {
-		let head = voice_repo::audio_head(&mut conn, subject, &take.take, of).await.map_err(voice)?;
-		let body = match head {
-			Some(_) => voice_repo::audio_body(&mut conn, subject, &take.take, of).await.map_err(voice)?,
-			None => None,
+		let ask = crate::take_files::Ask {
+			take: &take.take,
+			name: &take.ticket,
+			of: Some(of),
+			transcript: false,
 		};
-		let (Some(head), Some(body)) = (head, body) else {
-			if voice_repo::delete::receipt(&mut conn, subject, &take.take).await.map_err(voice)?.is_some() {
-				return Ok(Takes::Deleted(take.take.clone()));
-			}
-			return Ok(Takes::Waiting);
-		};
-		let extension = match head.content_type {
-			"audio/ogg" => "ogg",
-			"audio/mp4" => "m4a",
-			_ => "webm",
-		};
-		files.push((take.ticket.clone() + "." + extension, body));
-		let words = voice_repo::transcript::words(&mut conn, subject, &take.take).await.map_err(voice)?;
-		if !words.is_empty() {
-			let timed: Vec<serde_json::Value> = words
-				.iter()
-				.map(|word| serde_json::json!({ "text": word.text, "startMs": word.start_ms, "endMs": word.end_ms }))
-				.collect();
-			files.push((take.ticket.clone() + ".words.json", serde_json::Value::Array(timed).to_string().into_bytes()));
+		match crate::take_files::hand_off(&mut conn, subject, ask).await.map_err(voice)? {
+			crate::take_files::Take::Files(handed) => files.extend(handed),
+			crate::take_files::Take::Absent { deleted: true } => return Ok(Takes::Deleted(take.take.clone())),
+			// Asked without its transcript, a take is only ever absent or
+			// handed; a take not yet home is waited for.
+			_ => return Ok(Takes::Waiting),
 		}
 	}
 	Ok(Takes::Ready(files))
@@ -1241,6 +1229,11 @@ mod tests {
 		let week = folders.essays.join("2026-w46");
 		assert_eq!(std::fs::read(week.join(ESSAY_FILE)).unwrap(), body.as_bytes());
 		assert_eq!(std::fs::read(week.join("takes").join("QM-311.ogg")).unwrap(), b"OggS");
+		assert_eq!(
+			std::fs::read(week.join("takes").join("QM-311.words.json")).unwrap(),
+			br#"[{"endMs":400,"startMs":0,"text":"every"},{"endMs":900,"startMs":450,"text":"field"}]"#,
+			"byte for byte as home gave it before the shared hand-off (server#1052)"
+		);
 		let route = crate::handlers::rust_rounds::week_with_runs(&mut pool.acquire().await.unwrap(), ME, "2026-w46")
 			.await
 			.unwrap()

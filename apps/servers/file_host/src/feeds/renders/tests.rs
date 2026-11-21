@@ -1174,3 +1174,14 @@ fn a_part_of_a_week_says_which_part_of_how_many() {
 	let json = serde_json::to_value(&read.waiting[0]).unwrap();
 	assert!(json.get("part").is_none() && json.get("of").is_none(), "{json}");
 }
+
+/// A cards essay home refused before the render (paulgsc/server#1052) reads
+/// as its class alone, and no other text does.
+#[test]
+fn a_home_refusal_reads_as_its_class() {
+	assert_eq!(super::home_refusal("reason=take-missing\n"), Some("take-missing"));
+	assert_eq!(super::home_refusal("reason=take-unheard\n"), Some("take-unheard"));
+	assert_eq!(super::home_refusal("reason=too-long\n"), None);
+	assert_eq!(super::home_refusal("take-missing\n"), None);
+	assert_eq!(Over::parse("reason=take-missing\n"), None, "never the policy's");
+}

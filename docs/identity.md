@@ -1365,7 +1365,26 @@ nowhere is marked as such and belongs to review.
     `an_essay_the_subject_no_longer_holds_leaves_the_drive`,
     `an_interview_essay_is_given_from_its_weeks_final_with_its_takes`
     and `an_interview_essay_whose_take_is_deleted_is_withdrawn`, and
-    `rust_round_repo::essay_video`'s tests, which run for both kinds. A note
+    `rust_round_repo::essay_video`'s tests, which run for both kinds. **A
+    cards essay's spoken cards are the same exception** (WALK7,
+    paulgsc/server#1052, paulgsc/some-ui#3282; owner, 2026-11-20, "add
+    it", relayed by the coordinator of run paulgsc/some-ui#3311): an essay
+    whose spoken cards name the owner's takes is given them in
+    `cards-essays/<key>.takes/` (`cards_essays::pass`, through the one take
+    hand-off every essay uses, `take_files::hand_off`), and the rules hold
+    only as far as this says. (a) holds: the takes are the mailbox
+    subject's only, and with no subject home's tidy takes back every essay
+    given with takes within a minute; (b) holds: the takes folder goes once
+    the video is made, and a folder a stopped pass left half written goes
+    too; (c) holds **only until the worker starts its render**: a take
+    deleted from My data before then takes the essay and its takes back
+    from the worker within a minute, and it is refused from then on, but a
+    render already under way may still make the video, and a video made
+    keeps the owner's voice, both open in paulgsc/server#1055; (d) is
+    some-ui's side (what My data says of a cards video). *Enforced by*
+    `cards_essays::pass`' `no_copy_of_a_take_outlives_its_video_or_its_note`,
+    `every_kind_of_unheard_or_gone_take_is_said_and_a_wait_is_no_refusal`
+    and `a_spoken_card_is_given_its_takes_once_each_is_heard`. A note
     is never updated (each table's trigger aborts an `UPDATE`) or replaced
     (other bytes or another description under a held id is a `409`), and
     never deleted but with the account, after it is transcribed as before
@@ -1505,8 +1524,11 @@ nowhere is marked as such and belongs to review.
     are each a `404`, so no audio leaves home but to its own subject's paired
     phone, and a kind added later stays home until it is listed. It reads only, its span skips every
     argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
-    one other caller, `rust_essays`, which copies a final week's `rust-round` or `interview`
-    takes into its essay's render input on home's own drive (the exception
+    one other caller, `take_files::hand_off`, the one take hand-off: through it
+    `rust_essays` copies a final week's `rust-round` or `interview` takes, and
+    `cards_essays` a spoken card's takes (reading their audio with
+    `voice_repo::transcript::audio`, any kind; its tidy reads only a note's
+    head, `voice_repo::note_head`), into an essay's render input on home's own drive (the exception
     above), never off home; a `304` is decided from the head, so it reads no audio.
     The routes that
     read its row,

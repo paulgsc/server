@@ -794,6 +794,49 @@ pub async fn holds(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 	.await
 }
 
+/// What home holds about a note, whatever it was said for: what a reader
+/// that names a take by its id alone (a cards essay's spoken card, WALK7,
+/// paulgsc/server#1052) hands on beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteHead {
+	/// What it was said for, as stored ([`Of::as_str`]).
+	pub of_kind: String,
+	pub of_ref: String,
+	/// When the phone recorded it.
+	pub recorded_at: String,
+	/// One of [`CONTENT_TYPES`].
+	pub content_type: &'static str,
+}
+
+/// The head of `subject`'s note `note_id`, of any kind, while its audio is
+/// held; `None` for a note the subject does not hold, another subject's
+/// included, and for one whose recording was let go.
+///
+/// # Errors
+/// [`VoiceError::Unreadable`] for a held container this crate would not have
+/// written, and [`VoiceError::Storage`] for any `sqlx` failure.
+pub async fn note_head(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<NoteHead>, VoiceError> {
+	let row = sqlx::query!(
+		"SELECT note.of_kind, note.of_ref, note.recorded_at, note.content_type FROM voice_note AS note
+		 WHERE note.subject_id = ?1 AND note.note_id = ?2
+		   AND EXISTS (SELECT 1 FROM voice_note_audio AS audio WHERE audio.subject_id = note.subject_id AND audio.note_id = note.note_id)",
+		subject,
+		note_id
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	row
+		.map(|row| {
+			Ok(NoteHead {
+				of_kind: row.of_kind,
+				of_ref: row.of_ref,
+				recorded_at: row.recorded_at,
+				content_type: container(&row.content_type).ok_or(VoiceError::Unreadable)?,
+			})
+		})
+		.transpose()
+}
+
 /// The `ref` of `subject`'s note `note_id`, when home holds it.
 ///
 /// `Some(None)` when it is said for another kind than `of`, `None` when home
