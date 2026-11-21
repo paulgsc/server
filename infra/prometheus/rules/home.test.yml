@@ -408,6 +408,45 @@ tests:
         alertname: GameFeedFailing
         exp_alerts: []
 
+  # paulgsc/some-ui#3329: asleep between games the worker still wakes and
+  # stamps every 5 s, so GameFeedStale means a stopped worker, never a
+  # sleeping scoreboard; one asleep whose stamp stops is still stale.
+  - name: a game feed asleep between games is not stale unless it stops waking
+    interval: 1m
+    input_series:
+      - series: 'game_feed_enabled{job="file_host"}'
+        values: '1x40'
+      - series: 'game_feed_asleep{job="file_host"}'
+        values: '1x40'
+      - series: 'game_feed_next_fetch_timestamp_seconds{job="file_host"}'
+        values: '86400x40'
+      - series: 'game_feed_pass_failing{job="file_host"}'
+        values: '0x40'
+      - series: 'game_feed_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GameFeedStale
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GameFeedFailing
+        exp_alerts: []
+
+  - name: a game feed asleep that stops waking is stale
+    interval: 1m
+    input_series:
+      - series: 'game_feed_asleep{job="file_host"}'
+        values: '1x10'
+      - series: 'game_feed_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GameFeedStale
+        exp_alerts:
+          - exp_labels:
+              objective: GA4
+              says: "The game feed has not woken for two minutes."
+
   - name: a poller that keeps stamping, or is off, is not stale
     interval: 1m
     input_series:
