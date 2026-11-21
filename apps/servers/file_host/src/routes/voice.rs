@@ -90,6 +90,13 @@
 //!                                      "again" }, the owner's act on that
 //!                                      verdict, append-only; 409 when it
 //!                                      asks for none
+//! POST /voice-notes/:id/fast-track    → 201 { change: "recorded", fast },
+//!                                      or 200 "unchanged" for a retry:
+//!                                      body { fast: true | false }, the
+//!                                      owner putting the take first in the
+//!                                      transcriber's line, append-only;
+//!                                      409 once home has heard it
+//!                                      (paulgsc/server#1090)
 //! ```
 //!
 //! The Drive read (paulgsc/some-ui#2401, HF11) answers from what the
@@ -171,7 +178,8 @@ where
 		.delete("/voice-notes/:id", handlers::delete_note)
 		.get("/voice-notes/deleted", handlers::get_deleted)
 		.get("/voice-notes/attention", handlers::get_attention)
-		.post("/voice-notes/:id/attention", handlers::post_attention);
+		.post("/voice-notes/:id/attention", handlers::post_attention)
+		.post("/voice-notes/:id/fast-track", handlers::post_fast_track);
 
 	Module::versioned("voice", table).with_cors(cors)
 }

@@ -77,6 +77,7 @@ use voice_repo::{
 	attention::{Act, Acted, Take as TakeNeedingAttention},
 	conveyor::{Advanced, AtStation, Said as MoveSaid, Station, TakeStation},
 	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
+	fast_track::{Act as FastAct, Acted as FastActed},
 	kept::{KindKept, NoteKept, WeekKept},
 	meaning::Embed as _,
 	set_aside::SetAside,
@@ -861,6 +862,63 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 	Ok((status, Json(Reconciled { change, act: name, verdict })).into_response())
 }
 
+/// `POST /voice-notes/:id/fast-track`'s body: whether to put the take first.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FastTrackBody {
+	fast: bool,
+}
+
+/// `POST /voice-notes/:id/fast-track`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FastTracked {
+	/// `recorded`, or `unchanged` when the take's newest act already says so.
+	pub change: &'static str,
+	/// Whether the take is fast-tracked now.
+	pub fast: bool,
+}
+
+/// What putting first a take home has already heard answers with.
+const ALREADY_HEARD: &str = "home has already heard this take: there is nothing to put first";
+
+/// `POST /voice-notes/:id/fast-track`: the owner puts their take `id` at the
+/// front of the transcriber's line, or takes that back (paulgsc/server#1090,
+/// paulgsc/server#1091).
+///
+/// The body is `{"fast": true | false}`. The act is appended to
+/// `voice_note_fast_track` (`voice_repo::fast_track::act`): `201` with
+/// `change: "recorded"`. A retry, the act the take's newest already is,
+/// writes nothing and is a `200` with `change: "unchanged"`. While
+/// fast-tracked, the take is heard before every other waiting note but the
+/// one the contention guard is excusing, and the lane's give does not hold
+/// it (the owner, 2026-11-21, on #1090).
+///
+/// `BEGIN IMMEDIATE`, so the read and the write see one snapshot.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's or an untrusted origin, 422
+/// naming `fast` when the body is not one, 404 for a note the caller's
+/// subject does not hold, 409 for one home has already heard or found
+/// silent, and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_fast_track_post", skip_all, fields(otel.kind = "server"))]
+pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
+	let Some(FastTrackBody { fast }) = serde_json::from_slice::<FastTrackBody>(&body).ok() else {
+		return Err(FileHostError::unprocessable_entity([("fast", "true or false")]));
+	};
+	let act = if fast { FastAct::Fast } else { FastAct::Cancel };
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await.map_err(refusal)?;
+	tx.commit().await?;
+	let (status, change) = match acted {
+		FastActed::Recorded => (StatusCode::CREATED, "recorded"),
+		FastActed::Unchanged => (StatusCode::OK, "unchanged"),
+		FastActed::Ended => return Err(FileHostError::Conflict(ALREADY_HEARD)),
+		FastActed::NotHeld => return Err(FileHostError::NotFound),
+	};
+	Ok((status, Json(FastTracked { change, fast })).into_response())
+}
+
 #[cfg(test)]
 mod tests {
 	//! Through the real router, with real phone sessions (bearer tokens, as a
@@ -988,7 +1046,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 14);
+		assert_eq!(module().descriptors().count(), 15);
 		// A route named under `/voice-notes/` takes that name from the notes'
 		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
 		for route in module().descriptors() {
@@ -1283,6 +1341,43 @@ mod tests {
 	/// only from where it is, a retry changes nothing, and the station lists
 	/// follow. Another subject's take, an unknown one and a bad move are
 	/// refused and write nothing.
+	#[tokio::test]
+	async fn the_owner_puts_a_take_first_and_takes_it_back() {
+		const FAST: &str = "/voice-notes/t1/fast-track";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		let path = "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z";
+		assert_eq!(put(&app, path, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		let fast = json!({ "fast": true });
+
+		assert_eq!(post(&app, FAST, None, &fast).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(post(&app, FAST, Some(&browser), &fast).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		assert_eq!(post(&app, FAST, Some(&other), &fast).await.0, StatusCode::NOT_FOUND, "A's take is A's");
+		for bad in [json!({}), json!({ "fast": "yes" }), json!({ "fast": true, "extra": 1 })] {
+			assert_eq!(post(&app, FAST, Some(&phone), &bad).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+		}
+		assert_eq!(
+			post(&app, FAST, Some(&phone), &fast).await,
+			(StatusCode::CREATED, json!({ "change": "recorded", "fast": true }))
+		);
+		assert_eq!(
+			post(&app, FAST, Some(&phone), &fast).await,
+			(StatusCode::OK, json!({ "change": "unchanged", "fast": true }))
+		);
+		let back = json!({ "fast": false });
+		assert_eq!(
+			post(&app, FAST, Some(&phone), &back).await,
+			(StatusCode::CREATED, json!({ "change": "recorded", "fast": false }))
+		);
+
+		hear(&pool, A, "t1", "m", voice_repo::transcript::Outcome::Silent, "2026-11-14T00:00:00Z").await;
+		assert_eq!(post(&app, FAST, Some(&phone), &fast).await.0, StatusCode::CONFLICT, "heard: nothing to put first");
+	}
+
 	#[tokio::test]
 	async fn the_owner_moves_a_take_along_the_conveyor() {
 		const TAKE_PATH: &str = "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z";

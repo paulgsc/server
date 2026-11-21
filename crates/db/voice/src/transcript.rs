@@ -152,13 +152,35 @@ pub struct Waiting {
 	/// The language its kind is said in, when it has one
 	/// ([`crate::verdict::expected_language`], HEARD1).
 	pub expected_language: Option<&'static str>,
+	/// What puts it ahead of other notes ([`Urgency`]).
+	pub urgency: Urgency,
+}
+
+/// Why a note is heard ahead of others (paulgsc/server#1091,
+/// docs/shared-stages.md, "Who waits drives order"): a closed set, in
+/// ascending order. Each source orders the queue in [`waiting_first`], and
+/// the transcriber reads it before each note: a [`Urgency::FastTrack`] note
+/// is not held by the lane's give (the owner, 2026-11-21, on #1090).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Urgency {
+	/// Nothing waits on it.
+	None,
+	/// A waiter names it in `stage_want`: a cards essay held back for it.
+	Wanted,
+	/// The owner put it first by hand (`crate::fast_track`).
+	FastTrack,
 }
 
 /// The notes their key in `keys` has not ended (heard, or found silent).
 ///
 /// Those it has failed on fewer than `attempts` times, at most `limit`: those
-/// tried fewest times first, then those something waits on, most waited on
-/// first, then oldest first.
+/// the owner fast-tracked first, then those tried fewest times, then those
+/// something waits on, most waited on first, then oldest first.
+///
+/// **A take the owner puts first goes first** (paulgsc/server#1090, C1017):
+/// a fast-tracked note goes ahead of every note but the excused one, notes
+/// tried fewer times included, the one exception to TR1 below, by the
+/// owner's own hand and bounded by `attempts`.
 ///
 /// **What waits on a note puts it first** (paulgsc/server#1091,
 /// docs/shared-stages.md): a note a waiter names in `stage_want` (a cards
@@ -216,7 +238,9 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		           WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
 		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried,
 		          (SELECT COUNT(*) FROM stage_want w
-		           WHERE w.stage = 'transcriber' AND w.subject_id = n.subject_id AND w.item_key = n.note_id) AS wanted
+		           WHERE w.stage = 'transcriber' AND w.subject_id = n.subject_id AND w.item_key = n.note_id) AS wanted,
+		          COALESCE((SELECT f.act = 'fast' FROM voice_note_fast_track f
+		                    WHERE f.subject_id = n.subject_id AND f.note_id = n.note_id ORDER BY f.n DESC LIMIT 1), 0) AS fast
 		   FROM voice_note n
 		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
 		                     WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
@@ -225,9 +249,10 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 		     AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
 		                                            WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
 		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
-		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!" FROM candidate
+		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!",
+		        wanted AS "wanted!: i64", fast AS "fast!: bool" FROM candidate
 		 WHERE tried < ?2
-		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, tried, wanted DESC, stored_at, subject_id, note_id
+		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, fast DESC, tried, wanted DESC, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
 		keys.plain,
 		attempts,
@@ -247,6 +272,13 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 				note_id: row.note_id,
 				verbatim: row.verbatim,
 				expected_language: crate::verdict::expected_language(&row.of_kind),
+				urgency: if row.fast {
+					Urgency::FastTrack
+				} else if row.wanted > 0 {
+					Urgency::Wanted
+				} else {
+					Urgency::None
+				},
 			})
 			.collect(),
 	)
@@ -549,7 +581,7 @@ pub async fn words_heard_by(conn: &mut SqliteConnection, subject: &str, note_id:
 
 #[cfg(test)]
 mod tests {
-	use super::{audio, backlog, keep_attempt, waiting, waiting_first, words, words_heard_by, Attempt, Backlog, Kept, Keys, Outcome, Waiting, Word, VERBATIM};
+	use super::{audio, backlog, keep_attempt, waiting, waiting_first, words, words_heard_by, Attempt, Backlog, Kept, Keys, Outcome, Urgency, Waiting, Word, VERBATIM};
 	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -957,6 +989,50 @@ mod tests {
 		}
 		let order = waiting_for(&pool, SMALL).await;
 		assert_eq!(order, named(&[(A, "most-wanted"), (A, "wanted"), (A, "old"), (A, "retried")]));
+	}
+
+	/// paulgsc/server#1090, C1017: a take the owner fast-tracked goes first,
+	/// ahead of notes tried fewer times and of wanted ones, and each note says
+	/// why it is where it is; taken back, it falls into its place again.
+	#[tokio::test]
+	async fn a_take_the_owner_puts_first_goes_first_and_says_so() {
+		let pool = pool().await;
+		note(&pool, A, "fresh", "2026-10-25T01:00:00.000Z", b"fresh").await;
+		note(&pool, A, "wanted", "2026-10-25T02:00:00.000Z", b"wanted").await;
+		note(&pool, A, "chosen", "2026-10-25T03:00:00.000Z", b"chosen").await;
+		keep(&pool, A, "chosen", &attempt(SMALL, Outcome::Deadline)).await;
+		sqlx::query("INSERT INTO stage_want (waiter, waiter_key, stage, subject_id, item_key) VALUES ('cards_essays', 'e1', 'transcriber', ?1, 'wanted')")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, "now").await.unwrap();
+		drop(conn);
+		let order = |rows: Vec<Waiting>| rows.into_iter().map(|row| (row.note_id, row.urgency)).collect::<Vec<_>>();
+		let read = || async {
+			let (plain, verbatim) = keys(SMALL);
+			let mut conn = pool.acquire().await.unwrap();
+			let keys = Keys {
+				plain: &plain,
+				verbatim: &verbatim,
+			};
+			order(waiting(&mut conn, keys, 3, 20).await.unwrap())
+		};
+		let owned = |rows: &[(&str, Urgency)]| rows.iter().map(|(id, urgency)| ((*id).to_owned(), *urgency)).collect::<Vec<_>>();
+		assert_eq!(
+			read().await,
+			owned(&[("chosen", Urgency::FastTrack), ("wanted", Urgency::Wanted), ("fresh", Urgency::None)]),
+			"put first by hand though tried once"
+		);
+		let mut conn = pool.acquire().await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, "now").await.unwrap();
+		drop(conn);
+		assert_eq!(
+			read().await,
+			owned(&[("wanted", Urgency::Wanted), ("fresh", Urgency::None), ("chosen", Urgency::None)]),
+			"taken back: tried once, so behind the fresh notes (TR1)"
+		);
 	}
 
 	/// C896: the note named first goes ahead of every other while it waits,

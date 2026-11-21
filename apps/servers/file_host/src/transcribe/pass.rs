@@ -47,7 +47,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use voice_repo::meaning::{self, Embed, Indexed};
-use voice_repo::transcript::{self, Attempt, Kept, Keys, Outcome};
+use voice_repo::transcript::{self, Attempt, Kept, Keys, Outcome, Urgency};
 use voice_repo::verdict::{Judged, Verdict};
 use voice_repo::VoiceError;
 
@@ -145,7 +145,10 @@ pub async fn run_once_telling<H: Hear>(
 			pass.cancelled = true;
 			break;
 		}
-		if gives_way(turn, &mut pass) {
+		// A take the owner put first is not held by the give (the owner,
+		// 2026-11-21, on #1090); it is ordered first, so a give waits for
+		// no other note behind it.
+		if note.urgency < Urgency::FastTrack && gives_way(turn, &mut pass) {
 			break;
 		}
 		let audio = {
@@ -660,6 +663,32 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(after.kept, ["heard"; 3], "no render waits: every note heard");
+	}
+
+	/// A take the owner put first is not held by the give (the owner,
+	/// 2026-11-21, on #1090): heard while the turn is given, and the give goes
+	/// on for the rest.
+	#[tokio::test]
+	async fn a_fast_tracked_take_is_heard_while_the_turn_is_given() {
+		let pool = pool().await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"words").await;
+		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"words").await;
+		{
+			let mut conn = pool.acquire().await.unwrap();
+			voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, "now").await.unwrap();
+		}
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let interactive = crate::call_weeks::lane::Interactive::default();
+		interactive.set_batch_waits(true);
+		let mut turn = super::Turn::with(Duration::ZERO, Duration::from_secs(3600), Some(interactive.clone()));
+		let lock = DeletionLock::default();
+		let now = || String::from("2026-10-25T16:00:00.000Z");
+		let done = super::run_once_telling(&pool, &fake, None, &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
+			.await
+			.unwrap();
+		assert_eq!((done.kept.len(), done.gave_way), (1, true), "the chosen take heard, then the turn given: {done:?}");
+		assert_eq!(fake.heard().len(), 1);
 	}
 
 	async fn guarded(pool: &SqlitePool, fake: &Arc<Fake>, guard: &mut Guard<(String, String)>, cancel: &CancellationToken) -> Pass {

@@ -74,15 +74,18 @@ marking them.
   checks hold the same closed sets as `Stage` and `Waiter` (`stage::tests`).
 - **The cards essays name their takes.** An essay held back for a take not heard yet
   (`essay_media::Given::Waiting`, takes listed by id) wants each of them.
-- **The transcriber reads it.** `waiting_first` orders the excused note first, then fewest
-  attempts, then notes something waits on, the most waited-on first, then oldest. Urgency sits
-  after `tried` on purpose: a wanted note that keeps failing would otherwise hold the queue,
-  which TR1 forbids.
-- **Not yet built:** the next source is the owner's fast-track (#1090), a take marked by hand,
-  one more term of the same order; the owner ruled that a fast-tracked take also skips the
-  lane's give (TR4). With two sources the order gets its closed type (`None`, `Wanted`,
-  `FastTrack`). Urgency passing through more than one edge arrives with the first stage whose
-  waiter is itself waited on.
+- **The owner's hand is a source too.** `POST /voice-notes/:id/fast-track` puts one of the
+  owner's takes first (`voice_note_fast_track`, append-only, the newest act decides; #1090).
+- **The transcriber reads both.** `waiting_first` orders the excused note first, then
+  fast-tracked takes, then fewest attempts, then notes something waits on, the most waited-on
+  first, then oldest. Each note carries its `transcript::Urgency` (`None < Wanted < FastTrack`,
+  a closed set), and the pass reads it: a fast-tracked take is not held by the lane's give (the
+  owner, 2026-11-21, on #1090).
+- **TR1 and its one exception.** Wanted sits after `tried`: a wanted note that keeps failing
+  would otherwise hold the queue, which TR1 forbids (C1015). A fast-tracked take sits before
+  it: the owner chose it by hand, and its retries are bounded by `ATTEMPTS` (C1017).
+- **Not yet built:** urgency passing through more than one edge, which arrives with the first
+  stage whose waiter is itself waited on.
 
 ## The cases to come
 
