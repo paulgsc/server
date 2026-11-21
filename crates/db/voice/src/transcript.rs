@@ -400,7 +400,10 @@ pub struct Transcript {
 /// `heard_at`, then model, newest first), so the text and the words always
 /// match. Only when no model heard any speech is the note's newest silent
 /// ending read, as empty text: home heard it, and nothing was said. One
-/// statement, by the two tables' primary keys.
+/// statement, by the two tables' primary keys. The order is total: a model
+/// ends a note once (`voice_transcript_one_ending`), so no two endings share
+/// a model (HE1, paulgsc/server#923), and every other reader of a note's
+/// ending chooses it by this same order.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -1022,5 +1025,33 @@ mod tests {
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		let left: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject_id FROM voice_transcript_word").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B], "A's words went with A's account, B's stayed");
+	}
+
+	/// HE1 (paulgsc/server#923): every reader chooses a note's ending by
+	/// outcome, `heard_at` and model alone ([`super::heard`]'s order), and that
+	/// order is total because a model ends a note once: a second ending from
+	/// the same model, even at the same moment, is refused by the schema
+	/// (`voice_transcript_one_ending`), not only by [`keep_attempt`].
+	#[tokio::test]
+	async fn a_model_ends_a_note_once_so_every_ending_choice_is_total() {
+		let pool = pool().await;
+		note(&pool, A, "n", "2026-10-25T01:00:00.000Z", b"audio").await;
+		assert_eq!(keep(&pool, A, "n", &attempt(SMALL, Outcome::Failed)).await, Kept::Added(1));
+		assert_eq!(keep(&pool, A, "n", &attempt(SMALL, heard("first words"))).await, Kept::Added(2));
+		for (attempt, outcome, text) in [(3, "heard", Some("second words")), (3, "silent", None)] {
+			let second = sqlx::query(
+				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+				 SELECT subject_id, note_id, model, engine, ?1, ?2, CASE WHEN ?3 IS NULL THEN NULL ELSE 'en' END,
+				        CASE WHEN ?3 IS NULL THEN NULL ELSE 0.9 END, duration_ms, ?3, took_ms, heard_at
+				 FROM voice_transcript WHERE note_id = 'n' AND attempt = 2",
+			)
+			.bind(attempt)
+			.bind(outcome)
+			.bind(text)
+			.execute(&pool)
+			.await;
+			assert!(second.is_err(), "a second {outcome} ending from one model, at the same heard_at");
+		}
+		assert_eq!(keep(&pool, A, "n", &attempt(MEDIUM, heard("other words"))).await, Kept::Added(1), "another model may");
 	}
 }
