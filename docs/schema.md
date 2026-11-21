@@ -67,9 +67,11 @@ the seed). They are classified by today's code, and the call may move them.
    lexically: `#[cfg(test)]`, `#[test]`, `#[tokio::test]` and `#[sqlx::test]` items, out-of-line
    test modules, `#![cfg(test)]` files, and `tests/`, `benches/` and `examples/` directories.
    *It does not see* SQL built at run time. Account deletion's sweep over
-   `SUBJECT_SCOPED_TABLES` (`handlers::auth::delete_account`) is the one such delete of
-   append-only rows. It is the owner's own act (docs/identity.md invariant 9), and the trigger is
-   what holds everything else.
+   `SUBJECT_SCOPED_TABLES` (`handlers::auth::delete_account`) is the one such delete in Rust, and
+   the migrations' `<t>_leaves_with_account` triggers do the same in SQL. Both are the owner's own
+   act (docs/identity.md invariant 9), and the update trigger is what holds everything else.
+   Each `APPEND_ONLY_REWRITES` entry also says how many such statements its file holds, so a
+   new one beside a listed site fails too.
 4. **No reference points at a subject-scoped table.** History outlives the row it points to, and
    deletion goes by subject, table by table: account deletion's sweep, plus a
    `<t>_leaves_with_account` trigger for every table newer than it (docs/identity.md invariants 9
@@ -79,7 +81,8 @@ the seed). They are classified by today's code, and the call may move them.
    one such child (WALK7). *Enforced by*
    `every_declared_reference_is_listed_and_blocks_no_subjects_deletion`.
 5. **A declared reference is listed and cannot block a delete.** Its parent is either
-   append-only and never deleted, so the reference only guards insertion, or the child is derived
+   append-only and never deleted (a trigger aborts every `DELETE` of it, which the test checks),
+   so the reference only guards insertion, or the child is derived
    from the parent and goes with it (`ON DELETE CASCADE`). Every one is in `DECLARED_REFERENCES`
    with why, a composite key as its columns in key order, and the same test fails on one that is
    not listed, one that is listed but gone, or one that breaks either rule. #511 found the LeeType
@@ -113,7 +116,7 @@ the seed). They are classified by today's code, and the call may move them.
 
    A `sessions` row the owner deletes leaves its outcomes behind, on purpose: the migration says
    outcomes outlive their session. An `activities` row would need a seed migration to retire it.
-   A `voice_note` goes only at My data's delete, which removes the take's own rows in the same
+   A `voice_note` goes only with its account or at My data's delete, which removes the take's own rows in the same
    transaction and leaves a receipt (`voice_repo::delete`); a row elsewhere that names it may stay. A reader that joins one of these must
    treat a missing parent as normal.
 

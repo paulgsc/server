@@ -74,7 +74,7 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 	(
 		"account",
 		State,
-		"one row per account, never updated; deleted when its owner deletes the account (docs/identity.md invariant 9)",
+		"one row per account; its pairing_scope is filled in once, at the first phone pairing; deleted when its owner deletes the account (docs/identity.md invariant 9)",
 	),
 	(
 		"activities",
@@ -93,7 +93,7 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 	(
 		"auth_session",
 		Ephemeral,
-		"a sign-in session: expires (slid on use), deleted on sign-out, and expired or beyond 32 per account deleted at sign-in",
+		"a sign-in session: expires (slid on use), its kind, pairing and label rewritten when a phone pairs, deleted on sign-out, and expired or beyond 32 per account deleted at sign-in",
 	),
 	("bite_mapping", AppendOnly, "each scenario home mapped to a bite said first (GWB7); a later pass adds a row"),
 	("bite_match", AppendOnly, "each play a game bite was matched to (GWB7); a later pass adds a row"),
@@ -318,47 +318,53 @@ const DECLARED_REFERENCES: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// Production SQL that rewrites an append-only table, allowed: (file, what,
-/// table, why), `what` as `rewrite_sites` names it. One entry covers every
-/// such statement in its file. Each is a discard site paulgsc/some-ui's
+/// table, how many such statements that file holds, why), `what` as
+/// `rewrite_sites` names it, so another one in the same file fails too. Each is a discard site paulgsc/some-ui's
 /// `docs/discard-sites.md` lists with the owner's ruling; this list names
 /// them and rules on none. A new one says why the row may change, as a
 /// `Lifetime:` line does in paulgsc/some-ui, and goes on that list too; most
 /// such sites belong in a new row instead.
-const APPEND_ONLY_REWRITES: &[(&str, &str, &str, &str)] = &[
+const APPEND_ONLY_REWRITES: &[(&str, &str, &str, usize, &str)] = &[
 	(
 		"crates/db/voice/src/delete.rs",
 		"DELETE",
 		"studio_take_move",
+		1,
 		"My data's delete of a take (MD3): a discard site paulgsc/some-ui's docs/discard-sites.md lists with the owner's ruling (some-ui#2474, #2473, #3076); a receipt stays in voice_note_deletion",
 	),
 	(
 		"crates/db/voice/src/delete.rs",
 		"DELETE",
 		"voice_note",
+		1,
 		"My data's delete of a take (MD3): a discard site paulgsc/some-ui's docs/discard-sites.md lists with the owner's ruling (some-ui#2474, #2473, #3076); a receipt stays in voice_note_deletion",
 	),
 	(
 		"crates/db/voice/src/delete.rs",
 		"DELETE",
 		"voice_note_audio",
+		2,
 		"My data's delete of a take (MD3): a discard site paulgsc/some-ui's docs/discard-sites.md lists with the owner's ruling (some-ui#2474, #2473, #3076); a receipt stays in voice_note_deletion; and let_go_audio's retakes (IW8, some-ui#3175, C560), the same list",
 	),
 	(
 		"crates/db/voice/src/delete.rs",
 		"DELETE",
 		"voice_note_set_aside",
+		1,
 		"My data's delete of a take (MD3): a discard site paulgsc/some-ui's docs/discard-sites.md lists with the owner's ruling (some-ui#2474, #2473, #3076); a receipt stays in voice_note_deletion",
 	),
 	(
 		"crates/db/voice/src/delete.rs",
 		"DELETE",
 		"voice_transcript",
+		1,
 		"My data's delete of a take (MD3): a discard site paulgsc/some-ui's docs/discard-sites.md lists with the owner's ruling (some-ui#2474, #2473, #3076); a receipt stays in voice_note_deletion",
 	),
 	(
 		"crates/db/voice/src/delete.rs",
 		"DELETE",
 		"voice_transcript_word",
+		1,
 		"My data's delete of a take (MD3): a discard site paulgsc/some-ui's docs/discard-sites.md lists with the owner's ruling (some-ui#2474, #2473, #3076); a receipt stays in voice_note_deletion",
 	),
 ];
@@ -373,18 +379,18 @@ async fn migrated() -> SqlitePool {
 	pool
 }
 
-/// Whether `sql`, a `CREATE TRIGGER` statement, aborts every `UPDATE` of its
-/// table: `BEFORE UPDATE ON`, no `WHEN`, and a body that is exactly
+/// Whether `sql`, a `CREATE TRIGGER` statement, aborts every `event`
+/// (`UPDATE` or `DELETE`) of its table: `BEFORE <event> ON`, no `WHEN`, and a body that is exactly
 /// `SELECT RAISE(ABORT, '...');`. A trigger on some columns only
 /// (`UPDATE OF`), or one that aborts only some updates, is not one.
-fn aborts_every_update(sql: &str) -> bool {
+fn aborts_every(event: &str, sql: &str) -> bool {
 	let collapsed = sql.split_whitespace().collect::<Vec<_>>().join(" ");
 	let upper = collapsed.to_ascii_uppercase();
 	let Some(begin) = upper.find(" BEGIN ") else {
 		return false;
 	};
 	let (head, body) = (&upper[..begin], collapsed[begin + " BEGIN ".len()..].trim_start());
-	if !head.contains(" BEFORE UPDATE ON ") || head.contains(" WHEN ") {
+	if !head.contains(&(String::from(" BEFORE ") + event + " ON ")) || head.contains(" WHEN ") {
 		return false;
 	}
 	let mut rest = body.chars().filter(|c| !c.is_whitespace()).collect::<String>();
@@ -420,7 +426,7 @@ async fn lifecycle_problems(pool: &SqlitePool) -> Vec<String> {
 		.await
 		.unwrap()
 		.iter()
-		.filter(|row| aborts_every_update(&row.get::<String, _>("sql")))
+		.filter(|row| aborts_every("UPDATE", &row.get::<String, _>("sql")))
 		.map(|row| row.get::<String, _>("tbl_name").to_ascii_lowercase())
 		.collect();
 
@@ -496,11 +502,13 @@ fn the_trigger_rule_accepts_only_an_unconditional_abort_of_every_update() {
 		"CREATE TRIGGER t_leaves AFTER DELETE ON account BEGIN DELETE FROM t WHERE subject_id = OLD.subject_id; END",
 	];
 	for sql in holds {
-		assert!(aborts_every_update(sql), "{sql}");
+		assert!(aborts_every("UPDATE", sql), "{sql}");
 	}
 	for sql in does_not {
-		assert!(!aborts_every_update(sql), "{sql}");
+		assert!(!aborts_every("UPDATE", sql), "{sql}");
 	}
+	assert!(aborts_every("DELETE", does_not[0]));
+	assert!(!aborts_every("DELETE", holds[0]));
 }
 
 #[tokio::test]
@@ -509,6 +517,14 @@ async fn every_declared_reference_is_listed_and_blocks_no_subjects_deletion() {
 	let scoped: BTreeSet<&str> = SUBJECT_SCOPED_TABLES.iter().map(|(table, _)| *table).collect();
 	let mut problems = Vec::new();
 	let mut declared = BTreeSet::new();
+	let never_deleted: BTreeSet<String> = sqlx::query("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger'")
+		.fetch_all(&pool)
+		.await
+		.unwrap()
+		.iter()
+		.filter(|row| aborts_every("DELETE", &row.get::<String, _>("sql")))
+		.map(|row| row.get::<String, _>("tbl_name").to_ascii_lowercase())
+		.collect();
 	for (table, _, _) in TABLE_LIFECYCLE {
 		// One row per column; a composite key shares its `id`, in `seq` order.
 		let mut keys: Vec<(i64, String, Vec<String>, bool)> = Vec::new();
@@ -531,8 +547,8 @@ async fn every_declared_reference_is_listed_and_blocks_no_subjects_deletion() {
 			if !DECLARED_REFERENCES.iter().any(|(child, from, to, _)| child == table && *from == columns && *to == parent) {
 				problems.push(what.clone() + " is not in DECLARED_REFERENCES: a table here names another by value (docs/schema.md, \"References\")");
 			}
-			if !cascades && lifecycle_of(&parent) != Some(AppendOnly) {
-				problems.push(what + " can block deleting its parent: the parent is not append-only and the reference does not cascade");
+			if !cascades && (lifecycle_of(&parent) != Some(AppendOnly) || !never_deleted.contains(&parent.to_ascii_lowercase())) {
+				problems.push(what + " can block deleting its parent: the reference does not cascade, so the parent must be append-only and carry a trigger aborting every DELETE");
 			}
 			declared.insert((String::from(*table), columns, parent));
 		}
@@ -634,7 +650,9 @@ fn blank(src: &[char]) -> (Vec<char>, Vec<(usize, String)>) {
 			wipe(&mut code, i, end + 1);
 			i = end + 1;
 		} else if c == '\'' && at(i + 1) == '\\' {
-			let end = (i + 2..src.len()).find(|&j| at(j) == '\'').unwrap_or(src.len());
+			// The escaped character itself may be a quote (`'\''`): the
+			// closing quote comes after it.
+			let end = (i + 3..src.len()).find(|&j| at(j) == '\'').unwrap_or(src.len());
 			wipe(&mut code, i, end + 1);
 			i = end + 1;
 		} else if c == '\'' && at(i + 2) == '\'' {
@@ -830,7 +848,7 @@ fn no_production_sql_rewrites_an_append_only_table() {
 
 	let mut problems = Vec::new();
 	for (file, line, what, table) in &found {
-		if !APPEND_ONLY_REWRITES.iter().any(|(at, kind, name, _)| at == file && kind == what && name == table) {
+		if !APPEND_ONLY_REWRITES.iter().any(|(at, kind, name, _, _)| at == file && kind == what && name == table) {
 			problems.push(
 				file.clone()
 					+ ":" + &line.to_string()
@@ -842,9 +860,11 @@ fn no_production_sql_rewrites_an_append_only_table() {
 			);
 		}
 	}
-	for (at, kind, name, _) in APPEND_ONLY_REWRITES {
-		if !found.iter().any(|(file, _, what, table)| file == at && what == kind && table == name) {
-			problems.push(String::from(*at) + " " + kind + " " + name + " is in APPEND_ONLY_REWRITES but no such site exists: remove it");
+	for (at, kind, name, count, _) in APPEND_ONLY_REWRITES {
+		let sites = found.iter().filter(|(file, _, what, table)| file == at && what == kind && table == name).count();
+		if sites != *count {
+			problems
+				.push(String::from(*at) + " " + kind + " " + name + ": APPEND_ONLY_REWRITES names " + &count.to_string() + " such statements, the file holds " + &sites.to_string());
 		}
 	}
 	assert!(problems.is_empty(), "{problems:#?}");
@@ -867,6 +887,7 @@ fn live<'a>(x: &'a str) -> char {
 	let _ = "INSERT INTO mailbox_item (seq) VALUES (?) ON CONFLICT (seq) DO UPDATE SET seq = excluded.seq";
 	let _ = "INSERT INTO sessions (id) VALUES (?) ON CONFLICT (id) DO NOTHING";
 	let _ = "say \"hi\" then DELETE FROM jobs_event";
+	let _ = ('\'','"', "UPDATE jobs_event SET y = 2");
 	'"'
 }
 #[cfg(test)]
@@ -890,6 +911,7 @@ mod elsewhere;
 		(9, "REPLACE", "storage_sample"),
 		(10, "UPSERT", "mailbox_item"),
 		(12, "DELETE", "jobs_event"),
+		(13, "UPDATE", "jobs_event"),
 	];
 	assert_eq!(
 		sites,

@@ -47,6 +47,9 @@ def problems_in(root: Path, manifests: list[Path]) -> list[str]:
 			value = package.get(key)
 			base = (root / manifest).parent
 			if inherited(value):
+				if key == "build":
+					found.append(f"{manifest}: build cannot be inherited from the workspace")
+					continue
 				if key not in shared:
 					found.append(f"{manifest}: {key} is inherited but [workspace.package] sets none")
 					continue
@@ -57,6 +60,7 @@ def problems_in(root: Path, manifests: list[Path]) -> list[str]:
 				# `build = true` / `readme = true`: cargo's own default name.
 				value = {"readme": "README.md", "build": "build.rs"}.get(key)
 				if value is None:
+					found.append(f"{manifest}: {key} = true names no file; give a path")
 					continue
 			if not isinstance(value, str):
 				found.append(f"{manifest}: {key} is neither a path nor false")
@@ -75,7 +79,7 @@ def self_test() -> None:
 	with tempfile.TemporaryDirectory() as tmp:
 		root = Path(tmp)
 		(root / "README.md").write_text("root\n")
-		(root / "Cargo.toml").write_text('[workspace]\nmembers = ["a", "b", "c", "d", "e", "f"]\n[workspace.package]\nreadme = "README.md"\n')
+		(root / "Cargo.toml").write_text('[workspace]\nmembers = ["a", "b", "c", "d", "e", "f", "g"]\n[workspace.package]\nreadme = "README.md"\n')
 		for name, body in {
 			"a": 'readme = "README.md"\n',  # present
 			"b": 'readme = "README.md"\n',  # missing
@@ -83,12 +87,13 @@ def self_test() -> None:
 			"d": "readme = false\n",  # names no file
 			"e": 'build = "build.rs"\nlicense-file = "LICENSE"\n',  # both missing
 			"f": "license-file = { workspace = true }\n",  # inherited, unset
+			"g": "license-file = true\nbuild.workspace = true\n",  # neither is valid
 		}.items():
 			(root / name).mkdir()
 			(root / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n{body}')
 		(root / "a" / "README.md").write_text("a\n")
-		got = problems_in(root, [Path(n) / "Cargo.toml" for n in "abcdef"])
-		want_prefixes = ["b/Cargo.toml: readme", "e/Cargo.toml: license-file", "e/Cargo.toml: build", "f/Cargo.toml: license-file is inherited"]
+		got = problems_in(root, [Path(n) / "Cargo.toml" for n in "abcdefg"])
+		want_prefixes = ["b/Cargo.toml: readme", "e/Cargo.toml: license-file", "e/Cargo.toml: build", "f/Cargo.toml: license-file is inherited", "g/Cargo.toml: license-file = true", "g/Cargo.toml: build cannot"]
 		assert len(got) == len(want_prefixes), got
 		for prefix in want_prefixes:
 			assert any(problem.startswith(prefix) for problem in got), (prefix, got)

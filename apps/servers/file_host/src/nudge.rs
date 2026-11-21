@@ -84,7 +84,7 @@ const _: () = assert!(PASS_DEADLINE.as_secs() < WAKER_INTERVAL.as_secs(), "a pas
 /// and scheduling jitter (`NUDGE_PRESENCE_LEASE_TTL_SECONDS`).
 pub const PRESENCE_LEASE_TTL: Duration = Duration::from_secs(75);
 
-/// S9 (#489): `nudge/waker.rs` grew to 4,514 lines across eight stories before
+/// S9 (#489): `nudge/waker.rs` grew to 4,774 lines across eight stories before
 /// it was split by stage (docs/study-nudge.md, "Where each stage lives"). A
 /// module here that grows back past this many lines before its tests is the
 /// same drift, and fails here instead of in the next hotspot count.

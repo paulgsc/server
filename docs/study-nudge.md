@@ -940,7 +940,7 @@ admissible one. RCM8 only makes the `Presence` path behave like the other
 three.
 
 Selection and admission are then re-run against the session that now exists
-(`nudge::waker::decide_with_a_proposal`) rather than the whole verdict being
+(`nudge::propose::decide_with_a_proposal`) rather than the whole verdict being
 recomputed. Warrant was settled before anything was written and nothing the
 pass does afterwards can change it: `StudySignal::SessionProvisioned` carries
 a delta of `0.0` precisely so that composing a proposal is not itself evidence
