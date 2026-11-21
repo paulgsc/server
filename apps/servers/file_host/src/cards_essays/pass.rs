@@ -603,7 +603,7 @@ async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Ut
 				let takes = kinds.into_iter().find(|(kind, _)| *kind == essay_media::Kind::Takes).map(|(_, takes)| takes);
 				if let Some(takes) = takes.filter(|_| given.subject.is_some()) {
 					pass.waiting_on_takes += 1;
-					pass.wanted_takes.extend(takes.into_iter().map(|take| (essay.key.to_string(), take)));
+					pass.wanted_takes.extend(takes.into_iter().map(|take| (essay.key.clone(), take)));
 				}
 				// An item that was missing and is now home waits (a take to be
 				// heard): no longer a refusal.

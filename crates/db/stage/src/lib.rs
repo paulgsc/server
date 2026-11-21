@@ -25,8 +25,10 @@ pub struct Want<'a> {
 	pub item: &'a str,
 }
 
-/// Replaces every row of `waiter` with `wants`, keeping when each wait that
-/// goes on began, and dating a new one `now`. A want listed twice is kept
+/// Replaces every row of `waiter` with `wants`.
+///
+/// It keeps when each wait that goes on began, and dates a new one `now`. A
+/// want listed twice is kept
 /// once, and one for an item its subject no longer holds (a transcriber's
 /// note gone with its account, or deleted) is not written: checked in the
 /// same statement, so in a transaction it cannot outlive the account

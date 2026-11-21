@@ -154,10 +154,11 @@ pub struct Waiting {
 	pub expected_language: Option<&'static str>,
 }
 
-/// The notes their key in `keys` has not ended (heard, or found silent) and
-/// has failed on fewer than `attempts` times, at most `limit`: those tried
-/// fewest times first, then those something waits on, most waited on first,
-/// then oldest first.
+/// The notes their key in `keys` has not ended (heard, or found silent).
+///
+/// Those it has failed on fewer than `attempts` times, at most `limit`: those
+/// tried fewest times first, then those something waits on, most waited on
+/// first, then oldest first.
 ///
 /// **What waits on a note puts it first** (paulgsc/server#1091,
 /// docs/shared-stages.md): a note a waiter names in `stage_want` (a cards
