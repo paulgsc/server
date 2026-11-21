@@ -765,30 +765,39 @@ mod tests {
 			engaged("p4", "2026-11-02T09:00:00.000Z", "routine-lens", "passed-over"),
 		];
 		// Five reads, each moved on to `decide` at the same instant, and one
-		// decide stopped there (the screen went).
-		for (n, secs) in [10, 20, 30, 40, 50].into_iter().enumerate() {
-			let day = 3 + n;
-			let at = format!("2026-11-{day:02}T09:00:{secs:02}.000Z");
-			let start = format!("2026-11-{day:02}T09:00:00.000Z");
-			events.push(step(&format!("t{n}"), &start, "taken", None));
-			events.push(step(&format!("r{n}"), &at, "left", Some((&start, "read"))));
-			events.push(step(&format!("d{n}"), &at, "taken", None));
+		// decide left with no take after it (the screen went).
+		for (n, start, at) in [
+			("0", "2026-11-03T09:00:00.000Z", "2026-11-03T09:00:10.000Z"),
+			("1", "2026-11-04T09:00:00.000Z", "2026-11-04T09:00:20.000Z"),
+			("2", "2026-11-05T09:00:00.000Z", "2026-11-05T09:00:30.000Z"),
+			("3", "2026-11-06T09:00:00.000Z", "2026-11-06T09:00:40.000Z"),
+			("4", "2026-11-07T09:00:00.000Z", "2026-11-07T09:00:50.000Z"),
+		] {
+			events.push(step(&(String::from("t") + n), start, "taken", None));
+			events.push(step(&(String::from("r") + n), at, "left", Some((start, "read"))));
+			events.push(step(&(String::from("d") + n), at, "taken", None));
 		}
 		events.push(step("x1", "2026-11-03T09:02:00.000Z", "left", Some(("2026-11-03T09:00:10.000Z", "decide"))));
+		// A take of another affordance at the same instant is not a move.
+		events.push(step("x2", "2026-11-08T09:01:00.000Z", "left", Some(("2026-11-08T09:00:00.000Z", "decide"))));
+		events.push(engaged("x3", "2026-11-08T09:01:00.000Z", "routine-lens", "taken"));
 		for event in &events {
 			put(&pool, A, event).await.unwrap();
 		}
 		put(&pool, B, &step("b1", "2026-11-10T09:00:00.000Z", "offered", None)).await.unwrap();
-		for (n, friction) in [Some(2), Some(4), Some(3), Some(5), None, Some(4), Some(1)].into_iter().enumerate() {
-			let at = if n == 6 {
-				"2026-10-01T09:00:00.000Z".to_owned()
-			} else {
-				format!("2026-11-{:02}T09:00:00.000Z", 3 + n)
-			};
+		for (id, at, friction) in [
+			("j0", "2026-11-03T09:00:00.000Z", Some(2)),
+			("j1", "2026-11-04T09:00:00.000Z", Some(4)),
+			("j2", "2026-11-05T09:00:00.000Z", Some(3)),
+			("j3", "2026-11-06T09:00:00.000Z", Some(5)),
+			("j4", "2026-11-07T09:00:00.000Z", None),
+			("j5", "2026-11-08T09:00:00.000Z", Some(4)),
+			("j6", "2026-10-01T09:00:00.000Z", Some(1)),
+		] {
 			sqlx::query("INSERT INTO jobs_event (subject_id, event_id, at, body, written_at) VALUES (?1, ?2, ?3, ?4, ?3)")
 				.bind(A)
-				.bind(format!("j{n}"))
-				.bind(&at)
+				.bind(id)
+				.bind(at)
 				.bind(json!({ "type": "debrief", "friction": friction }).to_string())
 				.execute(&pool)
 				.await
@@ -801,16 +810,17 @@ mod tests {
 			json!({
 				"from": "2026-10-19T07:00:00.000Z", "to": "2026-11-16T08:00:00.000Z", "measuredDays": 28,
 				"opened": [
-					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "days": 6 }
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "days": 6 },
+					{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "days": 1 }
 				],
 				"places": [
-					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "decide", "left": 1, "movedOn": 0, "medianMs": null },
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "decide", "left": 2, "movedOn": 0, "medianMs": null },
 					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "read", "left": 5, "movedOn": 5, "medianMs": 30_000 }
 				],
 				"partial": false,
 				"debrief": { "said": 5, "median": 4.0 }
 			}),
-			"five taken days and one Sunday of two offers; B's and next week's are not counted; the unsaid and the earlier debrief are not said"
+			"five taken days and one Sunday of two offers; B's and next week's are not counted; another affordance's take is no move; the unsaid and the earlier debrief are not said"
 		);
 
 		let fresh = pool_with(&[step("f1", "2026-11-14T09:00:00.000Z", "taken", None)]).await;

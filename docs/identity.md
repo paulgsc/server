@@ -725,6 +725,11 @@ nowhere is marked as such and belongs to review.
     `PUT /jobs/events/:id` and `POST /sync/jobs/batch` (each event as that
     route), readable only by its own subject, and deleted with
     the account by both the sweep and the migration's trigger (invariant 12).
+    The one figure that leaves it in aggregate is Applying's debrief friction
+    (`jobs_repo::debrief_frictions`, 1 to 5 only): its count and median over
+    28 days, the median unsaid below 5, in the subject's own weekly read and
+    `report_week` (the owner's C861, paulgsc/some-ui WALK5). No pick,
+    company, chip or word goes with it.
     *Enforced by* `jobs_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced` and
     `the_record_leaves_with_the_account`, and `handlers::jobs`'s

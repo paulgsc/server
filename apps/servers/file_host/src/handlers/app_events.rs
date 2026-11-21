@@ -115,12 +115,14 @@ pub async fn get_summary(subject: SubjectId, State(db): State<SqlitePool>, Query
 /// The caller's engagement over ISO week `:week` (`2026-W46`, Monday midnight
 /// to the next on the owner's clock, `app_event_repo::ZONE`), the week
 /// before, the same week a quarter ago and a year ago, with each
-/// affordance's first day and last day taken. Raw counts and
-/// days only: the report's public-safety rule (#2701) is its writer's,
-/// applied after this.
+/// affordance's first day, last day taken and last day opened, and the
+/// walkthrough's friction measures over the 28 days ending with the week
+/// (`app_event_repo::friction`, the owner's C861). Raw counts, days and
+/// medians (a median of fewer than 5 is unsaid) only: the report's
+/// public-safety rule (#2701) is its writer's, applied after this.
 ///
 /// No window cap: each week is one range read of the index, whatever its
-/// age. A week that has not started yet is refused, since it holds nothing.
+/// age; the friction's places read at most `WINDOW_READ` `left`s. A week that has not started yet is refused, since it holds nothing.
 ///
 /// # Errors
 /// 401 without a session, 422 for a `:week` that is not an ISO week from

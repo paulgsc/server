@@ -1,8 +1,8 @@
-//! The walkthrough's friction measures (paulgsc/some-ui WALK5 #3337 and
-//! silence #3338; the owner's C861): what a published walkthrough may say
-//! about how the owner uses their own apps, read beside the weekly report
-//! ([`weekly`](crate::weekly)'s `friction`), over the 28 days that end with
-//! the asked week.
+//! The walkthrough's friction measures, over the 28 days ending with a week.
+//!
+//! What a published walkthrough may say about how the owner uses their own
+//! apps (paulgsc/some-ui WALK5 #3337, silence #3338; the owner's C861), read
+//! beside the weekly report ([`weekly`](crate::weekly)'s `friction`).
 //!
 //! - **Per affordance, never per module.** Which affordance is a module's
 //!   root (`opened`), which are `not-measured`, which place is a stop's last
@@ -10,11 +10,25 @@
 //!   (`@some-ui/engagement`), and the report writer, which holds it, reads
 //!   them off these rows. Home keeps no copy of the module list.
 //! - **Opened** is, per affordance, how many of the 28 days held an
-//!   `offered` or `taken` of it. A day is the owner's ([`ZONE`](crate::ZONE)).
+//!   `offered` or `taken` of it. Only a root that is shown on screen is an
+//!   opening; for one offered by notification, `offered` is a notification
+//!   sent, which the writer, holding the registry, tells apart. A day
+//!   before the affordance's own `seen` `firstDay` is not measured for it,
+//!   though `measuredDays` (the subject's first event of any affordance)
+//!   counts it: the writer bounds an affordance's days by its `firstDay`, so
+//!   a root that began sending late is never read as silent before then. A day is the owner's ([`ZONE`](crate::ZONE)).
 //! - **Places** are, per affordance and place, how many `left`s named it,
-//!   how many of them moved on to another of the affordance's places (a
-//!   `taken` of it at the same instant, as `stepPlace` writes a move) rather
-//!   than stopping there, and the median time in it (`at` less `startedAt`).
+//!   how many of them were followed by a `taken` of the same affordance at
+//!   the same instant (`movedOn`, as `stepPlace` writes a move), and the
+//!   median time in it (`at` less `startedAt`). What these can't tell apart,
+//!   since a `taken` names no place: a move forward from one back, a move to
+//!   the next place from the next item of the same affordance opened in the
+//!   same millisecond, and, at an affordance's last place, finishing from
+//!   leaving. The app going to the back writes a `left` with no `taken`, and
+//!   coming back a new `taken`, so a step spent across that is two stretches:
+//!   `left` counts stretches on screen, and the median is a stretch's.
+//!   Finer reads need the event to say more (a place on `taken`), which is
+//!   the owner's call, as taps per step are.
 //! - **Debrief** is Applying's friction, 1 to 5, as the Jobs record holds
 //!   it (`jobs_repo::debrief_frictions`): how many said it and their median.
 //! - **"Fewer than 5" (ask #2701).** Counts leave raw: banding them is the
@@ -89,7 +103,8 @@ pub struct Friction {
 	/// The asked week's end.
 	pub to: String,
 	/// Of the window's days, how many end after home's first engagement
-	/// event: the days a count here could see. 0 is "no data".
+	/// event of any affordance. 0 is "no data"; one affordance's own start
+	/// is its `seen` `firstDay`.
 	pub measured_days: i64,
 	/// Every affordance opened in the window, in pipeline, affordance and
 	/// surface order.
@@ -97,7 +112,7 @@ pub struct Friction {
 	/// Every place left in the window, in the same order, then by place.
 	pub places: Vec<PlaceTime>,
 	/// More `left`s than [`WINDOW_READ`](crate::WINDOW_READ) fell in the
-	/// window, and only the first were read.
+	/// window, and only the newest were read.
 	pub partial: bool,
 	pub debrief: Debrief,
 }
@@ -138,7 +153,7 @@ pub async fn friction(conn: &mut SqliteConnection, subject: &str, week: IsoWeek,
 		_ => return Err(EventError::Unreadable),
 	};
 	let measured_days = first.map_or(0, |first| edges.iter().filter(|(_, end)| first < end.as_str()).count());
-	let days = serde_json::to_string(&edges).map_err(|_| EventError::Unreadable)?;
+	let days = serde_json::to_value(&edges).map(|json| json.to_string()).map_err(|_| EventError::Unreadable)?;
 
 	let opened = sqlx::query_as!(
 		Opened,
@@ -165,7 +180,7 @@ pub async fn friction(conn: &mut SqliteConnection, subject: &str, week: IsoWeek,
 	let halves: Vec<f64> = frictions.iter().map(|&friction| friction as f64).collect();
 	let debrief = Debrief {
 		said: i64::try_from(frictions.len()).unwrap_or(i64::MAX),
-		median: median(&halves, |low, high| f64::midpoint(low, high)),
+		median: median(&halves, f64::midpoint),
 	};
 
 	Ok(Friction {
@@ -197,9 +212,9 @@ async fn places(conn: &mut SqliteConnection, subject: &str, from: &str, to: &str
 			FROM app_event AS l
 			WHERE l.subject_id = ?1 AND l.family = 'engagement' AND l.at >= ?2 AND l.at < ?3
 				AND json_extract(l.body, '$.kind') = 'left'
-			ORDER BY l.at
+				AND json_extract(l.body, '$.place') IS NOT NULL AND json_extract(l.body, '$.startedAt') IS NOT NULL
+			ORDER BY l.at DESC
 			LIMIT ?4)
-		WHERE place IS NOT NULL AND ms IS NOT NULL
 		ORDER BY pipeline, affordance, surface, place, ms"#,
 		subject,
 		from,
