@@ -491,10 +491,11 @@ pub struct BigPlays {
 	pub kinds: Vec<KindEntry>,
 }
 
-/// What part of a team a bite is about (#3049): its offense, defense, special
-/// teams, or its coaching (a call: go for it, the try, the clock). Whose is
-/// the team's code beside it, never ours or theirs: a game no side is wanted
-/// in still has a defense.
+/// What part of a team a bite is about (#3049).
+///
+/// Its offense, defense, special teams, or its coaching (a call: go for it,
+/// the try, the clock). Whose is the team's code beside it, never ours or
+/// theirs: a game no side is wanted in still has a defense.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Unit {

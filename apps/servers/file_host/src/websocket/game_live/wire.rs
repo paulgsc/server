@@ -363,8 +363,15 @@ impl State {
 /// A message from home.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outbound {
-	Offer { seq: u64, state: State },
-	Pong { phone_at: u64, home_at: u64 },
+	/// The state boxed: it holds the offer, many times a pong's size.
+	Offer {
+		seq: u64,
+		state: Box<State>,
+	},
+	Pong {
+		phone_at: u64,
+		home_at: u64,
+	},
 }
 
 impl Outbound {
@@ -492,24 +499,7 @@ fn home_examples() -> [Outbound; 4] {
 				}),
 			},
 		],
-		// The cards, then a few of the rest: one of each tier, with and
-		// without a unit.
-		ranked: [
-			("in.third-long", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Defense, Some("CHI")))),
-			("in.play-call", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Defense, Some("CHI")))),
-			("pre.stakes", scenario_engine::Tier::Always, None),
-			("in.fourth-down", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, Some("NE")))),
-			("in.halftime", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, None))),
-			("pre.weather", scenario_engine::Tier::Rest, None),
-		]
-		.into_iter()
-		.map(|(id, tier, unit)| Ranked {
-			id: id.to_owned(),
-			tier,
-			unit: unit.map(|(unit, _)| unit),
-			unit_side: unit.and_then(|(_, side)| side.map(str::to_owned)),
-		})
-		.collect(),
+		ranked: ranked_example(),
 	};
 	let before = Offer {
 		game_id: "401873023".to_owned(),
@@ -526,33 +516,54 @@ fn home_examples() -> [Outbound; 4] {
 	[
 		Outbound::Offer {
 			seq: 1_761_178_000_042,
-			state: State {
+			state: Box::new(State {
 				following: true,
 				games: games.clone(),
 				offer: Some(live),
-			},
+			}),
 		},
 		Outbound::Offer {
 			seq: 1_761_178_000_043,
-			state: State {
+			state: Box::new(State {
 				following: true,
 				games,
 				offer: Some(before),
-			},
+			}),
 		},
 		Outbound::Offer {
 			seq: 1_761_178_000_044,
-			state: State {
+			state: Box::new(State {
 				following: false,
 				games: Vec::new(),
 				offer: None,
-			},
+			}),
 		},
 		Outbound::Pong {
 			phone_at: 1_761_178_500_000,
 			home_at: 1_761_178_500_012,
 		},
 	]
+}
+
+/// The example offer's ranked list: the cards, then a few of the rest, one
+/// of each tier, with and without a unit.
+fn ranked_example() -> Vec<Ranked> {
+	[
+		("in.third-long", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Defense, Some("CHI")))),
+		("in.play-call", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Defense, Some("CHI")))),
+		("pre.stakes", scenario_engine::Tier::Always, None),
+		("in.fourth-down", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, Some("NE")))),
+		("in.halftime", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, None))),
+		("pre.weather", scenario_engine::Tier::Rest, None),
+	]
+	.into_iter()
+	.map(|(id, tier, unit)| Ranked {
+		id: id.to_owned(),
+		tier,
+		unit: unit.map(|(unit, _)| unit),
+		unit_side: unit.and_then(|(_, side)| side.map(str::to_owned)),
+	})
+	.collect()
 }
 
 #[cfg(test)]

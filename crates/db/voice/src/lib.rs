@@ -2036,7 +2036,7 @@ mod tests {
 		.bind(&then.id)
 		.bind(&then.of_ref)
 		.bind(&then.at)
-		.bind(&then.content_type)
+		.bind(then.content_type)
 		.bind(then.size)
 		.bind(&then.sha256)
 		.bind(&b"bite"[..])

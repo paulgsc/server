@@ -363,8 +363,6 @@ impl<'s> Cx<'s> {
 				let scorer = (0..self.so_far.plays.len()).rev().find_map(|i| self.scorer(i));
 				of(Unit::SpecialTeams, Some(onside.or(scorer)?))
 			}
-			// The coin toss: before the opening kickoff, no one team's yet.
-			Moment::Kickoff => None,
 			Moment::BigPlay => {
 				let big = (0..self.so_far.plays.len()).rev().find_map(|i| self.big_play(i))?;
 				match big.kind {
@@ -382,7 +380,8 @@ impl<'s> Cx<'s> {
 			Moment::LeadChange => by_the_ball((0..self.so_far.plays.len()).rev().find_map(|i| self.scorer(i))),
 			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury => by_the_ball(last),
 			Moment::ThirdAndLong | Moment::Snap | Moment::RedZone | Moment::OpeningDrive => by_the_ball(to_come.or(last)),
-			Moment::Pregame | Moment::Final | Moment::Watching => None,
+			// The coin toss: before the opening kickoff, no one team's yet.
+			Moment::Kickoff | Moment::Pregame | Moment::Final | Moment::Watching => None,
 		}
 	}
 
