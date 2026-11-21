@@ -481,7 +481,9 @@ nowhere is marked as such and belongs to review.
    any collector: see "What is still exposed".
 
 3. **Fingerprinting headers are named only in `net.rs`,** other than as a
-   write that puts one on a request, which is how tests prove they're ignored.
+   write that puts one on a request: how tests prove they're ignored, and how
+   home names its own fixed user agent on a request it sends (the snips
+   pickup to GitHub's API), which reads nothing of a person's.
    These are `User-Agent`, `X-Forwarded-For`, `X-Real-IP`, `Forwarded` and the
    CDN variants. The check matches any mention rather than a list of read
    methods, because every such list turned out to have another way through.
