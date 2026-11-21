@@ -60,10 +60,10 @@ impl<'a> SoFar<'a> {
 		// The run going: its index and the team snapping. A kick-off (an onside
 		// kick the kickers recover included) or the end of a half closes it, so
 		// the next snap starts a new one even by the same team; so does a snap
-		// in a later half than the last snap whose half is known, in case the
-		// log lacks both. All of overtime counts as one half here: regulation's
-		// end splits a run, but an overtime period's break carries possession
-		// over (the playoffs). `half` itself keeps each overtime period apart,
+		// in a different half from the last snap whose half is known, which
+		// matters when the log lacks both. All of overtime counts as one half
+		// here: regulation's end splits a run, but an overtime period's break
+		// carries possession over (the playoffs). `half` itself keeps each overtime period apart,
 		// for timeouts.
 		let mut run: Option<(usize, &str)> = None;
 		let mut last_half: Option<i64> = None;
