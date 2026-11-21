@@ -26,11 +26,15 @@ pub fn named(shot: &Value) -> Vec<String> {
 }
 
 /// `item`'s clip, side and file, when each is one `clip_frame` could hold:
-/// a plain clip id, `before` or `after`, and a plain `.png` name.
+/// a clip id as some-ui names one (`^[a-z0-9][a-z0-9-]{0,63}$`), `before`
+/// or `after`, and a plain `.png` name of at most 80 bytes, as `clip_frame`
+/// holds them.
 fn parts(item: &str) -> Option<(&str, &str, &str)> {
 	let mut parts = item.split('/');
 	let (clip, side, file) = (parts.next()?, parts.next()?, parts.next()?);
-	let plain_clip = (1..=80).contains(&clip.len()) && clip.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+	let plain_clip = (1..=64).contains(&clip.len())
+		&& clip.as_bytes().first().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+		&& clip.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
 	let plain_file = (5..=80).contains(&file.len())
 		&& file.rsplit_once('.').is_some_and(|(_, extension)| extension == "png")
 		&& file.as_bytes().first().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
@@ -54,18 +58,17 @@ pub(super) async fn hold(conn: &mut SqliteConnection, sources: &Sources, item: &
 	if super::sha256_hex(&bytes) != row.sha256 {
 		return Ok(Held::Refused(Why::Missing));
 	}
-	Ok(Held::Files {
-		files: vec![(String::from(item), bytes)],
-		entry: None,
-	})
+	Ok(Held::Files(vec![(String::from(item), bytes)]))
 }
 
-/// Whether home still holds `item`'s frame: its row, and its PNG on the drive.
+/// Whether home still holds `item`'s frame: its row, and its PNG on the
+/// drive. A drive that cannot say is no reason to take an essay back.
 pub(super) async fn still_held(conn: &mut SqliteConnection, sources: &Sources, item: &str) -> Result<bool, sqlx::Error> {
 	let Some((clip, side, file)) = parts(item) else {
 		return Ok(false);
 	};
-	Ok(clip_frame_repo::one(conn, clip, side, file).await?.is_some() && sources.frames.join(clip).join(side).join(file).exists())
+	let on_drive = sources.frames.join(clip).join(side).join(file).try_exists().unwrap_or(true);
+	Ok(clip_frame_repo::one(conn, clip, side, file).await?.is_some() && on_drive)
 }
 
 #[cfg(test)]
@@ -76,6 +79,7 @@ mod tests {
 	fn only_a_name_clip_frame_could_hold_is_a_frame() {
 		assert_eq!(parts("studio-promo/after/01.png"), Some(("studio-promo", "after", "01.png")));
 		for bad in [
+			"-promo/after/01.png",
 			"studio-promo/middle/01.png",
 			"../after/01.png",
 			"studio-promo/after/../01.png",

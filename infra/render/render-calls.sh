@@ -622,7 +622,7 @@ record() {
       # `cards_essays::pass`, written whole before the essay): a spoken
       # card's takes (WALK7, #1052; each take's audio, word times and
       # transcript), a scene's snips (SNIPS4; snips.json and the pictures)
-      # and its clip frames (clips.json and the frames).
+      # and its clip frames (the frames alone, <clip>/<side>/<file>).
       local media=() kind
       for kind in "${CARDS_MEDIA[@]}"; do
         if [ -d "$INPUT/$key.$kind" ]; then

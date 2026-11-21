@@ -62,7 +62,7 @@ pub(super) async fn hold(conn: &mut SqliteConnection, sources: &Sources, take: &
 		transcript: true,
 	};
 	Ok(match hand_off(conn, subject, ask).await {
-		Ok(Take::Files(files)) => Held::Files { files, entry: None },
+		Ok(Take::Files(files)) => Held::Files(files),
 		Ok(Take::Absent { .. }) => Held::Refused(Why::Missing),
 		Ok(Take::NotMadeOut) => Held::Refused(Why::Unheard),
 		Ok(Take::NotHeardYet) => Held::Waiting,

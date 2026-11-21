@@ -46,8 +46,8 @@
 //! - **No copy outlives its need** ([`tidy`], each minute, as
 //!   `rust_essays::tidy`): once an essay's video is made its media folders
 //!   go, and an essay given with an item home no longer holds (a take deleted
-//!   from My data, its recording let go, or its account gone; a snip's
-//!   picture gone) is withdrawn from the worker, its `<key>.json` and media
+//!   from My data, its recording let go, or its account gone; a clip frame
+//!   gone; never a snip, which is no one's record) is withdrawn from the worker, its `<key>.json` and media
 //!   folders removed, so the next pass refuses it. A `.<key>.<kind>.partial`
 //!   a stopped pass left goes too.
 

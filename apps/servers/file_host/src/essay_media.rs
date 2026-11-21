@@ -28,16 +28,19 @@
 //! - **Wait, refuse or give.** Each item is ready, not ready yet (a take not
 //!   heard yet: the essay waits and is asked again next pass), or never to
 //!   be given as home holds it now ([`Why`]). A refusal outranks a wait, so
-//!   an essay that can never be given says so at once; a missing item
-//!   outranks an unheard one, and an earlier kind a later one ([`Kind::ALL`]'s
-//!   order). A refusal is said by its kind's reason ([`Refusal::reason`]),
+//!   an essay that can never be given says so at once. The refusal said is
+//!   the first kind's in [`Kind::ALL`]'s order that refuses, and within a
+//!   kind a missing item outranks an unheard one: an unheard take and a
+//!   missing clip frame say `take-unheard`. A refusal is said by its kind's reason ([`Refusal::reason`]),
 //!   with the items by id, never what they hold.
 //! - **No copy outlives its need.** A kind's folder goes once its essay's
-//!   video is made, and an essay given with an item home no longer holds is
-//!   withdrawn ([`still_held`]; the caller's tidy, `cards_essays::pass::tidy`).
+//!   video is made, and an essay given with a take or clip frame home no
+//!   longer holds is withdrawn ([`still_held`]; the caller's tidy,
+//!   `cards_essays::pass::tidy`). A snip is never a reason to take one back:
+//!   it is no one's record, and its copy goes with the video.
 //! - **Nothing is ever written to home's own record here.** Each kind only
-//!   reads: `clip_frame` and `snip` rows stay as they were kept, and the
-//!   owner's takes stay where `voice_repo` keeps them.
+//!   reads: `clip_frame` rows stay as they were kept, and the owner's takes
+//!   stay where `voice_repo` keeps them.
 //! - **Counts and kinds, never bytes.** Nothing here logs.
 //!
 //! A Rust Rounds or interview essay plays takes too, by its week's final
@@ -75,17 +78,6 @@ impl Kind {
 			Self::ClipFrames => "clips",
 		}
 	}
-
-	/// The list its folder opens with, naming each item handed: its file,
-	/// its schema and the list's field. None for takes and clip frames, whose
-	/// files are all the recorder reads.
-	#[must_use]
-	pub const fn list(self) -> Option<(&'static str, &'static str, &'static str)> {
-		match self {
-			Self::Snips => Some(("snips.json", "some-ui.snips-given/1", "snips")),
-			Self::Takes | Self::ClipFrames => None,
-		}
-	}
 }
 
 /// Why an item is never to be given as home holds it now.
@@ -105,8 +97,8 @@ pub type File = (String, Vec<u8>);
 /// What home holds of one item asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Held {
-	/// Its files, and its entry in its kind's list ([`Kind::list`]).
-	Files { files: Vec<File>, entry: Option<Value> },
+	/// Its files.
+	Files(Vec<File>),
 	/// Not ready yet: asked again next pass.
 	Waiting,
 	/// Never to be given as home holds it now.
@@ -209,7 +201,7 @@ pub fn named(kind: Kind, essay: &Value) -> Vec<String> {
 /// # Errors
 /// [`Failed`].
 pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, items: &[String]) -> Result<Handed, Failed> {
-	let (mut files, mut entries) = (Vec::new(), Vec::new());
+	let mut files = Vec::new();
 	let (mut missing, mut unheard, mut waiting) = (Vec::new(), Vec::new(), false);
 	for item in items {
 		let held = match kind {
@@ -218,10 +210,7 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 			Kind::ClipFrames => clip_frames::hold(conn, sources, item).await?,
 		};
 		match held {
-			Held::Files { files: handed, entry } => {
-				files.extend(handed);
-				entries.extend(entry);
-			}
+			Held::Files(handed) => files.extend(handed),
 			Held::Waiting => waiting = true,
 			Held::Refused(Why::Missing) => missing.push(item.clone()),
 			Held::Refused(Why::Unheard) => unheard.push(item.clone()),
@@ -234,12 +223,6 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 		refusal(Why::Unheard, unheard)
 	} else if waiting {
 		Handed::Waiting
-	} else if let Some((name, schema, field)) = kind.list() {
-		let mut list = serde_json::Map::new();
-		list.insert(String::from("schema"), Value::from(schema));
-		list.insert(String::from(field), Value::Array(entries));
-		files.insert(0, (String::from(name), Value::Object(list).to_string().into_bytes()));
-		Handed::Ready(files)
 	} else {
 		Handed::Ready(files)
 	})
