@@ -66,7 +66,7 @@ impl<'a> SoFar<'a> {
 			let its_half = seen.play.period.map(half);
 			runs.push(team.map(|team| {
 				let index = match run {
-					Some((index, held, held_half)) if held == team && held_half == its_half && !closed => index,
+					Some((index, held, held_half)) if held == team && !closed && (held_half == its_half || held_half.is_none() || its_half.is_none()) => index,
 					Some((index, ..)) => index + 1,
 					None => 0,
 				};
@@ -385,7 +385,9 @@ fn flagged_against_the_returners(play: &Play) -> bool {
 		let end = starts.get(n + 1).copied().unwrap_or(lower.len());
 		let clause = &lower[*start..end];
 		let team = original[start + "penalty on ".len()..end].split(['-', ',', ' ']).next().unwrap_or_default();
-		!clause.contains("declined") && !team.is_empty() && play.possession.as_deref() != Some(self::team(team).as_str())
+		// A foul after the play ("enforced between downs", a celebration) does
+		// not undo the return before it.
+		!clause.contains("declined") && !clause.contains("between downs") && !team.is_empty() && play.possession.as_deref() != Some(self::team(team).as_str())
 	})
 }
 

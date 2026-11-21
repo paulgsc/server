@@ -295,10 +295,14 @@ fn a_drive_bite_never_takes_the_next_halfs_score() {
 		"the 3rd quarter's touchdown is a red-zone trip of its own"
 	);
 	assert_eq!(its_play(&over, &log, end, Scenario::RedZone, said, bite, bite, ANY), None);
-	// Without the half's end in the log, the quarter still ends the drive.
-	let no_end: Vec<Play> = plays.iter().filter(|p| p.id != "p3").cloned().collect();
-	let log = recorded_log(&no_end);
-	assert_eq!(its_play(&over, &log, end, Scenario::RedZone, said, bite, bite, ANY), None);
+	// Each of the three ends the drive alone: the half's end without the
+	// kickoff, the kickoff without the half's end, and the quarter with
+	// neither in the log.
+	for gone in [&["p4"][..], &["p3"], &["p3", "p4"]] {
+		let held: Vec<Play> = plays.iter().filter(|p| !gone.contains(&p.id.as_str())).cloned().collect();
+		let log = recorded_log(&held);
+		assert_eq!(its_play(&over, &log, end, Scenario::RedZone, said, bite, bite, ANY), None, "without {gone:?}");
+	}
 }
 
 /// #1077: a possession ends at a kickoff. CHI scores on its opening drive,
@@ -350,4 +354,6 @@ fn an_onside_kick_recovered_by_the_kickers_starts_a_new_drive() {
 	let first = wall(&plays[1]) - TimeDelta::seconds(10);
 	let picked = its_play(&over, &log, end, Scenario::OpeningDrive, Said::BeforeTheDrive, first, first, ANY).map(|(w, _)| w.play_id);
 	assert_ne!(picked.as_deref(), Some("p6"), "the opening drive is not the one after the onside kick");
+	let were: Vec<String> = plays_that_were(&over, &log, end, Scenario::OpeningDrive).into_iter().map(|w| w.play_id).collect();
+	assert_eq!(were, ["p3"], "only the first drive's end is an opening drive");
 }

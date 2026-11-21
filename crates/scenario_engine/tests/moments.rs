@@ -1027,3 +1027,21 @@ fn a_team_the_play_text_spells_otherwise_is_the_headers_team() {
 	});
 	assert!(own.iter().all(|(s, _)| *s != Scenario::Turnover), "{own:?}");
 }
+
+/// A foul after the play, "enforced between downs" (a celebration), does not
+/// undo the return before it, as one during the return does. The flag's
+/// words are ESPN's own (TEN at IND, 2025).
+#[test]
+fn a_flag_between_downs_leaves_the_return() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let returned = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 40 for 50 yards (D.Muasau). PENALTY on CHI, Unsportsmanlike Conduct, 15 yards, enforced between downs.".to_owned()),
+		..plays[punt].clone()
+	};
+	let o = just_after(&plays[..punt], returned);
+	assert_eq!(big(&o).map(|(p, _)| (p.kind, p.yards, p.by.as_str())), Some((Kind::PuntReturn, 50, "CHI")));
+}
