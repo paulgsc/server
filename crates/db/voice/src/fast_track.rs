@@ -57,9 +57,11 @@ pub enum Acted {
 	NotWaiting,
 }
 
-/// Records `act` on `subject`'s note `note_id`, at `now`, `attempts` being
-/// the most attempts one model makes on a note (the transcriber's
-/// `ATTEMPTS`). Run it in the transaction that holds the request's subject.
+/// Records `act` on `subject`'s note `note_id`, at `now`.
+///
+/// `attempts` is the most attempts one model makes on a note (the
+/// transcriber's `ATTEMPTS`). Run it in the transaction that holds the
+/// request's subject.
 ///
 /// A `fast` act is one try (the migration's doc): it records how many
 /// attempts home has made on the note so far, and the queue treats the mark

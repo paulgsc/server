@@ -100,6 +100,21 @@ pub async fn run_once<H: Hear>(
 	run_once_telling(db, hear, meaning, deletion, per_note, (guard, &mut Turn::unbounded()), cancel, now, &|| {}).await
 }
 
+/// Whether `note` is a fast-tracked take's one try, which the give does not
+/// hold (the owner, 2026-11-21, on #1090).
+///
+/// An excused try keeps no attempt, so the take the guard is excusing gives
+/// way as any note does: otherwise contention, when renders run, would let it
+/// skip the give again on each excuse. With the excused note first, a give
+/// started on it holds the fast-tracked take behind it too, for at most GIVE.
+fn first_try(guard: &Guard<(String, String)>, note: &transcript::Waiting) -> bool {
+	let excused = guard
+		.streak
+		.current()
+		.is_some_and(|(subject, note_id)| *subject == note.subject && *note_id == note.note_id);
+	note.urgency == Urgency::FastTrack && !excused
+}
+
 /// [`run_once`], calling `heard` as soon as each note heard is kept.
 ///
 /// A transcript is then committed and on its way to the
@@ -145,18 +160,7 @@ pub async fn run_once_telling<H: Hear>(
 			pass.cancelled = true;
 			break;
 		}
-		// A take the owner put first is not held by the give on its one try
-		// (the owner, 2026-11-21, on #1090). An excused try keeps no attempt,
-		// so the take the guard is excusing gives way as any note does:
-		// otherwise contention, when renders run, would let it skip the give
-		// again on each excuse. With the excused note first, a give started
-		// on it holds the fast-tracked take behind it too, for at most GIVE.
-		let excused = guard
-			.streak
-			.current()
-			.is_some_and(|(subject, note_id)| *subject == note.subject && *note_id == note.note_id);
-		let first_try = note.urgency == Urgency::FastTrack && !excused;
-		if !first_try && gives_way(turn, &mut pass) {
+		if !first_try(guard, &note) && gives_way(turn, &mut pass) {
 			break;
 		}
 		let audio = {
