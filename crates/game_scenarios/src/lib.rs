@@ -491,6 +491,41 @@ pub struct BigPlays {
 	pub kinds: Vec<KindEntry>,
 }
 
+/// What part of a team a bite is about (#3049).
+///
+/// Its offense, defense, special teams, or its coaching (a call: go for it,
+/// the try, the clock). Whose is the team's code beside it, never ours or
+/// theirs: a game no side is wanted in still has a defense.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Unit {
+	Offense,
+	Defense,
+	SpecialTeams,
+	Coaching,
+}
+
+impl Unit {
+	pub const ALL: [Self; 4] = [Self::Offense, Self::Defense, Self::SpecialTeams, Self::Coaching];
+
+	/// The stored name.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Offense => "offense",
+			Self::Defense => "defense",
+			Self::SpecialTeams => "special-teams",
+			Self::Coaching => "coaching",
+		}
+	}
+
+	/// The unit stored as `name`.
+	#[must_use]
+	pub fn named(name: &str) -> Option<Self> {
+		Self::ALL.into_iter().find(|unit| unit.as_str() == name)
+	}
+}
+
 /// The whole set, as `dump-game-scenarios` writes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Catalog {
@@ -498,6 +533,8 @@ pub struct Catalog {
 	pub scenarios: Vec<Entry>,
 	pub halves: Vec<Half>,
 	pub big_play: BigPlays,
+	/// What a bite can be about (#3049).
+	pub units: Vec<Unit>,
 }
 
 /// The set at [`CATALOG_VERSION`].
@@ -511,6 +548,7 @@ pub fn catalog() -> Catalog {
 			sizes: Size::ALL.into_iter().map(|id| SizeEntry { id, yards: id.yards() }).collect(),
 			kinds: Kind::ALL.into_iter().map(|id| KindEntry { id, least: id.least() }).collect(),
 		},
+		units: Unit::ALL.to_vec(),
 	}
 }
 

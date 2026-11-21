@@ -1053,8 +1053,8 @@ mod tests {
 		note(&pool, B, "theirs", "game", "401772", "2026-11-10T11:00:00.000Z").await;
 		hearing(&pool, A, "game", "small", Some("what a catch on third and long"), "2026-11-10T12:00:00Z").await;
 		sqlx::query(
-			"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version)
-			 VALUES (?1, 'game', 'in.third-long', 'offered', 3, 'Q3 4:12 3rd & 9', NULL, 1, '2026-11-10T10:02:58.000Z', NULL, 'standard', 1)",
+			"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, offer_seq, live_strip, context_line, watching, started_at, clock_offset_ms, mode, catalog_version, unit, unit_side)
+			 VALUES (?1, 'game', 'in.third-long', 'offered', 3, 'Q3 4:12 3rd & 9', NULL, 1, '2026-11-10T10:02:58.000Z', NULL, 'standard', 1, 'defense', 'CHI')",
 		)
 		.bind(A)
 		.execute(&pool)
@@ -1172,6 +1172,13 @@ mod tests {
 			"the play's latest version"
 		);
 		assert_eq!(about.half, Some(game_scenarios::Half::Second), "its play is in the 3rd");
+		assert_eq!(
+			(bite.unit, bite.unit_side.as_deref()),
+			(Some(game_scenarios::Unit::Defense), Some("CHI")),
+			"what it was about, as said"
+		);
+		let wire = serde_json::to_value(bite).unwrap();
+		assert_eq!((&wire["unit"], &wire["unitSide"]), (&serde_json::json!("defense"), &serde_json::json!("CHI")));
 		assert_eq!(game.duration_ms, Some(1000));
 
 		let interview = all.takes.iter().find(|take| take.id == "interview").unwrap();

@@ -64,6 +64,44 @@ closed enums, and the catalog dump lists them. A kick return is big from
 `huge`: 20 to 39 yards is the ordinary one, out of the end zone to about
 the 25 (`Kind::least`). `read::gain_by` reads which side gained and how far.
 
+### One ranked list, and what a bite is about (#3049)
+
+`Offer::ranked` holds every scenario of the set once, for the phone's "what
+was that about" list: the cards on offer now, exactly as `scenarios` lists
+them (`now`); then the always plausible, what the game means for the paths
+and whether it fits a pattern (`always`); then the rest in the set's order,
+least plausible last but still pickable (`rest`). Code ranks it, never a
+model.
+
+Each entry carries its default unit (`game_scenarios::Unit`) and whose, the
+team's code (`unit_side`), never ours or theirs (the phone reads that from
+the side wanted, and a game with none still has a defense). Each play in
+`just_happened` carries its own, read off that play, because one scenario
+can be about two teams at once: NE's 4th down just happened while CHI's is
+to come.
+
+- a call (4th down, the try, the two-minute drill) is the deciding team's
+  `coaching`; halftime is the side wanted's, or no one team's;
+- a kick is the kicking team's `special-teams` (the scorer's, on a try); a
+  kick or punt return, the returners';
+- a score is the scorer's `offense`, or its `defense` or `special-teams`
+  when it returned the ball; a lead change is the score that changed it,
+  however many plays on;
+- anything else in the game is, with a side wanted, its `offense` when it
+  had the ball and its `defense` when the other team did; with none, the
+  `offense` of the team with the ball.
+
+On the list, what the moment's rule offers ahead goes by the snap to come.
+What only ever just happened (a turnover, a flag, a sack, an injury, a lead
+change, a big play) is the latest such play's default, and an onside kick
+is the team that kicks off next: the latest onside kick's while nothing has
+scored since, else the last scorer's. None before kickoff (until the log
+holds the opening kickoff, whatever ESPN's state says) or after the final,
+for a pregame, final or owner's scenario, or when the team it would name is
+unknown. A unit with no side is about no one team. Units are catalogue v2's
+(C873): a bite said under catalogue 1 carries none. The owner can change
+it with one tap; home keeps what the phone sends, once, with the bite.
+
 A game ESPN calls over that was not completed (postponed or cancelled), with
 no play in the log, offers nothing, and its strip says "Not played".
 

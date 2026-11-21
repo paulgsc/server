@@ -349,7 +349,16 @@ where
 			continue;
 		}
 		let seq = live.next_seq(said.last_seq);
-		if send(&mut outgoing, &Outbound::Offer { seq, state: state.clone() }).await.is_err() {
+		if send(
+			&mut outgoing,
+			&Outbound::Offer {
+				seq,
+				state: Box::new(state.clone()),
+			},
+		)
+		.await
+		.is_err()
+		{
 			return "the phone left";
 		}
 		last = Some(state);
