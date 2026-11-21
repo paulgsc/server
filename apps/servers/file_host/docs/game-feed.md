@@ -42,7 +42,10 @@ those two indexed reads:
     the scoreboard still lists it), and `game_feed::CADENCE.refresh`
     (86,400 s) after the last read, and never sooner than awake would be. A
     day with no game costs one read (paulgsc/some-ui#3329); a game day, one
-    more per kickoff slot. The daily read learns a game added,
+    more per kickoff time at least 10 minutes from the last read, and one
+    every 10 minutes while a game overruns its end read. A game with no
+    kickoff, or one still `pre` at its end read (a delayed start), has no
+    second end read: only the daily read sees it over. The daily read learns a game added,
     flexed or rescheduled. One added, or moved sooner, to within a day of the
     last read is learnt only at the next one: in the worst case the whole game
     is missed live and fetched once, as over. So is a chosen game whose kickoff

@@ -3,9 +3,10 @@
 //!
 //! - **What is due** is [`Schedule`]'s call, in memory: the scoreboard as
 //!   its [`Watch`] says (every [`Cadence::scoreboard`] while a chosen game is
-//!   near, else asleep until the next chosen kickoff less
-//!   [`Cadence::margin`], or [`Cadence::refresh`] after the last read,
-//!   whichever is sooner); a chosen game's summary every [`Cadence::live`] while
+//!   near or a game overruns its end read, else asleep until the soonest of
+//!   the next chosen kickoff less [`Cadence::margin`], a listed game's end
+//!   read and [`Cadence::refresh`] after the last read); a chosen game's
+//!   summary every [`Cadence::live`] while
 //!   the game is live, or from its kickoff until a summary says it started
 //!   (the scoreboard may be minutes stale at kickoff); once more after it goes
 //!   final; and never again once a final summary is kept.
@@ -267,7 +268,8 @@ impl Track {
 	/// followed, and a game no team chose once the scoreboard calls it
 	/// completed, until a summary of it reads final, so the record holds
 	/// every game's end and every bite can be matched (the owner, 2026-11-21,
-	/// on #3329). Only a chosen game wakes the scoreboard ([`Track::near`]).
+	/// on #3329). Only a chosen game's kickoff wakes the scoreboard
+	/// ([`Track::near`]); any game's end does ([`Track::end_read`]).
 	fn fetched(&self, now: DateTime<Utc>, teams: &Teams) -> bool {
 		self.followed(now) && (self.completed || self.chosen(teams))
 	}
@@ -1152,7 +1154,35 @@ mod tests {
 		fetch.answer(&board_url, 200, &with("post", true));
 		fetch.answer(&nfl_feed::summary_url(GAME), 200, &final_of_game());
 		assert_eq!(pass_for(&db, &fetch, &mut schedule, next, &sf).await.fetched, ["scoreboard", "summary"]);
+		let mut conn = db.acquire().await.unwrap();
+		assert!(game_feed_repo::holds_final(&mut conn, GAME).await.unwrap(), "its end is kept");
+		drop(conn);
 		assert_eq!(schedule.watch(next, &sf, CADENCE), Watch::Asleep { until: next + Span::days(1) });
+		// The scoreboard moves to the next week: nothing more of it.
+		fetch.answer(&board_url, 200, &board(&[]));
+		assert_eq!(pass_for(&db, &fetch, &mut schedule, next + Span::days(1), &sf).await.fetched, ["scoreboard"]);
+		assert!(schedule.games.is_empty());
+	}
+
+	#[test]
+	fn a_game_live_past_its_end_read_keeps_the_scoreboard_awake_only_to_the_post_grace() {
+		let track = Track {
+			kickoff: Some(at(KICKOFF)),
+			teams: [None, None],
+			state: Some(GameState::In),
+			completed: false,
+			done: false,
+			target: Target::now(at(KICKOFF)),
+		};
+		assert!(!track.overrunning(at(KICKOFF) + PRE_GRACE - Span::seconds(1)));
+		assert!(track.overrunning(at(KICKOFF) + PRE_GRACE));
+		assert!(!track.overrunning(at(KICKOFF) + POST_GRACE));
+		let over = Track {
+			completed: true,
+			state: Some(GameState::Post),
+			..track
+		};
+		assert_eq!(over.end_read(), None, "seen over: no end read");
 	}
 
 	#[tokio::test]

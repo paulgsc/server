@@ -16,9 +16,10 @@
 //!
 //! **It sleeps between games** (paulgsc/some-ui#3329, GWB15). With no chosen
 //! game live, past kickoff and not final, or within an hour of kickoff
-//! (`CADENCE.margin`), the scoreboard is next read at that hour before the
-//! next chosen kickoff, or a day after its last read (`CADENCE.refresh`),
-//! whichever is sooner ([`pass::Watch::Asleep`]). The daily read is what
+//! (`CADENCE.margin`), the scoreboard is next read at the soonest of that
+//! hour before the next chosen kickoff, a listed game's end read (below),
+//! and a day after its last read (`CADENCE.refresh`)
+//! ([`pass::Watch::Asleep`]). The daily read is what
 //! learns a game added, moved, flexed or postponed while asleep: one added,
 //! or moved sooner, within a day of the last read can be missed, whole, until
 //! the next read, which then fetches it once as over.
@@ -26,11 +27,12 @@
 //! `GameFeedStale` still means the worker died, never that it sleeps.
 //! **Which games are chosen** is the operator's other lever,
 //! `settings::GameTeams` (every game by default): only a named team's games
-//! get live summaries and wake the scoreboard; any other game's summary is
+//! get live summaries and wake the scoreboard at kickoff; any other game's summary is
 //! fetched once the scoreboard calls it completed, until one reads final, so
 //! the record keeps every game's end (owner, 2026-11-21). The scoreboard
-//! reads at each game's expected end (kickoff plus `pass::PRE_GRACE`) to see
-//! it so, before the scoreboard moves to the next week.
+//! reads at each game's expected end (kickoff plus `pass::PRE_GRACE`), any
+//! team's, to see it so before the scoreboard moves to the next week, and
+//! stays awake while a game still live then has not read over.
 //!
 //! What this module promises (`docs/game-feed.md` in this app):
 //!
