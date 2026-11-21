@@ -2264,12 +2264,24 @@ mod tests {
 			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'silent', 4000, 10, '2026-11-14T20:40:00.000Z')",
 			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
 			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
+			// QM-314 was heard as spaces alone (paulgsc/server#913): nothing
+			// said, filed as a silence is.
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'qm314', 'rust-round', '2026-w46:QM-314', '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 'qm314', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'heard', 'en', 0.5, 4000, '  ', 10, '2026-11-14T20:41:00.000Z')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES (?1, 'qm314', 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
 		] {
 			sqlx::query(statement).bind(OWNER).execute(&pool).await.unwrap();
 		}
 
 		let outcome = pass(&pool, &fake).await.unwrap();
-		assert_eq!(outcome.filed, 3, "QM-311's failure, QM-312's hearing and QM-313's silence");
+		assert_eq!(outcome.filed, 4, "QM-311's failure, QM-312's hearing, QM-313's silence and QM-314's spaces");
+		let puts_now = fake.puts.lock().unwrap().clone();
+		let at = puts_now.iter().position(|put| put.contains("qm314")).unwrap();
+		let spaces: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[at]).unwrap();
+		assert_eq!(spaces["verdict"]["kind"], "nothing_said");
 		let puts = fake.puts.lock().unwrap().clone();
 		assert!(puts.contains(&String::from("/v1/transcript/items/transcript-qm311-1.json")), "{puts:?}");
 		assert!(!puts.iter().any(|put| put.contains("thought")), "a reflection's failure stays home: {puts:?}");

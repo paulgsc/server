@@ -660,12 +660,15 @@ pub struct Heard {
 /// not heard, is never one: the routine reads that from the absence. The
 /// exception is a Rust Rounds or interview take (paulgsc/server#908,
 /// HEARD1), which the week's routine and its essay must not wait on: one
-/// home found silent (judged `nothing_said`) while no model has heard words
-/// in it, and one every attempt failed on as its last attempt (judged
-/// `failed`) while no model has ended the note, so neither is ever filed
-/// after, and numbered above, a hearing; each with no text and no language,
-/// its verdict saying which. A silence or failure kept before verdicts were
-/// is never filed. Only
+/// home found silent, or heard as no words, only spaces (paulgsc/server#913),
+/// while no model has heard words in it, and one every attempt failed on as
+/// its last attempt (judged `failed`) while no model has ended the note, so
+/// neither is ever filed after, and numbered above, a hearing; a silence or
+/// failure with no text and no language, and each with its verdict saying
+/// which. Each such ending is filed
+/// once it is judged, whatever the verdict (`judge` says `nothing_said` of
+/// both); one kept before verdicts were is never filed, nor is a failure
+/// until judged (20261122004001 judged those that ran out before). Only
 /// a note said for a kind a routine reads is one (`reflection`, `jobs`,
 /// `scene`, `studio`, `rust-round`, which a Rust Rounds tutor reads:
 /// paulgsc/some-ui#2237, RR6, and `interview`, which the interview week's
@@ -698,11 +701,11 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		           AND trim(heard.text) <> ''
 		           AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round', 'interview'))
 		          OR (note.of_kind IN ('rust-round', 'interview')
-		              AND heard.outcome = 'silent'
+		              AND (heard.outcome = 'silent' OR (heard.outcome = 'heard' AND trim(heard.text) = ''))
 		              AND EXISTS (
 		                SELECT 1 FROM voice_transcript_verdict AS judged
 		                WHERE judged.subject_id = heard.subject_id AND judged.note_id = heard.note_id
-		                  AND judged.model = heard.model AND judged.attempt = heard.attempt AND judged.verdict = 'nothing_said')
+		                  AND judged.model = heard.model AND judged.attempt = heard.attempt)
 		              AND NOT EXISTS (
 		                SELECT 1 FROM voice_transcript AS spoken
 		                WHERE spoken.subject_id = heard.subject_id AND spoken.note_id = heard.note_id

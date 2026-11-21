@@ -83,6 +83,9 @@ pub fn judge(outcome: &Outcome, measures: Option<&Measures>, expected: Option<&s
 	let failed = |reason| last.then(|| verdict(Kind::Failed, vec![reason], None));
 	match outcome {
 		Outcome::Silent => Some(verdict(Kind::NothingSaid, Vec::new(), None)),
+		// Words that are only white space are nothing said, as silence is
+		// (paulgsc/server#913): the take is filed and read as a silence.
+		Outcome::Heard { text, .. } if text.trim().is_empty() => Some(verdict(Kind::NothingSaid, Vec::new(), None)),
 		Outcome::Unreadable => failed("unreadable"),
 		Outcome::TooLong => failed("too_long"),
 		Outcome::Deadline => failed("deadline"),
@@ -276,5 +279,21 @@ mod tests {
 		assert_eq!(kind_and_reasons(&Outcome::Deadline, None, None), (Kind::Failed, vec![String::from("deadline")]));
 		assert_eq!(kind_and_reasons(&Outcome::Failed, None, None).1, ["engine"]);
 		assert_eq!(judge(&Outcome::Unreadable, None, None, false), None, "retried: nothing final");
+	}
+
+	/// paulgsc/server#913: an ending heard as white space alone is nothing
+	/// said, whatever the engine measured of it, so it is filed as a silence.
+	#[test]
+	fn words_of_white_space_alone_are_nothing_said() {
+		for blank in ["", " ", "\n\t", "\u{a0}\u{3000}"] {
+			let outcome = Outcome::Heard {
+				language: String::from("en"),
+				language_p: 0.97,
+				text: blank.to_owned(),
+				words: Vec::new(),
+			};
+			let measured = measures(-0.3, 1.4, 0.01, 8_000, "en");
+			assert_eq!(kind_and_reasons(&outcome, Some(&measured), Some("en")), (Kind::NothingSaid, Vec::new()), "{blank:?}");
+		}
 	}
 }

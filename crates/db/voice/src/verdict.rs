@@ -632,4 +632,37 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(of_note(&mut conn, A, "n").await.unwrap(), Some(nothing), "a better model's ending replaces the failure");
 	}
+
+	/// paulgsc/server#913: 20261122004001 judges each model's last failed
+	/// attempt, numbered at least 3, that ran out before HEARD1, as `judge`
+	/// would have; and nothing else, nor anything twice.
+	#[tokio::test]
+	async fn a_take_that_ran_out_before_verdicts_is_judged_failed() {
+		const BEFORE: i64 = 20_261_121_000_300;
+		let pool = pool().await;
+		MIGRATOR.undo(&pool, BEFORE).await.unwrap();
+		for n in 1..=3 {
+			attempt(&pool, "ran-out", n, if n == 3 { "failed" } else { "deadline" }, "2026-11-10").await;
+			attempt(&pool, "judged", n, "too_long", "2026-11-17").await;
+		}
+		judge(&pool, "judged", 3, &verdict(Kind::Failed, &["too_long"], None), "2026-11-17").await;
+		for n in 1..=2 {
+			attempt(&pool, "still-trying", n, "unreadable", "2026-11-10").await;
+			attempt(&pool, "ended", n, "deadline", "2026-11-10").await;
+		}
+		attempt(&pool, "ended", 3, "silent", "2026-11-10").await;
+		MIGRATOR.run(&pool).await.unwrap();
+		let judged: Vec<(String, i64, String, String)> = sqlx::query_as("SELECT model, attempt, verdict, reasons FROM voice_transcript_verdict ORDER BY model, attempt")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		let expected = [("judged", 3, "failed", "too_long"), ("ran-out", 3, "failed", "engine")];
+		assert_eq!(
+			judged,
+			expected.map(|(model, attempt, verdict, reasons)| (model.to_owned(), attempt, verdict.to_owned(), reasons.to_owned()))
+		);
+		let mut conn = pool.acquire().await.unwrap();
+		let failed = of_ending(&mut conn, A, "n", "ended").await.unwrap();
+		assert_eq!(failed, None, "an ending kept before verdicts stays unjudged");
+	}
 }
