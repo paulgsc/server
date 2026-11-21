@@ -8,7 +8,7 @@
 
 use crate::{
 	read::{self, Kick, SoFar, Turnover},
-	words, Game, Happened, Mode, Offered, Situation, Watching,
+	words, Game, Happened, Mode, Offered, Said, Situation, Watching,
 };
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, Utc};
 use game_scenarios::{Moment, Scenario};
@@ -434,6 +434,28 @@ const fn kick_words(kick: Kick) -> &'static str {
 /// one play.
 pub(crate) const fn about_a_play(moment: Moment) -> bool {
 	!matches!(moment, Moment::Pregame | Moment::TwoMinute | Moment::Final | Moment::Watching)
+}
+
+/// When a bite offered as `scenario` at `at` was said relative to its play:
+/// before it when the moment's rule offers the snap to come, after it when
+/// the rule offers a play already in the log. One arm per moment, so a new
+/// moment must say which (#3040).
+pub(crate) fn offered_said(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, scenario: Scenario) -> Said {
+	let cx = Cx::new(game, so_far, at, Mode::Full, Utc.fix(), Watching::Unknown);
+	match scenario.entry().moment {
+		// Offered on the snap to come: the opening kickoff, the team's first
+		// possession, the down and distance, the spot.
+		Moment::Kickoff | Moment::OpeningDrive | Moment::ThirdAndLong | Moment::FourthDown | Moment::Snap | Moment::RedZone => Said::Before,
+		// A try is in its touchdown's own play: that play is in the log.
+		Moment::Kick if cx.try_pending().is_some() => Said::After,
+		Moment::Kick => Said::Before,
+		// Offered once the touchdown, or the score, is in the log.
+		Moment::Try | Moment::LeadChange => Said::After,
+		// Never offered ahead of time ("just happened" offers them), or about
+		// no one play.
+		Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::BigPlay | Moment::Injury => Said::After,
+		Moment::Pregame | Moment::TwoMinute | Moment::Final | Moment::Watching => Said::After,
+	}
 }
 
 /// The plays of `so_far`, in ESPN's order, that `scenario`'s rule says were

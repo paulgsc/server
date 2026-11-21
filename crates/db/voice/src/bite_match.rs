@@ -118,8 +118,12 @@ pub async fn games_with_bites_to_match(conn: &mut SqliteConnection) -> Result<Ve
 #[serde(rename_all = "kebab-case")]
 pub enum Method {
 	/// The nearest play the scenario's rule accepts, at or before the bite,
-	/// within the window.
+	/// within the window: a bite said after its play.
 	Nearest,
+	/// The first play the scenario's rule accepts that home had not seen when
+	/// the bite started, within the window either side: a bite said on an
+	/// offer of the snap to come (#3040, BM5).
+	Next,
 	/// No such play: kept, and marked (GW15).
 	Unmatched,
 	/// The scenario is about a stretch of the game, not one play.
@@ -129,13 +133,14 @@ pub enum Method {
 }
 
 impl Method {
-	const ALL: [Self; 4] = [Self::Nearest, Self::Unmatched, Self::NotAPlay, Self::NoScenario];
+	const ALL: [Self; 5] = [Self::Nearest, Self::Next, Self::Unmatched, Self::NotAPlay, Self::NoScenario];
 
 	/// The stored name.
 	#[must_use]
 	pub const fn as_str(self) -> &'static str {
 		match self {
 			Self::Nearest => "nearest",
+			Self::Next => "next",
 			Self::Unmatched => "unmatched",
 			Self::NotAPlay => "not-a-play",
 			Self::NoScenario => "no-scenario",
@@ -154,11 +159,13 @@ impl Method {
 pub struct Match {
 	/// The scenario matched under; `None` exactly for [`Method::NoScenario`].
 	pub scenario: Option<String>,
-	/// ESPN's play id; `Some` exactly for [`Method::Nearest`].
+	/// ESPN's play id; `Some` exactly for [`Method::Nearest`] and
+	/// [`Method::Next`].
 	pub play: Option<String>,
 	pub method: Method,
 	/// The bite's start on home's clock minus the play's time; `Some`
-	/// exactly with a play.
+	/// exactly with a play. At or above zero for [`Method::Nearest`]; for
+	/// [`Method::Next`], negative when the play came after the bite.
 	pub gap_seconds: Option<i64>,
 	/// The scenario engine's rules it was made under.
 	pub engine_version: i64,
@@ -353,8 +360,15 @@ mod tests {
 		);
 		assert!(add_match(&mut conn, "a", "n1", &nearest("p2", 40), NOW).await.unwrap());
 		assert_eq!(newest_match(&mut conn, "a", "n1").await.unwrap(), Some(nearest("p2", 40)));
+		// A bite on the snap to come: its play came 25 s after it started.
+		let next = Match {
+			method: Method::Next,
+			..nearest("p3", -25)
+		};
+		assert!(add_match(&mut conn, "a", "n1", &next, NOW).await.unwrap());
+		assert_eq!(newest_match(&mut conn, "a", "n1").await.unwrap(), Some(next));
 		drop(conn);
-		assert_eq!(rows(&pool, "bite_match").await, 2);
+		assert_eq!(rows(&pool, "bite_match").await, 3);
 		let refused = sqlx::query("UPDATE bite_match SET play_id = 'p3'").execute(&pool).await;
 		assert!(refused.is_err(), "append-only");
 	}
@@ -373,6 +387,12 @@ mod tests {
 			..nearest("p1", 1)
 		};
 		assert!(add_match(&mut conn, "a", "n1", &unmatched_with_play, NOW).await.is_err());
+		assert!(add_match(&mut conn, "a", "n1", &nearest("p1", -5), NOW).await.is_err(), "nearest is at or before the bite");
+		let next_no_play = Match {
+			method: Method::Next,
+			..no_play.clone()
+		};
+		assert!(add_match(&mut conn, "a", "n1", &next_no_play, NOW).await.is_err(), "next names a play");
 		let no_scenario = Match {
 			scenario: Some("in.sack".to_owned()),
 			play: None,

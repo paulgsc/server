@@ -24,7 +24,7 @@ use serde::{Serialize, Serializer};
 
 /// The engine's own version. Every offer carries it, so a bite records the
 /// rules it was offered under; bump it when a rule or a line changes.
-pub const ENGINE_VERSION: u32 = 2;
+pub const ENGINE_VERSION: u32 = 3;
 
 /// The recorder's three modes (the epic's "Settings: three modes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -257,6 +257,54 @@ pub struct Was {
 	pub play_id: String,
 	/// When it happened: ESPN's wallclock, or else when home first saw it.
 	pub at: DateTime<Utc>,
+	/// When home first saw it.
+	pub first: DateTime<Utc>,
+}
+
+/// When a bite was said relative to the play it is about (#3040).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Said {
+	/// Before its play: the bite took an offer about the snap to come (a third
+	/// and long, a fourth down, a field goal try), so its play is the first
+	/// its scenario's rule accepts that home had not seen yet.
+	Before,
+	/// After its play: what just happened, or an offer about a play already in
+	/// the log (the try is read off its touchdown's own play), so its play is
+	/// the nearest at or before it.
+	After,
+}
+
+/// When a bite offered as `scenario` at `at` was said relative to its play,
+/// from `game` and `log` as they stood then (SE2): the moment's rule decides,
+/// and one rule decides by the moment (a kick offered while a try is pending
+/// is about the touchdown's play, one offered on 4th down about the snap to
+/// come).
+///
+/// A bite chosen any other way (what just happened, from the whole set, said
+/// first) is [`Said::After`]: it is not tied to an offer of the snap to come.
+#[must_use]
+pub fn offered_said(game: &Game, log: &[Entry], at: DateTime<Utc>, scenario: Scenario) -> Said {
+	let so_far = read::SoFar::new(game, log, at);
+	rules::offered_said(game, &so_far, at, scenario)
+}
+
+/// The play of `were` (a scenario's, from [`plays_that_were`], in ESPN's
+/// order) a bite started at `at` and said as `said` is about, within
+/// `window`, and the bite's start minus the play's time in whole seconds.
+///
+/// [`Said::After`]: the nearest at or before `at`, at most `window` before.
+/// [`Said::Before`]: the first home had not seen by `lag` before `at`, its
+/// time within `window` either side of `at`. The broadcast runs behind, so
+/// the snap the owner spoke ahead of can have happened before they started;
+/// and the phone hears of a play `lag` or less after home does, so an offer
+/// can still show for that long after its snap reached home.
+#[must_use]
+pub fn its_play(said: Said, at: DateTime<Utc>, were: &[Was], window: TimeDelta, lag: TimeDelta) -> Option<(&Was, i64)> {
+	let found = match said {
+		Said::After => were.iter().filter(|was| was.at <= at && at - was.at <= window).max_by_key(|was| was.at),
+		Said::Before => were.iter().find(|was| was.first > at - lag && (at - was.at).abs() <= window),
+	};
+	found.map(|was| (was, (at - was.at).num_seconds()))
 }
 
 /// Whether `scenario` can be a play at all. Pregame, the two-minute drill,
@@ -282,6 +330,7 @@ pub fn plays_that_were(game: &Game, log: &[Entry], now: DateTime<Utc>, scenario:
 		.map(|i| Was {
 			play_id: so_far.plays[i].play.id.clone(),
 			at: so_far.plays[i].at,
+			first: so_far.plays[i].first,
 		})
 		.collect()
 }

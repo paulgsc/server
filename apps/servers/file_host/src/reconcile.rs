@@ -8,11 +8,16 @@
 //! long in this game at or before that time" can. So [`reconcile`] takes each
 //! bite of a game, asks the scenario engine which plays that scenario's rule
 //! says were one (`scenario_engine::plays_that_were`, the rule "just
-//! happened" uses, SE3), and keeps the nearest at or before the bite's start
-//! on home's clock, within [`WINDOW`]. What it finds is a `bite_match` row
-//! (`voice_repo::bite_match`); a bite with no such play is kept, marked
-//! `unmatched` (GW15). Nothing is ever edited: a later pass adds a row, and
-//! only when the match changed.
+//! happened" uses, SE3), and picks its play by when it was said
+//! (`scenario_engine::its_play`). A bite said on an offer of the snap to come
+//! (a third and long, a fourth down, a field goal try) is about that snap: the
+//! first such play home had not seen when the bite started (allowing
+//! [`LAG`] for the phone to hear of it), within [`WINDOW`] either side
+//! (`next`, #3040). Any other is about the nearest at
+//! or before the bite's start on home's clock, within [`WINDOW`] (`nearest`).
+//! What it finds is a `bite_match` row (`voice_repo::bite_match`); a bite with
+//! no such play is kept, marked `unmatched` (GW15). Nothing is ever edited: a
+//! later pass adds a row, and only when the match changed.
 //!
 //! [`propose`] is what the shot writer (GWB9) calls for a bite said first:
 //! the scenario must be in home's set and the engine, replayed at the bite's
@@ -27,7 +32,7 @@
 use crate::{websocket::game_live::offer::game_at, AppState};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use game_scenarios::{Scenario, CATALOG_VERSION};
-use scenario_engine::{about_a_play, could_be, plays_that_were, Was, Watching, ENGINE_VERSION};
+use scenario_engine::{about_a_play, could_be, its_play, offered_said, plays_that_were, Said, Watching, ENGINE_VERSION};
 use sqlx::SqlitePool;
 use std::{collections::HashMap, time::Duration};
 use tracing::{error, info};
@@ -36,17 +41,23 @@ use voice_repo::{
 	VoiceError,
 };
 
-/// How far before a bite the play it was about may be: the broadcast's delay
-/// plus the time to start talking. About 90 s, to be tuned on real Sundays
-/// (#2081).
+/// How far from a bite the play it was about may be: before it, the
+/// broadcast's delay plus the time to start talking; after it, for a bite on
+/// the snap to come, the time to the snap. About 90 s, to be tuned on real
+/// Sundays (#2081).
 pub const WINDOW: TimeDelta = TimeDelta::seconds(90);
+
+/// How long after home the phone may hear of a play, so how long an offer of
+/// the snap to come can still show once that snap reached home: the socket's
+/// push plus the clock offset's error (GW5's 2 s).
+pub const LAG: TimeDelta = TimeDelta::seconds(5);
 
 /// What one pass over a game did, in counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Reconciled {
 	/// The game's bites.
 	pub bites: usize,
-	/// Of those, matched to a play.
+	/// Of those, matched to a play, before or after it.
 	pub matched: usize,
 	/// Rows added: bites whose match changed or was new.
 	pub added: usize,
@@ -165,17 +176,6 @@ fn started_at_home(bite: &GameBite) -> Option<DateTime<Utc>> {
 	Some(phone + TimeDelta::milliseconds(bite.bite.offset.unwrap_or(0)))
 }
 
-/// The nearest of `were` at or before `at`, within [`WINDOW`], and how many
-/// whole seconds before.
-#[must_use]
-pub fn nearest(at: DateTime<Utc>, were: &[Was]) -> Option<(&Was, i64)> {
-	were
-		.iter()
-		.filter(|was| was.at <= at && at - was.at <= WINDOW)
-		.max_by_key(|was| was.at)
-		.map(|was| (was, (at - was.at).num_seconds()))
-}
-
 /// Match every bite of `game` to its play, as of `now`, adding a
 /// `bite_match` row for each bite whose match is new or changed.
 ///
@@ -196,7 +196,7 @@ pub async fn reconcile(db: &SqlitePool, game: &str, now: DateTime<Utc>) -> Resul
 	};
 	for bite in &bites {
 		let matched = match_one(&mut conn, game, bite, &log, now).await?;
-		done.matched += usize::from(matched.method == Method::Nearest);
+		done.matched += usize::from(matches!(matched.method, Method::Nearest | Method::Next));
 		// Read the newest and add in one write transaction, so two passes at
 		// once (the worker's and GWB8's) cannot both add the same match.
 		let mut tx = sqlx::Connection::begin_with(&mut *conn, "BEGIN IMMEDIATE").await?;
@@ -230,12 +230,22 @@ async fn match_one(conn: &mut sqlx::SqliteConnection, game_id: &str, bite: &Game
 	let Some(game) = game_at(conn, game_id, at).await? else {
 		return Ok(unmatched(Some(named), Method::Unmatched));
 	};
+	// Only an offer can be of the snap to come; the engine, replayed at the
+	// bite's start, says whether this one was (BM5).
+	let said = if bite.bite.how == voice_repo::How::Offered {
+		offered_said(&game, log, at, scenario)
+	} else {
+		Said::After
+	};
 	let were = plays_that_were(&game, log, now, scenario);
-	Ok(match nearest(at, &were) {
+	Ok(match its_play(said, at, &were, WINDOW, LAG) {
 		Some((was, gap)) => Match {
 			scenario: Some(named.to_owned()),
 			play: Some(was.play_id.clone()),
-			method: Method::Nearest,
+			method: match said {
+				Said::Before => Method::Next,
+				Said::After => Method::Nearest,
+			},
 			gap_seconds: Some(gap),
 			engine_version,
 		},
@@ -306,11 +316,10 @@ pub async fn propose(db: &SqlitePool, game: &str, subject: &str, note_id: &str, 
 
 #[cfg(test)]
 mod tests {
-	use super::{nearest, pass, propose, reconcile, Done, Pass, Proposal, Reconciled, WINDOW};
+	use super::{pass, propose, reconcile, Done, Pass, Proposal, Reconciled};
 	use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 	use game_feed_repo::{Fetched, Response};
 	use nfl_feed::summary::Play;
-	use scenario_engine::Was;
 	use serde_json::{json, Value};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 	use voice_repo::bite_match::{newest_match, Method};
@@ -437,20 +446,6 @@ mod tests {
 		(held.method, held.play, held.gap_seconds)
 	}
 
-	#[test]
-	fn the_nearest_play_at_or_before_within_the_window() {
-		let t = at("2026-10-23T01:00:00Z");
-		let was = |id: &str, s: i64| Was {
-			play_id: id.to_owned(),
-			at: t - TimeDelta::seconds(s),
-		};
-		let were = [was("far", 200), was("old", 80), was("near", 20), was("after", -5)];
-		let (picked, gap) = nearest(t, &were).unwrap();
-		assert_eq!((picked.play_id.as_str(), gap), ("near", 20));
-		assert!(nearest(t, &[was("far", 200), was("after", -5)]).is_none(), "outside the window, or after the bite");
-		assert_eq!(nearest(t, &[was("edge", WINDOW.num_seconds())]).map(|(_, gap)| gap), Some(90));
-	}
-
 	#[tokio::test]
 	async fn each_bite_is_matched_to_its_play_or_marked_and_kept() {
 		let db = pool().await;
@@ -458,10 +453,10 @@ mod tests {
 		let play = third_long(&plays);
 		kept_game(&db, &play).await;
 		let t = wall(&play);
-		bite(&db, "on-time", Some("in.third-long"), "offered", t + TimeDelta::seconds(30), Some(0)).await;
+		bite(&db, "on-time", Some("in.third-long"), "just-happened", t + TimeDelta::seconds(30), Some(0)).await;
 		// The phone's clock a minute fast: home's is 60 s behind it.
-		bite(&db, "fast-phone", Some("in.third-long"), "offered", t + TimeDelta::seconds(90), Some(-60_000)).await;
-		bite(&db, "too-late", Some("in.third-long"), "offered", t + TimeDelta::minutes(30), None).await;
+		bite(&db, "fast-phone", Some("in.third-long"), "just-happened", t + TimeDelta::seconds(90), Some(-60_000)).await;
+		bite(&db, "too-late", Some("in.third-long"), "just-happened", t + TimeDelta::minutes(30), None).await;
 		bite(&db, "pregame", Some("pre.weather"), "offered", at("2026-10-22T23:30:00Z"), None).await;
 		bite(&db, "left-for-later", None, "said-first", t + TimeDelta::seconds(10), Some(0)).await;
 		bite(&db, "newer-set", Some("in.something-new"), "every-scenario", t, None).await;
@@ -479,6 +474,35 @@ mod tests {
 
 		let again = reconcile(&db, GAME, now + TimeDelta::hours(1)).await.unwrap();
 		assert_eq!(again.added, 0, "a pass that changes nothing adds nothing");
+	}
+
+	/// BM5 (#3040): a bite said on the offer of a third and long, before its
+	/// snap, is matched to that snap, the gap negative; a bite on the same
+	/// play said after it, from "just happened", still looks back to it.
+	#[tokio::test]
+	async fn a_bite_on_the_snap_to_come_is_matched_to_that_snap() {
+		let db = pool().await;
+		let plays = plays();
+		let play = third_long(&plays);
+		let before = &plays[plays.iter().position(|p| p.id == play.id).unwrap() - 1];
+		// Home had the play before it when the owner started talking.
+		keep(&db, Fetched::Summary(GAME), &live_through(before), wall(before) + TimeDelta::seconds(5)).await;
+		kept_game(&db, &play).await;
+		let t = wall(&play);
+		let ahead = t - TimeDelta::seconds(20);
+		assert!(ahead > wall(before) + TimeDelta::seconds(5), "the bite starts after home saw the play before");
+		bite(&db, "before-the-snap", Some("in.third-long"), "offered", ahead, Some(0)).await;
+		bite(&db, "after-it", Some("in.third-long"), "just-happened", t + TimeDelta::seconds(15), Some(0)).await;
+		// Picked from the whole set before the snap: not tied to an offer, so
+		// it looks back, and finds no third and long before it.
+		bite(&db, "from-the-set", Some("in.third-long"), "every-scenario", ahead, Some(0)).await;
+
+		let now = wall(plays.last().unwrap()) + TimeDelta::minutes(10);
+		let done = reconcile(&db, GAME, now).await.unwrap();
+		assert_eq!((done.bites, done.matched), (3, 2));
+		assert_eq!(matched(&db, "before-the-snap").await, (Method::Next, Some(play.id.clone()), Some(-20)));
+		assert_eq!(matched(&db, "after-it").await, (Method::Nearest, Some(play.id.clone()), Some(15)));
+		assert_eq!(matched(&db, "from-the-set").await.0, Method::Unmatched);
 	}
 
 	#[tokio::test]
@@ -514,7 +538,7 @@ mod tests {
 		let t = wall(&play);
 		keep(&db, Fetched::Scoreboard, &board(), at("2026-10-22T23:00:00Z")).await;
 		keep(&db, Fetched::Summary(GAME), &live_through(&play), t + TimeDelta::seconds(5)).await;
-		bite(&db, "first", Some("in.third-long"), "offered", t + TimeDelta::seconds(30), Some(0)).await;
+		bite(&db, "first", Some("in.third-long"), "just-happened", t + TimeDelta::seconds(30), Some(0)).await;
 		let mut done = Done::default();
 		assert_eq!(pass(&db, &mut done, t + TimeDelta::minutes(1)).await.unwrap(), Pass::default(), "not final yet");
 
