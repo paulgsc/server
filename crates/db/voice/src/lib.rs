@@ -588,6 +588,36 @@ fn is_line(text: &str) -> bool {
 	text.chars().count() <= MAX_LINE_CHARS && !text.chars().any(char::is_control)
 }
 
+/// A bite's unit and whose, as the phone sent them (#3049).
+///
+/// Catalogue 1 names no units: a bite said under it is about none. A unit
+/// with no side is about no one team (halftime's coaching, or the owner
+/// clearing the side), whatever the unit; a side always names its unit.
+fn describe_unit(unit: Option<&str>, side: Option<&str>, catalog: Option<i64>, problems: &mut Vec<Problem>) -> (Option<game_scenarios::Unit>, Option<String>) {
+	let named = unit.and_then(|unit| {
+		let parsed = game_scenarios::Unit::named(unit);
+		if parsed.is_none() {
+			problems.push(("unit", "not what a bite is about: offense, defense, special-teams or coaching"));
+		} else if catalog.is_some_and(|catalog| catalog < UNITS_SINCE) {
+			problems.push(("unit", "catalogue 1 names no units"));
+			return None;
+		}
+		parsed
+	});
+	let side = side.and_then(|side| {
+		if !is_team(side) {
+			problems.push(("unitSide", "not a team's code: 2 to 4 capital letters"));
+			None
+		} else if unit.is_none() {
+			problems.push(("unitSide", "a team's unit names the unit"));
+			None
+		} else {
+			Some(side.to_owned())
+		}
+	});
+	(named, side)
+}
+
 /// The bite the phone `said`, or `None` with its problems pushed.
 fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite> {
 	let before = problems.len();
@@ -654,30 +684,7 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 	if catalog.is_none() {
 		problems.push(("catalog", "not a catalogue version: a whole number from 1"));
 	}
-	// Catalogue 1 names no units: a bite said under it is about none. A unit
-	// with no side is about no one team (halftime's coaching, or the owner
-	// clearing the side), whatever the unit.
-	let unit = said.unit.and_then(|unit| {
-		let parsed = game_scenarios::Unit::named(unit);
-		if parsed.is_none() {
-			problems.push(("unit", "not what a bite is about: offense, defense, special-teams or coaching"));
-		} else if catalog.is_some_and(|catalog| catalog < UNITS_SINCE) {
-			problems.push(("unit", "catalogue 1 names no units"));
-			return None;
-		}
-		parsed
-	});
-	let unit_side = said.unit_side.and_then(|side| {
-		if !is_team(side) {
-			problems.push(("unitSide", "not a team's code: 2 to 4 capital letters"));
-			None
-		} else if said.unit.is_none() {
-			problems.push(("unitSide", "a team's unit names the unit"));
-			None
-		} else {
-			Some(side.to_owned())
-		}
-	});
+	let (unit, unit_side) = describe_unit(said.unit, said.unit_side, catalog, problems);
 	match (how, strip, watching, started, mode, catalog) {
 		(Some(how), Some(strip), Some(watching), Some(started), Some(mode), Some(catalog)) if problems.len() == before => Some(Bite {
 			scenario,
