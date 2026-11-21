@@ -252,6 +252,12 @@ pub struct Happened {
 	pub ago: String,
 	/// The play by the big-play algebra, for `in.big-play` only.
 	pub big_play: Option<BigPlay>,
+	/// What a bite of this play is about by default (#3049): the unit and
+	/// whose, the team's code; read off this play, so one scenario can be
+	/// about two teams at once (a 4th down that just happened, and the next).
+	pub unit: Option<Unit>,
+	/// Whose unit, the team's code; `None` when about no one team.
+	pub unit_side: Option<String>,
 }
 
 /// A big play by the algebra (#3048): how big, what kind, who gained, and

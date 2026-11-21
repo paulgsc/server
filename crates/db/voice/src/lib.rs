@@ -442,6 +442,8 @@ pub const MAX_LINE_CHARS: usize = 500;
 /// The most a phone's clock may be off home's, either way: a day.
 const MAX_OFFSET_MS: i64 = 86_400_000;
 const MAX_SCENARIO_CHARS: usize = 64;
+/// The first catalogue version to name units (#3049).
+const UNITS_SINCE: i64 = 2;
 
 /// `at` as ISO-8601 UTC to the millisecond, if it is an RFC 3339 instant.
 pub(crate) fn instant(at: &str) -> Option<String> {
@@ -652,10 +654,16 @@ fn describe_bite(said: SaidBite<'_>, problems: &mut Vec<Problem>) -> Option<Bite
 	if catalog.is_none() {
 		problems.push(("catalog", "not a catalogue version: a whole number from 1"));
 	}
+	// Catalogue 1 names no units: a bite said under it is about none. A unit
+	// with no side is about no one team (halftime's coaching, or the owner
+	// clearing the side), whatever the unit.
 	let unit = said.unit.and_then(|unit| {
 		let parsed = game_scenarios::Unit::named(unit);
 		if parsed.is_none() {
 			problems.push(("unit", "not what a bite is about: offense, defense, special-teams or coaching"));
+		} else if catalog.is_some_and(|catalog| catalog < UNITS_SINCE) {
+			problems.push(("unit", "catalogue 1 names no units"));
+			return None;
 		}
 		parsed
 	});
@@ -1192,7 +1200,7 @@ mod tests {
 			started: Some("2026-10-26T13:41:07.250-07:00"),
 			offset: Some("-1350"),
 			mode: Some("standard"),
-			catalog: Some("1"),
+			catalog: Some("2"),
 			unit: Some("defense"),
 			unit_side: Some("BUF"),
 		}
@@ -1514,6 +1522,20 @@ mod tests {
 		let mut no_side = said_bite();
 		no_side.unit_side = None;
 		assert!(describe("b1", said_game(no_side), b"take").is_ok(), "a unit about no one team");
+		let mut first_catalog = said_bite();
+		first_catalog.catalog = Some("1");
+		assert_eq!(
+			fields(describe("b1", said_game(first_catalog), b"take").unwrap_err()),
+			["unit"],
+			"catalogue 1 names no units"
+		);
+		let first_catalog = SaidBite {
+			catalog: Some("1"),
+			unit: None,
+			unit_side: None,
+			..said_bite()
+		};
+		assert!(describe("b1", said_game(first_catalog), b"take").is_ok(), "an old phone's bite");
 
 		let long = "x".repeat(MAX_LINE_CHARS + 1);
 		let too_long = SaidBite {
@@ -1646,7 +1668,7 @@ mod tests {
 				String::from("2026-10-26T20:41:07.250Z"),
 				Some(-1350),
 				String::from("standard"),
-				1
+				2
 			),
 			"every field, the strip and context byte for byte"
 		);
@@ -1774,7 +1796,7 @@ mod tests {
 				String::from("2026-10-26T20:41:07.250Z"),
 				Some(-1350),
 				String::from("standard"),
-				1,
+				2,
 			)
 		};
 		assert_eq!(row("b1").await, expected(Some("in.third-long")), "the picked scenario, byte for byte");

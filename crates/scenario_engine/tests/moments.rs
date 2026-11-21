@@ -821,7 +821,7 @@ fn every_scenario_is_ranked_once_with_what_it_is_about() {
 
 /// #3049: the defaults the moment cannot read off the snap to come: the
 /// try's kick is the scorer's, a lead change is the scorer's even snaps
-/// later, an onside kick is the kicking team's, and nothing is about a unit
+/// later (while the latest play is the other team's), an onside kick is the kicking team's, and nothing is about a unit
 /// once the game is final.
 #[test]
 fn a_bites_default_unit_follows_who_did_it() {
@@ -843,9 +843,12 @@ fn a_bites_default_unit_follows_who_did_it() {
 	assert_eq!(about(&o, Scenario::Kick), team(Unit::SpecialTeams, "CHI"), "the scorer kicks the try");
 	assert_eq!(about(&o, Scenario::TwoPoint), team(Unit::Coaching, "CHI"), "and makes the call");
 
-	// Three plays on, NE has the ball: the score was still CHI's offense,
-	// which NE's side calls its defense.
-	let later = plays[td + 1..].iter().position(is_snap).unwrap() + td + 1;
+	// NE's second snap after it, so the latest play is NE's own: the score
+	// was still CHI's offense, which NE's side calls its defense.
+	let later = (td + 1..plays.len())
+		.filter(|&i| is_snap(&plays[i]) && plays[i].possession.as_deref() == Some("NE"))
+		.nth(1)
+		.unwrap();
 	let g = game(Some("NE"), status(GameState::In, Some(&plays[later])), Some(Situation::before(&plays[later])));
 	let o = offer(
 		&g,
@@ -866,4 +869,69 @@ fn a_bites_default_unit_follows_who_did_it() {
 	let g = game(Some("NE"), status(GameState::Post, plays.last()), None);
 	let o = offer(&g, &recorded_log(&plays), pacific(end), Mode::Full, Watching::Watched);
 	assert!(o.ranked.iter().all(|r| r.unit.is_none() && r.unit_side.is_none()));
+}
+
+/// #3049: a play that just happened carries its own default, read off that
+/// play: NE's punt on 4th down is NE's call while the 4th down to come, on
+/// the list, is CHI's.
+#[test]
+fn a_play_just_happened_is_about_who_made_it() {
+	use game_scenarios::Unit;
+	let plays = plays();
+	let punt = (0..plays.len() - 1)
+		.find(|&i| {
+			let p = &plays[i];
+			is_snap(p) && p.down == Some(4) && p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE")
+		})
+		.unwrap();
+	let next = plays[punt + 1..].iter().position(is_snap).unwrap() + punt + 1;
+	assert_eq!(plays[next].possession.as_deref(), Some("CHI"));
+	let g = game(Some("NE"), status(GameState::In, Some(&plays[next])), Some(Situation::before(&plays[next])));
+	let o = offer(
+		&g,
+		&recorded_log(&plays),
+		pacific(wall(&plays[next]) - TimeDelta::seconds(10)),
+		Mode::Full,
+		Watching::Unknown,
+	);
+	let happened = o.just_happened.iter().find(|j| j.scenario == Scenario::FourthDown && j.play_id == plays[punt].id).unwrap();
+	assert_eq!((happened.unit, happened.unit_side.as_deref()), (Some(Unit::Coaching), Some("NE")), "NE punted");
+	let ranked = o.ranked.iter().find(|r| r.scenario == Scenario::FourthDown).unwrap();
+	assert_eq!((ranked.unit, ranked.unit_side.as_deref()), (Some(Unit::Coaching), Some("CHI")), "CHI has the next 4th down");
+}
+
+/// #3049: ESPN says the game is on before the log holds its opening
+/// kickoff; until it does, nothing is about a unit.
+#[test]
+fn nothing_is_about_a_unit_before_the_opening_kickoff() {
+	let plays = plays();
+	let g = game(Some("NE"), status(GameState::In, None), None);
+	let o = offer(&g, &[], pacific(wall(&plays[0]) - TimeDelta::seconds(30)), Mode::Full, Watching::Unknown);
+	assert!(o.ranked.iter().all(|r| r.unit.is_none() && r.unit_side.is_none()), "{:?}", o.ranked);
+}
+
+/// #3049: an onside kick on the list is the team that kicks off next: the
+/// latest onside kick's only while nothing has scored since it.
+#[test]
+fn an_onside_kick_long_ago_is_not_the_next_kick() {
+	use game_scenarios::Unit;
+	let plays = plays();
+	let onside = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("onside"))).unwrap();
+	assert_eq!(plays[onside].possession.as_deref(), Some("NE"));
+	// CHI scores after it: a field goal, shaped from a later CHI snap.
+	let snap = (onside + 1..plays.len())
+		.find(|&i| is_snap(&plays[i]) && plays[i].possession.as_deref() == Some("CHI"))
+		.unwrap();
+	// CHI is the home team.
+	let kick = Play {
+		play_type: Some("Field Goal Good".to_owned()),
+		scoring: Some(true),
+		text: Some("C.Santos 30 yard field goal is GOOD, Center-S.Daniels, Holder-T.Taylor.".to_owned()),
+		home_score: Some(plays[snap - 1].home_score.unwrap_or(0) + 3),
+		away_score: plays[snap - 1].away_score,
+		..plays[snap].clone()
+	};
+	let o = just_after(&plays[..snap], kick);
+	let ranked = o.ranked.iter().find(|r| r.scenario == Scenario::OnsideKick).unwrap();
+	assert_eq!((ranked.unit, ranked.unit_side.as_deref()), (Some(Unit::SpecialTeams), Some("CHI")), "CHI kicks off next");
 }

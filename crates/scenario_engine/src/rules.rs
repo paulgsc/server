@@ -310,78 +310,121 @@ impl<'s> Cx<'s> {
 		})
 	}
 
+	/// Offense or defense as the owner says it: with a side wanted, its
+	/// offense when `team` had the ball and its defense when the other team
+	/// did; with none, the offense of `team`.
+	fn by_the_ball(&self, team: Option<&str>) -> Option<(Unit, Option<String>)> {
+		let team = team?;
+		Some(match self.us {
+			Some(us) if us != team => (Unit::Defense, Some(us.to_owned())),
+			_ => (Unit::Offense, Some(team.to_owned())),
+		})
+	}
+
+	/// Whether a bite would be about a unit at all now: only in the game's
+	/// own scenarios while it is played. Before kickoff (ESPN may say the game
+	/// is on before the log holds its opening kickoff) and after the final, a
+	/// bite is about the game, whatever scenario it names.
+	fn about_a_unit(&self, scenario: Scenario) -> bool {
+		scenario.entry().phase == When::In && self.phase == Phase::Live && (self.so_far.last_snap().is_some() || self.so_far.opening_kickoff().is_some())
+	}
+
 	/// What a bite of `scenario` is about by default, now (#3049, C874): a
-	/// unit, and whose as the team's code.
+	/// unit, and whose as the team's code. This is the default for a pick
+	/// from the list (the cards, and the rest); a play that just happened
+	/// carries its own, [`Cx::happened_unit`].
 	///
 	/// - A call (4th down, the try, the two-minute drill) is the coaching of
 	///   the team with the decision; halftime is the side wanted's, or no one
 	///   team's.
-	/// - A kick is the special teams of the team kicking; a kick or punt
-	///   return big play, of the returners.
-	/// - Anything else in the game: with a side wanted, its offense when it
-	///   had the ball and its defense when the other team did (how the owner
-	///   says it); with none, the offense of the team with the ball. "Had the
-	///   ball" is the snap to come's for what is offered ahead, and the latest
-	///   play's for what just happened.
+	/// - A kick is the special teams of the team kicking.
+	/// - What the moment's rule offers ahead (a 3rd and long, a snap, the red
+	///   zone, the opening drive) goes by the ball as [`Cx::by_the_ball`]
+	///   says, the snap to come's.
+	/// - What only ever just happened (a turnover, a flag, a sack, an injury,
+	///   a lead change, a big play, an onside kick) is the latest such play's
+	///   own default; with none yet, it goes by the latest play's ball.
 	///
 	/// None before kickoff, after the final, or for a pregame, final or
 	/// owner's scenario; none too when the team it would name is unknown.
 	fn default_unit(&self, scenario: Scenario) -> Option<(Unit, Option<String>)> {
-		// Only while the game is played: before kickoff and after the final a
-		// bite is about the game, not a unit, whatever scenario it names.
-		if scenario.entry().phase != When::In || self.phase != Phase::Live {
+		if !self.about_a_unit(scenario) {
 			return None;
 		}
-		let us = self.us;
+		let moment = scenario.entry().moment;
 		let to_come = self.game.situation.as_ref().and_then(|s| s.possession.as_deref());
 		let last = self.so_far.plays.iter().rev().find_map(|seen| seen.play.possession.as_deref());
-		let of = |unit, team: Option<&str>| Some((unit, team.map(str::to_owned)));
-		// Offense or defense as the owner says it: ours, with a side wanted.
-		let by_the_ball = |team: Option<&str>| {
-			let team = team?;
-			match us {
-				Some(us) if us != team => of(Unit::Defense, Some(us)),
-				_ => of(Unit::Offense, Some(team)),
-			}
-		};
-		match scenario.entry().moment {
-			Moment::FourthDown | Moment::TwoMinute => of(Unit::Coaching, Some(to_come.or(last)?)),
-			Moment::Try => of(Unit::Coaching, Some(self.try_pending().or(last)?)),
-			Moment::Halftime => of(Unit::Coaching, us),
+		let latest = || (0..self.so_far.plays.len()).rev().find(|&i| self.happened(moment, i).is_some());
+		match moment {
+			Moment::FourthDown | Moment::TwoMinute => Some((Unit::Coaching, Some(to_come.or(last)?.to_owned()))),
+			Moment::Try => Some((Unit::Coaching, Some(self.try_pending().or(last)?.to_owned()))),
+			Moment::Halftime => Some((Unit::Coaching, self.us.map(str::to_owned))),
 			// The try's kick is the scorer's; a field goal try, the offense's.
-			Moment::Kick => of(Unit::SpecialTeams, Some(self.try_pending().or(to_come).or(last)?)),
-			// An onside kick is the kicking team's: the latest onside kick's,
-			// or else the team that scored last, which kicks off next.
+			Moment::Kick => Some((Unit::SpecialTeams, Some(self.try_pending().or(to_come).or(last)?.to_owned()))),
+			// The team that kicks off next: the latest onside kick's only when
+			// nothing has scored since, else the team that scored last.
 			Moment::OnsideKick => {
-				let onside = self
-					.so_far
-					.plays
-					.iter()
-					.rev()
-					.find(|seen| read::is_onside(seen.play))
-					.and_then(|seen| seen.play.possession.as_deref());
-				let scorer = (0..self.so_far.plays.len()).rev().find_map(|i| self.scorer(i));
-				of(Unit::SpecialTeams, Some(onside.or(scorer)?))
-			}
-			Moment::BigPlay => {
-				let big = (0..self.so_far.plays.len()).rev().find_map(|i| self.big_play(i))?;
-				match big.kind {
-					Kind::KickReturn | Kind::PuntReturn => of(Unit::SpecialTeams, Some(&big.by)),
-					Kind::Pass | Kind::Run => by_the_ball(Some(&big.by)),
-					// The defense returned it: the gaining side had no ball.
-					Kind::InterceptionReturn | Kind::FumbleReturn => match us {
-						Some(us) if us == big.by => of(Unit::Defense, Some(us)),
-						Some(us) => of(Unit::Offense, Some(us)),
-						None => of(Unit::Defense, Some(&big.by)),
-					},
+				let scored = (0..self.so_far.plays.len()).rev().find(|&i| self.scorer(i).is_some());
+				match (latest(), scored) {
+					(Some(onside), scored) if scored.is_none_or(|scored| onside > scored) => self.happened_unit(moment, onside),
+					(_, scored) => Some((Unit::SpecialTeams, Some(self.scorer(scored?)?.to_owned()))),
 				}
 			}
-			// The score that changed the lead was the scorer's offense.
-			Moment::LeadChange => by_the_ball((0..self.so_far.plays.len()).rev().find_map(|i| self.scorer(i))),
-			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury => by_the_ball(last),
-			Moment::ThirdAndLong | Moment::Snap | Moment::RedZone | Moment::OpeningDrive => by_the_ball(to_come.or(last)),
+			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury | Moment::LeadChange | Moment::BigPlay => {
+				latest().map_or_else(|| self.by_the_ball(last), |i| self.happened_unit(moment, i))
+			}
+			Moment::ThirdAndLong | Moment::Snap | Moment::RedZone | Moment::OpeningDrive => self.by_the_ball(to_come.or(last)),
 			// The coin toss: before the opening kickoff, no one team's yet.
 			Moment::Kickoff | Moment::Pregame | Moment::Final | Moment::Watching => None,
+		}
+	}
+
+	/// What a bite of play `i`, just happened as `moment`, is about by
+	/// default (#3049, C874): read off that play, not off the snap to come.
+	/// A call is the coaching of the team that made it; a kick, the kicking
+	/// team's special teams (the try's, the scorer's); a return, the
+	/// returners'; a score, the scorer's (its defense or special teams when
+	/// the other team had the ball); anything else goes by the play's ball.
+	fn happened_unit(&self, moment: Moment, i: usize) -> Option<(Unit, Option<String>)> {
+		if self.phase != Phase::Live {
+			return None;
+		}
+		let play = self.so_far.plays[i].play;
+		let offense = play.possession.as_deref();
+		let of = |unit, team: Option<&str>| Some((unit, Some(team?.to_owned())));
+		match moment {
+			Moment::FourthDown => of(Unit::Coaching, offense),
+			Moment::Try => of(Unit::Coaching, self.scorer(i).or(offense)),
+			Moment::Kick => of(Unit::SpecialTeams, self.scorer(i).or(offense)),
+			Moment::OnsideKick | Moment::Kickoff => of(Unit::SpecialTeams, offense),
+			Moment::BigPlay => self.big_play(i).and_then(|big| self.gained(big.kind, &big.by)),
+			Moment::LeadChange => {
+				let scorer = self.scorer(i)?;
+				match read::gain_by(play) {
+					// A return for the score: the returners'.
+					Some((kind, _, false)) => self.gained(kind, scorer),
+					_ => self.by_the_ball(Some(scorer)),
+				}
+			}
+			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury | Moment::ThirdAndLong | Moment::Snap | Moment::RedZone | Moment::OpeningDrive => {
+				self.by_the_ball(offense)
+			}
+			Moment::TwoMinute | Moment::Halftime | Moment::Pregame | Moment::Final | Moment::Watching => None,
+		}
+	}
+
+	/// Whose unit a gain of `kind` by `by` was: a kick or punt return is the
+	/// returners' special teams, a pass or run goes by the ball, and an
+	/// interception or fumble return is the defense's (as the owner says it:
+	/// ours, or our offense's when the other side returned it).
+	fn gained(&self, kind: Kind, by: &str) -> Option<(Unit, Option<String>)> {
+		match kind {
+			Kind::KickReturn | Kind::PuntReturn => Some((Unit::SpecialTeams, Some(by.to_owned()))),
+			Kind::Pass | Kind::Run => self.by_the_ball(Some(by)),
+			Kind::InterceptionReturn | Kind::FumbleReturn => Some(match self.us {
+				Some(us) if us != by => (Unit::Offense, Some(us.to_owned())),
+				_ => (Unit::Defense, Some(by.to_owned())),
+			}),
 		}
 	}
 
@@ -690,13 +733,21 @@ pub(crate) fn just_happened(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, 
 			.filter_map(|scenario| cx.happened(scenario.entry().moment, i).map(|(weight, line)| (weight, scenario, line)))
 			.collect();
 		let ago_seconds = (at - seen.at).num_seconds().max(0);
-		out.extend(ranked(found).into_iter().map(|(scenario, line)| Happened {
-			scenario,
-			play_id: seen.play.id.clone(),
-			line,
-			ago_seconds,
-			ago: words::ago(ago_seconds),
-			big_play: (scenario == Scenario::BigPlay).then(|| cx.big_play(i)).flatten(),
+		out.extend(ranked(found).into_iter().map(|(scenario, line)| {
+			let (unit, unit_side) = cx
+				.happened_unit(scenario.entry().moment, i)
+				.filter(|_| cx.about_a_unit(scenario))
+				.map_or((None, None), |(unit, side)| (Some(unit), side));
+			Happened {
+				scenario,
+				play_id: seen.play.id.clone(),
+				line,
+				ago_seconds,
+				ago: words::ago(ago_seconds),
+				big_play: (scenario == Scenario::BigPlay).then(|| cx.big_play(i)).flatten(),
+				unit,
+				unit_side,
+			}
 		}));
 	}
 	out
