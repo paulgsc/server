@@ -228,10 +228,10 @@ pub async fn run_once_telling<H: Hear>(
 /// and the pass stops there; otherwise whether it was a deadline judged
 /// anyway, after which the pass stops too.
 ///
-/// A deadline judged anyway still leaves its note waiting (it has attempts
-/// left), and the next pass hears it first: going on to another note now
-/// would start that one's streak, which the older note's next excuse would
-/// then replace. A note not excused ends any streak of its own (C896).
+/// The pass stops after a deadline judged anyway too, as it did before
+/// TR1: that note's streak is over, and the next pass begins from the queue
+/// as it then stands, fewest attempts first. A note not excused ends any
+/// streak of its own (C896).
 fn excuse(guard: &mut Guard<(String, String)>, pass: &mut Pass, note: &transcript::Waiting, attempted: &Heard, contended: bool, took: Duration) -> Option<bool> {
 	let key = (note.subject.clone(), note.note_id.clone());
 	let judged_anyway = if matches!(attempted.outcome, Outcome::Deadline) && contended {

@@ -10,6 +10,10 @@
 //! a note midway: the turn is checked before each note, so a turn runs over
 //! by at most one note's deadline.
 //!
+//! - **Only time while batch work waits counts.** The run is timed from
+//!   the first note checked while batch work waits, and ends whenever none
+//!   does; it includes the gaps between passes and a pass's own catch-up,
+//!   which hold no lane but are part of the backlog's run.
 //! - **A run ends when the queue does.** A pass that finds nothing to hear
 //!   ends the run ([`Turn::rested`]), so notes heard as they arrive never add
 //!   up to a turn.
@@ -80,8 +84,14 @@ impl Turn {
 			self.giving_until = None;
 			self.since = None;
 		}
+		// The run counts only while batch work waits: hearing with nobody to
+		// give to is no part of a turn.
+		if !waits {
+			self.since = None;
+			return true;
+		}
 		let since = *self.since.get_or_insert(now);
-		if waits && now.saturating_duration_since(since) >= self.length {
+		if now.saturating_duration_since(since) >= self.length {
 			self.giving_until = now.checked_add(self.give);
 			self.since = None;
 			return false;
@@ -129,20 +139,26 @@ mod tests {
 						let waits = minute >= waits_from && minute < waits_from + waits_for;
 						interactive.set_batch_waits(waits);
 						let case = format_args!("{note_min} min notes, waiting from {waits_from} for {waits_for}, minute {minute}").to_string();
+						if !waits {
+							run_from = None;
+						}
 						if turn.may_hear(start + MIN * minute) {
 							if let Some(from) = given_from.take() {
 								assert!(!waits || minute >= from + 10, "a turn cut short while batch work waits: {case}");
 							}
-							let from = *run_from.get_or_insert(minute);
-							assert!(!waits || minute - from < 20, "a note started past the turn: {case}");
+							if waits {
+								let from = *run_from.get_or_insert(minute);
+								assert!(minute - from < 20, "a note started past the turn: {case}");
+							}
 							minute += note_min;
 						} else {
 							assert!(waits, "gave way to nothing: {case}");
 							run_from = None;
-							if given_from.is_none() {
-								given_from = Some(minute);
+							let from = *given_from.get_or_insert_with(|| {
 								gave += 1;
-							}
+								minute
+							});
+							assert!(minute < from + 10, "a turn given that does not end: {case}");
 							minute += 1;
 						}
 					}

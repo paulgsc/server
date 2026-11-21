@@ -214,18 +214,25 @@ struct Batch {
 	/// the attempt ends (`infra/render/render-calls.sh`). A folder that cannot
 	/// be listed counts as one, so home is never called idle on a guess.
 	attempting: bool,
+	/// An attempt's log was seen, not guessed from a folder that could not be
+	/// listed: what the transcriber's turn gives way to (TR4), which must
+	/// never give way to nothing.
+	attempt_seen: bool,
 }
 
 impl Batch {
 	async fn read(status: &Path, attempts: &[PathBuf]) -> Self {
-		let mut attempting_any = false;
+		let (mut attempting_any, mut seen_any) = (false, false);
 		for folder in attempts {
-			attempting_any = attempting_any || attempting(folder).await;
+			let found = attempting(folder).await;
+			attempting_any = attempting_any || found != Some(false);
+			seen_any = seen_any || found == Some(true);
 		}
 		Self {
 			job: Number::read(&status.join(JOB)).await,
 			peak: Number::read(&status.join(PEAK)).await,
 			attempting: attempting_any,
+			attempt_seen: seen_any,
 		}
 	}
 
@@ -233,21 +240,28 @@ impl Batch {
 	const fn active(&self) -> bool {
 		matches!(self.job, Number::Value(_)) || self.attempting
 	}
+
+	/// Batch work is known to wait: a job named, or an attempt's log seen.
+	/// Unlike [`Self::active`], never a guess (TR4).
+	const fn known_to_wait(&self) -> bool {
+		matches!(self.job, Number::Value(_)) || self.attempt_seen
+	}
 }
 
-async fn attempting(status: &Path) -> bool {
+/// Whether `status` holds an attempt's log: `None` when it cannot be listed.
+async fn attempting(status: &Path) -> Option<bool> {
 	let Ok(mut entries) = tokio::fs::read_dir(status).await else {
-		return true;
+		return None;
 	};
 	loop {
 		match entries.next_entry().await {
 			Ok(Some(entry)) => {
 				if is_attempt_log(&entry.file_name().to_string_lossy()) {
-					return true;
+					return Some(true);
 				}
 			}
-			Ok(None) => return false,
-			Err(_) => return true,
+			Ok(None) => return Some(false),
+			Err(_) => return None,
 		}
 	}
 }
@@ -408,7 +422,7 @@ impl Lane {
 		let pressure = tokio::fs::read_to_string(&paths.pressure).await.ok();
 		let waiting = self.since.waiting(interactive.reading());
 		let batch = Batch::read(&paths.status, &paths.attempts).await;
-		interactive.set_batch_waits(batch.active());
+		interactive.set_batch_waits(batch.known_to_wait());
 		let now_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
 		let (signals, readable) = signals(now_ms, meminfo.as_deref(), pressure.as_deref(), waiting, &batch);
 		let (state, decision) = ::lane::step(self.state, &signals, &POLICY);
@@ -547,7 +561,12 @@ mod tests {
 
 	#[test]
 	fn the_peak_is_declared_until_measured_and_a_garbled_file_is_unreadable() {
-		let batch = |job, peak| Batch { job, peak, attempting: false };
+		let batch = |job, peak| Batch {
+			job,
+			peak,
+			attempting: false,
+			attempt_seen: false,
+		};
 		let (signals, readable) = signals(0, Some(MEMINFO_ROOM), Some(PRESSURE_CALM), false, &batch(Number::Absent, Number::Absent));
 		assert_eq!((signals.batch_job, signals.batch_peak_bytes), (None, Some(DECLARED_PEAK_BYTES)));
 		assert_eq!(
@@ -576,12 +595,33 @@ mod tests {
 		signals(0, Some(MEMINFO_ROOM), Some(PRESSURE_CALM), false, batch)
 	}
 
+	/// TR4 (review): a folder that cannot be listed keeps home from being
+	/// called idle, but is not batch work the transcriber gives way to; a job
+	/// named, or an attempt's log seen, is.
+	#[tokio::test]
+	async fn the_transcribers_turn_gives_way_only_to_batch_work_seen() {
+		let dir = tempfile::tempdir().unwrap();
+		let status = dir.path().join("status");
+		std::fs::create_dir(&status).unwrap();
+		let missing = dir.path().join("missing");
+		let unread = Batch::read(&status, std::slice::from_ref(&missing)).await;
+		assert!(unread.active() && !unread.known_to_wait(), "a guess: active, not known to wait");
+		let quiet = Batch::read(&status, std::slice::from_ref(&status)).await;
+		assert!(!quiet.active() && !quiet.known_to_wait());
+		std::fs::write(status.join(".2026-10-30.log"), b"").unwrap();
+		assert!(Batch::read(&status, std::slice::from_ref(&status)).await.known_to_wait(), "an attempt seen");
+		std::fs::remove_file(status.join(".2026-10-30.log")).unwrap();
+		std::fs::write(status.join(JOB), b"7\n").unwrap();
+		assert!(Batch::read(&status, std::slice::from_ref(&status)).await.known_to_wait(), "a job named");
+	}
+
 	#[test]
 	fn no_psi_or_no_meminfo_is_unreadable() {
 		let batch = Batch {
 			job: Number::Absent,
 			peak: Number::Absent,
 			attempting: false,
+			attempt_seen: false,
 		};
 		let (signals, readable) = signals(0, None, None, false, &batch);
 		assert_eq!((signals.mem_available_bytes, signals.memory_pressure_pct), (None, None));
