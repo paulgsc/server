@@ -104,6 +104,7 @@ hex = "0.4.3"
 sha2 = "0.10.9"
 chrono.workspace = true
 tokio-util = { workspace = true }
+outbound = { workspace = true }
 reqwest = { workspace = true }
 rand = "0.9.2"
 base64 = { workspace = true }

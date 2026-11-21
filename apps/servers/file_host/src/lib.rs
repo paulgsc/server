@@ -282,7 +282,10 @@ impl AppState {
 
 		Ok(Some(NudgeContext {
 			clock,
-			sender: Arc::new(push_kit::Sender::new(identity.clone(), push_kit::ReqwestTransport::default())),
+			sender: Arc::new(push_kit::Sender::new(
+				identity.clone(),
+				push_kit::ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build()?),
+			)),
 			vapid: identity,
 			enabled: config.nudge_enabled,
 			quiet_hours_start: config.nudge_quiet_hours_start,
