@@ -16,6 +16,7 @@ base64 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 web-push = { workspace = true }
 
+outbound = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -27,7 +28,7 @@ default = []
 # The only adapter shipped here. Anything else — hyper, isahc, an offline
 # recorder in a test — implements `PushTransport` in its own crate and needs
 # nothing from this one but the trait.
-reqwest-transport = ["dep:reqwest"]
+reqwest-transport = ["dep:reqwest", "dep:outbound"]
 
 [lints]
 workspace = true

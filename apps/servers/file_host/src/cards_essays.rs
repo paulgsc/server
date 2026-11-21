@@ -109,7 +109,7 @@ impl CardsEssaysContext {
 	/// # Errors
 	/// An HTTP client that does not build.
 	pub fn new() -> anyhow::Result<Self> {
-		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+		let client = outbound::client(outbound::Caller::CardsEssays).timeout(REQUEST_TIMEOUT).build()?;
 		Ok(Self {
 			fetch: crate::game_feed::pass::ReqwestFetch::new(client),
 		})
@@ -186,6 +186,7 @@ async fn given(db: &SqlitePool, configured: Option<&str>) -> Result<pass::Given,
 		status: std::path::PathBuf::from(STATUS_FOLDER),
 		subject,
 		renders: std::path::PathBuf::from(RENDERS_FOLDER),
+		frames: std::path::PathBuf::from(crate::clips::FRAMES_FOLDER),
 	})
 }
 

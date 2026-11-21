@@ -172,7 +172,7 @@ local pct(lo, hi) = steps([{ color: green, value: null }, { color: amber, value:
     'Who is hitting their limit — containers',
     'CPU each container is using as a share of its own compose `cpus:` limit. Near 100% it is being throttled (next panel) — its requests wait for CPU even when the host is idle. Containers without a limit are not shown.',
     [{
-      expr: 'topk(10, 100 * sum by (name) (rate(container_cpu_usage_seconds_total{name=~"$container"}[5m])) / on(name) (max by (name) (container_spec_cpu_quota{name=~"$container"}) / max by (name) (container_spec_cpu_period{name=~"$container"})))',
+      expr: 'topk(10, 100 * sum by (name) (rate(container_cpu_usage_seconds_total{name!="", name=~"$container"}[5m])) / on(name) (max by (name) (container_spec_cpu_quota{name!="", name=~"$container"}) / max by (name) (container_spec_cpu_period{name!="", name=~"$container"})))',
       legendFormat: '{{name}}',
       instant: true,
       refId: 'A',
@@ -186,7 +186,7 @@ local pct(lo, hi) = steps([{ color: green, value: null }, { color: amber, value:
     'Throttled — share of CPU periods each container was held back',
     'For every container with a CPU limit: the share of scheduler periods in which it wanted more CPU than its limit and was paused. Anything sustained above a few percent is latency the service pays for its limit, independent of how busy the host is.',
     [{
-      expr: '100 * sum by (name) (rate(container_cpu_cfs_throttled_periods_total{name=~"$container"}[5m])) / sum by (name) (rate(container_cpu_cfs_periods_total{name=~"$container"}[5m]))',
+      expr: '100 * sum by (name) (rate(container_cpu_cfs_throttled_periods_total{name!="", name=~"$container"}[5m])) / sum by (name) (rate(container_cpu_cfs_periods_total{name!="", name=~"$container"}[5m]))',
       legendFormat: '{{name}}',
       refId: 'A',
     }],
@@ -223,7 +223,7 @@ local pct(lo, hi) = steps([{ color: green, value: null }, { color: amber, value:
     'Who is near their limit — containers',
     'Working-set memory as a share of each container\'s compose `mem_limit`. At 100% the kernel OOM-kills it. Containers without a limit are not shown.',
     [{
-      expr: 'topk(10, 100 * max by (name) (container_memory_working_set_bytes{name=~"$container"}) / max by (name) (container_spec_memory_limit_bytes{name=~"$container"} > 0))',
+      expr: 'topk(10, 100 * max by (name) (container_memory_working_set_bytes{name!="", name=~"$container"}) / max by (name) (container_spec_memory_limit_bytes{name!="", name=~"$container"} > 0))',
       legendFormat: '{{name}}',
       instant: true,
       refId: 'A',

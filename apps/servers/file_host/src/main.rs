@@ -123,7 +123,10 @@ async fn main() -> Result<()> {
 	// (#213/F2) needs a bucket above `admission::ANSWER_WITHIN`'s 8 s, and the
 	// exporter's default buckets top out at 10s — see
 	// `metrics::http::HTTP_DURATION_BUCKETS`'s own doc comment.
-	let metrics_builder = some_metrics::PrometheusBuilder::new().set_buckets_for_metric(some_metrics::Matcher::Full(HTTP_DURATION_METRIC.to_string()), HTTP_DURATION_BUCKETS)?;
+	// And `outbound`'s, whose callers time out at up to 30 s (`outbound::DURATION_BUCKETS`).
+	let metrics_builder = some_metrics::PrometheusBuilder::new()
+		.set_buckets_for_metric(some_metrics::Matcher::Full(HTTP_DURATION_METRIC.to_string()), HTTP_DURATION_BUCKETS)?
+		.set_buckets_for_metric(some_metrics::Matcher::Full(outbound::DURATION_METRIC.to_string()), outbound::DURATION_BUCKETS)?;
 	let metrics_handle = some_metrics::install_with(metrics_builder)?;
 
 	// #213 (F4): which build the dashboard is describing, stamped once at

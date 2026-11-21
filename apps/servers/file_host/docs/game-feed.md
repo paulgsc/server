@@ -23,13 +23,52 @@ offers: see "The phone's live game day" below.
 ## The worker
 
 Always started, and following or paused by the operator's switch (see
-"Turning it on"). It wakes every 5 s, reads the switch, and fetches only what
-its schedule says is due, so an idle wake's only I/O is that one indexed
-read:
+"Turning it on"). It wakes every 5 s, reads the switch and the chosen teams,
+and fetches only what its schedule says is due, so an idle wake's only I/O is
+those two indexed reads:
 
-- **The scoreboard** (`/scoreboard`, the current week) every
-  `game_feed::CADENCE.scoreboard` (600), to learn the week's games, their
-  kickoffs and their states. Due at once on start, so a restart catches up.
+- **The scoreboard** (`/scoreboard`, the current week), to learn the week's
+  games, their kickoffs and their states, as its state says
+  (`pass::Watch`, worked out each pass from what the schedule holds):
+  - **Awake** while a chosen game is live, past kickoff and not final, or
+    within `game_feed::CADENCE.margin` (3,600 s) of its kickoff, or while any
+    game was still live at its end read (below), to at most 8 h after its
+    kickoff: every
+    `game_feed::CADENCE.scoreboard` (600). Due at once on start, so a
+    restart catches up.
+  - **Asleep** otherwise: next read at the soonest of an hour before the next
+    chosen kickoff, any listed game's **end read** (its kickoff plus
+    `pass::PRE_GRACE`, 4 h, chosen or not, so every game is seen over while
+    the scoreboard still lists it), and `game_feed::CADENCE.refresh`
+    (86,400 s) after the last read, and never sooner than awake would be. A
+    day with no game costs one read (paulgsc/some-ui#3329); a game day, one
+    more per kickoff time at least 10 minutes from the last read, and one
+    every 10 minutes while a game overruns its end read. A game with no
+    kickoff, or one still `pre` at its end read (a delayed start), has no
+    second end read: only the daily read sees it over. The daily read learns a game added,
+    flexed or rescheduled. One added, or moved sooner, to within a day of the
+    last read is learnt only at the next one: in the worst case the whole game
+    is missed live and fetched once, as over. So is a chosen game whose kickoff
+    the scoreboard does not give, or one still `pre` past its grace that then
+    starts. A game still `pre` past its grace (postponed) leaves the scoreboard
+    asleep until a read says its new kickoff; one called off (`post`, not
+    completed) before its kickoff is not followed before that kickoff.
+  - **Backing off** after a read that failed, as below, whatever the games.
+- **Only the chosen teams' games.** `settings::GameTeams` (below, "Turning it
+  on") names teams; a game is chosen when either side is named, or always when
+  none is. Only a chosen game gets live summaries and only its kickoff wakes
+  the scoreboard. Every listed game is still learnt, so a change of teams
+  takes effect at the next pass. A game no team chose gets no live
+  summaries, but once the scoreboard calls it completed its summary is
+  fetched until one reads final, as a completed game first seen late is
+  (owner, 2026-11-21, on paulgsc/some-ui#3329): the record keeps every game's
+  end, and a bite about it is still matched to a play (`reconcile`, which
+  reads only games held final). Its end read is what sees it completed, so a
+  game that ends the week is not lost when the scoreboard moves on; one
+  still live then keeps the scoreboard awake until it reads over. Until its
+  final summary, the phone's game day shows it from the scoreboard alone.
+  One no read ever saw completed (postponed, say) is dropped once it leaves
+  the scoreboard, never fetched.
 - **A game's summary** (`/summary?event=<id>`) every `game_feed::CADENCE.live`
   (15) while the game is live, and from its kickoff while the scoreboard still
   calls it `pre`, since the scoreboard can be ten minutes stale at kickoff. A
@@ -127,6 +166,13 @@ moves without a sops edit or a restart, as Rust Rounds' recording did
   touched (GF2 holds) and the schedule waits; the first pass after it is
   turned back on fetches whatever is due by then, the scoreboard first, so it
   catches up as a restart does.
+- **The teams are a second setting,** `game-teams`, `{ "teams": [] }` by
+  default (`settings::GameTeams`, every game): ESPN's abbreviations as the
+  scoreboard spells them (`SF`, `WSH`), 2 to 4 capitals, at most 32, held
+  sorted and once each. Its own namespace, not a field of `game-feed`,
+  because the web app sets the switch with `{ following }` alone. It is read
+  each pass after the switch, and one that cannot be read skips the pass as
+  the switch does.
 - **Said once.** Pausing and resuming are each logged once, at `INFO`, when
   the worker first sees them, not every pass.
 - **A switch it cannot read skips the pass,** at `ERROR`
@@ -151,7 +197,12 @@ wake), `game_feed_pass_failing` (a storage failure), `game_feed_games_followed`,
 `game_feed_fetches_total{kind}` (what each fetch read as: `scoreboard`,
 `summary`, `rate_limited`, `status`, `not_json`, `not_an_object`, or why there
 was no answer: `timeout`, `connect`, `transport`) and
-`game_feed_plays_added_total`. The GAME FEED dashboard (`infra/grafana/dashboards/game-feed.jsonnet`) shows them.
+`game_feed_plays_added_total`, and the scoreboard's state after each pass that
+ran: `game_feed_asleep` (1 asleep, 0 awake or backing off),
+`game_feed_next_fetch_timestamp_seconds` (when it is next read) and
+`game_feed_teams_chosen` (0 is every game); a paused pass leaves those three
+as they were. Asleep, the worker still wakes and stamps every 5 s, so
+`GameFeedStale` still means the worker stopped, never that it sleeps. The GAME FEED dashboard (`infra/grafana/dashboards/game-feed.jsonnet`) shows them.
 
 ## What ESPN's data is like
 
@@ -245,15 +296,29 @@ which reads bites and writes `bite_match`, is a separate worker (call C160,
 - **How.** A bite's time on home's clock is its `started_at` plus its
   `clock_offset_ms`. `scenario_engine::plays_that_were` gives every play the
   bite's scenario's rule says was one (the rule "just happened" uses, SE3,
-  replayed over the whole log), and the match is the nearest at or before
-  that time, within `reconcile::WINDOW` (90 s, the broadcast's delay plus
-  the time to start talking, to be tuned on real Sundays). Otherwise the bite
-  is kept and marked: `unmatched`, `not-a-play` (pregame, the two-minute
-  drill, the final, the owner's own) or `no-scenario` (said first, not
-  mapped).
+  replayed over the whole log), and the match depends on when the bite was
+  said (#3040, BM5; `scenario_engine`'s README, "Which play a bite is
+  about"). A bite taken on an offer of the snap to come (a third and long, a
+  fourth down, a field goal try, a play call) is `next`: that snap, the
+  first home had not seen when the offer was on its screen, if the rule
+  accepts it, within `reconcile::WINDOW` either side. The offer was on
+  home's screen at the bite's start, or `reconcile::LAG` (5 s) before it if
+  home was no longer offering it then (the phone had not heard yet). A bite
+  on a first possession or a red-zone trip is `next` to the play that ends
+  that drive; one on the coin toss, to the opening kickoff. A bite picked
+  from the whole set, or said first and mapped, takes the nearer of the
+  plays either side (`next` if after it). A bite from just happened is
+  `nearest`: the nearest at or before that time,
+  within `reconcile::WINDOW` (90 s, the broadcast's delay plus the time to
+  start talking, to be tuned on real
+  Sundays). Otherwise the bite is kept and marked: `unmatched`, `not-a-play`
+  (pregame, the two-minute drill, the final, the owner's own) or
+  `no-scenario` (said first, not mapped).
 - **A said-first proposal** (`reconcile::propose`, for the shot writer,
   GWB9) is a `bite_mapping` row only if the scenario is in home's set and
   `scenario_engine::could_be` at the bite's time holds it; a refused one adds
   nothing, so the bite stays unmapped, never mislabelled.
 - **Append-only.** A pass adds a `bite_match` row only for a bite whose match
-  changed; a reader takes a bite's newest. Logs carry counts only.
+  changed; a reader takes a bite's newest. A bite whose newest match was made
+  under an older `ENGINE_VERSION` is matched again once, whatever its week, so
+  a rule change reaches every bite. Logs carry counts only.

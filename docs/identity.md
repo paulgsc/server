@@ -1371,7 +1371,7 @@ nowhere is marked as such and belongs to review.
     it", relayed by the coordinator of run paulgsc/some-ui#3311): an essay
     whose spoken cards name the owner's takes is given them in
     `cards-essays/<key>.takes/` (`cards_essays::pass`, through the one take
-    hand-off every essay uses, `take_files::hand_off`), and the rules hold
+    hand-off every essay uses, `essay_media::takes::hand_off`), and the rules hold
     only as far as this says. (a) holds: the takes are the mailbox
     subject's only, and with no subject home's tidy takes back every essay
     given with takes within a minute; (b) holds: the takes folder goes once
@@ -1524,7 +1524,7 @@ nowhere is marked as such and belongs to review.
     are each a `404`, so no audio leaves home but to its own subject's paired
     phone, and a kind added later stays home until it is listed. It reads only, its span skips every
     argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
-    one other caller, `take_files::hand_off`, the one take hand-off: through it
+    one other caller, `essay_media::takes::hand_off`, the one take hand-off: through it
     `rust_essays` copies a final week's `rust-round` or `interview` takes, and
     `cards_essays` a spoken card's takes (reading their audio with
     `voice_repo::transcript::audio`, any kind; its tidy reads only a note's

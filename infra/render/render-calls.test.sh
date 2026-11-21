@@ -345,21 +345,23 @@ fi
 # <key>.json --out <w>` writes cards.mp4, cut-list.json, shot-times.json and
 # a cache into <w>/<key>, the key being the file's name, or refuses it in the
 # real recorder's words while $FAKE/not-cards exists. Each run is counted in
-# $FAKE/cards-runs as `<file> <out>`, and the --takes it was handed (WALK7,
-# #1052) in $FAKE/cards-takes, `-` for none.
+# $FAKE/cards-runs as `<file> <out>`, and the --takes, --snips and --clips
+# it was handed (WALK7, #1052; SNIPS4) in $FAKE/cards-takes, `-` for none.
 if [ "$1" = tests/record/cards.ts ]; then
-  file= out= takes=-
+  file= out= takes=- snips=- clips=-
   while [ $# -gt 0 ]; do
     case $1 in
       --cut-list-file) file=$2; shift ;;
       --takes) takes=$2; shift ;;
+      --snips) snips=$2; shift ;;
+      --clips) clips=$2; shift ;;
       --out) out=$2; shift ;;
       --week | --week-file) echo "cards.ts takes no $1"; exit 2 ;;
     esac
     shift
   done
   echo "$file $out" >> "$fake/cards-runs"
-  echo "$takes" >> "$fake/cards-takes"
+  echo "$takes $snips $clips" >> "$fake/cards-takes"
   key=$(basename "$file" .json)
   if [ -e "$fake/not-cards" ]; then
     echo "$file isn't a cards essay:" >&2
@@ -1205,24 +1207,25 @@ run_job cards-essay > "$SCRATCH/pass.out" 2>&1
 check "and once it is fixed it renders, and its failed.log goes" \
   test -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cards.mp4" -a ! -e "$ROOT/renders/cards-essay-worker/zfs-2026-11-02.failed.log"
 
-# A cards essay's spoken cards (WALK7, #1052): file_host gives the takes
-# they name in <key>.takes/ beside the essay, and the recorder is handed that
-# folder as --takes when it is there, and only then; the folder is never
-# read as an essay of its own, and what the essay is made from includes it.
+# What a cards essay names that only home holds (WALK7, #1052; SNIPS4):
+# file_host gives each kind in <key>.<kind>/ beside the essay (takes, snips,
+# clips), and the recorder is handed each folder as --<kind> when it is
+# there, and only then; no folder is read as an essay of its own, and what
+# the essay is made from includes each.
 fresh cards-takes
-mkdir -p "$ROOT/cards-essays/zfs-2026-11-02.takes"
+mkdir -p "$ROOT/cards-essays/zfs-2026-11-02.takes" "$ROOT/cards-essays/zfs-2026-11-02.snips"
 echo '{}' > "$ROOT/cards-essays/zfs-2026-11-02.json"
 echo '{}' > "$ROOT/cards-essays/ext4-2026-11-03.json"
-check "a takes folder is no essay of its own" \
+check "a media folder is no essay of its own" \
   test "$(INPUT=$ROOT/cards-essays episodes cards-essay | tr '\n' ' ')" = "zfs-2026-11-02 ext4-2026-11-03 "
 use_job cards-essay
-check "what an essay is made from names its takes folder" \
-  test "$(inputs_of cards-essay zfs-2026-11-02 | tr '\n' ' ')" = "$ROOT/cards-essays/zfs-2026-11-02.json $ROOT/cards-essays/zfs-2026-11-02.takes "
+check "what an essay is made from names each kind's folder" \
+  test "$(inputs_of cards-essay zfs-2026-11-02 | tr '\n' ' ')" = "$ROOT/cards-essays/zfs-2026-11-02.json $ROOT/cards-essays/zfs-2026-11-02.takes $ROOT/cards-essays/zfs-2026-11-02.snips $ROOT/cards-essays/zfs-2026-11-02.clips "
 run_job cards-essay > "$SCRATCH/pass.out" 2>&1
 run_job cards-essay > "$SCRATCH/pass.out" 2>&1
-check "an essay given its takes is handed them" \
-  test "$(sed -n 1p "$FAKE/cards-takes")" = "$ROOT/cards-essays/zfs-2026-11-02.takes"
-check "an essay given none is handed none" test "$(sed -n 2p "$FAKE/cards-takes")" = -
+check "an essay given its takes and snips is handed both, and no clips" \
+  test "$(sed -n 1p "$FAKE/cards-takes")" = "$ROOT/cards-essays/zfs-2026-11-02.takes $ROOT/cards-essays/zfs-2026-11-02.snips -"
+check "an essay given none is handed none" test "$(sed -n 2p "$FAKE/cards-takes")" = "- - -"
 check "and both render" \
   test -e "$ROOT/renders/cards-essay/zfs-2026-11-02/cards.mp4" -a -e "$ROOT/renders/cards-essay/ext4-2026-11-03/cards.mp4"
 

@@ -17,14 +17,14 @@ mod read;
 mod rules;
 mod words;
 
-use chrono::{DateTime, FixedOffset, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, NaiveTime, Offset, TimeDelta, TimeZone, Utc};
 use game_scenarios::{Kind, Scenario, Size, CATALOG_VERSION};
 use nfl_feed::{log::Entry, summary::Play, Status, Weather};
 use serde::{Serialize, Serializer};
 
 /// The engine's own version. Every offer carries it, so a bite records the
 /// rules it was offered under; bump it when a rule or a line changes.
-pub const ENGINE_VERSION: u32 = 3;
+pub const ENGINE_VERSION: u32 = 4;
 
 /// The recorder's three modes (the epic's "Settings: three modes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -274,6 +274,103 @@ pub struct Was {
 	pub play_id: String,
 	/// When it happened: ESPN's wallclock, or else when home first saw it.
 	pub at: DateTime<Utc>,
+	/// When home first saw it.
+	pub first: DateTime<Utc>,
+}
+
+/// When a bite was said relative to the play it is about (#3040).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Said {
+	/// Before its play, which is the snap to come itself: the bite took an
+	/// offer of a third and long, a fourth down, a field goal try, or a play
+	/// call.
+	BeforeTheSnap,
+	/// Before its play, which ends the drive the snap to come is in: the bite
+	/// took an offer of a team's first possession or a trip inside the 20.
+	BeforeTheDrive,
+	/// Before the opening kickoff, offered up to a quarter hour ahead of it:
+	/// its play is that kickoff, however long after.
+	BeforeTheKickoff,
+	/// Not tied to an offer (picked from the whole set, or said first and
+	/// mapped later), so its play is the nearer in time of the nearest at or
+	/// before it and the first after it.
+	Either,
+	/// After its play: what just happened, or an offer about a play already in
+	/// the log (the try is read off its touchdown's own play), so its play is
+	/// the nearest at or before it.
+	After,
+}
+
+/// Whether `scenario` was on offer in `game` at `at`: its moment's rule fits
+/// then, in any mode, before a mode's count is applied.
+#[must_use]
+pub fn on_offer(game: &Game, log: &[Entry], at: DateTime<Utc>, scenario: Scenario) -> bool {
+	let so_far = read::SoFar::new(game, log, at);
+	rules::now(game, &so_far, at, Mode::Full, Utc.fix(), Watching::Unknown)
+		.iter()
+		.any(|offered| offered.scenario == scenario)
+}
+
+/// When a bite offered as `scenario` at `at` was said relative to its play.
+///
+/// From `game` and `log` as they stood then (SE2): the moment's rule decides,
+/// and one rule decides by the moment (a kick offered while a try is pending
+/// is about the touchdown's play, one offered on 4th down about the snap to
+/// come).
+///
+/// A bite chosen any other way is the caller's to place: what just happened
+/// is [`Said::After`]; one picked from the whole set, or said first and
+/// mapped later, is [`Said::Either`].
+#[must_use]
+pub fn offered_said(game: &Game, log: &[Entry], at: DateTime<Utc>, scenario: Scenario) -> Said {
+	let so_far = read::SoFar::new(game, log, at);
+	rules::offered_said(game, &so_far, at, scenario)
+}
+
+/// The play a bite of `scenario`, said as `said`, is about, and the gap.
+///
+/// `game` and `log` are as of `now`, after the game (each play at its latest
+/// version, SE2). The bite started at `at`; `offered` is when the offer it
+/// took was last on home's screen, which is `at` unless the phone was still
+/// showing an offer home had moved on from. The gap is `at` minus the play's
+/// time, in whole seconds.
+///
+/// - [`Said::After`]: the nearest play the scenario's rule accepts at or
+///   before `at`, at most `window` before.
+/// - Before: the snap to come is the first play from scrimmage that home
+///   had not seen by `offered` and that no flag wiped out, its time
+///   within `window` either side of `at` (the broadcast runs behind, so it
+///   can have happened before the owner started). [`Said::BeforeTheSnap`]:
+///   that snap, if the rule accepts it, else none. [`Said::BeforeTheDrive`]:
+///   the first play from it on, in the same team's possession, the rule
+///   accepts, however long after (the window bounds only the snap to come).
+/// - [`Said::BeforeTheKickoff`]: the opening kickoff, if home had not seen it
+///   by `offered`, with no window.
+/// - [`Said::Either`]: the nearer in time of the [`Said::After`] play and
+///   the first the rule accepts after `at`, within `window`; a tie looks back.
+#[must_use]
+#[allow(clippy::too_many_arguments)] // the bite's two times, its scenario and how, the game and the window
+pub fn its_play(
+	game: &Game,
+	log: &[Entry],
+	now: DateTime<Utc>,
+	scenario: Scenario,
+	said: Said,
+	at: DateTime<Utc>,
+	offered: DateTime<Utc>,
+	window: TimeDelta,
+) -> Option<(Was, i64)> {
+	let so_far = read::SoFar::new(game, log, now);
+	let i = rules::its_play(game, &so_far, now, scenario, said, at, offered, window)?;
+	let seen = &so_far.plays[i];
+	Some((
+		Was {
+			play_id: seen.play.id.clone(),
+			at: seen.at,
+			first: seen.first,
+		},
+		(at - seen.at).num_seconds(),
+	))
 }
 
 /// Whether `scenario` can be a play at all. Pregame, the two-minute drill,
@@ -299,6 +396,7 @@ pub fn plays_that_were(game: &Game, log: &[Entry], now: DateTime<Utc>, scenario:
 		.map(|i| Was {
 			play_id: so_far.plays[i].play.id.clone(),
 			at: so_far.plays[i].at,
+			first: so_far.plays[i].first,
 		})
 		.collect()
 }
