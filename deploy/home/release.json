@@ -1,11 +1,11 @@
 {
-  "serial": 100,
-  "server_commit": "1e1c2ba0132802ec32db1c1ed8f6de1ef7a1fe59",
+  "serial": 104,
+  "server_commit": "a5d25d6177a79b20de762206cef07348e80a6d12",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:v0@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"},
     "dashboard-builder": {"image": "pgathondu/dashboard-builder:9f7548d5441d839bd0134d7db527e75748867bae@sha256:11ad799995080d7c038760bf5a490bd06d9248453cfeeb39d6fac5ae75647384"},
-    "file-host": {"image": "pgathondu/server:1ff4e1d18c74f22c1beb93bdd2dc70ddf55773b3@sha256:0942ec2ab4eac9d5ebad42e9bd9c9f9115b52b673922944a632c3e59102e4c03"},
+    "file-host": {"image": "pgathondu/server:6ded1b56a632d6c250c48633cd91ae32163deae5@sha256:e27d780d0932be312d8d83daf8f63f04c4d24683fd2f8cc0cd42a27505a2b079"},
     "grafana": {"image": "grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2"},
     "kokoro": {"image": "pgathondu/kokoro:9f7548d5441d839bd0134d7db527e75748867bae@sha256:4090a4009b94da98e8ead3518dee8bcb2a40b5828db7db86b67a235f3a51845d"},
     "metabase": {"image": "metabase/metabase:v0.65.x@sha256:06b66bf50d5b46ad632a836aeb62149eaab768033f9d3dae72ad4b10e6427590"},
@@ -18,7 +18,7 @@
     "redis": {"image": "redis:8.10@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53"},
     "redis-exporter": {"image": "oliver006/redis_exporter:v1.97.0@sha256:f5f903fbe77571d455ede0453b084d6840bc62fc105efac001034421cab83b99"},
     "redisinsight": {"image": "redislabs/redisinsight:3.8@sha256:b5e19ee240abef6edb435871b90ff8a210995422e8e018ab61c0339d318a1f84"},
-    "render": {"image": "pgathondu/render:145f335578d054f995c40e74bd00aab155c21c41@sha256:0c4c4b8afef6f4537aea13a2142b9c27924c6f350a95732dd097231cef70d06e"},
+    "render": {"image": "pgathondu/render:231787fec28d162cf0243033672e33b38095088e@sha256:e7406129bd8194187d93d4f36a3879ccbcc890bd0bdfc688d80857545b1100df"},
     "resume-render": {"image": "pgathondu/resume-render:58bff40adb5f36f1d05534e161d392f9a88cdaba@sha256:24d153c2798b674b33e23c060b57d1a61884c64c07838814f2d712d581a4463e"},
     "rust-runner": {"image": "pgathondu/rust-runner:40c6b36773ffdf9e6e617ac00c8a4d05e0ab7722@sha256:ab776b58789259003b8a0a0dfd445b5c2e135427da32ae345e9e36443edebfb4"},
     "www": {"image": "pgathondu/www:0.1.70@sha256:f371fb32042afa7b357f71ee948426d47e74ffcc9210ce8d02f33713b8fa03ea"}
