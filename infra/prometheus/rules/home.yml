@@ -728,3 +728,31 @@ groups:
         labels:
           objective: LN3
           says: "Home's batch lane has not been able to read its {{ $labels.signal }} signal for 5 minutes, so no render may start: docs/home-compute.md (The lane) says where each signal comes from."
+
+  # What home asks of the outside (paulgsc/some-ui#3330): every HTTP request
+  # file_host and its crates send is counted once by crates/outbound, by
+  # caller, host and outcome (outbound_requests_total). Each caller's counters
+  # are at 0 from the moment its client is built, so the first failure after a
+  # restart is an increase. The OUTBOUND dashboard draws them.
+  - name: home-outbound
+    rules:
+      - alert: OutboundNoAnswer
+        # A host that has gone dark for one of home's workers: at least three
+        # requests in 30 minutes, and not one got an answer (every one timed
+        # out or found no connection, a reset or a TLS failure). The watchers'
+        # own alerts do not see this, since a pass that gets no answer still
+        # completes and stamps. An answer of any status, a refusal included,
+        # clears it: a host that refuses is reached, and a refusal is the
+        # worker's own to judge (the game feed backs off on a 429, GA2; a push
+        # service's 410 is a browser that left). A caller that sends fewer
+        # than three requests in 30 minutes (the game feed between games, a
+        # rare push) is not judged by it. The health probe exits before any
+        # scrape, so it never has a series here. Labels, not a URL: host is a
+        # fixed name per caller (crates/outbound, Caller::host).
+        expr: |
+          sum by (caller, host) (increase(outbound_requests_total{outcome=~"timeout|no_answer"}[30m])) >= 3
+          unless on (caller, host)
+          sum by (caller, host) (increase(outbound_requests_total{outcome!~"timeout|no_answer"}[30m])) > 0
+        labels:
+          objective: OB2
+          says: "Home's {{ $labels.caller }} has had no answer from {{ $labels.host }} for 30 minutes: every request it sent timed out or could not connect. The OUTBOUND dashboard's Not OK panel shows since when."
