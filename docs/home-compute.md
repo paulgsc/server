@@ -84,12 +84,11 @@ that adds it.
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
 | **Batch**, the lowest | `render`, `kokoro` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
 
-`file-host` may use three of home's four cores (`cpus: 3.0`), so the
-voice-note transcriber inside it hears on two threads and a core is left for
-requests (`transcribe::default_threads`). On two threads a take is heard in a
-little over half the time one takes (measured, paulgsc/server#1087), so the
-transcriber holds the lane (LA1) for half as long. It is a cap, not a
-reservation. The owner chose it (2026-11-21, C919).
+`file-host` may use three of home's four cores (`cpus: 3.0`; four, as #710
+has it), so the voice-note transcriber inside it hears on two threads
+(`transcribe::default_threads`), and holds the lane (LA1) for a little over
+half as long as on one (`transcribe`, "What it costs"). It is a cap, not a
+reservation. The owner chose it (C919).
 
 The lane (below) decides when the batch class may run: a render starts
 only when no interactive work waits and its peak fits, pauses for

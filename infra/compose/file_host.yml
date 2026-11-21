@@ -83,11 +83,7 @@ services:
       nats:
         condition: service_started
     mem_limit: 4G
-    # Three cores, so the voice-note transcriber hears on two threads
-    # (`transcribe::default_threads`: the cores less one, leaving one for
-    # requests). Measured, two threads hear a take in a little over half the
-    # time one does (paulgsc/server#1087); the owner chose it (2026-11-21,
-    # C919). docs/home-compute.md, "Classes".
+    # Three cores, so the transcriber hears on two threads: docs/home-compute.md.
     cpus: 3.0
     pids_limit: 200
     deploy:
