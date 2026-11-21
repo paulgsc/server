@@ -36,8 +36,10 @@
 //!   the box's CPU was contended is kept as nothing, so it never uses up one
 //!   of the note's [`ATTEMPTS`]; the pass stops, and the next hears the note
 //!   again. One note is excused at most [`crate::contention::NOBODYS`] times in a
-//!   row, then kept as it ended, and the pass stops there too, so the next
-//!   pass starts with that note and no other note's streak is replaced.
+//!   row, then kept as it ended, and the pass stops there too. While a note
+//!   is being excused it is heard first (`transcript::waiting_first`), so no
+//!   other note's streak replaces its own; once kept, its streak is over and
+//!   the next pass starts from the queue as it stands (C896).
 
 use super::engine::{Cancelled, Decode, Hear, Heard, Work};
 use super::turn::Turn;

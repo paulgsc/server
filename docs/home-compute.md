@@ -36,7 +36,10 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    held every render for hours). Decided with the owner's ask that renders
    not be starved by a busy transcriber, through paulgsc/some-ui#3333's
    coordinator (2026-11-21); `TURN` and `GIVE` are policy constants. A run ends when the queue is empty, so
-   notes heard as they arrive never add up to a turn. Held by
+   notes heard as they arrive never add up to a turn. A give holds every
+   note, a take recorded during it included, for at most `GIVE`; and a job
+   the lane holds stopped still counts as waiting (paulgsc/server#1088,
+   bounded by `GIVE` either way). Held by
    `transcribe::turn`'s and `transcribe::pass`'s tests.
 3. **A yield is never a failure, and resumed work never pays twice for a
    step it kept.** A pause or a stop leaves no `failed.log`, and the job

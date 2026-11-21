@@ -17,9 +17,14 @@
 //! - **A run ends when the queue does.** A pass that finds nothing to hear
 //!   ends the run ([`Turn::rested`]), so notes heard as they arrive never add
 //!   up to a turn.
-//! - **Nothing is given to no one.** With no batch work waiting the
-//!   transcriber hears on, however long its run (docs/home-compute.md
-//!   invariant 2).
+//! - **Nothing is given to no one it can see.** With no batch work waiting
+//!   the transcriber hears on, however long its run (docs/home-compute.md
+//!   invariant 2). A named job the lane holds stopped (for memory, say) still
+//!   counts as waiting, so the transcriber can give way to a render that
+//!   cannot run yet: bounded by [`GIVE`], and paulgsc/server#1088.
+//! - **A give holds every note**, a take recorded during it included: it
+//!   waits at most [`GIVE`] (paulgsc/server#1088 asks the owner whether it
+//!   should).
 
 use crate::call_weeks::lane::Interactive;
 use std::time::{Duration, Instant};
