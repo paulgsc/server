@@ -136,6 +136,14 @@ struct Dirs {
 	cache: PathBuf,
 }
 
+impl Dirs {
+	/// The cache, made.
+	fn cache_ready(&self) -> PathBuf {
+		std::fs::create_dir_all(&self.cache).unwrap();
+		self.cache.clone()
+	}
+}
+
 fn dirs() -> Dirs {
 	let root = tempfile::tempdir().unwrap();
 	let (essays, cache) = (root.path().join("essays"), root.path().join("snips"));
@@ -280,7 +288,7 @@ async fn a_commit_gone_is_said_until_a_newer_run_of_it_and_never_dispatched() {
 }
 
 #[tokio::test]
-async fn one_bundle_a_pass_and_a_failure_records_nothing() {
+async fn one_bundle_a_pass_and_a_failure_says_nothing_and_goes_to_the_back() {
 	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
 	let (_, a, _) = record(b"a", "/a");
 	let (_, b, _) = record(b"b", "/b");
@@ -289,15 +297,30 @@ async fn one_bundle_a_pass_and_a_failure_records_nothing() {
 	fake.run(run(1, 0), Err("timeout"));
 	fake.run(run(2, 1), Ok(Some(bundle(&commit(1), &[(b"b", "/b")], |_| {}))));
 	let picked = run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap();
+	assert_eq!((picked.fetched, picked.gone, picked.failures.as_slice()), (0, 0, &["timeout"][..]), "one download a pass");
+	assert!(!gone_of(&dirs.cache, &commit(0)).exists(), "a failure says nothing of the commit");
 	assert_eq!(
-		(picked.fetched, picked.gone, picked.failures.as_slice()),
-		(0, 0, &["timeout"][..]),
-		"a failure ends the pass"
+		run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap().fetched,
+		1,
+		"the failed commit waits behind the other"
 	);
-	assert!(!gone_of(&dirs.cache, &commit(0)).exists(), "and says nothing of it");
 	fake.bundles.lock().unwrap().insert(1, Ok(Some(bundle(&commit(0), &[(b"a", "/a")], |_| {}))));
-	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap().fetched, 1, "asked again");
-	assert_eq!(*fake.asked.lock().unwrap(), [1, 1], "one bundle a pass");
+	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap().fetched, 1, "then it is asked again");
+	assert_eq!(*fake.asked.lock().unwrap(), [1, 2, 1]);
+	assert!(!retry_of(&dirs.cache, &commit(0)).exists(), "fetched: its retry mark goes");
+}
+
+#[tokio::test]
+async fn commits_marked_gone_never_hold_a_new_one_back() {
+	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
+	let (_, id, _) = record(b"a", "/a");
+	for n in 0..u8::try_from(COMMITS_LOOKED).unwrap() {
+		hold_essay(&pool, &(String::from("gone-2026-11-0") + &(n + 1).to_string()), &[(commit(n), id.clone())]).await;
+		mark_gone(&dirs.cache_ready(), &commit(n), None, "no-run").await.unwrap();
+	}
+	// The last commit by name, after every gone one.
+	hold_essay(&pool, "new-2026-11-20", &[(commit(5), id.clone())]).await;
+	fake.run(run(9, 5), Ok(Some(bundle(&commit(5), &[(b"a", "/a")], |_| {}))));
 	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap().fetched, 1);
 }
 

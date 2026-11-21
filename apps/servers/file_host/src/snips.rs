@@ -18,9 +18,13 @@
 //!   home-compute invariant 6): no timer of its own. [`run_once`] runs after
 //!   the mailbox's own work.
 //! - **Bounded.** A pass looks up at most [`COMMITS_LOOKED`] commits (one list
-//!   call each) and downloads at most one bundle, of at most [`MAX_BUNDLE`]
-//!   bytes, streamed to the drive and never held in memory whole, each file
-//!   in it at most [`MAX_FILE`].
+//!   call each), commits never looked at first and those marked gone last,
+//!   and downloads at most one bundle, of at most [`MAX_BUNDLE`] bytes,
+//!   streamed to the drive and never held in memory whole, each file in it at
+//!   most [`MAX_FILE`] and all of them [`MAX_UNPACKED`]; the whole pass ends
+//!   at [`PASS_DEADLINE`] (the mailbox's caller holds it to that). A commit
+//!   whose fetch failed goes to the back (`<commit>.retry`), so none holds
+//!   another back.
 //! - **Checked whole, or refused whole.** The manifest must be
 //!   `some-ui.snips/1` of the run's own commit; `SHA256SUMS` must name the
 //!   manifest and every file its records name, and nothing else, and the
@@ -78,6 +82,13 @@ pub const MAX_BUNDLE: u64 = 256 * 1024 * 1024;
 
 /// The most bytes of one file in a bundle.
 pub const MAX_FILE: u64 = 16 * 1024 * 1024;
+
+/// The most bytes a bundle's files may come to, unpacked.
+pub const MAX_UNPACKED: u64 = 512 * 1024 * 1024;
+
+/// How long one pickup pass may take, all its requests together: so long at
+/// most it holds up the mailbox pass it rides.
+pub const PASS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The most files a bundle may hold.
 pub const MAX_FILES: usize = 4096;
@@ -252,12 +263,11 @@ impl Capture for GitHub {
 	async fn bundle(&self, run: &Run, into: &Path) -> Result<Bundle, &'static str> {
 		let url = String::from(REPOSITORY) + "/actions/runs/" + &run.id.to_string() + "/artifacts";
 		let wanted = String::from("snips-bundle-") + &run.head_sha;
-		let Some(artifact) = self.json::<Artifacts>(&url).await?.artifacts.into_iter().find(|artifact| artifact.name == wanted) else {
+		// An earlier attempt's expired copy may be listed beside the newest.
+		let artifacts = self.json::<Artifacts>(&url).await?.artifacts;
+		let Some(artifact) = artifacts.into_iter().find(|artifact| artifact.name == wanted && !artifact.expired) else {
 			return Ok(Bundle::Gone);
 		};
-		if artifact.expired {
-			return Ok(Bundle::Gone);
-		}
 		if artifact.size_in_bytes > MAX_BUNDLE {
 			return Ok(Bundle::TooBig);
 		}
@@ -319,6 +329,7 @@ struct Record {
 #[derive(Deserialize)]
 struct FileOf {
 	name: String,
+	kind: String,
 	bytes: u64,
 	sha256: String,
 }
@@ -339,9 +350,11 @@ fn sums(text: &str) -> Option<BTreeMap<String, String>> {
 
 /// `name`'s bytes in `archive`, at most [`MAX_FILE`].
 fn read(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Vec<u8>, Why> {
-	let entry = archive.by_name(name).map_err(|_| Why::Refused)?;
+	let entry = archive.by_name(name).map_err(zip_error)?;
 	let mut bytes = Vec::new();
-	entry.take(MAX_FILE + 1).read_to_end(&mut bytes).map_err(|_| Why::Refused)?;
+	// A corrupt entry reads as an I/O error too, and the zip itself is on
+	// the drive: either is asked again, never said gone.
+	entry.take(MAX_FILE + 1).read_to_end(&mut bytes).map_err(|_| Why::Drive)?;
 	if bytes.len() as u64 > MAX_FILE {
 		return Err(Why::Refused);
 	}
@@ -357,6 +370,16 @@ enum Why {
 	Drive,
 }
 
+/// A zip's failure: the drive's when it is I/O, else the bundle's.
+#[allow(clippy::needless_pass_by_value)]
+fn zip_error(err: zip::result::ZipError) -> Why {
+	if matches!(err, zip::result::ZipError::Io(_)) {
+		Why::Drive
+	} else {
+		Why::Refused
+	}
+}
+
 /// Writes `bytes` to `name` under `stage`.
 fn stage_file(stage: &Path, name: &str, bytes: &[u8]) -> Result<(), Why> {
 	let to = stage.join(name);
@@ -370,7 +393,7 @@ fn stage_file(stage: &Path, name: &str, bytes: &[u8]) -> Result<(), Why> {
 /// stages its manifest and pictures in `stage` under their names.
 fn open(zip: &Path, stage: &Path, run: &Run) -> Result<(), Why> {
 	let file = std::fs::File::open(zip).map_err(|_| Why::Drive)?;
-	let mut archive = zip::ZipArchive::new(file).map_err(|_| Why::Refused)?;
+	let mut archive = zip::ZipArchive::new(file).map_err(zip_error)?;
 	if archive.len() > MAX_FILES {
 		return Err(Why::Refused);
 	}
@@ -391,9 +414,12 @@ fn open(zip: &Path, stage: &Path, run: &Run) -> Result<(), Why> {
 		let record: Record = serde_json::from_str(raw.get()).map_err(|_| Why::Refused)?;
 		let (version, hash) = id_parts(&record.id).ok_or(Why::Refused)?;
 		let files = std::iter::once(&record.image).chain(record.recording.as_ref());
-		let plain = files
-			.clone()
-			.all(|file| SNIP_FILE.is_match(&file.name) && sums.get(&file.name) == Some(&file.sha256) && file.bytes <= MAX_FILE);
+		let plain = files.clone().all(|file| {
+			SNIP_FILE.is_match(&file.name)
+				&& file.name.rsplit_once('.').is_some_and(|(_, extension)| extension == file.kind)
+				&& sums.get(&file.name) == Some(&file.sha256)
+				&& (1..=MAX_FILE).contains(&file.bytes)
+		});
 		let ok = plain
 			&& version == manifest.app_version
 			&& record.app_version == manifest.app_version
@@ -411,6 +437,14 @@ fn open(zip: &Path, stage: &Path, run: &Run) -> Result<(), Why> {
 		records.push(record);
 	}
 	if named.iter().ne(sums.keys()) {
+		return Err(Why::Refused);
+	}
+	let unpacked: u64 = records
+		.iter()
+		.flat_map(|record| std::iter::once(&record.image).chain(record.recording.as_ref()))
+		.map(|file| file.bytes)
+		.sum();
+	if unpacked > MAX_UNPACKED {
 		return Err(Why::Refused);
 	}
 	let listed: Result<Vec<String>, _> = archive.file_names().map(|entry| entry.map(std::borrow::Cow::into_owned)).collect();
@@ -461,6 +495,18 @@ async fn marked(folder: &Path, commit: &str) -> Option<String> {
 	Some(text.lines().find_map(|line| line.strip_prefix("run=")).unwrap_or_default().to_owned())
 }
 
+/// `<commit>.retry`, touched when a commit's fetch failed in a way that may
+/// clear: when, by its time, never why.
+#[must_use]
+pub fn retry_of(folder: &Path, commit: &str) -> PathBuf {
+	folder.join(String::from(commit) + ".retry")
+}
+
+/// Touches `commit`'s retry mark.
+async fn mark_retry(folder: &Path, commit: &str) -> std::io::Result<()> {
+	tokio::fs::write(retry_of(folder, commit), b"").await
+}
+
 /// Marks `commit` gone, naming `run` and why.
 async fn mark_gone(folder: &Path, commit: &str, run: Option<&Run>, reason: &str) -> std::io::Result<()> {
 	let partial = folder.join(String::from(".") + commit + ".gone.partial");
@@ -477,7 +523,7 @@ async fn drop_unwanted(folder: &Path, wanted: &BTreeSet<String>, picked: &mut Pi
 	};
 	while let Ok(Some(entry)) = entries.next_entry().await {
 		let name = entry.file_name().to_string_lossy().into_owned();
-		let commit = name.strip_suffix(".gone").unwrap_or(&name);
+		let commit = name.strip_suffix(".gone").or_else(|| name.strip_suffix(".retry")).unwrap_or(&name);
 		if !name.starts_with('.') && wanted.contains(commit) {
 			continue;
 		}
@@ -502,7 +548,16 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 	let mut picked = Picked::default();
 	let wanted = wanted(db, essays).await?;
 	drop_unwanted(folder, &wanted, &mut picked).await;
-	let missing: Vec<&String> = wanted.iter().filter(|commit| !bundle_of(folder, commit).is_dir()).collect();
+	let mut missing: Vec<(u8, std::time::SystemTime, &String)> = Vec::new();
+	for commit in wanted.iter().filter(|commit| !bundle_of(folder, commit).is_dir()) {
+		// Never looked at first, then those whose fetch failed, longest ago
+		// first, then those marked gone (only a newer run clears one): so no
+		// commit holds another back for good.
+		let retried = tokio::fs::metadata(retry_of(folder, commit)).await.and_then(|meta| meta.modified()).ok();
+		let rank = if gone_of(folder, commit).exists() { 2 } else { u8::from(retried.is_some()) };
+		missing.push((rank, retried.unwrap_or(std::time::UNIX_EPOCH), commit));
+	}
+	missing.sort();
 	if missing.is_empty() {
 		return Ok(picked);
 	}
@@ -510,12 +565,13 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		picked.failures.push("drive");
 		return Ok(picked);
 	}
-	for commit in missing.into_iter().take(COMMITS_LOOKED) {
+	for (_, _, commit) in missing.into_iter().take(COMMITS_LOOKED) {
 		let runs = match capture.runs(commit).await {
 			Ok(runs) => runs,
 			Err(kind) => {
 				picked.failures.push(kind);
-				break;
+				let _ = mark_retry(folder, commit).await;
+				continue;
 			}
 		};
 		let newest = runs.into_iter().filter(|run| &run.head_sha == commit).max_by_key(|run| (run.id, run.run_attempt));
@@ -558,6 +614,7 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		match outcome {
 			Ok(None) => {
 				let _ = tokio::fs::remove_file(gone_of(folder, commit)).await;
+				let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 				picked.fetched += 1;
 			}
 			Ok(Some(reason)) => {
@@ -566,7 +623,11 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 					picked.failures.push("drive");
 				}
 			}
-			Err(kind) => picked.failures.push(kind),
+			Err(kind) => {
+				picked.failures.push(kind);
+				// To the back of the queue, so it holds no other commit back.
+				let _ = mark_retry(folder, commit).await;
+			}
 		}
 		// One bundle a pass.
 		break;

@@ -464,7 +464,12 @@ async fn watch(db: &SqlitePool, context: &MailboxContext) {
 /// counts and kinds, never a token, URL or record.
 async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) {
 	let (essays, folder) = (std::path::Path::new(crate::cards_essays::ESSAYS_FOLDER), std::path::Path::new(crate::snips::FOLDER));
-	match crate::snips::run_once(db, capture, essays, folder).await {
+	let Ok(done) = tokio::time::timeout(crate::snips::PASS_DEADLINE, crate::snips::run_once(db, capture, essays, folder)).await else {
+		// What it left half-made goes next pass (`snips::run_once`).
+		warn!("Snips pickup pass reached its deadline; asked again next pass");
+		return;
+	};
+	match done {
 		Ok(picked) if picked == crate::snips::Picked::default() => {}
 		Ok(picked) if picked.failures.is_empty() => info!(fetched = picked.fetched, gone = picked.gone, dropped = picked.dropped, "Snips pickup pass"),
 		Ok(picked) => warn!(fetched = picked.fetched, gone = picked.gone, failures = ?picked.failures, "Snips pickup pass did not finish; asked again next pass"),
@@ -529,11 +534,11 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 	}
 	log_pass(&result, cause);
 	let settled = result.as_ref().is_ok_and(|outcome| !outcome.no_account && !outcome.more);
-	// A snip names no person: picked up whether or not there is an account.
-	if let Some(capture) = context.snips.as_deref() {
-		pick_up_snips(db, capture).await;
-	}
 	let Some(subject) = subject else {
+		// A snip names no person: picked up whether or not there is an account.
+		if let Some(capture) = context.snips.as_deref() {
+			pick_up_snips(db, capture).await;
+		}
 		return settled;
 	};
 	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
@@ -549,6 +554,10 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 			Ok(_) => {}
 			Err(err) => error!(error = %err, "Jobs arrival notice pass failed"),
 		}
+	}
+	// Last, after what a phone or the routine waits on.
+	if let Some(capture) = context.snips.as_deref() {
+		pick_up_snips(db, capture).await;
 	}
 	settled
 }

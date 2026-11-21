@@ -19,10 +19,13 @@ does with snips: `apps/servers/file_host/src/snips.rs` fetches them, and
    keeps the cut list append-only. That is the record of which snip and
    commit each essay used, and how to make the snip again (SNIPS5).
 3. **Fetched on demand, bounded, from the mailbox pass.** There is no timer of
-   its own (home-compute invariant 6). A pass looks up at most five commits
-   and downloads at most one bundle, of at most 256 MiB, streamed to the
-   drive. The download times out after five minutes, so that is the longest
-   it holds up the mailbox pass it rides.
+   its own (home-compute invariant 6). It runs last in the pass, after what a
+   phone or the routine waits on. A pass looks up at most five commits (those
+   never looked at first, those marked gone last) and downloads at most one
+   bundle, of at most 256 MiB, streamed to the drive, 512 MiB unpacked. The
+   whole pickup ends at five minutes: that is the longest it holds up the
+   mailbox pass. A commit whose fetch failed goes to the back of the queue
+   (`<commit>.retry`), so none holds another back.
 4. **Checked whole, or refused whole.** A bundle is used only once its
    schema, commit, `SHA256SUMS` and every file check out (some-ui's
    `docs/snips.md`).

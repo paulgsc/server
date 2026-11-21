@@ -70,10 +70,13 @@ pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: 
 	let (name, sha256) = (field("name"), field("sha256"));
 	// The bundle was checked whole when fetched; its names are plain
 	// (`crate::snips`), and the folder writer takes no other.
+	if name.is_empty() {
+		return Ok(Held::Refused(Why::Missing));
+	}
 	let Some(bytes) = super::read_held(&bundle.join(&name)).await? else {
 		return Ok(Held::Refused(Why::Missing));
 	};
-	if name.is_empty() || super::sha256_hex(&bytes) != sha256 {
+	if super::sha256_hex(&bytes) != sha256 {
 		return Ok(Held::Refused(Why::Missing));
 	}
 	Ok(Held::Snip {
