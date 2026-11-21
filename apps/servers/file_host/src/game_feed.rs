@@ -7,10 +7,23 @@
 //!
 //! **Why this is a poll.** ESPN pushes nothing to home, and home makes only
 //! outbound requests. The worker wakes every [`TICK`], fetches only what its
-//! [`pass::Schedule`] says is due, and an idle wake does no I/O at all: the
-//! scoreboard every 10 minutes ([`CADENCE`]), a game's summary
-//! every 15 seconds while it is live, once more after it
-//! goes final. GW6 asks for a play within a minute, 8 times in 10; the live
+//! [`pass::Schedule`] says is due, and an idle wake does no I/O but reading
+//! its two settings: the scoreboard every 10 minutes ([`CADENCE`]) while a
+//! chosen game is near, a chosen game's summary every 15 seconds while it is
+//! live, once more after it goes final.
+//!
+//! **It sleeps between games** (paulgsc/some-ui#3329, GWB15). With no chosen
+//! game live, past kickoff and not final, or within an hour of kickoff
+//! ([`CADENCE`]`.margin`), the scoreboard is next read at that hour before
+//! the next chosen kickoff, or a day after its last read
+//! ([`CADENCE`]`.refresh`), whichever is sooner ([`pass::Watch::Asleep`]).
+//! The daily read is what learns a game added, moved, flexed or postponed
+//! while asleep; one moved sooner by less than a day can be missed until it.
+//! Asleep, the worker still wakes every [`TICK`] and stamps each wake, so
+//! `GameFeedStale` still means the worker died, never that it sleeps.
+//! **Which games are chosen** is the operator's other lever,
+//! `settings::GameTeams` (every game by default): only a named team's games
+//! get summaries, and only their kickoffs wake the scoreboard. GW6 asks for a play within a minute, 8 times in 10; the live
 //! cadence plus one tick is 20 s, which leaves the rest to ESPN's own delay.
 //!
 //! What this module promises (`docs/game-feed.md` in this app):
@@ -44,7 +57,7 @@
 
 pub mod pass;
 
-use crate::settings::{self, GameFeed};
+use crate::settings::{self, GameFeed, GameTeams};
 use crate::AppState;
 use std::time::Duration;
 use tracing::{error, info};
@@ -69,16 +82,30 @@ pub const MAX_CADENCE: Duration = Duration::from_secs(86_400);
 /// `GAME_FEED_LIVE_SECONDS`, `GAME_FEED_BACKOFF_CAP_SECONDS`). The backoff
 /// cap is at least both cadences and every value is within the floors and
 /// [`MAX_CADENCE`]: the assertions below hold that at compile time.
+///
+/// The sleep's two (paulgsc/some-ui#3329, C885) are policy too: `margin`, an
+/// hour, wakes the scoreboard six reads before a chosen kickoff, so a
+/// kickoff delayed on the day is read before the summaries begin; `refresh`,
+/// a day, is the one read a day with no game near costs, the issue's "one
+/// daily scoreboard read", and catches a game flexed or rescheduled (the NFL
+/// announces a flex at least six days ahead). The margin is at least one
+/// scoreboard cadence, so a chosen kickoff is always preceded by an awake
+/// read, and shorter than the refresh, which is at most [`MAX_CADENCE`].
 pub const CADENCE: pass::Cadence = pass::Cadence {
 	scoreboard: Duration::from_secs(600),
 	live: Duration::from_secs(15),
 	backoff_cap: Duration::from_secs(900),
+	margin: Duration::from_secs(3_600),
+	refresh: Duration::from_secs(86_400),
 };
 
 const _: () = {
 	let (scoreboard, live, cap) = (CADENCE.scoreboard.as_secs(), CADENCE.live.as_secs(), CADENCE.backoff_cap.as_secs());
 	assert!(scoreboard >= MIN_SCOREBOARD.as_secs() && live >= MIN_LIVE.as_secs());
 	assert!(cap <= MAX_CADENCE.as_secs() && cap >= scoreboard && cap >= live);
+	let (margin, refresh) = (CADENCE.margin.as_secs(), CADENCE.refresh.as_secs());
+	assert!(margin >= scoreboard && margin < refresh);
+	assert!(refresh >= scoreboard && refresh <= MAX_CADENCE.as_secs());
 };
 
 /// How long one request may take.
@@ -157,12 +184,16 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 		info!(
 			scoreboard_secs = context.cadence.scoreboard.as_secs(),
 			live_secs = context.cadence.live.as_secs(),
+			margin_secs = context.cadence.margin.as_secs(),
+			refresh_secs = context.cadence.refresh.as_secs(),
 			"game feed started"
 		);
 		let mut schedule = pass::Schedule::new(chrono::Utc::now());
 		let mut ticker = tokio::time::interval(TICK);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut seen = Seen::default();
+		// The teams the last pass read, for the count a skipped pass says.
+		let mut chosen = settings::Teams::default();
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
@@ -171,9 +202,14 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 				}
 				_ = ticker.tick() => {
 					crate::metrics::game_feed::record_pass_started();
-					// The switch, once a pass (`settings::GameFeed`).
-					let switch = match settings::read::<GameFeed>(&db).await {
-						Ok(standing) => standing.value,
+					// The switch and the teams, once a pass (`settings::GameFeed`,
+					// `settings::GameTeams`).
+					let levers = match settings::read::<GameFeed>(&db).await {
+						Ok(switch) => settings::read::<GameTeams>(&db).await.map(|teams| (switch.value, teams.value.teams)),
+						Err(err) => Err(err),
+					};
+					let (switch, teams) = match levers {
+						Ok(levers) => levers,
 						Err(err) => {
 							crate::metrics::instruments::record_error("game_feed", "setting");
 							// A switch that does not read is home's storage failing, as
@@ -182,11 +218,12 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 							// reads as its default, following: else a switch broken
 							// from boot, or after a pause, would fail unseen.
 							crate::metrics::game_feed::record_enabled(GameFeed::default().following);
-							crate::metrics::game_feed::record_pass(None, schedule.followed(chrono::Utc::now()));
-							error!(error = %err, "game feed pass skipped: its following setting could not be read");
+							crate::metrics::game_feed::record_pass(None, schedule.followed(chrono::Utc::now(), &chosen));
+							error!(error = %err, "game feed pass skipped: a setting it follows could not be read");
 							continue;
 						}
 					};
+					chosen.clone_from(&teams);
 					crate::metrics::game_feed::record_enabled(switch.following);
 					if let Some(change) = seen.switch(!switch.following) {
 						say(change);
@@ -198,8 +235,10 @@ fn spawn(state: &AppState, context: GameFeedContext) {
 						crate::metrics::game_feed::record_pass(Some(&pass::Pass::default()), 0);
 						continue;
 					}
-					let result = pass::run_once(&db, &context.fetch, &mut schedule, context.cadence, &chrono::Utc::now).await;
-					crate::metrics::game_feed::record_pass(result.as_ref().ok(), schedule.followed(chrono::Utc::now()));
+					let result = pass::run_once(&db, &context.fetch, &mut schedule, context.cadence, &teams, &chrono::Utc::now).await;
+					let now = chrono::Utc::now();
+					crate::metrics::game_feed::record_pass(result.as_ref().ok(), schedule.followed(now, &teams));
+					crate::metrics::game_feed::record_watch(schedule.watch(now, &teams, context.cadence), teams.len());
 					// What the pass kept is the phone's offer to make
 					// again, now rather than at its next tick (GWB4).
 					if result.as_ref().is_ok_and(|done| !done.fetched.is_empty()) {

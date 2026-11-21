@@ -4,7 +4,7 @@
 //! `game_feed_last_attempt_timestamp_seconds` moves on every wake, and stale
 //! means the task died. Labels are fetch kinds only, never a game or a URL.
 
-use crate::game_feed::pass::Pass;
+use crate::game_feed::pass::{Pass, Watch};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// What a fetch can read as, `game_feed_repo::Read::kind` and the kinds of
@@ -55,4 +55,17 @@ pub fn record_pass(pass: Option<&Pass>, followed: usize) {
 		}
 		metrics::counter!("game_feed_plays_added_total").increment(u64::try_from(pass.added).unwrap_or(u64::MAX));
 	}
+}
+
+/// Where the scoreboard stands after a pass that ran (paulgsc/some-ui#3329):
+/// `game_feed_asleep` 1 while no chosen game is near ([`Watch::Asleep`]),
+/// else 0; `game_feed_next_fetch_timestamp_seconds`, when the scoreboard is
+/// next read, asleep or not; and `game_feed_teams_chosen`, how many teams the
+/// operator named (0 is every game). A paused pass leaves them as the last
+/// pass that ran set them: FOLLOWING says it is paused.
+pub fn record_watch(watch: Watch, teams: usize) {
+	metrics::gauge!("game_feed_asleep").set(if matches!(watch, Watch::Asleep { .. }) { 1.0 } else { 0.0 });
+	let next = u32::try_from(watch.due_at().timestamp()).map_or(0.0, f64::from);
+	metrics::gauge!("game_feed_next_fetch_timestamp_seconds").set(next);
+	metrics::gauge!("game_feed_teams_chosen").set(f64::from(u32::try_from(teams).unwrap_or(u32::MAX)));
 }

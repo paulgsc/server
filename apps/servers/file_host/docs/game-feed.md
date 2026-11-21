@@ -23,13 +23,31 @@ offers: see "The phone's live game day" below.
 ## The worker
 
 Always started, and following or paused by the operator's switch (see
-"Turning it on"). It wakes every 5 s, reads the switch, and fetches only what
-its schedule says is due, so an idle wake's only I/O is that one indexed
-read:
+"Turning it on"). It wakes every 5 s, reads the switch and the chosen teams,
+and fetches only what its schedule says is due, so an idle wake's only I/O is
+those two indexed reads:
 
-- **The scoreboard** (`/scoreboard`, the current week) every
-  `game_feed::CADENCE.scoreboard` (600), to learn the week's games, their
-  kickoffs and their states. Due at once on start, so a restart catches up.
+- **The scoreboard** (`/scoreboard`, the current week), to learn the week's
+  games, their kickoffs and their states, as its state says
+  (`pass::Watch`, worked out each pass from what the schedule holds):
+  - **Awake** while a chosen game is live, past kickoff and not final, or
+    within `game_feed::CADENCE.margin` (3,600 s) of its kickoff: every
+    `game_feed::CADENCE.scoreboard` (600). Due at once on start, so a
+    restart catches up.
+  - **Asleep** otherwise: next read an hour before the next chosen kickoff,
+    or `game_feed::CADENCE.refresh` (86,400 s) after the last read, whichever
+    is sooner, and never sooner than awake would be. A day with no game near
+    costs one read (paulgsc/some-ui#3329). The daily read learns a game added,
+    flexed or rescheduled; one moved sooner by less than a day is learnt at
+    that read, so in the worst case its first hour is missed. A game still
+    `pre` past its grace (postponed) leaves the scoreboard asleep until a read
+    says its new kickoff.
+  - **Backing off** after a read that failed, as below, whatever the games.
+- **Only the chosen teams' games.** `settings::GameTeams` (below, "Turning it
+  on") names teams; a game is chosen when either side is named, or always when
+  none is. Only a chosen game's summary is fetched and only its kickoff wakes
+  the scoreboard. Every listed game is still learnt, so a change of teams
+  takes effect at the next pass.
 - **A game's summary** (`/summary?event=<id>`) every `game_feed::CADENCE.live`
   (15) while the game is live, and from its kickoff while the scoreboard still
   calls it `pre`, since the scoreboard can be ten minutes stale at kickoff. A
@@ -127,6 +145,13 @@ moves without a sops edit or a restart, as Rust Rounds' recording did
   touched (GF2 holds) and the schedule waits; the first pass after it is
   turned back on fetches whatever is due by then, the scoreboard first, so it
   catches up as a restart does.
+- **The teams are a second setting,** `game-teams`, `{ "teams": [] }` by
+  default (`settings::GameTeams`, every game): ESPN's abbreviations as the
+  scoreboard spells them (`SF`, `WSH`), 2 to 4 capitals, at most 32, held
+  sorted and once each. Its own namespace, not a field of `game-feed`,
+  because the web app sets the switch with `{ following }` alone. It is read
+  each pass after the switch, and one that cannot be read skips the pass as
+  the switch does.
 - **Said once.** Pausing and resuming are each logged once, at `INFO`, when
   the worker first sees them, not every pass.
 - **A switch it cannot read skips the pass,** at `ERROR`
@@ -151,7 +176,12 @@ wake), `game_feed_pass_failing` (a storage failure), `game_feed_games_followed`,
 `game_feed_fetches_total{kind}` (what each fetch read as: `scoreboard`,
 `summary`, `rate_limited`, `status`, `not_json`, `not_an_object`, or why there
 was no answer: `timeout`, `connect`, `transport`) and
-`game_feed_plays_added_total`. The GAME FEED dashboard (`infra/grafana/dashboards/game-feed.jsonnet`) shows them.
+`game_feed_plays_added_total`, and the scoreboard's state after each pass that
+ran: `game_feed_asleep` (1 asleep, 0 awake or backing off),
+`game_feed_next_fetch_timestamp_seconds` (when it is next read) and
+`game_feed_teams_chosen` (0 is every game); a paused pass leaves those three
+as they were. Asleep, the worker still wakes and stamps every 5 s, so
+`GameFeedStale` still means the worker stopped, never that it sleeps. The GAME FEED dashboard (`infra/grafana/dashboards/game-feed.jsonnet`) shows them.
 
 ## What ESPN's data is like
 

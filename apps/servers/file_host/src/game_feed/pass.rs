@@ -1,8 +1,11 @@
 //! One pass of the game feed: fetch what is due, keep every response, then
 //! read it.
 //!
-//! - **What is due** is [`Schedule`]'s call, in memory: the scoreboard every
-//!   [`Cadence::scoreboard`]; a game's summary every [`Cadence::live`] while
+//! - **What is due** is [`Schedule`]'s call, in memory: the scoreboard as
+//!   its [`Watch`] says (every [`Cadence::scoreboard`] while a chosen game is
+//!   near, else asleep until the next chosen kickoff less
+//!   [`Cadence::margin`], or [`Cadence::refresh`] after the last read,
+//!   whichever is sooner); a chosen game's summary every [`Cadence::live`] while
 //!   the game is live, or from its kickoff until a summary says it started
 //!   (the scoreboard may be minutes stale at kickoff); once more after it goes
 //!   final; and never again once a final summary is kept.
@@ -14,6 +17,7 @@
 //!   at most [`Cadence::backoff_cap`]; its next good response resets it.
 //! - **No network in tests.** Fetching is the [`Fetch`] port.
 
+use crate::settings::Teams;
 use chrono::{DateTime, Duration as Span, SecondsFormat, Utc};
 use game_feed_repo::{Fetched, Read, Response};
 use nfl_feed::{scoreboard::Scoreboard, GameState};
@@ -152,9 +156,43 @@ impl Fetch for ReqwestFetch {
 /// How often each thing is fetched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cadence {
+	/// The scoreboard while a chosen game is near ([`Watch::Awake`]).
 	pub scoreboard: Duration,
 	pub live: Duration,
 	pub backoff_cap: Duration,
+	/// How long before a chosen game's kickoff the scoreboard wakes.
+	pub margin: Duration,
+	/// The longest the scoreboard sleeps between reads, so a game added,
+	/// moved or flexed into the week is learnt within it.
+	pub refresh: Duration,
+}
+
+/// Where the scoreboard stands between reads: the feed's states, one of
+/// which holds after every pass ([`Schedule::watch`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Watch {
+	/// Not read yet, or a chosen game is live, past kickoff and not final, or
+	/// within [`Cadence::margin`] of kickoff: next read at `at`, one
+	/// [`Cadence::scoreboard`] after the last (at once before the first).
+	Awake { at: DateTime<Utc> },
+	/// No chosen game near: next read at `until`, the next chosen kickoff
+	/// less [`Cadence::margin`] or [`Cadence::refresh`] after the last read,
+	/// whichever is sooner, and never sooner than [`Watch::Awake`] would be.
+	Asleep { until: DateTime<Utc> },
+	/// The last read failed: next read at `at`, its backoff, whatever the
+	/// games.
+	BackingOff { at: DateTime<Utc> },
+}
+
+impl Watch {
+	/// When the scoreboard is next read.
+	#[must_use]
+	pub const fn due_at(self) -> DateTime<Utc> {
+		match self {
+			Self::Awake { at } | Self::BackingOff { at } => at,
+			Self::Asleep { until } => until,
+		}
+	}
 }
 
 /// When one thing is next fetched, and how many fetches of it in a row went
@@ -196,6 +234,8 @@ fn span(duration: Duration) -> Span {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Track {
 	kickoff: Option<DateTime<Utc>>,
+	/// Its sides' teams, home first, as the scoreboard spells them.
+	teams: [Option<String>; 2],
 	state: Option<GameState>,
 	/// The scoreboard says the game is final (`post` and completed).
 	completed: bool,
@@ -216,6 +256,18 @@ impl Track {
 			Some(GameState::Post) => self.completed || self.kickoff.is_some_and(|kickoff| now - kickoff < POST_GRACE),
 			Some(GameState::Pre) | None => self.kickoff.is_some_and(|kickoff| kickoff <= now && now - kickoff < PRE_GRACE),
 		}
+	}
+
+	/// Whether `teams` choose this game.
+	fn chosen(&self, teams: &Teams) -> bool {
+		let [home, away] = &self.teams;
+		teams.follows(home.as_deref(), away.as_deref())
+	}
+
+	/// Whether the scoreboard stays awake for it: followed now, or not yet
+	/// final and within `margin` of its kickoff.
+	fn near(&self, now: DateTime<Utc>, margin: Span) -> bool {
+		self.followed(now) || (!self.done && self.kickoff.is_some_and(|kickoff| now < kickoff && kickoff - margin <= now))
 	}
 }
 
@@ -239,6 +291,8 @@ fn later(held: Option<GameState>, seen: Option<GameState>) -> Option<GameState> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schedule {
 	scoreboard: Target,
+	/// When the scoreboard was last read well: `None` before the first.
+	read_at: Option<DateTime<Utc>>,
 	games: BTreeMap<String, Track>,
 }
 
@@ -248,14 +302,46 @@ impl Schedule {
 	pub const fn new(now: DateTime<Utc>) -> Self {
 		Self {
 			scoreboard: Target::now(now),
+			read_at: None,
 			games: BTreeMap::new(),
 		}
 	}
 
-	/// Games being followed now: live, or past kickoff and not yet final.
+	/// Chosen games being followed now: live, or past kickoff and not yet
+	/// final.
 	#[must_use]
-	pub fn followed(&self, now: DateTime<Utc>) -> usize {
-		self.games.values().filter(|track| track.followed(now)).count()
+	pub fn followed(&self, now: DateTime<Utc>, teams: &Teams) -> usize {
+		self.chosen(teams).filter(|track| track.followed(now)).count()
+	}
+
+	fn chosen<'a>(&'a self, teams: &'a Teams) -> impl Iterator<Item = &'a Track> + 'a {
+		self.games.values().filter(move |track| track.chosen(teams))
+	}
+
+	/// Where the scoreboard stands at `now`, for the games `teams` choose.
+	///
+	/// Worked out from what the schedule holds each time it is asked, never
+	/// stored, so a change of `teams` moves it at the next pass.
+	#[must_use]
+	pub fn watch(&self, now: DateTime<Utc>, teams: &Teams, cadence: Cadence) -> Watch {
+		let at = self.scoreboard.next_at;
+		let Some(read_at) = self.read_at else { return Watch::Awake { at } };
+		if self.scoreboard.failures > 0 {
+			return Watch::BackingOff { at };
+		}
+		let margin = span(cadence.margin);
+		if self.chosen(teams).any(|track| track.near(now, margin)) {
+			return Watch::Awake { at };
+		}
+		let next_kickoff = self
+			.chosen(teams)
+			.filter(|track| !track.done)
+			.filter_map(|track| track.kickoff)
+			.filter(|kickoff| now < *kickoff)
+			.min();
+		let refresh = read_at + span(cadence.refresh);
+		let until = next_kickoff.map_or(refresh, |kickoff| (kickoff - margin).min(refresh));
+		Watch::Asleep { until: until.max(at) }
 	}
 
 	/// Learn the week from a scoreboard. `done` names the games already kept
@@ -264,12 +350,14 @@ impl Schedule {
 		for game in &board.games {
 			let track = self.games.entry(game.id.clone()).or_insert_with(|| Track {
 				kickoff: None,
+				teams: [None, None],
 				state: None,
 				completed: false,
 				done: done.contains(&game.id),
 				target: Target::now(now),
 			});
 			track.kickoff = game.kickoff.or(track.kickoff);
+			track.teams = [game.home.team.clone(), game.away.team.clone()];
 			track.completed = game.status.is_final();
 			// `pre` again after `post` is a postponed game rescheduled under
 			// the same event id: follow it again from its new kickoff.
@@ -282,11 +370,11 @@ impl Schedule {
 		self.games.retain(|id, track| board.games.iter().any(|game| &game.id == id) || track.followed(now));
 	}
 
-	fn due(&self, now: DateTime<Utc>) -> Vec<String> {
+	fn due(&self, now: DateTime<Utc>, teams: &Teams) -> Vec<String> {
 		self
 			.games
 			.iter()
-			.filter(|(_, track)| track.followed(now) && track.target.next_at <= now)
+			.filter(|(_, track)| track.chosen(teams) && track.followed(now) && track.target.next_at <= now)
 			.map(|(id, _)| id.clone())
 			.collect()
 	}
@@ -307,7 +395,8 @@ fn stamp(at: DateTime<Utc>) -> String {
 	at.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Fetch, keep and read whatever is due at `clock()`.
+/// Fetch, keep and read whatever is due at `clock()`, for the games `teams`
+/// choose.
 ///
 /// # Errors
 /// A storage failure, which ends the pass. What was kept before it stays
@@ -317,11 +406,12 @@ pub async fn run_once<F: Fetch>(
 	fetch: &F,
 	schedule: &mut Schedule,
 	cadence: Cadence,
+	teams: &Teams,
 	clock: &(dyn Fn() -> DateTime<Utc> + Sync),
 ) -> Result<Pass, sqlx::Error> {
 	let mut pass = Pass::default();
 	let now = clock();
-	if schedule.scoreboard.next_at <= now {
+	if schedule.watch(now, teams, cadence).due_at() <= now {
 		let url = nfl_feed::scoreboard_url();
 		let read = fetch_and_keep(db, fetch, Fetched::Scoreboard, &url, clock, &mut pass).await;
 		if read.is_err() {
@@ -340,11 +430,12 @@ pub async fn run_once<F: Fetch>(
 				}
 				schedule.learn(&board, &done, now);
 				schedule.scoreboard.succeeded(now, cadence.scoreboard);
+				schedule.read_at = Some(now);
 			}
 			_ => schedule.scoreboard.failed(now, cadence.scoreboard, cadence.backoff_cap),
 		}
 	}
-	for game in schedule.due(now) {
+	for game in schedule.due(now, teams) {
 		let url = nfl_feed::summary_url(&game);
 		let read = fetch_and_keep(db, fetch, Fetched::Summary(&game), &url, clock, &mut pass).await;
 		let Some(track) = schedule.games.get_mut(&game) else { continue };
@@ -422,6 +513,8 @@ mod tests {
 		scoreboard: Duration::from_secs(600),
 		live: Duration::from_secs(15),
 		backoff_cap: Duration::from_secs(900),
+		margin: Duration::from_secs(3600),
+		refresh: Duration::from_secs(86_400),
 	};
 
 	/// Canned answers by URL, each used once, in order; the URLs asked are
@@ -574,7 +667,7 @@ mod tests {
 	}
 
 	async fn pass_at(db: &SqlitePool, fetch: &Canned, schedule: &mut Schedule, now: DateTime<Utc>) -> Pass {
-		run_once(db, fetch, schedule, CADENCE, &move || now).await.unwrap()
+		run_once(db, fetch, schedule, CADENCE, &Teams::default(), &move || now).await.unwrap()
 	}
 
 	#[tokio::test]
@@ -590,7 +683,7 @@ mod tests {
 		let pass = pass_at(&db, &fetch, &mut schedule, kickoff_plus(-3600)).await;
 		assert_eq!(pass.fetched, ["scoreboard"]);
 		assert_eq!(fetch.asked(), std::slice::from_ref(&board_url));
-		assert_eq!(schedule.followed(kickoff_plus(-3600)), 0);
+		assert_eq!(schedule.followed(kickoff_plus(-3600), &Teams::default()), 0);
 		// Nothing is due until the scoreboard's cadence comes round.
 		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff_plus(-3599)).await, Pass::default());
 
@@ -611,7 +704,7 @@ mod tests {
 		// Final: one last fetch, then nothing more for this game.
 		fetch.answer(&game_url, 200, &final_of_game());
 		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff_plus(46)).await.added, 10);
-		assert_eq!(schedule.followed(kickoff_plus(61)), 0);
+		assert_eq!(schedule.followed(kickoff_plus(61), &Teams::default()), 0);
 		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff_plus(61)).await, Pass::default());
 		assert!(fetch.asked().iter().all(|url| url == &board_url || url == &game_url));
 
@@ -693,13 +786,13 @@ mod tests {
 		fetch.answer(&board_url, 200, final_board.as_bytes());
 		fetch.answer(&game_url, 200, &live_of_game(10));
 		pass_at(&db, &fetch, &mut schedule, kickoff_plus(10_000)).await;
-		assert_eq!(schedule.followed(kickoff_plus(10_015)), 1);
+		assert_eq!(schedule.followed(kickoff_plus(10_015), &Teams::default()), 1);
 		let mut conn = db.acquire().await.unwrap();
 		assert!(!game_feed_repo::holds_final(&mut conn, GAME).await.unwrap(), "a live summary is not final");
 		drop(conn);
 		fetch.answer(&game_url, 200, &final_of_game());
 		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff_plus(10_015)).await.added, 10);
-		assert_eq!(schedule.followed(kickoff_plus(10_030)), 0);
+		assert_eq!(schedule.followed(kickoff_plus(10_030), &Teams::default()), 0);
 	}
 
 	#[tokio::test]
@@ -730,8 +823,8 @@ mod tests {
 		let later_kickoff = at(KICKOFF) + Span::days(2);
 		fetch.answer(&board_url, 200, board_with("pre", "2026-11-01T00:15Z").as_bytes());
 		pass_at(&db, &fetch, &mut schedule, later_kickoff - Span::hours(1)).await;
-		assert_eq!(schedule.followed(later_kickoff - Span::hours(1)), 0, "not before its new kickoff");
-		assert_eq!(schedule.followed(later_kickoff + Span::seconds(1)), 1);
+		assert_eq!(schedule.followed(later_kickoff - Span::hours(1), &Teams::default()), 0, "not before its new kickoff");
+		assert_eq!(schedule.followed(later_kickoff + Span::seconds(1), &Teams::default()), 1);
 	}
 
 	#[tokio::test]
@@ -747,7 +840,201 @@ mod tests {
 		fetch.answer(&board_url, 200, page.to_string().as_bytes());
 		fetch.answer(&nfl_feed::summary_url(GAME), 200, &final_of_game());
 		assert_eq!(pass_at(&db, &fetch, &mut schedule, a_day_on).await.fetched, ["scoreboard", "summary"]);
-		assert_eq!(schedule.followed(a_day_on + Span::seconds(15)), 0);
+		assert_eq!(schedule.followed(a_day_on + Span::seconds(15), &Teams::default()), 0);
+	}
+
+	/// A scoreboard of the games given, each `(id, kickoff, state, home,
+	/// away)`, none completed.
+	fn board(games: &[(&str, &str, &str, &str, &str)]) -> Vec<u8> {
+		let events: Vec<serde_json::Value> = games
+			.iter()
+			.map(|(id, date, state, home, away)| {
+				serde_json::json!({
+					"id": id,
+					"date": date,
+					"status": { "type": { "state": state, "completed": false } },
+					"competitions": [{ "competitors": [
+						{ "homeAway": "home", "team": { "abbreviation": home } },
+						{ "homeAway": "away", "team": { "abbreviation": away } },
+					] }],
+				})
+			})
+			.collect();
+		serde_json::json!({ "events": events }).to_string().into_bytes()
+	}
+
+	fn teams(named: &[&str]) -> Teams {
+		Teams::try_from(named.iter().map(|team| (*team).to_owned()).collect::<Vec<_>>()).unwrap()
+	}
+
+	async fn pass_for(db: &SqlitePool, fetch: &Canned, schedule: &mut Schedule, now: DateTime<Utc>, chosen: &Teams) -> Pass {
+		run_once(db, fetch, schedule, CADENCE, chosen, &move || now).await.unwrap()
+	}
+
+	/// A start on a Tuesday with no game in the week.
+	const TUESDAY: &str = "2026-11-03T15:00:00Z";
+
+	#[tokio::test]
+	async fn a_week_with_no_game_reads_the_scoreboard_once_a_day_and_nothing_else() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let start = at(TUESDAY);
+		for _ in 0..8 {
+			fetch.answer(&board_url, 200, &board(&[]));
+		}
+		let mut schedule = Schedule::new(start);
+		let mut asked = 0;
+		// A wake every 5 minutes for a week: one read a day.
+		let mut now = start;
+		while now < start + Span::days(7) {
+			let pass = pass_at(&db, &fetch, &mut schedule, now).await;
+			asked += pass.fetched.len();
+			if !pass.fetched.is_empty() {
+				assert_eq!(pass.fetched, ["scoreboard"]);
+				assert_eq!(schedule.watch(now, &Teams::default(), CADENCE), Watch::Asleep { until: now + Span::days(1) });
+			}
+			now += Span::minutes(5);
+		}
+		assert_eq!(asked, 7);
+		assert!(fetch.asked().iter().all(|url| url == &board_url));
+	}
+
+	#[tokio::test]
+	async fn a_game_tomorrow_wakes_the_scoreboard_an_hour_before_its_kickoff() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let start = at(TUESDAY);
+		let kickoff = start + Span::hours(20);
+		let week = board(&[(GAME, &stamp(kickoff), "pre", "SF", "SEA")]);
+		let mut schedule = Schedule::new(start);
+		fetch.answer(&board_url, 200, &week);
+		pass_at(&db, &fetch, &mut schedule, start).await;
+		let asleep = Watch::Asleep { until: kickoff - Span::hours(1) };
+		assert_eq!(schedule.watch(start, &Teams::default(), CADENCE), asleep);
+		assert_eq!(asleep.due_at(), kickoff - Span::hours(1));
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff - Span::hours(2)).await, Pass::default());
+
+		// Awake from an hour before: the scoreboard at its cadence, then the
+		// summary from kickoff.
+		fetch.answer(&board_url, 200, &week);
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff - Span::hours(1)).await.fetched, ["scoreboard"]);
+		let next = kickoff - Span::hours(1) + Span::minutes(10);
+		assert_eq!(schedule.watch(next, &Teams::default(), CADENCE), Watch::Awake { at: next });
+		fetch.answer(&board_url, 200, &week);
+		fetch.answer(&nfl_feed::summary_url(GAME), 200, PRE);
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, kickoff).await.fetched, ["scoreboard", "summary"]);
+	}
+
+	#[tokio::test]
+	async fn a_flexed_kickoff_is_learnt_at_the_read_before_the_old_one_or_the_daily_read() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let start = at(TUESDAY);
+
+		// Flexed later: read an hour before the old kickoff, which says the
+		// new one, so nothing is fetched at the old kickoff.
+		let old = start + Span::hours(10);
+		let new = old + Span::hours(7);
+		let mut schedule = Schedule::new(start);
+		fetch.answer(&board_url, 200, &board(&[(GAME, &stamp(old), "pre", "SF", "SEA")]));
+		pass_at(&db, &fetch, &mut schedule, start).await;
+		fetch.answer(&board_url, 200, &board(&[(GAME, &stamp(new), "pre", "SF", "SEA")]));
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, old - Span::hours(1)).await.fetched, ["scoreboard"]);
+		assert_eq!(schedule.watch(old, &Teams::default(), CADENCE), Watch::Asleep { until: new - Span::hours(1) });
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, old).await, Pass::default());
+
+		// Moved sooner: five days out at first, then the daily read says
+		// tomorrow.
+		let far = start + Span::days(5);
+		let sooner = start + Span::days(1) + Span::hours(10);
+		let mut schedule = Schedule::new(start);
+		fetch.answer(&board_url, 200, &board(&[(GAME, &stamp(far), "pre", "SF", "SEA")]));
+		pass_at(&db, &fetch, &mut schedule, start).await;
+		assert_eq!(schedule.watch(start, &Teams::default(), CADENCE), Watch::Asleep { until: start + Span::days(1) });
+		fetch.answer(&board_url, 200, &board(&[(GAME, &stamp(sooner), "pre", "SF", "SEA")]));
+		pass_at(&db, &fetch, &mut schedule, start + Span::days(1)).await;
+		let read = start + Span::days(1);
+		assert_eq!(schedule.watch(read, &Teams::default(), CADENCE), Watch::Asleep { until: sooner - Span::hours(1) });
+	}
+
+	#[tokio::test]
+	async fn a_postponed_game_sleeps_the_scoreboard_until_the_daily_read_learns_its_new_kickoff() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let kickoff = at(TUESDAY) + Span::days(4);
+		let stuck = board(&[(GAME, &stamp(kickoff), "pre", "SF", "SEA")]);
+
+		// Still `pre` past its grace: no summary, and the scoreboard asleep
+		// until the day after its last read.
+		let past = kickoff + PRE_GRACE;
+		let mut schedule = Schedule::new(past);
+		fetch.answer(&board_url, 200, &stuck);
+		assert_eq!(pass_at(&db, &fetch, &mut schedule, past).await.fetched, ["scoreboard"]);
+		assert_eq!(schedule.watch(past, &Teams::default(), CADENCE), Watch::Asleep { until: past + Span::days(1) });
+
+		// The daily read has it rescheduled two days on.
+		let again = kickoff + Span::days(2);
+		fetch.answer(&board_url, 200, &board(&[(GAME, &stamp(again), "pre", "SF", "SEA")]));
+		pass_at(&db, &fetch, &mut schedule, past + Span::days(1)).await;
+		let read = past + Span::days(1);
+		assert_eq!(schedule.watch(read, &Teams::default(), CADENCE), Watch::Asleep { until: again - Span::hours(1) });
+	}
+
+	#[tokio::test]
+	async fn only_a_chosen_teams_games_are_fetched_or_wake_the_scoreboard() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let start = at(TUESDAY);
+		let kickoff = start + Span::hours(5);
+		let week = board(&[
+			(GAME, &stamp(kickoff), "pre", "SF", "SEA"),
+			("401873099", &stamp(kickoff - Span::hours(3)), "pre", "GB", "CAR"),
+		]);
+		let (sf, dallas) = (teams(&["SF"]), teams(&["DAL"]));
+
+		// A team with no game this week: asleep until the daily read, though
+		// two games kick off today.
+		let mut schedule = Schedule::new(start);
+		fetch.answer(&board_url, 200, &week);
+		pass_for(&db, &fetch, &mut schedule, start, &dallas).await;
+		assert_eq!(schedule.watch(start, &dallas, CADENCE), Watch::Asleep { until: start + Span::days(1) });
+		// Every game, or SF: the earlier GB game, or SF's, wakes it.
+		assert_eq!(schedule.watch(start, &Teams::default(), CADENCE), Watch::Asleep { until: kickoff - Span::hours(4) });
+		assert_eq!(schedule.watch(start, &sf, CADENCE), Watch::Asleep { until: kickoff - Span::hours(1) });
+
+		// Choosing SF takes effect at the next pass, and at SF's kickoff only
+		// SF's summary is fetched, the GB game live or not.
+		fetch.answer(&board_url, 200, &week);
+		fetch.answer(&nfl_feed::summary_url(GAME), 200, PRE);
+		assert_eq!(pass_for(&db, &fetch, &mut schedule, kickoff, &sf).await.fetched, ["scoreboard", "summary"]);
+		assert_eq!(fetch.asked(), [board_url.clone(), board_url.clone(), nfl_feed::summary_url(GAME)]);
+		assert_eq!(schedule.followed(kickoff, &sf), 1);
+		assert_eq!(schedule.followed(kickoff, &Teams::default()), 2);
+		assert_eq!(schedule.followed(kickoff, &dallas), 0);
+	}
+
+	#[tokio::test]
+	async fn a_failing_read_backs_off_as_before_while_asleep() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let start = at(TUESDAY);
+		let mut schedule = Schedule::new(start);
+		fetch.answer(&board_url, 200, &board(&[]));
+		pass_at(&db, &fetch, &mut schedule, start).await;
+		let day = start + Span::days(1);
+		fetch.answer(&board_url, 429, b"Too Many Requests");
+		pass_at(&db, &fetch, &mut schedule, day).await;
+		assert_eq!(schedule.watch(day, &Teams::default(), CADENCE), Watch::BackingOff { at: day + Span::seconds(900) });
+		fetch.answer(&board_url, 200, &board(&[]));
+		pass_at(&db, &fetch, &mut schedule, day + Span::seconds(900)).await;
+		let read = day + Span::seconds(900);
+		assert_eq!(schedule.watch(read, &Teams::default(), CADENCE), Watch::Asleep { until: read + Span::days(1) });
 	}
 
 	#[test]
@@ -757,6 +1044,7 @@ mod tests {
 			state: Some(GameState::Post),
 			completed: false,
 			done: false,
+			teams: [None, None],
 			target: Target::now(at(KICKOFF)),
 		};
 		assert!(track.followed(kickoff_plus(60)));
@@ -770,6 +1058,7 @@ mod tests {
 			state: Some(GameState::Pre),
 			completed: false,
 			done: false,
+			teams: [None, None],
 			target: Target::now(at(KICKOFF)),
 		};
 		assert!(!track.followed(kickoff_plus(-1)));

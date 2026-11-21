@@ -87,6 +87,86 @@ impl Namespace for GameFeed {
 	const NAME: &'static str = "game-feed";
 }
 
+/// The most teams [`Teams`] may name: every NFL team is 32.
+pub const MAX_TEAMS: usize = 32;
+
+/// The teams whose games the game feed follows live (paulgsc/some-ui#3329,
+/// GWB15), each as ESPN spells its abbreviation on the scoreboard (`SF`,
+/// `WSH`, `LAR`: `nfl_feed::scoreboard::Side::team`), the same names the
+/// phone's game day labels a game by (`SF vs SEA`). Empty means every game.
+///
+/// Each is 2 to 4 capital letters, at most [`MAX_TEAMS`]; held sorted and
+/// once each, so the same choice is always stored the same way.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct Teams(Vec<String>);
+
+impl Teams {
+	/// Whether a game between `home` and `away` is followed: always, when no
+	/// team is named; else when either side is named.
+	#[must_use]
+	pub fn follows(&self, home: Option<&str>, away: Option<&str>) -> bool {
+		self.0.is_empty() || [home, away].into_iter().flatten().any(|team| self.0.iter().any(|named| named == team))
+	}
+
+	/// How many teams are named: 0 is every game.
+	#[must_use]
+	pub fn len(&self) -> usize {
+		self.0.len()
+	}
+
+	/// Whether no team is named, so every game is followed.
+	#[must_use]
+	pub fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
+}
+
+impl TryFrom<Vec<String>> for Teams {
+	type Error = String;
+
+	fn try_from(mut teams: Vec<String>) -> Result<Self, Self::Error> {
+		if let Some(bad) = teams
+			.iter()
+			.find(|team| !(2..=4).contains(&team.len()) || !team.bytes().all(|byte| byte.is_ascii_uppercase()))
+		{
+			return Err(format!("a team is 2 to 4 capital letters, as ESPN abbreviates it, not {bad:?}"));
+		}
+		teams.sort_unstable();
+		teams.dedup();
+		if teams.len() > MAX_TEAMS {
+			return Err(format!("at most {MAX_TEAMS} teams"));
+		}
+		Ok(Self(teams))
+	}
+}
+
+impl From<Teams> for Vec<String> {
+	fn from(teams: Teams) -> Self {
+		teams.0
+	}
+}
+
+/// Which teams' games the game feed follows (paulgsc/some-ui#3329, GWB15).
+///
+/// The game feed fetches a game's summary only when one of its sides is
+/// named, and sleeps the scoreboard until a named team's next kickoff
+/// (`game_feed::pass::Watch`). **Every game by default** (no team named), as
+/// before the setting existed.
+///
+/// A namespace of its own beside [`GameFeed`], not a field of it: the web
+/// app sets the switch with `{ following }` alone, and a field there would
+/// be reset by every flip of the switch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GameTeams {
+	pub teams: Teams,
+}
+
+impl Namespace for GameTeams {
+	const NAME: &'static str = "game-teams";
+}
+
 /// A namespace the routes serve, erased to JSON.
 pub struct Entry {
 	pub name: &'static str,
@@ -114,7 +194,7 @@ fn accept<N: Namespace>(body: &[u8]) -> Result<String, String> {
 }
 
 /// Every lever home has. A namespace not here is a `404`.
-pub const NAMESPACES: &[Entry] = &[entry::<RustRounds>(), entry::<GameFeed>()];
+pub const NAMESPACES: &[Entry] = &[entry::<RustRounds>(), entry::<GameFeed>(), entry::<GameTeams>()];
 
 /// The namespace named `name`, if home has one.
 #[must_use]
@@ -156,7 +236,7 @@ pub async fn read<N: Namespace>(db: &SqlitePool) -> Result<Standing<N>, ReadErro
 
 #[cfg(test)]
 mod tests {
-	use super::{namespace, read, GameFeed, ReadError, RustRounds, NAMESPACES};
+	use super::{namespace, read, GameFeed, GameTeams, ReadError, RustRounds, Teams, MAX_TEAMS, NAMESPACES};
 	use admin_setting_repo::SetBy;
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -184,6 +264,40 @@ mod tests {
 		for refused in [&br#"{"following":"no"}"#[..], br#"{"recording":false}"#, b"{}"] {
 			assert!((entry.accept)(refused).is_err(), "{}", String::from_utf8_lossy(refused));
 		}
+	}
+
+	#[test]
+	fn the_game_feed_follows_every_team_by_default() {
+		assert!(GameTeams::default().teams.is_empty());
+		let entry = namespace("game-teams").unwrap();
+		assert_eq!((entry.default)(), serde_json::json!({ "teams": [] }));
+		// Held sorted and once each.
+		assert_eq!((entry.accept)(br#"{"teams":["SF","KC","SF"]}"#).unwrap(), r#"{"teams":["KC","SF"]}"#);
+		let letter = |n: usize| char::from(b'A' + u8::try_from(n).unwrap());
+		let too_many: Vec<String> = (0..=MAX_TEAMS).map(|n| format!("T{}{}", letter(n / 26), letter(n % 26))).collect();
+		let too_many = serde_json::json!({ "teams": too_many }).to_string();
+		for refused in [
+			&br#"{"teams":["sf"]}"#[..],
+			br#"{"teams":["S"]}"#,
+			br#"{"teams":["SFSFS"]}"#,
+			br#"{"teams":"SF"}"#,
+			b"{}",
+			too_many.as_bytes(),
+		] {
+			assert!((entry.accept)(refused).is_err(), "{}", String::from_utf8_lossy(refused));
+		}
+	}
+
+	#[test]
+	fn a_game_is_followed_when_either_side_is_named_or_none_is() {
+		let every = Teams::default();
+		assert!(every.follows(Some("GB"), Some("CAR")));
+		assert!(every.follows(None, None));
+		let sf = Teams::try_from(vec![String::from("SF")]).unwrap();
+		assert!(sf.follows(Some("SF"), Some("SEA")));
+		assert!(sf.follows(Some("SEA"), Some("SF")));
+		assert!(!sf.follows(Some("GB"), Some("CAR")));
+		assert!(!sf.follows(None, None), "a game with no teams read is not a named team's");
 	}
 
 	#[test]

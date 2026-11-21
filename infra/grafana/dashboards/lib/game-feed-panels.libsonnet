@@ -10,6 +10,9 @@
 // says whether the deployment runs the worker, SINCE LAST LOOK whether it is
 // still waking (every 5 s), so a stalled feed reads differently from a quiet
 // week, and FAILING whether the last pass ended on a storage failure.
+// SCOREBOARD and NEXT READ say whether the feed is asleep between games and
+// until when (paulgsc/some-ui#3329): asleep is healthy, and the worker still
+// wakes every 5 s, so SINCE LAST LOOK stays green while it sleeps.
 
 local ds = { type: 'prometheus', uid: 'prometheus' };
 
@@ -72,6 +75,32 @@ local series(title, description, targets, unit) = {
     's',
     [{ color: 'green', value: null }, { color: 'red', value: 60 }],
   ),
+
+  scoreboard: stat(
+    'SCOREBOARD',
+    'Whether the scoreboard is asleep: no chosen team\'s game is live or within an hour of kickoff, so it is next read an hour before the next chosen kickoff or a day after its last read, whichever is sooner. AWAKE reads it every 10 minutes. Asleep is not a fault; SINCE LAST LOOK says whether the worker is alive.',
+    { expr: 'game_feed_asleep' },
+    'none',
+    [{ color: 'green', value: null }],
+    [{ type: 'value', options: { '0': { text: 'AWAKE', color: 'green' }, '1': { text: 'ASLEEP', color: '#8E8E8E' } } }],
+  ),
+
+  nextRead: stat(
+    'NEXT READ',
+    'When the scoreboard is next read, asleep or awake, as the last pass that ran set it. A paused feed leaves it as it was: FOLLOWING says so.',
+    { expr: 'game_feed_next_fetch_timestamp_seconds * 1000' },
+    'dateTimeFromNow',
+    [{ color: 'green', value: null }],
+  ),
+
+  teams: stat(
+    'TEAMS CHOSEN',
+    'How many teams the operator named in the game-teams setting: only their games get live summaries and wake the scoreboard. 0 means every game.',
+    { expr: 'game_feed_teams_chosen' },
+    'none',
+    [{ color: 'green', value: null }],
+    [{ type: 'value', options: { '0': { text: 'EVERY GAME', color: 'green' } } }],
+  ) { fieldConfig+: { defaults+: { decimals: 0 } } },
 
   failing: stat(
     'FAILING',
