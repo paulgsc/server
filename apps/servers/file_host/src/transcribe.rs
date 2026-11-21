@@ -41,10 +41,10 @@
 //! transcript carries it, so no reader judges a transcript for itself.
 //!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
-//! 500 MB while loaded, for as long as the server runs. Measured on one
-//! thread (a 2.1 GHz Xeon core; `file_host`'s `cpus: 2.0` gives it one, as
-//! [`default_threads`] counts), the decode takes about 1.3 s a second of
-//! speech, two threads a little over half that, and each language detection
+//! 500 MB while loaded, for as long as the server runs. It hears on
+//! [`default_threads`] (two, under file-host's compose cap). Measured on one
+//! 2.1 GHz Xeon core, the decode takes about 1.3 s a second of speech, two
+//! threads a little over half that, and each language detection
 //! an encoder pass, bounded by the speech (`engine`, TR2, has the figures). Off unless `TRANSCRIBE_ENABLED`; on, the
 //! server refuses to start without a model, the VAD model and ffmpeg.
 //!
