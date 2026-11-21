@@ -124,6 +124,25 @@ false start". A line about the team with the ball names it unless it is the
 side wanted; a margin is that team's. Timeouts left are counted from the
 log's timeout plays in the half.
 
+## A game's moment log
+
+```rust
+moment_log(&game, &log, now) -> Vec<Logged>
+```
+
+Every play of the game in ESPN's order, each as every scenario it was, most
+specific first within a play: a `Happened`, exactly as "just happened"
+carries it at `now`, with the quarter and clock of its snap. "Just
+happened" is one reading of it (the newest few, within the mode's window);
+the log is the same rule (`rules::Cx::was`) over every play, with no window
+and no count, so the two cannot disagree about a play (tested:
+`just_happened_is_the_newest_of_the_log`). It is read in Full mode, which
+only moves the pregame window, never what a play was. Which entries are big,
+or have a bite beside them, is the reader's to choose: the engine serves the
+log, not a policy. One pass over the log, O(plays × scenarios): about 3 ms
+for the recorded game's 180 plays in a release build. `file_host` serves it
+to the phone as `GET /games/:id/moments`.
+
 ## The next snap is not in the log
 
 The log holds each play as it stood at its own snap, so the snap still to

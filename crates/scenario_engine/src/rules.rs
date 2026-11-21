@@ -735,31 +735,47 @@ pub(crate) fn now(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, mode: Mode
 pub(crate) fn just_happened(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, mode: Mode) -> Vec<Happened> {
 	let cx = Cx::new(game, so_far, at, mode, Utc.fix(), Watching::Unknown);
 	let since = at - mode.kept();
-	let mut out = Vec::new();
-	for (i, seen) in so_far.plays.iter().enumerate().rev().filter(|(_, seen)| seen.first >= since) {
+	(0..so_far.plays.len()).rev().filter(|i| so_far.plays[*i].first >= since).flat_map(|i| cx.was(i)).collect()
+}
+
+/// Every play of `so_far`, in ESPN's order, each as the scenarios it was,
+/// most specific first: the game's moment log. The "just happened" rule
+/// with no window and no count, so the log and "just happened" are one
+/// reading of the same entries.
+pub(crate) fn moment_log(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>) -> Vec<(usize, Happened)> {
+	let cx = Cx::new(game, so_far, at, Mode::Full, Utc.fix(), Watching::Unknown);
+	(0..so_far.plays.len()).flat_map(|i| cx.was(i).into_iter().map(move |happened| (i, happened))).collect()
+}
+
+impl Cx<'_> {
+	/// Play `i` as the scenarios it was, most specific first, as of `at`.
+	fn was(&self, i: usize) -> Vec<Happened> {
+		let seen = &self.so_far.plays[i];
 		let found = Scenario::ALL
 			.into_iter()
-			.filter_map(|scenario| cx.happened(scenario.entry().moment, i).map(|(weight, line)| (weight, scenario, line)))
+			.filter_map(|scenario| self.happened(scenario.entry().moment, i).map(|(weight, line)| (weight, scenario, line)))
 			.collect();
-		let ago_seconds = (at - seen.at).num_seconds().max(0);
-		out.extend(ranked(found).into_iter().map(|(scenario, line)| {
-			let (unit, unit_side) = cx
-				.happened_unit(scenario.entry().moment, i)
-				.filter(|_| cx.about_a_unit(scenario))
-				.map_or((None, None), |(unit, side)| (Some(unit), side));
-			Happened {
-				scenario,
-				play_id: seen.play.id.clone(),
-				line,
-				ago_seconds,
-				ago: words::ago(ago_seconds),
-				big_play: (scenario == Scenario::BigPlay).then(|| cx.big_play(i)).flatten(),
-				unit,
-				unit_side,
-			}
-		}));
+		let ago_seconds = (self.at - seen.at).num_seconds().max(0);
+		ranked(found)
+			.into_iter()
+			.map(|(scenario, line)| {
+				let (unit, unit_side) = self
+					.happened_unit(scenario.entry().moment, i)
+					.filter(|_| self.about_a_unit(scenario))
+					.map_or((None, None), |(unit, side)| (Some(unit), side));
+				Happened {
+					scenario,
+					play_id: seen.play.id.clone(),
+					line,
+					ago_seconds,
+					ago: words::ago(ago_seconds),
+					big_play: (scenario == Scenario::BigPlay).then(|| self.big_play(i)).flatten(),
+					unit,
+					unit_side,
+				}
+			})
+			.collect()
 	}
-	out
 }
 
 /// The scenarios plausible at any time of a game week (#3049, C874): what
