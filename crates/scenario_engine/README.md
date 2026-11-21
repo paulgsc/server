@@ -86,8 +86,11 @@ the side wanted, and a game with none still has a defense):
   `offense` of the team with the ball (the snap to come's, or for what just
   happened the latest play's).
 
-None before kickoff, after the final, or about the owner. The owner can
-change it with one tap; home keeps what the phone sends, once, with the bite.
+A kick is the kicking team's (the scorer's, on a try); a lead change, the
+scorer's, however many plays on; an onside kick, the kicking team's. None
+before kickoff or after the final, for a pregame, final or owner's
+scenario, or when the team it would name is unknown. The owner can change
+it with one tap; home keeps what the phone sends, once, with the bite.
 
 A game ESPN calls over that was not completed (postponed or cancelled), with
 no play in the log, offers nothing, and its strip says "Not played".

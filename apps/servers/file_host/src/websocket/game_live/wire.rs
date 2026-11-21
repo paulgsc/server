@@ -277,8 +277,8 @@ pub struct Ranked {
 	pub id: String,
 	/// `now`, `always` or `rest`.
 	pub tier: scenario_engine::Tier,
-	/// The catalog's `units`, or null (before kickoff, after the final, about
-	/// the owner).
+	/// The catalog's `units`, or null (before kickoff, after the final, for a
+	/// pregame, final or owner's scenario, or with the team unknown).
 	pub unit: Option<game_scenarios::Unit>,
 	/// Whose unit: the team's code (`CHI`), or null when about no one team.
 	/// The phone reads ours or theirs from the side wanted.

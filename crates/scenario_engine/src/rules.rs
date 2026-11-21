@@ -324,9 +324,12 @@ impl<'s> Cx<'s> {
 	///   ball" is the snap to come's for what is offered ahead, and the latest
 	///   play's for what just happened.
 	///
-	/// None before kickoff, after the final, or about the owner.
+	/// None before kickoff, after the final, or for a pregame, final or
+	/// owner's scenario; none too when the team it would name is unknown.
 	fn default_unit(&self, scenario: Scenario) -> Option<(Unit, Option<String>)> {
-		if scenario.entry().phase != When::In {
+		// Only while the game is played: before kickoff and after the final a
+		// bite is about the game, not a unit, whatever scenario it names.
+		if scenario.entry().phase != When::In || self.phase != Phase::Live {
 			return None;
 		}
 		let us = self.us;
@@ -345,17 +348,23 @@ impl<'s> Cx<'s> {
 			Moment::FourthDown | Moment::TwoMinute => of(Unit::Coaching, Some(to_come.or(last)?)),
 			Moment::Try => of(Unit::Coaching, Some(self.try_pending().or(last)?)),
 			Moment::Halftime => of(Unit::Coaching, us),
-			Moment::Kick => of(Unit::SpecialTeams, to_come.or(last)),
-			Moment::Kickoff | Moment::OnsideKick => {
-				let kicking = self
+			// The try's kick is the scorer's; a field goal try, the offense's.
+			Moment::Kick => of(Unit::SpecialTeams, Some(self.try_pending().or(to_come).or(last)?)),
+			// An onside kick is the kicking team's: the latest onside kick's,
+			// or else the team that scored last, which kicks off next.
+			Moment::OnsideKick => {
+				let onside = self
 					.so_far
 					.plays
 					.iter()
 					.rev()
-					.find(|seen| read::kind(seen.play).contains("kickoff"))
+					.find(|seen| read::is_onside(seen.play))
 					.and_then(|seen| seen.play.possession.as_deref());
-				of(Unit::SpecialTeams, kicking.or(us))
+				let scorer = (0..self.so_far.plays.len()).rev().find_map(|i| self.scorer(i));
+				of(Unit::SpecialTeams, Some(onside.or(scorer)?))
 			}
+			// The coin toss: before the opening kickoff, no one team's yet.
+			Moment::Kickoff => None,
 			Moment::BigPlay => {
 				let big = (0..self.so_far.plays.len()).rev().find_map(|i| self.big_play(i))?;
 				match big.kind {
@@ -369,7 +378,9 @@ impl<'s> Cx<'s> {
 					},
 				}
 			}
-			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury | Moment::LeadChange => by_the_ball(last),
+			// The score that changed the lead was the scorer's offense.
+			Moment::LeadChange => by_the_ball((0..self.so_far.plays.len()).rev().find_map(|i| self.scorer(i))),
+			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::Injury => by_the_ball(last),
 			Moment::ThirdAndLong | Moment::Snap | Moment::RedZone | Moment::OpeningDrive => by_the_ball(to_come.or(last)),
 			Moment::Pregame | Moment::Final | Moment::Watching => None,
 		}

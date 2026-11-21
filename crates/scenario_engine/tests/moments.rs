@@ -818,3 +818,52 @@ fn every_scenario_is_ranked_once_with_what_it_is_about() {
 	assert_eq!(about(&o, Scenario::PlayCall), team(Unit::Offense, "NE"), "the team with the ball's offense");
 	assert_eq!(about(&o, Scenario::Halftime), (Some(Unit::Coaching), None), "halftime is no one team's");
 }
+
+/// #3049: the defaults the moment cannot read off the snap to come: the
+/// try's kick is the scorer's, a lead change is the scorer's even snaps
+/// later, an onside kick is the kicking team's, and nothing is about a unit
+/// once the game is final.
+#[test]
+fn a_bites_default_unit_follows_who_did_it() {
+	use game_scenarios::Unit;
+	let plays = plays();
+	let about = |o: &Offer, scenario: Scenario| o.ranked.iter().find(|r| r.scenario == scenario).map(|r| (r.unit, r.unit_side.clone())).unwrap();
+	let team = |unit, side: &str| (Some(unit), Some(side.to_owned()));
+
+	// CHI's touchdown, its try to come, read through NE.
+	let td = plays.iter().position(|p| p.id == "401873010832").unwrap();
+	let mut log = PlayLog::default();
+	let seen = wall(&plays[td]) + TimeDelta::seconds(10);
+	let mut first: Vec<Play> = plays[..=td].to_vec();
+	first[td] = td_before_the_try(&plays[td]);
+	log.apply(GAME, 1, &seen.to_rfc3339_opts(SecondsFormat::Secs, true), &first);
+	let entries: Vec<Entry> = log.entries().to_vec();
+	let g = game(Some("NE"), status(GameState::In, Some(&plays[td])), None);
+	let o = offer(&g, &entries, pacific(seen + TimeDelta::seconds(5)), Mode::Full, Watching::Unknown);
+	assert_eq!(about(&o, Scenario::Kick), team(Unit::SpecialTeams, "CHI"), "the scorer kicks the try");
+	assert_eq!(about(&o, Scenario::TwoPoint), team(Unit::Coaching, "CHI"), "and makes the call");
+
+	// Three plays on, NE has the ball: the score was still CHI's offense,
+	// which NE's side calls its defense.
+	let later = plays[td + 1..].iter().position(is_snap).unwrap() + td + 1;
+	let g = game(Some("NE"), status(GameState::In, Some(&plays[later])), Some(Situation::before(&plays[later])));
+	let o = offer(
+		&g,
+		&recorded_log(&plays),
+		pacific(wall(&plays[later]) - TimeDelta::seconds(10)),
+		Mode::Full,
+		Watching::Unknown,
+	);
+	assert_eq!(about(&o, Scenario::FellBehind), team(Unit::Defense, "NE"), "the scorer's, not the latest play's");
+
+	// The onside kick, NE's.
+	let onside = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("onside"))).unwrap();
+	let o = just_after(&plays[..onside], plays[onside].clone());
+	assert_eq!(about(&o, Scenario::OnsideKick), team(Unit::SpecialTeams, "NE"));
+
+	// After the final: about the game, never a unit.
+	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+	let g = game(Some("NE"), status(GameState::Post, plays.last()), None);
+	let o = offer(&g, &recorded_log(&plays), pacific(end), Mode::Full, Watching::Watched);
+	assert!(o.ranked.iter().all(|r| r.unit.is_none() && r.unit_side.is_none()));
+}

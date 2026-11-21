@@ -1198,6 +1198,15 @@ mod tests {
 		}
 	}
 
+	/// `bite` with no unit, as a phone from before #3049 says it.
+	fn without_unit(bite: SaidBite<'_>) -> SaidBite<'_> {
+		SaidBite {
+			unit: None,
+			unit_side: None,
+			..bite
+		}
+	}
+
 	fn said_game(bite: SaidBite<'_>) -> Said<'_> {
 		Said {
 			of: Some("game"),
@@ -1900,9 +1909,11 @@ mod tests {
 		let refused = sqlx::query("UPDATE game_bite SET live_strip = 'x'").execute(&pool).await;
 		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
 
+		// No unit, so the refusal tested is this rollback's own, not the
+		// unit migration's (undone first).
 		let picked = SaidBite {
 			how: Some("said-first"),
-			..said_bite()
+			..without_unit(said_bite())
 		};
 		put(&pool, A, &describe("b1", said_game(picked), b"take").unwrap(), b"take").await.unwrap();
 		assert!(
@@ -1971,8 +1982,11 @@ mod tests {
 			.unwrap();
 		assert_eq!(index, 1, "the transcriber's index is back");
 
-		// Going back refuses rather than discards once a bite is held.
-		put(&pool, A, &game("b1", b"take"), b"take").await.unwrap();
+		// Going back refuses rather than discards once a bite is held: one with
+		// no unit, so the refusal is this rollback's own.
+		put(&pool, A, &describe("b1", said_game(without_unit(said_bite())), b"take").unwrap(), b"take")
+			.await
+			.unwrap();
 		assert!(MIGRATOR.undo(&pool, BEFORE_GAME).await.is_err(), "a held bite refuses the rollback");
 		assert_eq!((rows(&pool, "voice_note").await, rows(&pool, "game_bite").await), (2, 1), "and nothing went");
 
@@ -2453,5 +2467,31 @@ mod tests {
 		assert_eq!(whole("-9223372036854775808", true, 86_400_000), None, "i64::MIN is refused, not wrapped");
 		assert_eq!(whole("+1", true, 10), None);
 		assert_eq!(whole("-1", false, 10), None);
+	}
+
+	/// #3049's columns go back only while no bite holds a unit: one that does
+	/// refuses the rollback and nothing goes; without, the round trip is clean.
+	#[tokio::test]
+	async fn the_unit_columns_go_back_only_while_no_bite_holds_one() {
+		const BEFORE_UNIT: i64 = 20_261_121_000_100;
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(A)
+			.bind(A.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		put(&pool, A, &describe("plain", said_game(without_unit(said_bite())), b"one").unwrap(), b"one")
+			.await
+			.unwrap();
+		MIGRATOR.undo(&pool, BEFORE_UNIT).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(rows(&pool, "game_bite").await, 1, "a bite with no unit survives the round trip");
+
+		put(&pool, A, &game("b1", b"two"), b"two").await.unwrap();
+		assert!(MIGRATOR.undo(&pool, BEFORE_UNIT).await.is_err(), "a held unit refuses the rollback");
+		let held: (Option<String>, Option<String>) = sqlx::query_as("SELECT unit, unit_side FROM game_bite WHERE note_id = 'b1'").fetch_one(&pool).await.unwrap();
+		assert_eq!(held, (Some("defense".to_owned()), Some("BUF".to_owned())), "and nothing went");
 	}
 }
