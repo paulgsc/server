@@ -307,7 +307,8 @@ fn a_drive_bite_never_takes_the_next_halfs_score() {
 
 /// A drive is not split where possession carries on: across an overtime
 /// period's break (the playoffs), and across a snap ESPN gave no period. But a
-/// later regulation half still splits it, read past such a snap.
+/// later half still splits it, read past such a snap, and so does regulation's
+/// end, with or without the overtime kickoff in the log.
 #[test]
 fn a_drive_carries_across_an_overtime_break_and_a_snap_with_no_period() {
 	let ot = [
@@ -347,11 +348,33 @@ fn a_drive_carries_across_an_overtime_break_and_a_snap_with_no_period() {
 		),
 	];
 	halves[1].period = None;
-	let log = recorded_log(&halves);
-	let end = wall(halves.last().unwrap()) + TimeDelta::minutes(5);
-	let over = game(Some("CHI"), status(GameState::Post, halves.last()), None);
-	let bite = wall(&halves[0]) - TimeDelta::seconds(10);
-	assert_eq!(its_play(&over, &log, end, Scenario::RedZone, Said::BeforeTheDrive, bite, bite, ANY), None);
+	let red = |plays: &[Play]| {
+		let log = recorded_log(plays);
+		let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+		let over = game(Some("CHI"), status(GameState::Post, plays.last()), None);
+		let bite = wall(&plays[0]) - TimeDelta::seconds(10);
+		its_play(&over, &log, end, Scenario::RedZone, Said::BeforeTheDrive, bite, bite, ANY).map(|(w, _)| w.play_id)
+	};
+	assert_eq!(red(&halves), None, "a later half splits, read past the snap with no period");
+	// The same, all in the 2nd quarter: the snap with no period splits nothing.
+	halves[2].period = Some(2);
+	assert_eq!(red(&halves).as_deref(), Some("p3"));
+	// Regulation's end splits a run though the overtime kickoff is not in the
+	// log: overtime is a half of its own.
+	let late = [
+		shaped(1, 4, "NE", "Rush", "R.Stevenson up the middle to CHI 12 for 3 yards.", (Some(1), 15), (20, 20)),
+		shaped(2, 4, "NE", "End Period", "END OF 4TH QUARTER", (None, 12), (20, 20)),
+		shaped(
+			3,
+			5,
+			"NE",
+			"Passing Touchdown",
+			"D.Maye pass short right to H.Henry for 10 yards, TOUCHDOWN.",
+			(Some(1), 10),
+			(26, 20),
+		),
+	];
+	assert_eq!(red(&late), None, "the 4th quarter's drive does not run into overtime");
 }
 
 /// #1077: a possession ends at a kickoff. CHI scores on its opening drive,

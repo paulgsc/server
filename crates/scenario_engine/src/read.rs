@@ -25,7 +25,8 @@ pub(crate) struct SoFar<'a> {
 	/// The score (away, home) after each play, a missing one carried forward.
 	scores: Vec<(i64, i64)>,
 	/// Each snap's possession run: a run is the snaps one team has in a row,
-	/// within one half and with no kick-off between them.
+	/// within one half (all of overtime being one) and with no kick-off
+	/// between them.
 	runs: Vec<Option<usize>>,
 	/// The first run of each team.
 	first_run: HashMap<&'a str, usize>,
@@ -60,15 +61,16 @@ impl<'a> SoFar<'a> {
 		// kick the kickers recover included) or the end of a half closes it, so
 		// the next snap starts a new one even by the same team; so does a snap
 		// in a later half than the last snap whose half is known, in case the
-		// log lacks both. Only regulation's halves count: an overtime period's
-		// break carries possession over (the playoffs), and the 4th quarter's
-		// end is followed by a kick-off.
+		// log lacks both. All of overtime counts as one half here: regulation's
+		// end splits a run, but an overtime period's break carries possession
+		// over (the playoffs). `half` itself keeps each overtime period apart,
+		// for timeouts.
 		let mut run: Option<(usize, &str)> = None;
 		let mut last_half: Option<i64> = None;
 		let mut closed = false;
 		for seen in &plays {
 			let team = seen.play.possession.as_deref().filter(|_| is_snap(seen.play));
-			let its_half = seen.play.period.filter(|period| *period <= 4).map(half);
+			let its_half = seen.play.period.map(|period| half(period.min(5)));
 			runs.push(team.map(|team| {
 				let new_half = matches!((last_half, its_half), (Some(last), Some(now)) if last != now);
 				let index = match run {
