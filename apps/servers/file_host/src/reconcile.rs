@@ -247,16 +247,18 @@ async fn match_one(conn: &mut sqlx::SqliteConnection, game_id: &str, bite: &Game
 	// on home's screen at its start, or, if the phone had not yet heard that
 	// home moved on, up to LAG before; the engine, replayed then, says
 	// whether it was of the snap to come (BM5).
-	// Whether home was offering the scenario when the bite started, or LAG
-	// before; an offer home showed at neither was stale on the phone.
+	// Whether the offer was stale on the phone: home, knowing the snap to
+	// come, offered the scenario neither when the bite started nor LAG
+	// before. Without a situation home could not say, and the moment's
+	// direction stands.
 	let mut stale = false;
 	let (said, offered) = if bite.bite.how == voice_repo::How::Offered {
 		let earlier = at - LAG;
 		let now_on = on_offer(&game, log, at, scenario);
 		let then = match game_at(conn, game_id, earlier).await? {
 			Some(before) if !now_on && on_offer(&before, log, earlier, scenario) => (before, earlier),
-			_ => {
-				stale = !now_on;
+			before => {
+				stale = !now_on && game.situation.is_some() && before.is_some_and(|before| before.situation.is_some());
 				(game.clone(), at)
 			}
 		};
@@ -268,13 +270,10 @@ async fn match_one(conn: &mut sqlx::SqliteConnection, game_id: &str, bite: &Game
 		// says which side of its play it was said on.
 		(Said::Either, at)
 	};
-	// A stale offer's snap may already be in home's log: if nothing ahead is
-	// its play, it is the nearest at or before (#3040's earlier behaviour).
-	let found = its_play(&game, log, now, scenario, said, at, offered, WINDOW).map(|found| (said, found)).or_else(|| {
-		stale
-			.then(|| its_play(&game, log, now, scenario, Said::After, at, at, WINDOW).map(|found| (Said::After, found)))
-			.flatten()
-	});
+	// A stale offer's snap is already in home's log: it is the nearest at or
+	// before, never one ahead (#3040's earlier behaviour).
+	let said = if stale { Said::After } else { said };
+	let found = its_play(&game, log, now, scenario, said, at, offered, WINDOW).map(|found| (said, found));
 	Ok(match found {
 		Some((said, (was, gap))) => Match {
 			scenario: Some(named.to_owned()),

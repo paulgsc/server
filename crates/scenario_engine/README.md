@@ -106,7 +106,7 @@ the nearest accepted play before it and the first after it.
 | `kick` while a try is to come, `try`, `lead-change` | after (`After`) | the nearest the rule accepts at or before the bite (the try is written into its touchdown's own play) |
 | the rest | never offered ahead of time, or about no one play | |
 
-The snap to come is the first play from scrimmage, or kickoff, that home
+The snap to come is the first play from scrimmage (never a kickoff) that home
 had not seen when the offer was on its screen and that no flag wiped out (a
 false start replays the down). Its time must be within `window` of the
 bite's start either side (a delayed broadcast can put it before); a drive's

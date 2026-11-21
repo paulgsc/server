@@ -5,9 +5,10 @@
 -- took the play before it or none.
 --
 -- `method` gains `next`: the snap to come when the bite took its offer (the
--- first home had not seen then), if the scenario's rule accepts it, or for a
--- drive the play that ends it, its time within the window either side of the
--- bite (`scenario_engine::its_play`). Its
+-- first home had not seen then), if the scenario's rule accepts it, its time
+-- within the window either side of the bite; or for a drive the play that
+-- ends it, and for the coin toss the opening kickoff, however long after
+-- (`scenario_engine::its_play`). Its
 -- `gap_seconds` is still the bite's start on home's clock minus the play's
 -- time, so it is negative when the play came after the bite, and may be
 -- positive on a delayed broadcast; `nearest`'s stays at or above zero. Every

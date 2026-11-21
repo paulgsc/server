@@ -216,6 +216,11 @@ fn a_bite_on_the_opening_drive_before_the_kickoff_is_about_that_drive() {
 		.find(|(_, p)| were.iter().any(|w| w.play_id == p.id))
 		.map(|(j, _)| first + j);
 	assert!(expected.is_some(), "the recorded game's first drive ended in a play the rule accepts");
-	let picked = its_play(&over, &log, end, Scenario::OpeningDrive, Said::BeforeTheDrive, bite, bite, TimeDelta::seconds(90));
+	// Live, with the receivers' first snap to come, and nothing in the log.
+	let then = game(Some("CHI"), status(GameState::In, Some(&plays[kickoff])), Some(Situation::before(&plays[first])));
+	assert!(on_offer(&then, &log, bite, Scenario::OpeningDrive), "offered before the kickoff is listed");
+	let said = offered_said(&then, &log, bite, Scenario::OpeningDrive);
+	assert_eq!(said, Said::BeforeTheDrive);
+	let picked = its_play(&over, &log, end, Scenario::OpeningDrive, said, bite, bite, TimeDelta::seconds(90));
 	assert_eq!(picked.map(|(w, _)| position(&plays, &w.play_id)), expected);
 }
