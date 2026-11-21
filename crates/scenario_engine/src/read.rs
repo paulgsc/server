@@ -330,7 +330,7 @@ fn gain_in(text: &str) -> Option<i64> {
 /// offense's pass, whose text names the target with "intended for" and the
 /// return's yards after it.
 pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
-	if wiped_out(play) || field_goal(play).is_some() || touchdown_nullified(play) {
+	if wiped_out(play) || touchdown_nullified(play) {
 		return None;
 	}
 	let text = text(play);
@@ -341,6 +341,19 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 	// restate as yards, and a muff or fumble on it is the kicking team's ball.
 	let clean_return = !flagged_against_the_returners(play) && !text.contains("reversed.");
 	let kept = !text.contains("muff") && !text.contains("fumble");
+	// A blocked punt or field goal the other side recovers is its return, from
+	// "is BLOCKED by ..., RECOVERED by DEN-T.Hufanga at DEN 37. T.Hufanga to
+	// DEN 42 for 5 yards": a punt's is a punt return, a field goal's a kick
+	// return. The kicking team's own recovery gains nothing.
+	if is_blocked_kick(play) {
+		let kind = if is_punt(play) { Kind::PuntReturn } else { Kind::KickReturn };
+		return (recovered_by_the_other_side(play) && clean_return && kept)
+			.then(|| after("recovered by").and_then(return_yards).map(|y| (kind, y, false)))
+			.flatten();
+	}
+	if field_goal(play).is_some() {
+		return None;
+	}
 	if kind(play).contains("kickoff") {
 		return (!is_onside(play) && clean_return && kept)
 			.then(|| after("kicks").and_then(return_yards).map(|y| (Kind::KickReturn, y, false)))
@@ -372,6 +385,54 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 		Kind::Run
 	};
 	gain(play).map(|y| (kind, y, true))
+}
+
+/// A punt or field goal ESPN says was blocked.
+fn is_blocked_kick(play: &Play) -> bool {
+	text(play).contains(" is blocked") && (is_punt(play) || field_goal(play).is_some())
+}
+
+/// Whether the side ESPN did not give the ball recovered it ("RECOVERED by
+/// TEN-O.Oladejo" on IND's punt).
+fn recovered_by_the_other_side(play: &Play) -> bool {
+	recovered_by(play).is_some_and(|team| play.possession.as_deref() != Some(team.as_str()))
+}
+
+/// A play that is a big play whatever its yards (the owner, 2026-11-21,
+/// C967): any turnover, and any special-teams touchdown (a kick, punt or
+/// blocked-kick return). Its kind, and whether the side that gained is the
+/// team ESPN gave the ball. Its size is at least big; its yards may make it
+/// bigger.
+pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
+	if wiped_out(play) || touchdown_nullified(play) {
+		return None;
+	}
+	let kickoff = kind(play).contains("kickoff");
+	if kickoff || is_punt(play) || is_blocked_kick(play) {
+		// On a kick ESPN gives the ball to the kickers, so a ball the
+		// returners muffed or fumbled is turned over when the kickers
+		// recover it.
+		let text = text(play);
+		let kickers = recovered_by(play).is_some_and(|team| play.possession.as_deref() == Some(team.as_str()));
+		if (text.contains("muff") || text.contains("fumble")) && kickers && !is_onside(play) {
+			return Some((Kind::FumbleReturn, true));
+		}
+		let returned = !is_blocked_kick(play) || recovered_by_the_other_side(play);
+		let kind = if kickoff || !is_punt(play) { Kind::KickReturn } else { Kind::PuntReturn };
+		return (is_touchdown(play) && returned && !kickers).then_some((kind, false));
+	}
+	// A review that reversed the play may have undone the turnover; read only
+	// one that stood, as a return's yards are (`gain_by`).
+	if text(play).contains("reversed.") {
+		return None;
+	}
+	match turnover(play)? {
+		Turnover::Interception => Some((Kind::InterceptionReturn, false)),
+		Turnover::Fumble => Some((Kind::FumbleReturn, false)),
+		// Open with the owner (C967): no kind in catalog v2 names a stop, and
+		// a released catalog never changes, so on downs stays a turnover only.
+		Turnover::OnDowns => None,
+	}
 }
 
 /// Whether an accepted flag on the play is on the side ESPN did not give the

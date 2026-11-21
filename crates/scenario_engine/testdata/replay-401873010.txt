@@ -76,7 +76,7 @@ before 4018730101589 | 5:42 left in the 2nd | NE has the ball | 2nd and 6 at the
 before 4018730101614 | 5:04 left in the 2nd | NE has the ball | 1st and 10 at the CHI 37 | CHI 13, NE 7 | now: [Run or throw: NE, 1st and 10 at the CHI 37] | just:
 before 4018730101636 | 4:21 left in the 2nd | NE has the ball | 2nd and 3 at the CHI 30 | CHI 13, NE 7 | now: [Run or throw: NE, 2nd and 3 at the CHI 30] | just:
 before 4018730101658 | 3:32 left in the 2nd | NE has the ball | 1st and 10 at the CHI 15 | CHI 13, NE 7 | now: [Red zone: NE, 1st and 10 at the CHI 15, down 6] [Run or throw: NE, 1st and 10 at the CHI 15] | just:
-after  4018730101658 | 3:32 left in the 2nd | CHI has the ball | 1st and 10 at the CHI 20 | CHI 13, NE 7 | now: [Run or throw: 1st and 10 at the CHI 20] | just: [Turnover: NE threw an interception, 36 seconds ago] [Red zone: NE in the red zone: empty, 36 seconds ago]
+after  4018730101658 | 3:32 left in the 2nd | CHI has the ball | 1st and 10 at the CHI 20 | CHI 13, NE 7 | now: [Run or throw: 1st and 10 at the CHI 20] | just: [Turnover: NE threw an interception, 36 seconds ago] [Big play: CHI interception return, 36 seconds ago]
 before 4018730101693 | 3:25 left in the 2nd | CHI has the ball | 1st and 10 at the CHI 20 | CHI 13, NE 7 | now: [Run or throw: 1st and 10 at the CHI 20] | just:
 before 4018730101730 | 3:04 left in the 2nd | CHI has the ball | 2nd and 4 at the CHI 26 | CHI 13, NE 7 | now: [Run or throw: 2nd and 4 at the CHI 26] | just:
 before 4018730101753 | 2:58 left in the 2nd | CHI has the ball | 3rd and 4 at the CHI 26 | CHI 13, NE 7 | now: [Run or throw: 3rd and 4 at the CHI 26] | just:

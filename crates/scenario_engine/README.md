@@ -64,6 +64,15 @@ closed enums, and the catalog dump lists them. A kick return is big from
 `huge`: 20 to 39 yards is the ordinary one, out of the end zone to about
 the 25 (`Kind::least`). `read::gain_by` reads which side gained and how far.
 
+Any turnover (an interception, or a fumble lost, a muffed kick the kickers
+recover included) and any special-teams touchdown (a kick, punt or
+blocked-kick return) is a big play whatever its yards: big at least, and
+bigger if its yards earn it (the owner, 2026-11-21, C967). A turnover on
+downs is not one yet: no kind in catalog v2 names a stop (C967 is open on
+it). Everything else is big by its yards alone (D8). A blocked punt the
+other side runs back is its punt return, a blocked field goal its kick
+return (#3334); the kickers' own recovery gains nothing.
+
 ### One ranked list, and what a bite is about (#3049)
 
 `Offer::ranked` holds every scenario of the set once, for the phone's "what

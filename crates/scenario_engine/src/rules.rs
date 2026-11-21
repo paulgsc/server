@@ -11,7 +11,7 @@ use crate::{
 	words, BigPlay, Game, Happened, Mode, Offered, Ranked, Said, Situation, Tier, Watching,
 };
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, Utc};
-use game_scenarios::{Kind, Moment, Phase as When, Scenario, Unit};
+use game_scenarios::{Kind, Moment, Phase as When, Scenario, Size, Unit};
 use nfl_feed::GameState;
 use std::cmp::Reverse;
 
@@ -296,8 +296,17 @@ impl<'s> Cx<'s> {
 	/// side that gained it.
 	fn big_play(&self, i: usize) -> Option<BigPlay> {
 		let play = self.so_far.plays[i].play;
-		let (kind, yards, theirs) = read::gain_by(play)?;
-		let size = kind.size(yards)?;
+		let gained = read::gain_by(play);
+		// Any turnover or special-teams touchdown is big whatever its yards
+		// (C967); its own yards may make it bigger. Anything else is big by
+		// its yards alone (D8).
+		let (kind, yards, theirs, size) = if let Some((kind, theirs)) = read::always_big(play) {
+			let yards = gained.filter(|(k, ..)| *k == kind).map_or(0, |(_, yards, _)| yards);
+			(kind, yards, theirs, kind.size(yards).unwrap_or(Size::Big))
+		} else {
+			let (kind, yards, theirs) = gained?;
+			(kind, yards, theirs, kind.size(yards)?)
+		};
 		let team = play.possession.as_deref()?;
 		let by = if theirs { team } else { self.so_far.other(team)? };
 		Some(BigPlay {

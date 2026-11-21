@@ -580,12 +580,16 @@ fn a_big_play_is_the_side_that_gained_it() {
 	let unit = o.ranked.iter().find(|r| r.scenario == Scenario::BigPlay).map(|r| (r.unit, r.unit_side.clone()));
 	assert_eq!(unit, Some((Some(game_scenarios::Unit::Offense), Some("NE".to_owned()))));
 
-	// The same play with the return stopped short of 20 is no big play.
+	// The same play with the return stopped short of 20 is still big: any
+	// turnover is, whatever its yards (the owner, C967).
 	let short = Play {
 		text: Some("(Shotgun) D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 33 for 12 yards.".to_owned()),
 		..plays[pick].clone()
 	};
-	assert!(big(&just_after(&plays[..pick], short)).is_none());
+	let o = just_after(&plays[..pick], short);
+	let (play, line) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.yards), (Kind::InterceptionReturn, Size::Big, "CHI", 12));
+	assert_eq!(line, "CHI 12-yard interception return");
 
 	// A punt returned 50 yards is the receivers'.
 	let punt = plays
@@ -689,7 +693,12 @@ fn a_big_play_is_read_as_it_stood() {
 		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond MUFFS catch, RECOVERED by NE-D.Muasau at CHI 30. D.Muasau to CHI 5 for 25 yards.".to_owned()),
 		..plays[punt].clone()
 	};
-	assert!(big(&just_after(&plays[..punt], muffed)).is_none());
+	// The muff is no punt return, but the kickers got the ball: a turnover,
+	// so big whatever its yards (C967).
+	let o = just_after(&plays[..punt], muffed);
+	let (play, line) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str()), (Kind::FumbleReturn, Size::Big, "NE"));
+	assert_eq!(line, "NE fumble return");
 	let taken_away = Play {
 		text: Some(
 			"(Shotgun) D.Maye pass deep right to S.Diggs for 62 yards, TOUCHDOWN NULLIFIED by Penalty. PENALTY on NE-M.Onwenu, Offensive Holding, 10 yards, enforced at NE 38."
@@ -1044,4 +1053,61 @@ fn a_flag_between_downs_leaves_the_return() {
 	};
 	let o = just_after(&plays[..punt], returned);
 	assert_eq!(big(&o).map(|(p, _)| (p.kind, p.yards, p.by.as_str())), Some((Kind::PuntReturn, 50, "CHI")));
+}
+
+/// #3334: a blocked kick the other side runs back is its return, and a
+/// special-teams touchdown is big whatever its yards (C967). The texts are
+/// ESPN's own, from 2025's regular season, with the teams changed to this
+/// game's.
+#[test]
+fn a_blocked_kick_run_back_is_the_returners_and_a_special_teams_score_is_big() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let shaped = |kind: &str, text: &str| Play {
+		play_type: Some(kind.to_owned()),
+		text: Some(text.to_owned()),
+		..plays[punt].clone()
+	};
+	let at_the_punt = |play: Play| just_after(&plays[..punt], play);
+
+	// PHI at TB: a blocked punt run back 35 yards for a touchdown.
+	let o = at_the_punt(shaped(
+		"Blocked Punt Touchdown",
+		"R.Dixon punt is BLOCKED by C.Latu, Center-E.Deckers, RECOVERED by CHI-S.Brown at NE 35. S.Brown for 35 yards, TOUCHDOWN. J.Elliott extra point is GOOD, Center-C.Hughlett, Holder-B.Mann.",
+	));
+	let (play, line) = big(&o).unwrap();
+	assert_eq!(
+		(play.kind, play.size, play.by.as_str(), play.yards, play.scored, play.good),
+		(Kind::PuntReturn, Size::Big, "CHI", 35, true, Some(false))
+	);
+	assert_eq!(line, "CHI 35-yard punt return, touchdown");
+	// TEN at IND: 14 yards, but a special-teams touchdown, so big.
+	let o = at_the_punt(shaped(
+		"Blocked Punt Touchdown",
+		"R.Sanchez punt is BLOCKED by J.Chestnut, Center-L.Rhodes, RECOVERED by CHI-O.Oladejo at NE 14. O.Oladejo for 14 yards, TOUCHDOWN. NE-R.Sanchez was injured during the play. PENALTY on CHI, Unsportsmanlike Conduct, 15 yards, enforced between downs. J.Slye extra point is GOOD, Center-M.Cox, Holder-J.Stonehouse.",
+	));
+	let (play, _) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.scored), (Kind::PuntReturn, Size::Big, "CHI", true));
+	// LV at IND: blocked, and the kickers fell on it: nothing returned.
+	assert!(big(&at_the_punt(shaped(
+		"Blocked Punt",
+		"A.Cole punt is BLOCKED by S.Olubi, Center-J.Bobenmoyer, recovered by NE-I.Thomas at NE 8."
+	)))
+	.is_none());
+	// MIN at DET: a blocked field goal run back 41 yards is a kick return.
+	let o = at_the_punt(shaped(
+		"Blocked Field Goal",
+		"J.Bates 45 yard field goal is BLOCKED (L.Rodriguez), Center-H.Hatten, Holder-J.Fox, RECOVERED by CHI-I.Rodgers at CHI 33. I.Rodgers pushed ob at NE 26 for 41 yards (J.Fox).",
+	));
+	let (play, _) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.yards), (Kind::KickReturn, Size::Huge, "CHI", 41));
+	// SF at SEA: run back 8, no score: not big.
+	assert!(big(&at_the_punt(shaped(
+		"Blocked Field Goal",
+		"J.Moody 36 yard field goal is BLOCKED (J.Love), Center-J.Weeks, Holder-T.Morstead, RECOVERED by CHI-D.Lawrence at CHI 23. D.Lawrence to CHI 31 for 8 yards (C.McKivitz).",
+	)))
+	.is_none());
 }
