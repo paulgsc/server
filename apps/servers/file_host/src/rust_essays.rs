@@ -635,15 +635,15 @@ async fn takes(db: &SqlitePool, kind: Kind, subject: &str, played: &[Played]) ->
 	let mut conn = db.acquire().await?;
 	let mut files = Vec::with_capacity(played.len() * 2);
 	for take in played {
-		let ask = crate::take_files::Ask {
+		let ask = crate::essay_media::takes::Ask {
 			take: &take.take,
 			name: &take.ticket,
 			of: Some(of),
 			transcript: false,
 		};
-		match crate::take_files::hand_off(&mut conn, subject, ask).await.map_err(voice)? {
-			crate::take_files::Take::Files(handed) => files.extend(handed),
-			crate::take_files::Take::Absent { deleted: true } => return Ok(Takes::Deleted(take.take.clone())),
+		match crate::essay_media::takes::hand_off(&mut conn, subject, ask).await.map_err(voice)? {
+			crate::essay_media::takes::Take::Files(handed) => files.extend(handed),
+			crate::essay_media::takes::Take::Absent { deleted: true } => return Ok(Takes::Deleted(take.take.clone())),
 			// Asked without its transcript, a take is only ever absent or
 			// handed; a take not yet home is waited for.
 			_ => return Ok(Takes::Waiting),
