@@ -11,7 +11,7 @@
 use serde::Serialize;
 
 /// The version of the set. Every bite and every weekly bundle records it.
-pub const CATALOG_VERSION: u32 = 1;
+pub const CATALOG_VERSION: u32 = 2;
 
 /// When in a game week a scenario belongs. Also the first segment of its id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -72,6 +72,10 @@ pub enum Moment {
 	Final,
 	/// Any time during or after a game of the week.
 	Watching,
+	/// From the end of the 2nd quarter until the second half's kickoff.
+	Halftime,
+	/// A kickoff the kicking team tried to get back.
+	OnsideKick,
 }
 
 /// One scenario's entry in the set, as the dump writes it.
@@ -120,11 +124,13 @@ pub enum Scenario {
 	MissedIt,
 	DodgedIt,
 	TunedInLate,
+	Halftime,
+	OnsideKick,
 }
 
 impl Scenario {
 	/// Every scenario, in the order the legend lists them.
-	pub const ALL: [Self; 27] = [
+	pub const ALL: [Self; 29] = [
 		Self::Weather,
 		Self::InjuryReport,
 		Self::Venue,
@@ -152,6 +158,8 @@ impl Scenario {
 		Self::MissedIt,
 		Self::DodgedIt,
 		Self::TunedInLate,
+		Self::Halftime,
+		Self::OnsideKick,
 	];
 
 	/// The scenario's entry in the set.
@@ -338,6 +346,22 @@ impl Scenario {
 				&["result", "stretch"],
 				M::Watching,
 			),
+			Self::Halftime => e(
+				"in.halftime",
+				In,
+				"Halftime",
+				"Where the first half left us, and what the second needs.",
+				&["leading", "trailing", "tied"],
+				M::Halftime,
+			),
+			Self::OnsideKick => e(
+				"in.onside-kick",
+				In,
+				"Onside kick",
+				"A kickoff the kicking team tried to get back.",
+				&["ours", "theirs"],
+				M::OnsideKick,
+			),
 		}
 	}
 
@@ -354,11 +378,126 @@ impl Scenario {
 	}
 }
 
+/// Which half of the game an in-game bite is in (#3048, D10): from the
+/// quarter of the play it matched, or the game's quarter when it was said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Half {
+	First,
+	Second,
+	Overtime,
+}
+
+impl Half {
+	pub const ALL: [Self; 3] = [Self::First, Self::Second, Self::Overtime];
+
+	/// The half quarter `period` is in; none for a quarter ESPN never uses.
+	#[must_use]
+	pub const fn of_period(period: i64) -> Option<Self> {
+		match period {
+			1 | 2 => Some(Self::First),
+			3 | 4 => Some(Self::Second),
+			5.. => Some(Self::Overtime),
+			_ => None,
+		}
+	}
+}
+
+/// How big a big play was (#3048, D8): 20 yards or more, 40, 60.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Size {
+	Big,
+	Huge,
+	/// The kind you remember.
+	Memorable,
+}
+
+impl Size {
+	pub const ALL: [Self; 3] = [Self::Big, Self::Huge, Self::Memorable];
+
+	/// The fewest yards of the size.
+	#[must_use]
+	pub const fn yards(self) -> i64 {
+		match self {
+			Self::Big => 20,
+			Self::Huge => 40,
+			Self::Memorable => 60,
+		}
+	}
+
+	/// The size of a gain of `yards`; none under 20.
+	#[must_use]
+	pub fn of_yards(yards: i64) -> Option<Self> {
+		Self::ALL.into_iter().rev().find(|size| yards >= size.yards())
+	}
+}
+
+/// What kind of big play it was (#3048, D9), named for the side that gained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+	Pass,
+	Run,
+	KickReturn,
+	PuntReturn,
+	InterceptionReturn,
+	FumbleReturn,
+}
+
+impl Kind {
+	pub const ALL: [Self; 6] = [Self::Pass, Self::Run, Self::KickReturn, Self::PuntReturn, Self::InterceptionReturn, Self::FumbleReturn];
+
+	/// The smallest size a play of this kind counts as big from. A kickoff
+	/// return of 20 to 39 yards is the ordinary one, out of the end zone to
+	/// about the 25, so a kick return is big from 40.
+	#[must_use]
+	pub const fn least(self) -> Size {
+		match self {
+			Self::KickReturn => Size::Huge,
+			Self::Pass | Self::Run | Self::PuntReturn | Self::InterceptionReturn | Self::FumbleReturn => Size::Big,
+		}
+	}
+
+	/// The size of this kind's gain of `yards`, if it is a big play.
+	#[must_use]
+	pub fn size(self, yards: i64) -> Option<Size> {
+		Size::of_yards(yards).filter(|size| *size >= self.least())
+	}
+}
+
+/// A kind, as the dump writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct KindEntry {
+	pub id: Kind,
+	/// The smallest size it counts as big from.
+	pub least: Size,
+}
+
+/// A size, as the dump writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SizeEntry {
+	pub id: Size,
+	pub yards: i64,
+}
+
+/// The big-play algebra's closed parts (#3048), as the dump lists them.
+///
+/// A big play is a size, a kind, the side that gained, whether it scored,
+/// and whether it was good for the side wanted; the last two are yes or no.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BigPlays {
+	pub sizes: Vec<SizeEntry>,
+	pub kinds: Vec<KindEntry>,
+}
+
 /// The whole set, as `dump-game-scenarios` writes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Catalog {
 	pub version: u32,
 	pub scenarios: Vec<Entry>,
+	pub halves: Vec<Half>,
+	pub big_play: BigPlays,
 }
 
 /// The set at [`CATALOG_VERSION`].
@@ -367,6 +506,11 @@ pub fn catalog() -> Catalog {
 	Catalog {
 		version: CATALOG_VERSION,
 		scenarios: Scenario::ALL.into_iter().map(Scenario::entry).collect(),
+		halves: Half::ALL.to_vec(),
+		big_play: BigPlays {
+			sizes: Size::ALL.into_iter().map(|id| SizeEntry { id, yards: id.yards() }).collect(),
+			kinds: Kind::ALL.into_iter().map(|id| KindEntry { id, least: id.least() }).collect(),
+		},
 	}
 }
 

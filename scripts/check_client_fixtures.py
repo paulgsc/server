@@ -14,6 +14,7 @@ compares each copy with a fresh dump of what it copies:
       provisioned-session.snapshot.json      <- dump-provisioned-session
       proposed-session.snapshot.json         <- dump-proposed-session
       game-scenarios.snapshot.json           <- dump-game-scenarios
+      game-live-messages.snapshot.json       <- dump-game-live-messages
 
 `.github/workflows/routes.yml` runs the dumps and passes their outputs in
 (`--dumps`), with some-ui's `main` checked out (`--some-ui`). some-ui's copies
@@ -66,6 +67,7 @@ PAIRS = (
 	Pair("provisioned session", "the server's", "provisioned-session.json", copy_in_some_ui="provisioned-session.snapshot.json"),
 	Pair("proposed session", "the server's", "proposed-session.json", copy_in_some_ui="proposed-session.snapshot.json"),
 	Pair("game scenarios", "the server's", "game-scenarios.json", copy_in_some_ui="game-scenarios.snapshot.json"),
+	Pair("game live messages", "the server's", "game-live-messages.json", copy_in_some_ui="game-live-messages.snapshot.json"),
 )
 
 # Regenerating the catalog fixture makes tests/catalog_parity.rs fail until the

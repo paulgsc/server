@@ -15,8 +15,8 @@ fn all_lists_every_scenario_in_declaration_order() {
 	}
 	assert_eq!(
 		Scenario::ALL.len(),
-		Scenario::TunedInLate as usize + 1,
-		"a scenario was appended after TunedInLate but not to Scenario::ALL"
+		Scenario::OnsideKick as usize + 1,
+		"a scenario was appended after OnsideKick but not to Scenario::ALL"
 	);
 }
 
@@ -87,4 +87,39 @@ fn the_set_matches_its_released_file() {
 			"v{version} and v{CATALOG_VERSION} are the same set: a version is only bumped for a change"
 		);
 	}
+}
+
+#[test]
+fn a_half_and_a_size_come_from_their_numbers() {
+	use super::{Half, Kind, Size};
+	assert_eq!(
+		[0, 1, 2, 3, 4, 5, 6].map(Half::of_period),
+		[
+			None,
+			Some(Half::First),
+			Some(Half::First),
+			Some(Half::Second),
+			Some(Half::Second),
+			Some(Half::Overtime),
+			Some(Half::Overtime)
+		]
+	);
+	assert_eq!(
+		[19, 20, 39, 40, 59, 60, 99].map(Size::of_yards),
+		[
+			None,
+			Some(Size::Big),
+			Some(Size::Big),
+			Some(Size::Huge),
+			Some(Size::Huge),
+			Some(Size::Memorable),
+			Some(Size::Memorable)
+		]
+	);
+	assert_eq!(
+		[25, 39, 40].map(|y| Kind::KickReturn.size(y)),
+		[None, None, Some(Size::Huge)],
+		"an ordinary kick return is not big"
+	);
+	assert_eq!(Kind::PuntReturn.size(25), Some(Size::Big));
 }

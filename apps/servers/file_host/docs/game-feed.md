@@ -312,7 +312,7 @@ which reads bites and writes `bite_match`, is a separate worker (call C160,
   within `reconcile::WINDOW` (90 s, the broadcast's delay plus the time to
   start talking, to be tuned on real
   Sundays). Otherwise the bite is kept and marked: `unmatched`, `not-a-play`
-  (pregame, the two-minute drill, the final, the owner's own) or
+  (pregame, the two-minute drill, halftime, the final, the owner's own) or
   `no-scenario` (said first, not mapped).
 - **A said-first proposal** (`reconcile::propose`, for the shot writer,
   GWB9) is a `bite_mapping` row only if the scenario is in home's set and

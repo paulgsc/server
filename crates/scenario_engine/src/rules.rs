@@ -8,7 +8,7 @@
 
 use crate::{
 	read::{self, Kick, SoFar, Turnover},
-	words, Game, Happened, Mode, Offered, Said, Situation, Watching,
+	words, BigPlay, Game, Happened, Mode, Offered, Said, Situation, Watching,
 };
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, Utc};
 use game_scenarios::{Moment, Scenario};
@@ -141,8 +141,9 @@ impl<'s> Cx<'s> {
 			Moment::Kick => self.kick_now(),
 			Moment::Final => self.final_(scenario),
 			Moment::Watching => self.you(scenario),
+			Moment::Halftime => self.halftime(),
 			// Known only once they have happened: "just happened" offers them.
-			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::BigPlay | Moment::Injury => None,
+			Moment::Turnover | Moment::Penalty | Moment::Sack | Moment::BigPlay | Moment::Injury | Moment::OnsideKick => None,
 		}
 	}
 
@@ -277,6 +278,38 @@ impl<'s> Cx<'s> {
 		Some((60, words::against_the_clock(clock?, offense, self.us, timeouts, period == 4)))
 	}
 
+	/// From ESPN's end of the half until the second half's kickoff.
+	fn halftime(&self) -> Found {
+		if self.phase != Phase::Live {
+			return None;
+		}
+		let plays = &self.so_far.plays;
+		let end = plays.iter().rposition(|seen| read::ends_the_half(seen.play))?;
+		if plays[end + 1..].iter().any(|seen| read::kind(seen.play).contains("kickoff") || read::is_snap(seen.play)) {
+			return None;
+		}
+		let score = words::score(self.game, self.so_far.score());
+		Some((100, words::halftime(self.us, self.us.and_then(|us| self.margin_now(us)), &score)))
+	}
+
+	/// Play `i` by the big-play algebra: a gain of 20 or more, credited to the
+	/// side that gained it.
+	fn big_play(&self, i: usize) -> Option<BigPlay> {
+		let play = self.so_far.plays[i].play;
+		let (kind, yards, theirs) = read::gain_by(play)?;
+		let size = kind.size(yards)?;
+		let team = play.possession.as_deref()?;
+		let by = if theirs { team } else { self.so_far.other(team)? };
+		Some(BigPlay {
+			size,
+			kind,
+			by: by.to_owned(),
+			yards,
+			scored: read::is_touchdown(play),
+			good: self.us.map(|us| us == by),
+		})
+	}
+
 	/// After the final.
 	fn final_(&self, scenario: Scenario) -> Found {
 		if self.phase != Phase::Over {
@@ -370,9 +403,13 @@ impl<'s> Cx<'s> {
 				Some((75, words::down_result(&situation()?, Some(result))))
 			}
 			Moment::Sack => read::is_sack(play).then(|| (70, words::sacked(offense.unwrap_or("The quarterback"), situation().as_deref()))),
-			Moment::BigPlay if snap && !read::is_punt(play) && read::field_goal(play).is_none() => {
-				let yards = read::gain(play).filter(|g| *g >= 20)?;
-				Some((65, words::big_play(offense?, yards, read::is_touchdown(play))))
+			Moment::BigPlay => self.big_play(i).map(|big| (65, words::big_play(&big))),
+			Moment::OnsideKick if read::is_onside(play) && !wiped_out => {
+				let kicking = offense?;
+				// A kick the receivers fielded is theirs; ESPN names a recovery
+				// only when it was loose.
+				let recovered = read::recovered_by(play).or_else(|| self.so_far.other(kicking).map(str::to_owned));
+				Some((85, words::onside(kicking, recovered.as_deref())))
 			}
 			Moment::ThirdAndLong if snap && !wiped_out && play.down == Some(3) && play.distance.is_some_and(|d| d >= 7) => {
 				let distance = play.distance?;
@@ -430,10 +467,10 @@ const fn kick_words(kick: Kick) -> &'static str {
 
 /// Whether a play can be one of `moment`'s scenarios: the moments with a
 /// "just happened" rule in [`Cx::happened`]. The rest (pregame, the two-minute
-/// drill, the final and the owner's own) are about a stretch of the game, not
-/// one play.
+/// drill, halftime, the final and the owner's own) are about a stretch of the
+/// game, not one play.
 pub(crate) const fn about_a_play(moment: Moment) -> bool {
-	!matches!(moment, Moment::Pregame | Moment::TwoMinute | Moment::Final | Moment::Watching)
+	!matches!(moment, Moment::Pregame | Moment::TwoMinute | Moment::Final | Moment::Watching | Moment::Halftime)
 }
 
 /// When a bite offered as `scenario` at `at` was said relative to its play:
@@ -464,7 +501,11 @@ pub(crate) fn offered_said(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, s
 		| Moment::Pregame
 		| Moment::TwoMinute
 		| Moment::Final
-		| Moment::Watching => Said::After,
+		| Moment::Watching
+		// Halftime is about no one play; an onside kick is offered only once
+		// it is in the log.
+		| Moment::Halftime
+		| Moment::OnsideKick => Said::After,
 	}
 }
 
@@ -580,6 +621,7 @@ pub(crate) fn just_happened(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, 
 			line,
 			ago_seconds,
 			ago: words::ago(ago_seconds),
+			big_play: (scenario == Scenario::BigPlay).then(|| cx.big_play(i)).flatten(),
 		}));
 	}
 	out
