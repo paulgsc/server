@@ -20,6 +20,14 @@ use nfl_feed::{
 };
 use scenario_engine::{its_play, offer, offered_said, on_offer, plays_that_were, Mode, Said, Situation, Watching};
 
+/// Whether `play` ends a possession whoever snaps next (#1077): a kickoff,
+/// or the end of a quarter that ends a half.
+#[cfg(test)]
+fn ends_a_drive(play: &Play) -> bool {
+	let kind = play.play_type.as_deref().unwrap_or_default();
+	kind.contains("Kickoff") || (play.period == Some(2) && matches!(kind, "End of Half" | "End Period"))
+}
+
 /// A window wide enough that only the direction decides.
 const ANY: TimeDelta = TimeDelta::days(1);
 
@@ -80,7 +88,7 @@ fn a_bite_on_the_snap_to_come_is_about_that_snap() {
 					let expected = plays[target..]
 						.iter()
 						.enumerate()
-						.take_while(|(_, p)| !is_snap(p) || p.possession == plays[target].possession)
+						.take_while(|(j, p)| *j == 0 || (!ends_a_drive(p) && (!is_snap(p) || p.possession == plays[target].possession)))
 						.find(|(_, p)| were.iter().any(|w| w.play_id == p.id))
 						.map(|(j, _)| target + j);
 					assert_eq!(picked, expected, "{why}");
@@ -212,7 +220,7 @@ fn a_bite_on_the_opening_drive_before_the_kickoff_is_about_that_drive() {
 	let expected = plays[first..]
 		.iter()
 		.enumerate()
-		.take_while(|(_, p)| !is_snap(p) || p.possession == plays[first].possession)
+		.take_while(|(j, p)| *j == 0 || (!ends_a_drive(p) && (!is_snap(p) || p.possession == plays[first].possession)))
 		.find(|(_, p)| were.iter().any(|w| w.play_id == p.id))
 		.map(|(j, _)| first + j);
 	assert!(expected.is_some(), "the recorded game's first drive ended in a play the rule accepts");
@@ -223,4 +231,123 @@ fn a_bite_on_the_opening_drive_before_the_kickoff_is_about_that_drive() {
 	assert_eq!(said, Said::BeforeTheDrive);
 	let picked = its_play(&over, &log, end, Scenario::OpeningDrive, said, bite, bite, TimeDelta::seconds(90));
 	assert_eq!(picked.map(|(w, _)| position(&plays, &w.play_id)), expected);
+}
+
+/// A play shaped for #1077's games: the team with the ball, the period, its
+/// type and text, the down and yards to the end zone, and the score after.
+#[cfg(test)]
+fn shaped(n: i64, period: i64, team: &str, kind: &str, text: &str, (down, to_go): (Option<i64>, i64), score: (i64, i64)) -> Play {
+	let base = chrono::DateTime::parse_from_rfc3339("2026-10-23T01:00:00Z").unwrap().with_timezone(&chrono::Utc);
+	// Forty seconds a play, and a quarter hour for halftime.
+	let at = base + TimeDelta::seconds(40 * n) + TimeDelta::minutes(if period >= 3 { 15 } else { 0 });
+	Play {
+		id: ["p", &n.to_string()].concat(),
+		sequence: Some(n),
+		wallclock: Some(at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+		period: Some(period),
+		clock: Some("0:10".to_owned()),
+		down,
+		distance: down.map(|_| 10),
+		yard_line: Some(50),
+		yards_to_endzone: Some(to_go),
+		possession: Some(team.to_owned()),
+		play_type: Some(kind.to_owned()),
+		scoring: Some(false),
+		away_score: Some(score.0),
+		home_score: Some(score.1),
+		text: Some(text.to_owned()),
+	}
+}
+
+/// #1077: a possession ends at the half. NE is in the red zone as the 2nd
+/// quarter runs out, the half ends with no score, and NE receives the second
+/// half's kickoff and scores on that drive. A red-zone bite said before the
+/// Q2 snap is about the trip that ended at the half, which had no result, so
+/// it is about no play, never the 3rd quarter's touchdown.
+#[test]
+fn a_drive_bite_never_takes_the_next_halfs_score() {
+	let plays = [
+		shaped(1, 2, "NE", "Rush", "R.Stevenson up the middle to CHI 12 for 3 yards.", (Some(1), 15), (14, 20)),
+		shaped(2, 2, "NE", "Pass Incompletion", "D.Maye pass incomplete.", (Some(2), 12), (14, 20)),
+		shaped(3, 2, "NE", "End of Half", "END OF 2ND QUARTER", (None, 12), (14, 20)),
+		shaped(4, 3, "CHI", "Kickoff", "C.Santos kicks 65 yards from CHI 35 to end zone, Touchback.", (None, 65), (14, 20)),
+		shaped(5, 3, "NE", "Rush", "R.Stevenson left end to NE 40 for 5 yards.", (Some(1), 65), (14, 20)),
+		shaped(
+			6,
+			3,
+			"NE",
+			"Passing Touchdown",
+			"D.Maye pass short right to H.Henry for 10 yards, TOUCHDOWN.",
+			(Some(1), 10),
+			(20, 20),
+		),
+	];
+	let log = recorded_log(&plays);
+	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+	let over = game(Some("CHI"), status(GameState::Post, plays.last()), None);
+	let bite = wall(&plays[0]) - TimeDelta::seconds(10);
+	let then = game(Some("CHI"), status(GameState::In, Some(&plays[0])), Some(Situation::before(&plays[0])));
+	assert!(on_offer(&then, &log, bite, Scenario::RedZone));
+	let said = offered_said(&then, &log, bite, Scenario::RedZone);
+	assert_eq!(said, Said::BeforeTheDrive);
+	assert!(
+		plays_that_were(&over, &log, end, Scenario::RedZone).iter().any(|w| w.play_id == "p6"),
+		"the 3rd quarter's touchdown is a red-zone trip of its own"
+	);
+	assert_eq!(its_play(&over, &log, end, Scenario::RedZone, said, bite, bite, ANY), None);
+	// Without the half's end in the log, the quarter still ends the drive.
+	let no_end: Vec<Play> = plays.iter().filter(|p| p.id != "p3").cloned().collect();
+	let log = recorded_log(&no_end);
+	assert_eq!(its_play(&over, &log, end, Scenario::RedZone, said, bite, bite, ANY), None);
+}
+
+/// #1077: a possession ends at a kickoff. CHI scores on its opening drive,
+/// kicks onside and gets it back: the drive after is not its first, so the
+/// opening drive is not on offer, and a bite on it before the onside kick
+/// is not about the next drive's score.
+#[test]
+fn an_onside_kick_recovered_by_the_kickers_starts_a_new_drive() {
+	let plays = [
+		shaped(1, 1, "NE", "Kickoff", "A.Borregales kicks 65 yards from NE 35 to end zone, Touchback.", (None, 65), (0, 0)),
+		shaped(2, 1, "CHI", "Rush", "D.Swift left end to NE 15 for 50 yards.", (Some(1), 65), (0, 0)),
+		shaped(
+			3,
+			1,
+			"CHI",
+			"Passing Touchdown",
+			"C.Williams pass short left to R.Odunze for 15 yards, TOUCHDOWN.",
+			(Some(1), 15),
+			(0, 7),
+		),
+		shaped(
+			4,
+			1,
+			"CHI",
+			"Kickoff",
+			"C.Santos kicks onside 11 yards from CHI 35 to CHI 46. RECOVERED by CHI-J.Brisker.",
+			(None, 65),
+			(0, 7),
+		),
+		shaped(5, 1, "CHI", "Rush", "D.Swift right end to NE 10 for 44 yards.", (Some(1), 54), (0, 7)),
+		shaped(6, 1, "CHI", "Rushing Touchdown", "D.Swift up the middle for 10 yards, TOUCHDOWN.", (Some(1), 10), (0, 14)),
+	];
+	let log = recorded_log(&plays);
+	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+	let over = game(Some("CHI"), status(GameState::Post, plays.last()), None);
+	// Before the snap after the onside kick: CHI's first drive is over.
+	let bite = wall(&plays[4]) - TimeDelta::seconds(10);
+	let then = game(Some("CHI"), status(GameState::In, Some(&plays[3])), Some(Situation::before(&plays[4])));
+	assert!(!on_offer(&then, &log, bite, Scenario::OpeningDrive), "the drive after an onside kick is not the first");
+	// A red-zone bite before the first touchdown's snap is about that
+	// touchdown; one on the snap after the onside kick, about the second.
+	let red = |k: usize| {
+		let bite = wall(&plays[k]) - TimeDelta::seconds(10);
+		its_play(&over, &log, end, Scenario::RedZone, Said::BeforeTheDrive, bite, bite, ANY).map(|(w, _)| w.play_id)
+	};
+	assert_eq!(red(2).as_deref(), Some("p3"));
+	assert_eq!(red(4).as_deref(), Some("p6"));
+	// The opening drive's bite before its first snap ends with that drive.
+	let first = wall(&plays[1]) - TimeDelta::seconds(10);
+	let picked = its_play(&over, &log, end, Scenario::OpeningDrive, Said::BeforeTheDrive, first, first, ANY).map(|(w, _)| w.play_id);
+	assert_ne!(picked.as_deref(), Some("p6"), "the opening drive is not the one after the onside kick");
 }

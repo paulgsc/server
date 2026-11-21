@@ -24,10 +24,13 @@ pub(crate) struct SoFar<'a> {
 	pub(crate) plays: Vec<Seen<'a>>,
 	/// The score (away, home) after each play, a missing one carried forward.
 	scores: Vec<(i64, i64)>,
-	/// Each snap's possession run: a run is the snaps one team has in a row.
+	/// Each snap's possession run: a run is the snaps one team has in a row,
+	/// within one half and with no kick-off between them.
 	runs: Vec<Option<usize>>,
 	/// The first run of each team.
 	first_run: HashMap<&'a str, usize>,
+	/// Whether a kick-off or the end of a half has closed the latest run.
+	run_closed: bool,
 }
 
 impl<'a> SoFar<'a> {
@@ -53,19 +56,26 @@ impl<'a> SoFar<'a> {
 		}
 		let mut runs = Vec::with_capacity(plays.len());
 		let mut first_run = HashMap::new();
-		let mut run: Option<(usize, &str)> = None;
+		// The run going: its index, the team snapping, and its half. A kick-off
+		// (an onside kick the kickers recover included) or the end of a half
+		// closes it, so the next snap starts a new one even by the same team.
+		let mut run: Option<(usize, &str, Option<i64>)> = None;
+		let mut closed = false;
 		for seen in &plays {
 			let team = seen.play.possession.as_deref().filter(|_| is_snap(seen.play));
+			let its_half = seen.play.period.map(half);
 			runs.push(team.map(|team| {
 				let index = match run {
-					Some((index, held)) if held == team => index,
-					Some((index, _)) => index + 1,
+					Some((index, held, held_half)) if held == team && held_half == its_half && !closed => index,
+					Some((index, ..)) => index + 1,
 					None => 0,
 				};
-				run = Some((index, team));
+				run = Some((index, team, its_half));
+				closed = false;
 				first_run.entry(team).or_insert(index);
 				index
 			}));
+			closed |= kind(seen.play).contains("kickoff") || ends_the_half(seen.play);
 		}
 		Self {
 			game,
@@ -73,6 +83,7 @@ impl<'a> SoFar<'a> {
 			scores,
 			runs,
 			first_run,
+			run_closed: closed,
 		}
 	}
 
@@ -153,19 +164,20 @@ impl<'a> SoFar<'a> {
 		}
 	}
 
-	/// Whether `team`'s first possession is still to come or still going.
+	/// Whether `team`'s first possession is still to come or still going: no
+	/// kick-off or end of a half has closed it.
 	pub(crate) fn first_run_open(&self, team: &str) -> bool {
 		self.first_run.get(team).is_none_or(|first| {
-			self
-				.last_snap()
-				.is_some_and(|last| self.runs[last] == Some(*first) && self.plays[last].play.possession.as_deref() == Some(team))
+			!self.run_closed
+				&& self
+					.last_snap()
+					.is_some_and(|last| self.runs[last] == Some(*first) && self.plays[last].play.possession.as_deref() == Some(team))
 		})
 	}
 
 	/// Timeouts `team` has left in the half of `period`: three a half, two in
 	/// overtime, less each "Timeout ... by TEAM" play in that half.
 	pub(crate) fn timeouts_left(&self, team: &str, period: i64) -> i64 {
-		let half = |p: i64| if p >= 5 { p } else { (p + 1) / 2 };
 		let needle = [" by ", team, " at "].concat().to_ascii_lowercase();
 		let used = self
 			.plays
@@ -175,6 +187,16 @@ impl<'a> SoFar<'a> {
 			.count();
 		let allowed = if period >= 5 { 2 } else { 3 };
 		(allowed - i64::try_from(used).unwrap_or(allowed)).max(0)
+	}
+}
+
+/// The half of `period`: 1 for the 1st and 2nd quarters, 2 for the 3rd and
+/// 4th, and each overtime period its own.
+pub(crate) const fn half(period: i64) -> i64 {
+	if period >= 5 {
+		period
+	} else {
+		(period + 1) / 2
 	}
 }
 

@@ -159,6 +159,12 @@ the nearest accepted play before it and the first after it.
 | `kick` while a try is to come, `try`, `lead-change` | after (`After`) | the nearest the rule accepts at or before the bite (the try is written into its touchdown's own play) |
 | the rest | never offered ahead of time, or about no one play | |
 
+A possession is the snaps one team has in a row with no kickoff between
+them, within one half (#1077): a kickoff (an onside kick the kickers get
+back included) or the end of a half ends it even when the same team snaps
+next, so a drive bite late in the 2nd quarter is never about the third's
+score, and the drive after a recovered onside kick is not the first.
+
 The snap to come is the first play from scrimmage (never a kickoff) that home
 had not seen when the offer was on its screen and that no flag wiped out (a
 false start replays the down). Its time must be within `window` of the
