@@ -406,7 +406,11 @@ pub async fn delete(conn: &mut SqliteConnection, subject: &str, note_id: &str, o
 	let newest = if by_kind.is_some_and(|kind| on.contains(&kind)) || !on.contains(&Deletable::Unheard) {
 		None
 	} else {
-		crate::verdict::newest(conn, subject, note_id).await?.map(|newest| newest.verdict.kind)
+		match crate::verdict::newest(conn, subject, note_id).await? {
+			Some(newest) => Some(newest.verdict.kind),
+			// Being heard again: the verdict the request answered decides.
+			None => crate::attention::asked_of(conn, subject, note_id).await?,
+		}
 	};
 	if !allows(on, by_kind, newest) {
 		return Ok(Deleted::Kept(if by_kind.is_some() { Kept::SwitchedOff } else { Kept::ForGood }));

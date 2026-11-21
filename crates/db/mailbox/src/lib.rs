@@ -681,7 +681,10 @@ pub struct Heard {
 /// of the routine, and a mark does not unname it, so the Jobs index would
 /// otherwise wait on a transcript that never comes. The filer checks the
 /// mark again in the transaction that files ([`set_aside_from_routines`]),
-/// since one can land after this read.
+/// since one can land after this read. Nor is an attempt a request to hear
+/// the note again superseded (paulgsc/some-ui#3339): home reads it as
+/// skipped, and its fresh key's ending is filed under that key in its turn
+/// (re-filing beyond that is paulgsc/server#1073).
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -720,6 +723,7 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		       SELECT 1 FROM voice_note_set_aside AS aside
 		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
 		     ))
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = heard.subject_id AND h.note_id = heard.note_id AND h.act = 'hear_again' AND h.model = heard.model AND h.attempt >= heard.attempt)
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_transcript AS filed
 		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model

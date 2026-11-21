@@ -1750,17 +1750,18 @@ nowhere is marked as such and belongs to review.
     notes held whose newest verdict no act answers. **The owner may ask home
     to hear a take again** (paulgsc/some-ui#3339; the owner, 2026-11-21:
     "it's what we have, except the retry"): `hear-again` is a fourth act in
-    the same closed set, not a table of its own (C923). It is taken only
-    for a take no attempt ended, its newest verdict `failed`, and only one
-    home would hear (its recording held, not set aside); one an attempt
-    ended, `garbled`, `nothing_said` or `heard`, is a `409` until a fresh
-    hearing of an ended take has its own transcription key, since a model
-    ends a note once (`voice_transcript_one_ending`) (C924). The
-    transcriber then counts a fresh set of its `ATTEMPTS` on the note, those
-    numbered after the attempt the act answered
-    (`voice_repo::transcript::waiting`'s `spent`), and judges the last of
-    that set final: no attempt or verdict is rewritten, the old verdict
-    stays, and the transcriber reads no clock for it (C925). The attempts a
+    the same closed set, not a table of its own (C923). It is taken for any
+    take home has judged, a heard one included (a take heard as the wrong
+    language is heard as right, now that a Studio script or spoken-card take
+    is heard as English), and only one home would hear (its recording held,
+    not set aside) (C924). Each request is a fresh transcription under a new
+    key, the take's key with `+again<k>` (`voice_repo::transcript::again`),
+    the way the interview's verbatim prompt is a key of its own: a model ends
+    a note once under a key (`voice_transcript_one_ending`), so the old
+    ending, words and verdict stay as they are beside the new, the
+    transcriber gives the fresh key its own set of `ATTEMPTS`, and nothing
+    is rewritten and no clock read (C925, the coordinator's call on run
+    paulgsc/some-ui#3311). The attempts a
     request supersedes, its model's numbered up to the one it answered, are
     skipped by every read that chooses a take's ending or final verdict, by
     one predicate written the same way in each
@@ -1770,14 +1771,17 @@ nowhere is marked as such and belongs to review.
     the fresh set ends its attempt is what is read. A take is asked again
     at most once per `voice_repo::attention::HEAR_AGAIN_SNOOZE`, six hours,
     a policy constant and not a setting; inside it the answer is a `409`
-    whose `details.nextAt` says when (C926). Every take on the takes read
+    whose `details.nextAt` says when (C926). While home hears a take again,
+    the verdict the request answered is what the delete rule
+    (`voice_repo::delete::allows`) and My data's `deletable` read, so a request
+    never makes a take undeletable. Every take on the takes read
     and on Needs your attention carries `hearAgain` (`open`, `hearing`,
     `askedAt`, `nextAt`), `hearing` told by what is on home (a request, no
     final attempt since, the take still heard) and never by the acts alone;
     its `of` and `ref` are its source, as the take library keeps them, and
-    no new link is made (C927). The mailbox files a take's transcript once
-    per model, so a take heard on a retry is not filed for the routines
-    again (paulgsc/server#1073). Every read that gives
+    no new link is made (C927). The mailbox never files a superseded attempt,
+    and files a fresh key's transcript as another model's; what the routines
+    read of a take heard again beyond that is paulgsc/server#1073. Every read that gives
     a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
     the mailbox's transcript and pickup files) gives its verdict beside it,
     so no reader judges a transcript for itself. A reader

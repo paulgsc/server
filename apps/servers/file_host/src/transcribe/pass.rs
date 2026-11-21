@@ -13,7 +13,7 @@
 //!   that fails is retried a pass later, not at once, and at most
 //!   [`ATTEMPTS`] times by one model (`voice_repo::transcript::waiting`),
 //!   until the owner asks home to hear it again, which opens a fresh set of
-//!   [`ATTEMPTS`] (paulgsc/some-ui#3339): the last of that set is final.
+//!   [`ATTEMPTS`] under a fresh key, `<key>+again<k>` (paulgsc/some-ui#3339).
 //! - **An interview take is heard verbatim** ([`super::verbatim`], IW2):
 //!   decoded with the prompt that keeps fillers, and kept under the model's
 //!   verbatim key, which is the only key it waits on. Every other note is
@@ -157,11 +157,8 @@ pub async fn run_once_telling<H: Hear>(
 		};
 		// Gone since the list was read: it went with its account.
 		let Some(audio) = audio else { continue };
-		let (decode, model) = if note.verbatim {
-			(Decode::Verbatim, keys.verbatim)
-		} else {
-			(Decode::Plain, keys.plain)
-		};
+		// Under the note's own key: its model's, or a fresh one the owner asked for.
+		let (decode, model) = (if note.verbatim { Decode::Verbatim } else { Decode::Plain }, note.key.as_str());
 		let started = Instant::now();
 		let window = Window::open(guard.gauge.as_ref());
 		let attempt = {
@@ -202,7 +199,7 @@ pub async fn run_once_telling<H: Hear>(
 			duration_ms: attempted.duration_ms,
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
-		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n - note.spent >= ATTEMPTS);
+		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n >= ATTEMPTS);
 		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(kind, took);
@@ -1018,7 +1015,7 @@ mod tests {
 	}
 
 	/// paulgsc/some-ui#3339: once the owner asks home to hear a failed note
-	/// again, the transcriber gives it a fresh set of `ATTEMPTS`, numbered
+	/// again, the transcriber hears it under a fresh key with its own set of `ATTEMPTS`, numbered
 	/// on from its old ones, and judges the last of that set final; nothing
 	/// it kept before is rewritten.
 	#[tokio::test]
@@ -1042,12 +1039,22 @@ mod tests {
 			pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
 		}
 		assert_eq!(fake.heard().len(), 6, "three more tries and no more");
-		let attempts: Vec<i64> = rows(&pool).await.into_iter().map(|(_, _, n, _, _)| n).collect();
-		assert_eq!(attempts, [1, 2, 3, 4, 5, 6], "numbered on, none rewritten");
-		let judged: Vec<(i64, String)> = sqlx::query_as("SELECT attempt, verdict FROM voice_transcript_verdict ORDER BY attempt")
+		let attempts: Vec<(String, i64)> = sqlx::query_as("SELECT model, attempt FROM voice_transcript ORDER BY model, attempt")
 			.fetch_all(&pool)
 			.await
 			.unwrap();
-		assert_eq!(judged, [(3, String::from("failed")), (6, String::from("failed"))], "each set's last is final");
+		let model = String::from("ggml-small-q5_1.bin");
+		let fresh = model.clone() + "+again1";
+		let expected: Vec<(String, i64)> = (1..=ATTEMPTS).map(|n| (model.clone(), n)).chain((1..=ATTEMPTS).map(|n| (fresh.clone(), n))).collect();
+		assert_eq!(attempts, expected, "a fresh key beside the old, none rewritten");
+		let judged: Vec<(String, i64, String)> = sqlx::query_as("SELECT model, attempt, verdict FROM voice_transcript_verdict ORDER BY model")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			judged,
+			[(model, ATTEMPTS, String::from("failed")), (fresh, ATTEMPTS, String::from("failed"))],
+			"each key's last is final"
+		);
 	}
 }
