@@ -260,6 +260,15 @@ impl Track {
 		}
 	}
 
+	/// Whether its summary is fetched now, for `teams`: a chosen game while
+	/// followed, and a game no team chose once the scoreboard calls it
+	/// completed, until a summary of it reads final, so the record holds
+	/// every game's end and every bite can be matched (the owner, 2026-11-21,
+	/// on #3329). Only a chosen game wakes the scoreboard ([`Track::near`]).
+	fn fetched(&self, now: DateTime<Utc>, teams: &Teams) -> bool {
+		self.followed(now) && (self.completed || self.chosen(teams))
+	}
+
 	/// Whether `teams` choose this game.
 	fn chosen(&self, teams: &Teams) -> bool {
 		let [home, away] = &self.teams;
@@ -347,10 +356,10 @@ impl Schedule {
 	}
 
 	/// Learn the week from a scoreboard. `done` names the games already kept
-	/// final. A game no longer listed is dropped unless it is still followed
-	/// and chosen: a game no team chose is never fetched, so never `done`, and
-	/// would otherwise be kept, and fetched all at once if every game were
-	/// chosen later.
+	/// final. A game no longer listed is dropped unless its summary is still
+	/// fetched ([`Track::fetched`]): a game no team chose and not completed
+	/// is never fetched, so never `done`, and would otherwise be kept, and
+	/// fetched all at once if every game were chosen later.
 	fn learn(&mut self, board: &Scoreboard, done: &[String], now: DateTime<Utc>, teams: &Teams) {
 		for game in &board.games {
 			let track = self.games.entry(game.id.clone()).or_insert_with(|| Track {
@@ -372,16 +381,14 @@ impl Schedule {
 				later(track.state, game.status.state)
 			};
 		}
-		self
-			.games
-			.retain(|id, track| board.games.iter().any(|game| &game.id == id) || (track.chosen(teams) && track.followed(now)));
+		self.games.retain(|id, track| board.games.iter().any(|game| &game.id == id) || track.fetched(now, teams));
 	}
 
 	fn due(&self, now: DateTime<Utc>, teams: &Teams) -> Vec<String> {
 		self
 			.games
 			.iter()
-			.filter(|(_, track)| track.chosen(teams) && track.followed(now) && track.target.next_at <= now)
+			.filter(|(_, track)| track.fetched(now, teams) && track.target.next_at <= now)
 			.map(|(id, _)| id.clone())
 			.collect()
 	}
@@ -1015,7 +1022,8 @@ mod tests {
 		assert_eq!(schedule.watch(start, &sf, CADENCE), Watch::Asleep { until: kickoff - Span::hours(1) });
 
 		// Choosing SF takes effect at the next pass, and at SF's kickoff only
-		// SF's summary is fetched, the GB game live or not.
+		// SF's summary is fetched, the GB game live or not, until the
+		// scoreboard calls it completed.
 		fetch.answer(&board_url, 200, &week);
 		fetch.answer(&nfl_feed::summary_url(GAME), 200, PRE);
 		assert_eq!(pass_for(&db, &fetch, &mut schedule, kickoff, &sf).await.fetched, ["scoreboard", "summary"]);
@@ -1059,18 +1067,40 @@ mod tests {
 		assert!(!track.near(days_ahead, Span::hours(1)));
 	}
 
+	/// A completed scoreboard with one GB game over three hours ago.
+	fn gb_over(start: DateTime<Utc>) -> Vec<u8> {
+		let mut over: serde_json::Value = serde_json::from_slice(&board(&[(GAME, &stamp(start - Span::hours(3)), "post", "GB", "CAR")])).unwrap();
+		over["events"][0]["status"]["type"]["completed"] = serde_json::json!(true);
+		over.to_string().into_bytes()
+	}
+
 	#[tokio::test]
-	async fn a_game_no_team_chose_is_dropped_once_it_leaves_the_scoreboard() {
+	async fn a_completed_game_no_team_chose_is_fetched_until_its_summary_is_final() {
 		let db = pool().await;
 		let fetch = Canned::default();
 		let board_url = nfl_feed::scoreboard_url();
 		let start = at(TUESDAY);
-		let mut over: serde_json::Value = serde_json::from_slice(&board(&[(GAME, &stamp(start - Span::hours(3)), "post", "GB", "CAR")])).unwrap();
-		over["events"][0]["status"]["type"]["completed"] = serde_json::json!(true);
 		let sf = teams(&["SF"]);
 		let mut schedule = Schedule::new(start);
-		fetch.answer(&board_url, 200, over.to_string().as_bytes());
-		pass_for(&db, &fetch, &mut schedule, start, &sf).await;
+		fetch.answer(&board_url, 200, &gb_over(start));
+		fetch.answer(&nfl_feed::summary_url(GAME), 200, &final_of_game());
+		assert_eq!(pass_for(&db, &fetch, &mut schedule, start, &sf).await.fetched, ["scoreboard", "summary"]);
+		assert_eq!(pass_for(&db, &fetch, &mut schedule, start + Span::seconds(15), &sf).await, Pass::default(), "once");
+		// It neither wakes the scoreboard nor counts as followed.
+		assert_eq!(schedule.watch(start, &sf, CADENCE), Watch::Asleep { until: start + Span::days(1) });
+		assert_eq!(schedule.followed(start, &sf), 0);
+	}
+
+	#[tokio::test]
+	async fn a_live_game_no_team_chose_is_not_fetched_and_dropped_once_it_leaves_the_scoreboard() {
+		let db = pool().await;
+		let fetch = Canned::default();
+		let board_url = nfl_feed::scoreboard_url();
+		let start = at(TUESDAY);
+		let sf = teams(&["SF"]);
+		let mut schedule = Schedule::new(start);
+		fetch.answer(&board_url, 200, &board(&[(GAME, &stamp(start - Span::hours(1)), "in", "GB", "CAR")]));
+		assert_eq!(pass_for(&db, &fetch, &mut schedule, start, &sf).await.fetched, ["scoreboard"]);
 		assert_eq!(schedule.followed(start, &Teams::default()), 1, "held while listed");
 		fetch.answer(&board_url, 200, &board(&[]));
 		pass_for(&db, &fetch, &mut schedule, start + Span::days(1), &sf).await;

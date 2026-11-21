@@ -26,7 +26,9 @@
 //! `GameFeedStale` still means the worker died, never that it sleeps.
 //! **Which games are chosen** is the operator's other lever,
 //! `settings::GameTeams` (every game by default): only a named team's games
-//! get summaries, and only their kickoffs wake the scoreboard.
+//! get live summaries and wake the scoreboard; any other game's summary is
+//! fetched once the scoreboard calls it completed, until one reads final, so
+//! the record keeps every game's end (owner, 2026-11-21).
 //!
 //! What this module promises (`docs/game-feed.md` in this app):
 //!

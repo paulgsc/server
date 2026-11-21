@@ -50,11 +50,15 @@ those two indexed reads:
   on") names teams; a game is chosen when either side is named, or always when
   none is. Only a chosen game's summary is fetched and only its kickoff wakes
   the scoreboard. Every listed game is still learnt, so a change of teams
-  takes effect at the next pass; one no team chose is dropped once it leaves
-  the scoreboard, never fetched. So with teams named, a game not chosen has
-  no summary kept: the phone's game day shows it from the scoreboard alone,
-  and a bite about it is never matched to a play (`reconcile`, which reads
-  only games held final).
+  takes effect at the next pass. A game no team chose gets no live
+  summaries, but once the scoreboard calls it completed its summary is
+  fetched until one reads final, as a completed game first seen late is
+  (owner, 2026-11-21, on paulgsc/some-ui#3329): the record keeps every game's
+  end, and a bite about it is still matched to a play (`reconcile`, which
+  reads only games held final). It does not wake the scoreboard, so that
+  fetch comes at the next read after it ends, up to a day later. Until then
+  the phone's game day shows it from the scoreboard alone. One never
+  completed is dropped once it leaves the scoreboard, never fetched.
 - **A game's summary** (`/summary?event=<id>`) every `game_feed::CADENCE.live`
   (15) while the game is live, and from its kickoff while the scoreboard still
   calls it `pre`, since the scoreboard can be ten minutes stale at kickoff. A
