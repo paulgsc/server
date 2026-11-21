@@ -1,6 +1,13 @@
-//! One pass of the transcriber: the notes the model has not heard, oldest
-//! first, one at a time, each kept as an attempt in `voice_transcript`.
+//! One pass of the transcriber: the notes the model has not heard, those
+//! tried fewest times first and then oldest first, one at a time, each kept
+//! as an attempt in `voice_transcript`.
 //!
+//! - **A note that keeps failing never holds the queue** (TR1, C895): a
+//!   note's next attempt waits behind every note tried fewer times
+//!   (`voice_repo::transcript::waiting`), so a take recorded after a run of
+//!   another note's deadlines is heard in the next pass, not after every
+//!   attempt left on every older note. The note the guard is excusing is
+//!   the one exception: it goes first, so its streak is never replaced.
 //! - **Bounded.** A pass takes at most [`BATCH`] notes, each heard on a
 //!   blocking thread by its deadline, and gives each one attempt, so a note
 //!   that fails is retried a pass later, not at once, and at most
@@ -32,7 +39,7 @@
 //!   row, then kept as it ended, and the pass stops there too, so the next
 //!   pass starts with that note and no other note's streak is replaced.
 
-use super::engine::{Cancelled, Decode, Hear, Heard};
+use super::engine::{Cancelled, Decode, Hear, Heard, Work};
 use super::verbatim;
 use crate::auth::DeletionLock;
 use crate::contention::{Excuse, Guard, Window};
@@ -121,10 +128,11 @@ pub async fn run_once_telling<H: Hear>(
 		plain: hear.model(),
 		verbatim: &verbatim_key,
 	};
-	let waiting = {
+	let mut waiting = {
 		let mut conn = db.acquire().await?;
 		transcript::waiting(&mut conn, keys, ATTEMPTS, BATCH).await?
 	};
+	excused_first(&mut waiting, guard);
 	for note in waiting {
 		if cancel.is_cancelled() {
 			pass.cancelled = true;
@@ -160,6 +168,7 @@ pub async fn run_once_telling<H: Hear>(
 				outcome: Outcome::Failed,
 				duration_ms: None,
 				measures: None,
+				work: Work::none(),
 			},
 		};
 		let took = started.elapsed();
@@ -174,6 +183,7 @@ pub async fn run_once_telling<H: Hear>(
 			match guard.streak.excuse((note.subject.clone(), note.note_id.clone())) {
 				Excuse::Nobodys => {
 					pass.excused += 1;
+					super::log_attempt("excused", note.verbatim, took, attempted.duration_ms, attempted.work);
 					break;
 				}
 				Excuse::JudgedAnyway => {
@@ -198,6 +208,7 @@ pub async fn run_once_telling<H: Hear>(
 		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(kind, took);
+			super::log_attempt(kind, note.verbatim, took, attempt.duration_ms, attempted.work);
 			if let Some(verdict) = &verdict {
 				crate::metrics::transcribe::record_verdict(verdict.kind);
 			}
@@ -214,6 +225,18 @@ pub async fn run_once_telling<H: Hear>(
 		}
 	}
 	Ok(pass)
+}
+
+/// `waiting`, with the note `guard` is excusing first, when it waits: the
+/// queue is fewest attempts first (TR1), but an excuse keeps nothing, so
+/// nothing else would put that note first, and a fresher note heard before
+/// it would start a streak that replaces its own (#822).
+fn excused_first(waiting: &mut Vec<transcript::Waiting>, guard: &Guard<(String, String)>) {
+	let Some((subject, note_id)) = guard.streak.current() else { return };
+	if let Some(at) = waiting.iter().position(|note| note.subject == *subject && note.note_id == *note_id) {
+		let excused = waiting.remove(at);
+		waiting.insert(0, excused);
+	}
 }
 
 /// One write, under the deletion hold (docs/identity.md invariant 9):
@@ -282,7 +305,7 @@ mod tests {
 	use super::{run_once, Pass, ATTEMPTS, BATCH};
 	use crate::auth::DeletionLock;
 	use crate::contention::{fake, fake::State, Guard, NOBODYS};
-	use crate::transcribe::engine::{Cancelled, Decode, Hear, Heard};
+	use crate::transcribe::engine::{Cancelled, Decode, Hear, Heard, Work};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 	use std::sync::{Arc, Mutex};
 	use std::time::{Duration, Instant};
@@ -358,6 +381,7 @@ mod tests {
 				outcome,
 				duration_ms: Some(28_400),
 				measures: None,
+				work: Work::none(),
 			})
 		}
 	}
@@ -429,10 +453,11 @@ mod tests {
 
 	/// Two notes that keep reaching their deadlines on a box that stays
 	/// busy. A pass that judges one anyway stops there, so every pass hears
-	/// one note: the oldest still waiting, until its attempts are used up,
-	/// and only then the next. No run of excuses between two kept attempts
-	/// is longer than `NOBODYS`, so neither note's streak is replaced by the
-	/// other's (paulgsc/server#822, review).
+	/// one note: the one tried fewest times, the older between two tried as
+	/// often (TR1, C895), and the note being excused before either. No run of
+	/// excuses between two kept attempts is longer than `NOBODYS`, and every
+	/// hearing in it is of the note it ends with, so neither note's streak is
+	/// replaced by the other's (paulgsc/server#822, review).
 	#[tokio::test]
 	async fn a_pass_stops_after_a_deadline_judged_anyway() {
 		let pool = pool().await;
@@ -443,12 +468,18 @@ mod tests {
 		let (mut guard, _) = fake::guard(State::Busy);
 		let mut excused_in_a_row = 0;
 		let mut kept = 0;
+		let tried = |rows: &[(String, String, i64, String, Option<String>)], id: &str| rows.iter().filter(|row| row.1 == id).count();
 		while kept < 2 * ATTEMPTS {
-			let before = fake.heard().len();
+			let before = rows(&pool).await;
 			let done = guarded(&pool, &fake, &mut guard, &cancel).await;
-			assert_eq!(fake.heard().len() - before, 1, "every pass hears one note: {done:?}");
+			let after = rows(&pool).await;
 			if done.judged_anyway == 1 {
 				assert_eq!(done.kept, ["deadline"]);
+				// The note judged is the one excused all along, and it was the
+				// one tried fewest times when its streak began.
+				let judged = &after.iter().find(|row| !before.contains(row)).unwrap().1;
+				let other = if judged == "older" { "later" } else { "older" };
+				assert!(tried(&before, judged) <= tried(&before, other), "{judged} went before a note tried fewer times");
 				excused_in_a_row = 0;
 				kept += 1;
 			} else {
@@ -456,11 +487,92 @@ mod tests {
 				excused_in_a_row += 1;
 			}
 			assert!(excused_in_a_row <= NOBODYS, "{excused_in_a_row} excuses in a row");
-			let older = rows(&pool).await.iter().filter(|row| row.1 == "older").count();
-			let later = rows(&pool).await.iter().filter(|row| row.1 == "later").count();
-			assert!(later == 0 || older == usize::try_from(ATTEMPTS).unwrap(), "the later note waits until the older is done");
+			assert!(
+				tried(&after, "older").abs_diff(tried(&after, "later")) <= 1,
+				"neither note's failures hold the other's turn: {after:?}"
+			);
 		}
+		let heard = fake.heard();
+		assert_eq!(
+			heard.len(),
+			2 * usize::try_from(ATTEMPTS).unwrap() * (usize::try_from(NOBODYS).unwrap() + 1),
+			"every pass hears one note"
+		);
 		assert!(guarded(&pool, &fake, &mut guard, &cancel).await.kept.is_empty(), "both used up their attempts");
+	}
+
+	/// TR1 (C895): a run of deadlines never stands between a fresh take and
+	/// its first hearing, and never holds the queue past a bound. Generated
+	/// over how many older notes keep reaching their deadline (0 to 4) and
+	/// how many attempts each has used (0 to `ATTEMPTS` − 1): the fresh take
+	/// is heard in the first pass that reaches it, before any note already
+	/// tried, and every note that keeps failing is heard at most `ATTEMPTS`
+	/// times in all, so the work the queue holds the lane for is bounded.
+	#[tokio::test]
+	async fn a_run_of_deadlines_never_keeps_a_fresh_take_waiting() {
+		for stuck in 0..=4 {
+			for used in 0..ATTEMPTS {
+				let pool = pool().await;
+				let cancel = CancellationToken::new();
+				let fake = Fake::new(&cancel);
+				for n in 0..stuck {
+					note(
+						&pool,
+						A,
+						&["stuck-", &n.to_string()].concat(),
+						&["2026-10-25T01:0", &n.to_string(), ":00.000Z"].concat(),
+						b"slow",
+					)
+					.await;
+				}
+				for _ in 0..used {
+					pass(&pool, &fake, Duration::from_millis(5), &cancel).await;
+				}
+				said_for(&pool, B, "take", "studio", "2026-11-20T14:00:00.000Z", b"words").await;
+				let before = fake.heard().len();
+				let done = pass(&pool, &fake, Duration::from_millis(5), &cancel).await;
+				let heard: Vec<String> = fake.heard().split_off(before);
+				let expected_first = if used == 0 && stuck > 0 { "slow" } else { "words" };
+				assert_eq!(
+					heard.first().map(String::as_str),
+					Some(expected_first),
+					"{stuck} stuck notes, {used} attempts used: {done:?}"
+				);
+				assert!(done.kept.contains(&"heard"), "{stuck} stuck notes, {used} attempts used: the take is heard in this pass");
+				for _ in 0..=ATTEMPTS {
+					pass(&pool, &fake, Duration::from_millis(5), &cancel).await;
+				}
+				let slow = fake.heard().iter().filter(|audio| *audio == "slow").count();
+				assert_eq!(slow, stuck * usize::try_from(ATTEMPTS).unwrap(), "each stuck note is heard at most ATTEMPTS times");
+			}
+		}
+	}
+
+	/// TR1 with the guard (#822): a fresh take stored while an older note is
+	/// being excused does not go before it, so the older note's streak is
+	/// never replaced; the take is heard once that streak ends.
+	#[tokio::test]
+	async fn the_note_being_excused_is_heard_before_a_fresh_take() {
+		let pool = pool().await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"slow").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let (mut guard, gauge) = fake::guard(State::Calm);
+		assert_eq!(guarded(&pool, &fake, &mut guard, &cancel).await.kept, ["deadline"], "tried once, on a calm box");
+		gauge.set(State::Busy);
+		assert_eq!(guarded(&pool, &fake, &mut guard, &cancel).await.excused, 1);
+		said_for(&pool, B, "take", "studio", "2026-11-20T14:00:00.000Z", b"words").await;
+		for _ in 1..NOBODYS {
+			assert_eq!(guarded(&pool, &fake, &mut guard, &cancel).await.excused, 1, "the excused note again, not the take");
+		}
+		let done = guarded(&pool, &fake, &mut guard, &cancel).await;
+		assert_eq!((done.judged_anyway, done.kept), (1, vec!["deadline"]), "the streak ends with the older note's");
+		assert_eq!(guarded(&pool, &fake, &mut guard, &cancel).await.kept, ["heard"], "then the take, tried fewer times");
+		// Calm once, excused NOBODYS times, judged anyway; then the take, and
+		// the older note again after it in the same pass, excused anew.
+		let mut expected = vec!["slow"; usize::try_from(NOBODYS).unwrap() + 2];
+		expected.extend(["words", "slow"]);
+		assert_eq!(fake.heard(), expected);
 	}
 
 	async fn guarded(pool: &SqlitePool, fake: &Arc<Fake>, guard: &mut Guard<(String, String)>, cancel: &CancellationToken) -> Pass {
@@ -687,6 +799,7 @@ mod tests {
 				outcome: Outcome::Silent,
 				duration_ms: Some(1),
 				measures: None,
+				work: Work::none(),
 			})
 		}
 	}
@@ -804,6 +917,10 @@ mod tests {
 		crate::transcribe::log_pass(&Ok(done));
 		let lines = captured.lines();
 		assert!(lines.iter().any(|line| line.contains("heard")), "sanity check: the summary was captured: {lines:?}");
+		// TR3 (C898): each attempt has its own line as it ends, before the
+		// pass's.
+		let attempts = lines.iter().filter(|line| line.contains("voice-note transcription attempt")).count();
+		assert_eq!(attempts, 3, "a line per attempt: {lines:?}");
 		for line in &lines {
 			for heard in [SAID, "words", "noise", "은"] {
 				assert!(!line.contains(heard), "what a note said, or its audio, reached a log line");

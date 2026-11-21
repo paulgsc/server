@@ -41,10 +41,20 @@
 //! transcript carries it, so no reader judges a transcript for itself.
 //!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
-//! 500 MB while loaded, for as long as the server runs, and hears a minute
-//! of speech in about a minute on two threads. Off unless
-//! `TRANSCRIBE_ENABLED`; on, the server refuses to start without a model,
-//! the VAD model and ffmpeg.
+//! 500 MB while loaded, for as long as the server runs. Measured on one
+//! thread (a 2.1 GHz Xeon core; `file_host`'s `cpus: 2.0` gives it one, as
+//! [`default_threads`] counts), a language detection costs about 16 s
+//! whatever the cut, and the decode about 1.3 s a second of speech; two
+//! threads take a little over half that. A hearing's detections are bounded
+//! by its speech (`engine`, TR2), so a take is heard in time proportional to
+//! its speech, not to its pauses. Off unless `TRANSCRIBE_ENABLED`; on, the
+//! server refuses to start without a model, the VAD model and ffmpeg.
+//!
+//! **What it says while it works** (TR3, C898): a line per attempt as it
+//! ends (`log_attempt`), its kind, how long it took, and how much work it
+//! was, beside the pass's own line at the end. A pass of [`pass::BATCH`]
+//! notes can take hours; the worker is never silent for longer than one
+//! note's [`DEADLINE`].
 
 pub mod engine;
 pub mod pass;
@@ -250,6 +260,25 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 	}
 }
 
+/// One attempt's log line, as it ends (TR3, C898): its kind, whether it was
+/// heard verbatim, how long it took, how long its audio and speech are, and
+/// how many detections and runs it took. A pass hears up to `pass::BATCH`
+/// notes, each by its deadline, so a pass's own line can be hours away; this
+/// one says what the worker is doing while it works. Never a note's text,
+/// audio, id or subject (docs/identity.md invariant 23).
+pub(crate) fn log_attempt(kind: &'static str, verbatim: bool, took: Duration, audio_ms: Option<i64>, work: engine::Work) {
+	info!(
+		kind,
+		verbatim,
+		took_s = took.as_secs(),
+		audio_s = audio_ms.map(|ms| ms / 1000),
+		speech_s = work.speech_ms.map(|ms| ms / 1000),
+		detections = work.detections,
+		runs = work.runs,
+		"voice-note transcription attempt"
+	);
+}
+
 /// What failed, without the database's own message.
 const fn kind(err: &voice_repo::VoiceError) -> &'static str {
 	match err {
@@ -262,6 +291,7 @@ const fn kind(err: &voice_repo::VoiceError) -> &'static str {
 mod tests {
 	use super::{Cancelled, Decode, Hear, Heard, Held};
 	use crate::call_weeks::lane::Interactive;
+	use crate::transcribe::engine::Work;
 	use std::sync::{Arc, Mutex};
 	use std::time::Instant;
 	use tokio_util::sync::CancellationToken;
@@ -288,6 +318,7 @@ mod tests {
 				outcome: Outcome::Silent,
 				duration_ms: None,
 				measures: None,
+				work: Work::none(),
 			})
 		}
 	}

@@ -155,7 +155,15 @@ pub struct Waiting {
 }
 
 /// The notes their key in `keys` has not ended (heard, or found silent) and
-/// has failed on fewer than `attempts` times, oldest first, at most `limit`.
+/// has failed on fewer than `attempts` times, at most `limit`: those tried
+/// fewest times first, then oldest first.
+///
+/// **A note that keeps failing never holds the queue** (TR1, C895): a note
+/// already tried waits behind every note tried fewer times, so a take that
+/// runs to its deadline is tried again only once every fresher take has had
+/// its turn, and no run of one note's failures stands between a take and its
+/// first hearing. Each note is still tried at most `attempts` times, so the
+/// order only decides who goes first, never how much work there is.
 ///
 /// A [`VERBATIM`] note waits on [`Keys::verbatim`] alone, and any other note
 /// on [`Keys::plain`] alone; [`Waiting::verbatim`] says which.
@@ -178,18 +186,22 @@ pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64,
 	// The key is decided per note before either lookup, a value the
 	// `(subject_id, note_id, model)` index reads as it reads a bound one.
 	let rows = sqlx::query!(
-		r#"SELECT n.subject_id AS "subject_id!", n.note_id AS "note_id!", n.of_kind = ?5 AS "verbatim!: bool", n.of_kind AS "of_kind!" FROM voice_note n
-		 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
-		                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		                     AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
-		                     AND t.outcome IN ('heard', 'silent'))
-		   AND (SELECT COUNT(*) FROM voice_transcript t
-		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		          AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) < ?2
-		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
-		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
-		   AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id)
-		 ORDER BY n.stored_at, n.subject_id, n.note_id
+		r#"WITH candidate AS MATERIALIZED (
+		   SELECT n.subject_id, n.note_id, n.of_kind = ?5 AS verbatim, n.of_kind, n.stored_at,
+		          (SELECT COUNT(*) FROM voice_transcript t
+		           WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried
+		   FROM voice_note n
+		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
+		                     WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
+		                       AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
+		                       AND t.outcome IN ('heard', 'silent'))
+		     AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                            WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
+		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
+		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!" FROM candidate
+		 WHERE tried < ?2
+		 ORDER BY tried, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
 		keys.plain,
 		attempts,
@@ -686,7 +698,7 @@ mod tests {
 	#[tokio::test]
 	async fn the_queue_searches_transcripts_by_their_index() {
 		let source = include_str!("transcript.rs");
-		let from = source.find("r#\"SELECT n.subject_id").unwrap() + "r#\"".len();
+		let from = source.find("r#\"WITH candidate").unwrap() + "r#\"".len();
 		let to = from + source[from..].find("\"#,").unwrap();
 		let sql = &source[from..to];
 		assert!(sql.contains("CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END") && sql.ends_with("LIMIT ?3"), "{sql}");
@@ -737,7 +749,7 @@ mod tests {
 		note(&pool, A, "bad", "2026-10-25T01:00:00.000Z", b"not audio").await;
 		note(&pool, A, "good", "2026-10-25T02:00:00.000Z", b"audio").await;
 		for (n, outcome) in [(1, Outcome::Unreadable), (2, Outcome::Deadline), (3, Outcome::Failed)] {
-			assert_eq!(waiting_for(&pool, SMALL).await[0], named(&[(A, "bad")])[0], "attempt {n}");
+			assert!(waiting_for(&pool, SMALL).await.contains(&named(&[(A, "bad")])[0]), "attempt {n}");
 			assert_eq!(keep(&pool, A, "bad", &attempt(SMALL, outcome)).await, Kept::Added(n));
 		}
 		assert_eq!(waiting_for(&pool, SMALL).await, named(&[(A, "good")]), "three failures and it stops waiting");
@@ -764,6 +776,33 @@ mod tests {
 			.map(|(id, n, kind, text)| (id.to_owned(), n, kind.to_owned(), text.map(str::to_owned)))
 			.collect();
 		assert_eq!(rows, expected);
+	}
+
+	/// TR1 (C895): a note that keeps failing never holds the queue. Every
+	/// note tried fewer times goes before it, whatever its age, so a take
+	/// stored after a run of one note's deadlines is heard first; among notes
+	/// tried as often, the oldest goes first. Generated over every number of
+	/// failures the older note has had, 0 to `attempts` − 1, and every place
+	/// the fresh note's age takes against it.
+	#[tokio::test]
+	async fn a_note_tried_fewer_times_goes_first_whatever_its_age() {
+		for failed in 0..3 {
+			for fresh_at in ["2026-10-25T00:00:00.000Z", "2026-10-25T09:00:00.000Z"] {
+				let pool = pool().await;
+				note(&pool, A, "stuck", "2026-10-25T01:00:00.000Z", b"stuck").await;
+				for _ in 0..failed {
+					keep(&pool, A, "stuck", &attempt(SMALL, Outcome::Deadline)).await;
+				}
+				note(&pool, B, "fresh", fresh_at, b"fresh").await;
+				let order = waiting_for(&pool, SMALL).await;
+				let expected = if failed == 0 && fresh_at.ends_with("09:00:00.000Z") {
+					named(&[(A, "stuck"), (B, "fresh")])
+				} else {
+					named(&[(B, "fresh"), (A, "stuck")])
+				};
+				assert_eq!(order, expected, "{failed} failures, the fresh note stored at {fresh_at}");
+			}
+		}
 	}
 
 	/// The schema holds the rules on its own, whatever writes to it.

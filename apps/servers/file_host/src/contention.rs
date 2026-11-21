@@ -209,6 +209,16 @@ impl<K> Default for Streak<K> {
 	}
 }
 
+impl<K> Streak<K> {
+	/// What is being excused, while a streak runs: the note or program the
+	/// worker hears or runs again first, so no other starts a streak that
+	/// replaces it.
+	#[must_use]
+	pub fn current(&self) -> Option<&K> {
+		self.last.as_ref().map(|(key, _)| key)
+	}
+}
+
 impl<K: PartialEq> Streak<K> {
 	/// Excuse `key` once more, or not past [`NOBODYS`] in a row.
 	pub fn excuse(&mut self, key: K) -> Excuse {
