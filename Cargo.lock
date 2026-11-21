@@ -6264,6 +6264,7 @@ name = "voice_repo"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "game_scenarios",
  "hex",
  "nfl_feed",
  "rust_round_repo",
