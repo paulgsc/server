@@ -476,29 +476,7 @@ fn home_examples() -> [Outbound; 4] {
 				line: "NE on 3rd and 8".to_owned(),
 			},
 		],
-		just_happened: vec![
-			Happened {
-				id: "in.sack".to_owned(),
-				play_id: "4018730101234".to_owned(),
-				line: "NE sacked on 2nd and 5".to_owned(),
-				at: "2026-10-23T01:52:20Z".to_owned(),
-				big_play: None,
-			},
-			Happened {
-				id: "in.big-play".to_owned(),
-				play_id: "4018730101210".to_owned(),
-				line: "CHI 45-yard interception return, touchdown".to_owned(),
-				at: "2026-10-23T01:51:02Z".to_owned(),
-				big_play: Some(scenario_engine::BigPlay {
-					size: game_scenarios::Size::Huge,
-					kind: game_scenarios::Kind::InterceptionReturn,
-					by: "CHI".to_owned(),
-					yards: 45,
-					scored: true,
-					good: Some(false),
-				}),
-			},
-		],
+		just_happened: just_happened_example(),
 		ranked: ranked_example(),
 	};
 	let before = Offer {
@@ -541,6 +519,34 @@ fn home_examples() -> [Outbound; 4] {
 		Outbound::Pong {
 			phone_at: 1_761_178_500_000,
 			home_at: 1_761_178_500_012,
+		},
+	]
+}
+
+/// The example offer's "just happened": a sack, and a big play with its
+/// reading by the big-play algebra.
+fn just_happened_example() -> Vec<Happened> {
+	vec![
+		Happened {
+			id: "in.sack".to_owned(),
+			play_id: "4018730101234".to_owned(),
+			line: "NE sacked on 2nd and 5".to_owned(),
+			at: "2026-10-23T01:52:20Z".to_owned(),
+			big_play: None,
+		},
+		Happened {
+			id: "in.big-play".to_owned(),
+			play_id: "4018730101210".to_owned(),
+			line: "CHI 45-yard interception return, touchdown".to_owned(),
+			at: "2026-10-23T01:51:02Z".to_owned(),
+			big_play: Some(scenario_engine::BigPlay {
+				size: game_scenarios::Size::Huge,
+				kind: game_scenarios::Kind::InterceptionReturn,
+				by: "CHI".to_owned(),
+				yards: 45,
+				scored: true,
+				good: Some(false),
+			}),
 		},
 	]
 }
