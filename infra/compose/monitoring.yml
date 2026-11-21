@@ -346,6 +346,16 @@ services:
       - '--event_storage_age_limit=default=0'
       - '--store_container_labels=false'
       - '--whitelisted_container_labels=io.kubernetes.container.name,io.kubernetes.pod.name'
+      # The Docker factory (v0.55) reads each container through containerd's
+      # `moby` namespace, and without it every series is a bare cgroup `id`
+      # with no `name` (home, 2026-11-21: 'unable to create containerd
+      # client ... /run/containerd/containerd.sock: no such file'). Home's
+      # dockerd runs its own containerd at /run/docker/containerd/, which
+      # the `/var/run` mount above already carries in. Only the endpoint
+      # changes: the Docker factory fixes the namespace to `moby` itself,
+      # and `--containerd-namespace` stays at its default, so the
+      # containerd factory does not claim Docker's containers by their ids.
+      - '--containerd=/var/run/docker/containerd/containerd.sock'
     mem_limit: 512M
     cpus: 0.5
     pids_limit: 30

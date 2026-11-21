@@ -57,6 +57,7 @@ members = [
   "crates/fcm_kit",
   "crates/game_scenarios",
   "crates/nfl_feed",
+  "crates/outbound",
   "crates/scenario_engine",
   "crates/playoff_delta",
   "crates/push_kit",
@@ -201,6 +202,7 @@ outcome_repo = { path = "crates/db/outcome" }
 publication_repo = { path = "crates/db/publication" }
 presence_repo = { path = "crates/db/presence" }
 push_kit = { path = "crates/push_kit" }
+outbound = { path = "crates/outbound" }
 intervention = { path = "crates/intervention" }
 game_scenarios = { path = "crates/game_scenarios" }
 scenario_engine = { path = "crates/scenario_engine" }
