@@ -906,8 +906,9 @@ const NOT_WAITING: &str = "home won't hear this take as it stands (set aside, it
 /// 401 without a session, 403 for a browser's or an untrusted origin, 422
 /// naming `fast` when the body is not one, 404 for a note the caller's
 /// subject does not hold, 409 for one home has already heard or found
-/// silent, or, for `fast: true` only, won't hear as it stands (set aside,
-/// its recording let go, every attempt spent; a model bump can change it), and 500 for a storage failure.
+/// silent (either act), or, for `fast: true` only, won't hear as it stands
+/// (set aside, its recording let go, every attempt spent; a model bump can
+/// change it), and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_fast_track_post", skip_all, fields(otel.kind = "server"))]
 pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {

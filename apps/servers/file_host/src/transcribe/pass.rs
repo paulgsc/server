@@ -706,6 +706,70 @@ mod tests {
 		assert_eq!(fake.heard(), ["chosen"], "the chosen take, and no other");
 	}
 
+	/// A failed attempt at `id` by `model`, kept as the pass would keep one.
+	async fn failed_by(pool: &SqlitePool, id: &str, model: &str) {
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'e', 1, 'deadline', 1, 1, 'then')",
+		)
+		.bind(A)
+		.bind(id)
+		.bind(model)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// The owner marks `chosen`, then a pass runs while batch work waits and
+	/// the turn is already spent: what it heard.
+	async fn heard_while_given(pool: &SqlitePool) -> Vec<String> {
+		{
+			let mut conn = pool.acquire().await.unwrap();
+			let acted = voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
+				.await
+				.unwrap();
+			assert_eq!(acted, voice_repo::fast_track::Acted::Recorded);
+		}
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let interactive = crate::call_weeks::lane::Interactive::default();
+		interactive.set_batch_waits(true);
+		let mut turn = super::Turn::with(Duration::ZERO, Duration::from_secs(3600), Some(interactive.clone()));
+		let lock = DeletionLock::default();
+		let now = || String::from("2026-10-25T16:00:00.000Z");
+		let done = super::run_once_telling(pool, &fake, None, &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
+			.await
+			.unwrap();
+		assert!(done.gave_way, "{done:?}");
+		fake.heard()
+	}
+
+	/// C1017, TR1 literal: a note the queue's model has tried, marked again,
+	/// is `Wanted`, so the give holds it like any other.
+	#[tokio::test]
+	async fn a_tried_note_marked_again_is_held_by_the_give() {
+		let pool = pool().await;
+		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
+		failed_by(&pool, "chosen", "ggml-small-q5_1.bin").await;
+		// The older note tried as often, so the marked one is first in line
+		// and the give is checked on it.
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
+		failed_by(&pool, "older", "ggml-small-q5_1.bin").await;
+		assert!(heard_while_given(&pool).await.is_empty(), "held by the give");
+	}
+
+	/// A marked note only an older model failed on is untried by the queue's
+	/// model, so it is `FastTrack` again after a model bump: one try per
+	/// marked note per model.
+	#[tokio::test]
+	async fn a_note_an_old_model_failed_on_is_fast_tracked_again_after_a_bump() {
+		let pool = pool().await;
+		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
+		failed_by(&pool, "chosen", "ggml-base.bin").await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
+		assert_eq!(heard_while_given(&pool).await, ["chosen"], "its one try under the new model");
+	}
+
 	async fn guarded(pool: &SqlitePool, fake: &Arc<Fake>, guard: &mut Guard<(String, String)>, cancel: &CancellationToken) -> Pass {
 		run_once(pool, fake, None, &DeletionLock::default(), Duration::from_millis(30), guard, cancel, &|| {
 			String::from("2026-10-25T16:00:00.000Z")

@@ -55,7 +55,8 @@ does not read each of its waiters.
    runs at once stays with the lane. One bounded exception, by the owner's ruling on
    paulgsc/server#1090 (2026-11-21, "a fast-tracked take skips the give"; C1017 bounds it): a note the
    owner fast-tracks is heard through the lane's give on its one try, while the queue's model has
-   never tried it, so at most one deadline per marked note per model; a note excused by the
+   never tried it, so within one run of `file_host` at most one deadline per marked note per
+   model (the guard's streak is in memory); a note excused by the
    contention guard gives way as before, and the note's retries are held like the rest (`docs/home-compute.md`, invariant 2).
 7. **The bound is policy.** It is a constant in the source, moved by a call, and reaches the
    alerts as `stage_promise_seconds`; it is never written into a rule.

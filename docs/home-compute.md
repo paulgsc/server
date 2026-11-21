@@ -43,9 +43,12 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    queue's model has never tried it, and only that one. The authority is the
    owner's ruling on paulgsc/server#1090 (2026-11-21): "a fast-tracked take
    skips the give"; C1017 bounds it to one try. It is bounded by the owner's
-   own hand: at most one deadline per marked note per model, since marking a
+   own hand: within one run of `file_host`, at most one deadline per marked
+   note per model, since marking a
    tried note again never makes it `FastTrack`, and a note excused by the
-   contention guard gives way as every other note does. Its retries wait for the give like the
+   contention guard gives way as every other note does. (The guard's streak is
+   kept in memory, so a restart during an excused try brings the note back
+   `FastTrack` and not excused: one more try per restart.) Its retries wait for the give like the
    rest. And a job
    the lane holds stopped still counts as waiting (paulgsc/server#1088,
    bounded by `GIVE` either way). Held by

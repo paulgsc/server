@@ -1718,7 +1718,10 @@ nowhere is marked as such and belongs to review.
     (paulgsc/server#462; words since paulgsc/some-ui#2085). `file_host`'s `transcribe` worker, on only when
     `TRANSCRIBE_ENABLED`, reads each note's audio and hears it on home's CPU
     with whisper.cpp: the note the contention guard is excusing first, then
-    those tried fewest times, then oldest first, one
+    those tried fewest times, then among those the most urgent
+    (`transcript::Urgency`: a note the owner fast-tracked and not yet tried,
+    then one wanted, by a waiter or by a mark already tried), then the most
+    waited on, then oldest first (paulgsc/server#1091), one
     at a time, on a blocking thread by a deadline, never on a request's path
     (so a note that keeps failing never keeps a newer one waiting: TR1). Each attempt is a row: the model
     file and engine, the attempt's number, its outcome (`heard`, with the
