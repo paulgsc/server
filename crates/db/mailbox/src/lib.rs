@@ -660,15 +660,14 @@ pub struct Heard {
 /// not heard, is never one: the routine reads that from the absence. The
 /// exception is a Rust Rounds or interview take (paulgsc/server#908,
 /// HEARD1), which the week's routine and its essay must not wait on: one
-/// home found silent, or heard as no words, only spaces (paulgsc/server#913),
-/// while no model has heard words in it, and one every attempt failed on as
+/// home found silent, or heard as nothing but blank text (paulgsc/server#913),
+/// judged `nothing_said`, while no model has heard words in it, and one every attempt failed on as
 /// its last attempt (judged `failed`) while no model has ended the note, so
-/// neither is ever filed after, and numbered above, a hearing; a silence or
-/// failure with no text and no language, and each with its verdict saying
-/// which. Each such ending is filed
-/// once it is judged, whatever the verdict (`judge` says `nothing_said` of
-/// both); one kept before verdicts were is never filed, nor is a failure
-/// until judged (20261122004001 judged those that ran out before). Only
+/// neither is ever filed after, and numbered above, a hearing; each with no
+/// text and no language, its verdict saying which. Blank is [`BLANK`]'s, as
+/// `judge`'s is: Unicode white space. One judged otherwise, or kept before
+/// verdicts were, is never filed; a failure is filed once judged
+/// (20261122004001 judged those that ran out before verdicts were). Only
 /// a note said for a kind a routine reads is one (`reflection`, `jobs`,
 /// `scene`, `studio`, `rust-round`, which a Rust Rounds tutor reads:
 /// paulgsc/some-ui#2237, RR6, and `interview`, which the interview week's
@@ -692,24 +691,25 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 	let heard = sqlx::query_as!(
 		Heard,
 		r#"SELECT heard.note_id AS "note_id!", heard.model AS "model!", note.of_kind AS "of_kind!", note.of_ref AS "of_ref!",
-		          note.recorded_at AS "recorded_at!", COALESCE(heard.text, '') AS "text!: String", heard.language AS "language?: String",
+		          note.recorded_at AS "recorded_at!", CASE WHEN trim(COALESCE(heard.text, ''), char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) = '' THEN '' ELSE heard.text END AS "text!: String",
+		          CASE WHEN trim(COALESCE(heard.text, ''), char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) = '' THEN NULL ELSE heard.language END AS "language?: String",
 		          heard.heard_at AS "heard_at!"
 		   FROM voice_transcript AS heard
 		   JOIN voice_note AS note ON note.subject_id = heard.subject_id AND note.note_id = heard.note_id
 		   WHERE heard.subject_id = ?1
 		     AND ((heard.outcome = 'heard'
-		           AND trim(heard.text) <> ''
+		           AND trim(heard.text, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) <> ''
 		           AND note.of_kind IN ('reflection', 'jobs', 'scene', 'studio', 'rust-round', 'interview'))
 		          OR (note.of_kind IN ('rust-round', 'interview')
-		              AND (heard.outcome = 'silent' OR (heard.outcome = 'heard' AND trim(heard.text) = ''))
+		              AND (heard.outcome = 'silent' OR (heard.outcome = 'heard' AND trim(heard.text, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) = ''))
 		              AND EXISTS (
 		                SELECT 1 FROM voice_transcript_verdict AS judged
 		                WHERE judged.subject_id = heard.subject_id AND judged.note_id = heard.note_id
-		                  AND judged.model = heard.model AND judged.attempt = heard.attempt)
+		                  AND judged.model = heard.model AND judged.attempt = heard.attempt AND judged.verdict = 'nothing_said')
 		              AND NOT EXISTS (
 		                SELECT 1 FROM voice_transcript AS spoken
 		                WHERE spoken.subject_id = heard.subject_id AND spoken.note_id = heard.note_id
-		                  AND spoken.outcome = 'heard' AND trim(spoken.text) <> ''))
+		                  AND spoken.outcome = 'heard' AND trim(spoken.text, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) <> ''))
 		          OR (note.of_kind IN ('rust-round', 'interview')
 		              AND EXISTS (
 		                SELECT 1 FROM voice_transcript_verdict AS judged

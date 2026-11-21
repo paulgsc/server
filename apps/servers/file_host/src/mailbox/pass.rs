@@ -2264,24 +2264,12 @@ mod tests {
 			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'silent', 4000, 10, '2026-11-14T20:40:00.000Z')",
 			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
 			 VALUES (?1, 'qm313', 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
-			// QM-314 was heard as spaces alone (paulgsc/server#913): nothing
-			// said, filed as a silence is.
-			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
-			 VALUES (?1, 'qm314', 'rust-round', '2026-w46:QM-314', '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
-			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
-			 VALUES (?1, 'qm314', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'heard', 'en', 0.5, 4000, '  ', 10, '2026-11-14T20:41:00.000Z')",
-			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
-			 VALUES (?1, 'qm314', 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
 		] {
 			sqlx::query(statement).bind(OWNER).execute(&pool).await.unwrap();
 		}
 
 		let outcome = pass(&pool, &fake).await.unwrap();
-		assert_eq!(outcome.filed, 4, "QM-311's failure, QM-312's hearing, QM-313's silence and QM-314's spaces");
-		let puts_now = fake.puts.lock().unwrap().clone();
-		let at = puts_now.iter().position(|put| put.contains("qm314")).unwrap();
-		let spaces: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[at]).unwrap();
-		assert_eq!(spaces["verdict"]["kind"], "nothing_said");
+		assert_eq!(outcome.filed, 3, "QM-311's failure, QM-312's hearing and QM-313's silence");
 		let puts = fake.puts.lock().unwrap().clone();
 		assert!(puts.contains(&String::from("/v1/transcript/items/transcript-qm311-1.json")), "{puts:?}");
 		assert!(!puts.iter().any(|put| put.contains("thought")), "a reflection's failure stays home: {puts:?}");
@@ -2310,6 +2298,40 @@ mod tests {
 			(&serde_json::json!(""), &serde_json::Value::Null, &serde_json::json!([]))
 		);
 		assert_eq!(silent["verdict"]["kind"], "nothing_said");
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 0, "filed once");
+	}
+
+	/// paulgsc/server#913: a Rust Rounds take heard as white space alone,
+	/// judged nothing said, is filed shaped as a silence; one judged on its
+	/// signals before that is not filed as heard.
+	#[tokio::test]
+	async fn a_rust_rounds_take_heard_as_blank_text_is_filed_as_a_silence() {
+		let (pool, fake) = (pool().await, Fake::default());
+		for statement in [
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'qm314', 'rust-round', '2026-w46:QM-314', '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 'qm314', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'heard', 'en', 0.5, 4000, ' \u{a0}\n\u{3000}', 10, '2026-11-14T20:41:00.000Z')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES (?1, 'qm314', 'ggml-small-q5_1.bin', 1, 'heard-1', 'nothing_said', '', 'now')",
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'qm315', 'rust-round', '2026-w46:QM-315', '2026-11-12T10:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 'qm315', 'ggml-small-q5_1.bin', 'whisper.cpp', 1, 'heard', 'en', 0.5, 4000, '\u{a0}', 10, '2026-11-14T20:42:00.000Z')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, 'qm315', 'ggml-small-q5_1.bin', 1, 'heard-1', 'heard', '', 4000, 'now')",
+		] {
+			sqlx::query(statement).bind(OWNER).execute(&pool).await.unwrap();
+		}
+		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 1, "QM-314 alone");
+		let puts = fake.puts.lock().unwrap().clone();
+		assert_eq!(puts, [String::from("/v1/transcript/items/transcript-qm314-1.json")]);
+		let blank: serde_json::Value = serde_json::from_str(&fake.put_bodies.lock().unwrap()[0]).unwrap();
+		assert_eq!(
+			(&blank["text"], &blank["language"], &blank["verdict"]["kind"]),
+			(&serde_json::json!(""), &serde_json::Value::Null, &serde_json::json!("nothing_said")),
+			"shaped as a silence"
+		);
 		assert_eq!(pass(&pool, &fake).await.unwrap().filed, 0, "filed once");
 	}
 

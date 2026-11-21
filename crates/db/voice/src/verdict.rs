@@ -642,27 +642,41 @@ mod tests {
 		let pool = pool().await;
 		MIGRATOR.undo(&pool, BEFORE).await.unwrap();
 		for n in 1..=3 {
-			attempt(&pool, "ran-out", n, if n == 3 { "failed" } else { "deadline" }, "2026-11-10").await;
+			let at = String::from("2026-11-10T0") + &n.to_string() + ":00:00.000Z";
+			attempt(&pool, "ran-out", n, if n == 3 { "failed" } else { "deadline" }, &at).await;
+			attempt(&pool, "unreadable", n, "unreadable", &at).await;
+			attempt(&pool, "too-long", n, "too_long", &at).await;
+			attempt(&pool, "deadline", n, "deadline", &at).await;
 			attempt(&pool, "judged", n, "too_long", "2026-11-17").await;
 		}
 		judge(&pool, "judged", 3, &verdict(Kind::Failed, &["too_long"], None), "2026-11-17").await;
 		for n in 1..=2 {
 			attempt(&pool, "still-trying", n, "unreadable", "2026-11-10").await;
 			attempt(&pool, "ended", n, "deadline", "2026-11-10").await;
+			attempt(&pool, "spoke", n, "failed", "2026-11-10").await;
 		}
 		attempt(&pool, "ended", 3, "silent", "2026-11-10").await;
+		attempt(&pool, "spoke", 3, "heard", "2026-11-10").await;
 		MIGRATOR.run(&pool).await.unwrap();
-		let judged: Vec<(String, i64, String, String)> = sqlx::query_as("SELECT model, attempt, verdict, reasons FROM voice_transcript_verdict ORDER BY model, attempt")
-			.fetch_all(&pool)
-			.await
-			.unwrap();
-		let expected = [("judged", 3, "failed", "too_long"), ("ran-out", 3, "failed", "engine")];
+		let judged: Vec<(String, i64, String, String, String)> =
+			sqlx::query_as("SELECT model, attempt, verdict, reasons, judged_at FROM voice_transcript_verdict ORDER BY model, attempt")
+				.fetch_all(&pool)
+				.await
+				.unwrap();
+		let at3 = "2026-11-10T03:00:00.000Z";
+		let expected = [
+			("deadline", 3, "failed", "deadline", at3),
+			("judged", 3, "failed", "too_long", "2026-11-17"),
+			("ran-out", 3, "failed", "engine", at3),
+			("too-long", 3, "failed", "too_long", at3),
+			("unreadable", 3, "failed", "unreadable", at3),
+		];
 		assert_eq!(
 			judged,
-			expected.map(|(model, attempt, verdict, reasons)| (model.to_owned(), attempt, verdict.to_owned(), reasons.to_owned()))
+			expected.map(|(model, attempt, verdict, reasons, at)| (model.to_owned(), attempt, verdict.to_owned(), reasons.to_owned(), at.to_owned())),
+			"each judged as judge would, dated at its attempt"
 		);
 		let mut conn = pool.acquire().await.unwrap();
-		let failed = of_ending(&mut conn, A, "n", "ended").await.unwrap();
-		assert_eq!(failed, None, "an ending kept before verdicts stays unjudged");
+		assert_eq!(of_ending(&mut conn, A, "n", "ended").await.unwrap(), None, "an ending kept before verdicts stays unjudged");
 	}
 }

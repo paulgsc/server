@@ -23,12 +23,16 @@
 -- any take home couldn't hear. It raises no alert: `TranscriptGarbled` counts
 -- verdicts as the worker keeps them, not rows.
 --
+-- Each is dated at its attempt's own `heard_at`, when `judge` would have
+-- judged it, so a note's newest verdict (`voice_repo::verdict::newest`, by
+-- `judged_at`) stays the failure judged last, not whichever this wrote.
+--
 -- Append-only, as the table is: new rows only, none where the attempt already
 -- has a verdict under `heard-1`.
 INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
 SELECT t.subject_id, t.note_id, t.model, t.attempt, 'heard-1', 'failed',
        CASE t.outcome WHEN 'failed' THEN 'engine' ELSE t.outcome END,
-       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       t.heard_at
 FROM voice_transcript t
 WHERE t.outcome IN ('unreadable', 'too_long', 'deadline', 'failed')
   AND t.attempt >= 3
