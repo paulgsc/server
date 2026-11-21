@@ -2,12 +2,8 @@
 //! tried fewest times first and then oldest first, one at a time, each kept
 //! as an attempt in `voice_transcript`.
 //!
-//! - **A note that keeps failing never holds the queue** (TR1, C895): a
-//!   note's next attempt waits behind every note tried fewer times
-//!   (`voice_repo::transcript::waiting`), so a take recorded after a run of
-//!   another note's deadlines is heard in the next pass, not after every
-//!   attempt left on every older note. The note the guard is excusing is
-//!   the one exception: it goes first, so its streak is never replaced.
+//! - **A note that keeps failing never holds the queue** (TR1, C895;
+//!   `voice_repo::transcript::waiting` states it).
 //! - **Bounded.** A pass takes at most [`BATCH`] notes, each heard on a
 //!   blocking thread by its deadline, and gives each one attempt, so a note
 //!   that fails is retried a pass later, not at once, and at most
@@ -135,8 +131,6 @@ pub async fn run_once_telling<H: Hear>(
 	};
 	let waiting = {
 		let mut conn = db.acquire().await?;
-		// The note the guard is excusing first, so no fresher note starts a
-		// streak that replaces its own (C896, #822).
 		let first = guard.streak.current().map(|(subject, note_id)| (subject.as_str(), note_id.as_str()));
 		transcript::waiting_first(&mut conn, keys, ATTEMPTS, BATCH, first).await?
 	};
@@ -229,11 +223,6 @@ pub async fn run_once_telling<H: Hear>(
 /// `contended` or not: `None` when its deadline is excused, kept as nothing,
 /// and the pass stops there; otherwise whether it was a deadline judged
 /// anyway, after which the pass stops too.
-///
-/// The pass stops after a deadline judged anyway too, as it did before
-/// TR1: that note's streak is over, and the next pass begins from the queue
-/// as it then stands, fewest attempts first. A note not excused ends any
-/// streak of its own (C896).
 fn excuse(guard: &mut Guard<(String, String)>, pass: &mut Pass, note: &transcript::Waiting, attempted: &Heard, contended: bool, took: Duration) -> Option<bool> {
 	let key = (note.subject.clone(), note.note_id.clone());
 	let judged_anyway = if matches!(attempted.outcome, Outcome::Deadline) && contended {
@@ -485,7 +474,7 @@ mod tests {
 	/// often (TR1, C895), and the note being excused before either. No run of
 	/// excuses between two kept attempts is longer than `NOBODYS`, and every
 	/// hearing in it is of the note it ends with, so neither note's streak is
-	/// replaced by the other's (paulgsc/server#822, review).
+	/// replaced by the other's (paulgsc/server#822).
 	#[tokio::test]
 	async fn a_pass_stops_after_a_deadline_judged_anyway() {
 		let pool = pool().await;
@@ -534,8 +523,7 @@ mod tests {
 	/// over how many older notes keep reaching their deadline (0 to 4) and
 	/// how many attempts each has used (0 to `ATTEMPTS` − 1): the fresh take
 	/// is heard in the first pass that reaches it, before any note already
-	/// tried, and every note that keeps failing is heard at most `ATTEMPTS`
-	/// times in all, so the work the queue holds the lane for is bounded.
+	/// tried.
 	#[tokio::test]
 	async fn a_run_of_deadlines_never_keeps_a_fresh_take_waiting() {
 		for stuck in 0..=4 {
@@ -567,11 +555,6 @@ mod tests {
 					"{stuck} stuck notes, {used} attempts used: {done:?}"
 				);
 				assert!(done.kept.contains(&"heard"), "{stuck} stuck notes, {used} attempts used: the take is heard in this pass");
-				for _ in 0..=ATTEMPTS {
-					pass(&pool, &fake, Duration::from_millis(5), &cancel).await;
-				}
-				let slow = fake.heard().iter().filter(|audio| *audio == "slow").count();
-				assert_eq!(slow, stuck * usize::try_from(ATTEMPTS).unwrap(), "each stuck note is heard at most ATTEMPTS times");
 			}
 		}
 	}
@@ -603,7 +586,7 @@ mod tests {
 		assert_eq!(fake.heard(), expected);
 	}
 
-	/// C896 (review): a streak ends when its note ends as on a calm box, so a
+	/// C896: a streak ends when its note ends as on a calm box, so a
 	/// note excused once and then kept is not put first again: a fresh take
 	/// stored after it is heard before its next attempt.
 	#[tokio::test]

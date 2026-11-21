@@ -113,9 +113,7 @@ struct Counts {
 	/// Holds ever taken, so the lane sees work that came and went between
 	/// two ticks.
 	started: AtomicU64,
-	/// Batch work was in progress at the lane's last tick, paused or not:
-	/// what a long run of interactive work gives a turn to (LA1's bound,
-	/// TR4).
+	/// What [`Interactive::batch_waits`] reads.
 	batch: AtomicBool,
 }
 
@@ -144,9 +142,9 @@ impl Interactive {
 		self.0.held.load(Ordering::SeqCst) > 0
 	}
 
-	/// Whether batch work was in progress (a job named, or an attempt
-	/// running, paused or not) at the lane's last tick: the transcriber's
-	/// turn gives way to it (`transcribe::turn`, TR4).
+	/// Whether batch work was known to wait at the lane's last tick
+	/// ([`Batch::known_to_wait`]): the transcriber's turn gives way to it
+	/// (`transcribe::turn`, TR4).
 	#[must_use]
 	pub fn batch_waits(&self) -> bool {
 		self.0.batch.load(Ordering::SeqCst)
@@ -215,8 +213,7 @@ struct Batch {
 	/// be listed counts as one, so home is never called idle on a guess.
 	attempting: bool,
 	/// An attempt's log was seen, not guessed from a folder that could not be
-	/// listed: what the transcriber's turn gives way to (TR4), which must
-	/// never give way to nothing.
+	/// listed.
 	attempt_seen: bool,
 }
 
@@ -595,7 +592,7 @@ mod tests {
 		signals(0, Some(MEMINFO_ROOM), Some(PRESSURE_CALM), false, batch)
 	}
 
-	/// TR4 (review): a folder that cannot be listed keeps home from being
+	/// TR4: a folder that cannot be listed keeps home from being
 	/// called idle, but is not batch work the transcriber gives way to; a job
 	/// named, or an attempt's log seen, is.
 	#[tokio::test]

@@ -44,7 +44,7 @@
 //! kept as a signal of its verdict ([`Measures::detected`]).
 //!
 //! **What a hearing costs is bounded by its speech, never by its pauses**
-//! (TR2, C897; paulgsc/server, `claude/transcribe-deadline`). Each detection
+//! (TR2, C897). Each detection
 //! is an encoder pass over 30 seconds of mel, whatever the cut's length:
 //! measured on one thread, 16 s for a two-second cut as for an eight-second
 //! one, so a 69-second take of 24 cuts spent most of its 464 seconds
@@ -156,7 +156,7 @@ impl Heard {
 /// How much work a hearing took (TR3, C898): what its log line says beside
 /// how long it took, so a slow hearing tells which part was slow. Counts and
 /// a length only, never what was said.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Work {
 	/// How long the speech the VAD found is, once Whisper is run on it.
 	pub speech_ms: Option<i64>,
@@ -419,12 +419,6 @@ impl Whisper {
 		// clamps a mel against its loudest frame, so a mel of the whole speech
 		// would let the cuts after this one decide its language. `full` makes
 		// each run's own mel before it hears that run.
-		//
-		// So their number is bounded by the speech's length, and each after
-		// the first runs only while the decode keeps its share of the deadline,
-		// measured by the dearest detection so far (TR2, C897): a take of many
-		// pauses, or a slow or loaded box, detects less rather than runs to
-		// its deadline.
 		let dearest = std::cell::Cell::new(Duration::ZERO);
 		let detect = |cut: &[f32]| -> Option<(String, f64)> {
 			let started = Instant::now();
@@ -598,7 +592,7 @@ impl Hear for Whisper {
 			outcome,
 			duration_ms,
 			measures: None,
-			work: Work::default(),
+			work: Work::none(),
 		};
 		let Some((speech, cuts)) = self.speech(&pcm) else {
 			return Ok(heard(Outcome::Failed));
@@ -615,7 +609,7 @@ impl Hear for Whisper {
 		let (mut segments, mut detected) = (Vec::new(), None);
 		let mut work = Work {
 			speech_ms: i64::try_from(speech.len() * 1000 / SAMPLE_RATE).ok(),
-			..Work::default()
+			..Work::none()
 		};
 		let outcome = self.transcribe(&speech, &cuts, (decoding, language), deadline, cancel, &mut segments, &mut detected, &mut work)?;
 		let measures = matches!(outcome, Outcome::Heard { .. }).then(|| Measures::of(&speech, segments, detected));
@@ -847,11 +841,7 @@ const fn windows(speech_len: usize) -> usize {
 	}
 }
 
-/// The most detections one hearing makes, a window of speech: each is an
-/// encoder pass over 30 seconds of mel whatever the cut's length (16 s on
-/// one of home's threads for a two-second cut as for an eight-second one,
-/// measured for TR2), so a take's cost grows with its pauses unless they are
-/// bounded by its length.
+/// The most detections one hearing makes, a window of speech.
 const DETECTS_PER_WINDOW: usize = 4;
 
 /// The most detections a hearing of `speech_len` samples makes: the first

@@ -43,11 +43,9 @@
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
 //! 500 MB while loaded, for as long as the server runs. Measured on one
 //! thread (a 2.1 GHz Xeon core; `file_host`'s `cpus: 2.0` gives it one, as
-//! [`default_threads`] counts), a language detection costs about 16 s
-//! whatever the cut, and the decode about 1.3 s a second of speech; two
-//! threads take a little over half that. A hearing's detections are bounded
-//! by its speech (`engine`, TR2), so a take is heard in time proportional to
-//! its speech, not to its pauses. Off unless `TRANSCRIBE_ENABLED`; on, the
+//! [`default_threads`] counts), the decode takes about 1.3 s a second of
+//! speech, two threads a little over half that, and each language detection
+//! an encoder pass, bounded by the speech (`engine`, TR2, has the figures). Off unless `TRANSCRIBE_ENABLED`; on, the
 //! server refuses to start without a model, the VAD model and ffmpeg.
 //!
 //! **What it says while it works** (TR3, C898): a line per attempt as it
@@ -282,11 +280,7 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 	}
 }
 
-/// One attempt's log line, as it ends (TR3, C898): its kind, whether it was
-/// heard verbatim, how long it took, how long its audio and speech are, and
-/// how many detections and runs it took. A pass hears up to `pass::BATCH`
-/// notes, each by its deadline, so a pass's own line can be hours away; this
-/// one says what the worker is doing while it works. Never a note's text,
+/// One attempt's log line, as it ends (TR3, C898). Never a note's text,
 /// audio, id or subject (docs/identity.md invariant 23).
 pub(crate) fn log_attempt(kind: &'static str, verbatim: bool, took: Duration, audio_ms: Option<i64>, work: engine::Work) {
 	info!(
