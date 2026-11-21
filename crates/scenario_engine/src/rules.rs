@@ -467,8 +467,8 @@ const fn kick_words(kick: Kick) -> &'static str {
 
 /// Whether a play can be one of `moment`'s scenarios: the moments with a
 /// "just happened" rule in [`Cx::happened`]. The rest (pregame, the two-minute
-/// drill, the final and the owner's own) are about a stretch of the game, not
-/// one play.
+/// drill, halftime, the final and the owner's own) are about a stretch of the
+/// game, not one play.
 pub(crate) const fn about_a_play(moment: Moment) -> bool {
 	!matches!(moment, Moment::Pregame | Moment::TwoMinute | Moment::Final | Moment::Watching | Moment::Halftime)
 }

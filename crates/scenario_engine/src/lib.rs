@@ -374,8 +374,8 @@ pub fn its_play(
 }
 
 /// Whether `scenario` can be a play at all. Pregame, the two-minute drill,
-/// the final and the owner's own scenarios are about a stretch of the game,
-/// so no play is ever one of them.
+/// halftime, the final and the owner's own scenarios are about a stretch of
+/// the game, so no play is ever one of them.
 #[must_use]
 pub const fn about_a_play(scenario: Scenario) -> bool {
 	rules::about_a_play(scenario.entry().moment)
