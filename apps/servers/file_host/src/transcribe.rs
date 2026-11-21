@@ -53,11 +53,18 @@
 //! **What it says while it works** (TR3, C898): a line per attempt as it
 //! ends (`log_attempt`), its kind, how long it took, and how much work it
 //! was, beside the pass's own line at the end. A pass of [`pass::BATCH`]
-//! notes can take hours; the worker is never silent for longer than one
-//! note's [`DEADLINE`].
+//! notes can take hours; the worker says something at least once a note's
+//! [`DEADLINE`] while it hears, except of an attempt a shutdown cut short or
+//! one whose note left with its account midway, which keep nothing.
+//!
+//! **It gives the lane a turn** (`turn`, TR4): after [`turn::TURN`] of
+//! hearing in a row while a render waits, it hears nothing for
+//! [`turn::GIVE`], so a backlog never holds the renders for good
+//! (docs/home-compute.md invariant 2).
 
 pub mod engine;
 pub mod pass;
+pub mod turn;
 pub mod verbatim;
 pub mod verdict;
 
@@ -133,7 +140,12 @@ impl TranscribeContext {
 			info!("voice-note transcription is not enabled; home keeps notes without hearing them");
 			return Ok(None);
 		}
-		let engine = Whisper::load(&PathBuf::from(MODEL), &PathBuf::from(VAD_MODEL), default_threads())?;
+		let threads = default_threads();
+		let engine = Whisper::load(&PathBuf::from(MODEL), &PathBuf::from(VAD_MODEL), threads)?;
+		// What whisper.cpp was built with (AVX2, FMA, F16C…) and how many
+		// threads it hears on: a hearing's speed turns on both, and nothing
+		// else says them.
+		info!(threads, system_info = whisper_rs::print_system_info(), "voice-note transcriber loaded");
 		Ok(Some(Self {
 			engine: Arc::new(engine),
 			interval: INTERVAL,
@@ -183,6 +195,7 @@ impl<H: Hear> Hear for Held<H> {
 fn spawn(state: &AppState, context: TranscribeContext) {
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
+	let interactive = state.interactive.clone();
 	let engine = Arc::new(Held {
 		inner: Arc::clone(&context.engine),
 		interactive: state.interactive.clone(),
@@ -198,6 +211,8 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 		let mut ticker = tokio::time::interval(context.interval);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut guard = crate::contention::Guard::host();
+		// How long it may hold the lane in a row while a render waits (TR4).
+		let mut turn = turn::Turn::new(interactive);
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
@@ -210,7 +225,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 					// Each transcript heard wakes the mailbox's pass as soon as
 					// it is kept, not when the batch ends (MBP2).
 					let filed = || outbox.filed();
-					let result = pass::run_once_telling(&db, &engine, meaning, &context.deletion, context.deadline, &mut guard, &cancel, &crate::mailbox::pass::now, &filed).await;
+					let result = pass::run_once_telling(&db, &engine, meaning, &context.deletion, context.deadline, (&mut guard, &mut turn), &cancel, &crate::mailbox::pass::now, &filed).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
 				}
@@ -232,6 +247,13 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 		crate::metrics::contention::record("transcribe", guard);
 		if done.excused > 0 {
 			info!("voice-note transcription gave way: a note ran to its deadline while the box was contended, so it is nobody's and heard again next pass");
+		}
+		if done.gave_way {
+			info!(
+				turn_minutes = turn::TURN.as_secs() / 60,
+				give_minutes = turn::GIVE.as_secs() / 60,
+				"voice-note transcription gave the lane a turn: it had heard for its turn while a render waited"
+			);
 		}
 		if done.judged_anyway > 0 {
 			warn!(

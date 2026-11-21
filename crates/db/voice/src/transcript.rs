@@ -183,6 +183,21 @@ pub struct Waiting {
 /// # Errors
 /// Any `sqlx` failure.
 pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64, limit: i64) -> Result<Vec<Waiting>, VoiceError> {
+	waiting_first(conn, keys, attempts, limit, None).await
+}
+
+/// [`waiting`], with the note `first` names ahead of every other.
+///
+/// `first` is `(subject, note_id)`, the note the transcriber's contention
+/// guard is excusing (TR1 with the guard, C896). An excuse keeps no attempt, so
+/// nothing else keeps that note first, and a fresher note heard before it
+/// would start a streak that replaces its own (#822). It is ordered first in
+/// the query itself, so it is in the batch however many fresher notes wait.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64, limit: i64, first: Option<(&str, &str)>) -> Result<Vec<Waiting>, VoiceError> {
+	let (first_subject, first_note) = first.unzip();
 	// The key is decided per note before either lookup, a value the
 	// `(subject_id, note_id, model)` index reads as it reads a bound one.
 	let rows = sqlx::query!(
@@ -201,13 +216,15 @@ pub async fn waiting(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64,
 		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
 		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!" FROM candidate
 		 WHERE tried < ?2
-		 ORDER BY tried, stored_at, subject_id, note_id
+		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, tried, stored_at, subject_id, note_id
 		 LIMIT ?3"#,
 		keys.plain,
 		attempts,
 		limit,
 		keys.verbatim,
-		VERBATIM
+		VERBATIM,
+		first_subject,
+		first_note
 	)
 	.fetch_all(&mut *conn)
 	.await?;
@@ -470,7 +487,7 @@ pub async fn words_heard_by(conn: &mut SqliteConnection, subject: &str, note_id:
 
 #[cfg(test)]
 mod tests {
-	use super::{audio, keep_attempt, waiting, words, words_heard_by, Attempt, Kept, Keys, Outcome, Waiting, Word, VERBATIM};
+	use super::{audio, keep_attempt, waiting, waiting_first, words, words_heard_by, Attempt, Kept, Keys, Outcome, Waiting, Word, VERBATIM};
 	use crate::{describe, put_note, Said, SaidBite};
 	use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -709,6 +726,8 @@ mod tests {
 			.bind(20_i64)
 			.bind("v")
 			.bind(VERBATIM)
+			.bind(Option::<&str>::None)
+			.bind(Option::<&str>::None)
 			.fetch_all(&pool)
 			.await
 			.unwrap();
@@ -803,6 +822,33 @@ mod tests {
 				assert_eq!(order, expected, "{failed} failures, the fresh note stored at {fresh_at}");
 			}
 		}
+	}
+
+	/// C896: the note named first goes ahead of every other while it waits,
+	/// however many fresher notes tried fewer times would fill the batch, and
+	/// naming a note that no longer waits changes nothing.
+	#[tokio::test]
+	async fn the_note_named_first_is_in_the_batch_whatever_waits_beside_it() {
+		let pool = pool().await;
+		note(&pool, A, "excused", "2026-10-25T01:00:00.000Z", b"excused").await;
+		keep(&pool, A, "excused", &attempt(SMALL, Outcome::Deadline)).await;
+		for n in 0..5 {
+			note(&pool, B, &["fresh-", &n.to_string()].concat(), "2026-10-25T02:00:00.000Z", b"fresh").await;
+		}
+		let (plain, verbatim) = keys(SMALL);
+		let keys = Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		let mut conn = pool.acquire().await.unwrap();
+		let ids = |rows: Vec<Waiting>| rows.into_iter().map(|row| row.note_id).collect::<Vec<_>>();
+		let plain_order = ids(waiting(&mut conn, keys, 3, 3).await.unwrap());
+		assert!(!plain_order.contains(&String::from("excused")), "tried once, behind the fresh notes: {plain_order:?}");
+		let named = ids(waiting_first(&mut conn, keys, 3, 3, Some((A, "excused"))).await.unwrap());
+		assert_eq!(named.first().map(String::as_str), Some("excused"), "{named:?}");
+		assert_eq!(named.len(), 3);
+		let gone = ids(waiting_first(&mut conn, keys, 3, 3, Some((A, "no-such-note"))).await.unwrap());
+		assert_eq!(gone, plain_order, "a note that does not wait changes nothing");
 	}
 
 	/// The schema holds the rules on its own, whatever writes to it.

@@ -23,10 +23,19 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    one job per run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
    second batch worker joins this lane, never one of its own (L5,
    some-ui#2084).
-2. **Interactive work never waits behind batch work.** While a voice note
+2. **Interactive work never waits behind batch work, and a backlog of it
+   never holds batch work for good.** While a voice note
    is heard or a Rust Rounds program recorded, the lane pauses the render or
    does not start it (LA1), and `render` and `kokoro` take a quarter of
    the default CPU weight. Held by LA1's tests and the worker's pause case.
+   The one bound: the transcriber's backlog is not someone waiting, so once
+   it has heard for `transcribe::turn::TURN` (20 minutes) in a row while
+   batch work waits, it hears nothing for `transcribe::turn::GIVE`
+   (10 minutes) or until no batch work waits, checked before each note and
+   never midway through one (TR4, C899; 2026-11-20, when a run of deadlines
+   held every render for hours). A run ends when the queue is empty, so
+   notes heard as they arrive never add up to a turn. Held by
+   `transcribe::turn`'s and `transcribe::pass`'s tests.
 3. **A yield is never a failure, and resumed work never pays twice for a
    step it kept.** A pause or a stop leaves no `failed.log`, and the job
    resumes from its step cache under the same id. Held by

@@ -47,9 +47,9 @@
 //! (TR2, C897; paulgsc/server, `claude/transcribe-deadline`). Each detection
 //! is an encoder pass over 30 seconds of mel, whatever the cut's length:
 //! measured on one thread, 16 s for a two-second cut as for an eight-second
-//! one, so a 72-second take of twelve cuts spent 195 of its 273 seconds
-//! detecting, and a take with more pauses, on a slower box, ran to
-//! `transcribe::DEADLINE` and was never heard. So a hearing detects at most
+//! one, so a 69-second take of 24 cuts spent most of its 464 seconds
+//! detecting (206 s with the bound below), and a take with more pauses, on
+//! a slower box, ran to `transcribe::DEADLINE` and was never heard. So a hearing detects at most
 //! [`most_detections`] cuts: the first, and the longest of the rest, four a
 //! window of speech; a take with fewer pauses than that has every cut a
 //! second or longer detected, as ST23 had it, and in one with more, a cut
@@ -57,7 +57,8 @@
 //! detection after the first runs only while the decode keeps its share of
 //! the deadline, reckoned from the dearest detection so far
 //! ([`leaves_the_decode_its_time`]), so a slow or loaded box detects less
-//! rather than runs out of time.
+//! rather than runs out of time: on home's box, where a take of twelve cuts
+//! is within the count, that is the bound that holds it.
 //!
 //! **Each word keeps its time, and how sure Whisper was of it**
 //! (paulgsc/some-ui#2085, GWB11; paulgsc/server#577, ST22). Whisper
@@ -157,9 +158,10 @@ impl Heard {
 /// a length only, never what was said.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Work {
-	/// How long the speech the VAD found is, when it ran.
+	/// How long the speech the VAD found is, once Whisper is run on it.
 	pub speech_ms: Option<i64>,
-	/// Language detections made: an encoder pass each.
+	/// Language detections asked for: an encoder pass each, unless the cut's
+	/// mel could not be made.
 	pub detections: usize,
 	/// Runs decoded, each in its own language: an encoder pass a window each,
 	/// and its decode.
@@ -167,7 +169,8 @@ pub struct Work {
 }
 
 impl Work {
-	/// No work: the audio never reached the VAD.
+	/// No work counted: the audio did not decode, or the VAD found no speech
+	/// or could not run, so no detection or run was made.
 	#[must_use]
 	pub const fn none() -> Self {
 		Self {

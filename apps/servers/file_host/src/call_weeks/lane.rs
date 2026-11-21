@@ -43,7 +43,7 @@ use crate::AppState;
 use ::lane::{Decision, Policy, Signals, State, Verb, Why};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -113,6 +113,10 @@ struct Counts {
 	/// Holds ever taken, so the lane sees work that came and went between
 	/// two ticks.
 	started: AtomicU64,
+	/// Batch work was in progress at the lane's last tick, paused or not:
+	/// what a long run of interactive work gives a turn to (LA1's bound,
+	/// TR4).
+	batch: AtomicBool,
 }
 
 /// One piece of interactive work, until it is dropped.
@@ -138,6 +142,19 @@ impl Interactive {
 	#[cfg(test)]
 	pub(crate) fn is_held(&self) -> bool {
 		self.0.held.load(Ordering::SeqCst) > 0
+	}
+
+	/// Whether batch work was in progress (a job named, or an attempt
+	/// running, paused or not) at the lane's last tick: the transcriber's
+	/// turn gives way to it (`transcribe::turn`, TR4).
+	#[must_use]
+	pub fn batch_waits(&self) -> bool {
+		self.0.batch.load(Ordering::SeqCst)
+	}
+
+	/// What the lane saw of batch work at its tick.
+	pub(crate) fn set_batch_waits(&self, waits: bool) {
+		self.0.batch.store(waits, Ordering::SeqCst);
 	}
 
 	fn reading(&self) -> (usize, u64) {
@@ -391,6 +408,7 @@ impl Lane {
 		let pressure = tokio::fs::read_to_string(&paths.pressure).await.ok();
 		let waiting = self.since.waiting(interactive.reading());
 		let batch = Batch::read(&paths.status, &paths.attempts).await;
+		interactive.set_batch_waits(batch.active());
 		let now_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
 		let (signals, readable) = signals(now_ms, meminfo.as_deref(), pressure.as_deref(), waiting, &batch);
 		let (state, decision) = ::lane::step(self.state, &signals, &POLICY);

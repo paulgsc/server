@@ -220,6 +220,15 @@ impl<K> Streak<K> {
 }
 
 impl<K: PartialEq> Streak<K> {
+	/// `key` ended as it would on a calm box (heard, kept as it ended, or
+	/// judged anyway): its streak, if it has one, is over, so it is no longer
+	/// put first, and an excuse after this starts a new streak.
+	pub fn end(&mut self, key: &K) {
+		if self.last.as_ref().is_some_and(|(last, _)| last == key) {
+			self.last = None;
+		}
+	}
+
 	/// Excuse `key` once more, or not past [`NOBODYS`] in a row.
 	pub fn excuse(&mut self, key: K) -> Excuse {
 		let count = match &self.last {
