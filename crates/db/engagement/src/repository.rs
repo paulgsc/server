@@ -127,7 +127,7 @@ impl EngagementRepository {
 	/// with `SQLITE_BUSY` instead of waiting, while an immediate one simply
 	/// waits its turn under `busy_timeout`. That is what serialises every
 	/// read-modify-write of a charge — `/signals` and `POST /outcomes` go through
-	/// here (via `nudge::waker::observe`), and [`Self::catch_up`] takes the same
+	/// here (via `nudge::observe::observe`), and [`Self::catch_up`] takes the same
 	/// lock.
 	///
 	/// `apply` receives the stored rows (empty for a subject never seen) and
@@ -215,7 +215,7 @@ impl EngagementRepository {
 
 	/// Give a subject nobody has yet observed a gate row, seeded full.
 	///
-	/// The only caller is first contact (`waker::first_contact`, from
+	/// The only caller is first contact (`observe::first_contact`, from
 	/// `POST /push/subscriptions`) — see that function for why subscribing is
 	/// the honest "someone exists" event. This is deliberately **not** built on
 	/// [`Self::save`]: `save`'s `ON CONFLICT` upserts both tables

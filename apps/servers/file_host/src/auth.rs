@@ -89,7 +89,7 @@ struct Inner {
 /// - a request, from before its session is looked up until it finishes
 ///   (`subject::SubjectId`);
 /// - the nudge waker, around each write plus a re-check of the subject's gate
-///   row (`nudge::waker::unless_deleted`), never across a push delivery.
+///   row (`nudge::actuate::unless_deleted`), never across a push delivery.
 ///
 /// Every hold is short, and the lock is fair, so nothing waits behind more
 /// than one deletion, and a deletion never waits for more than the writes in

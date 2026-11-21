@@ -21,10 +21,15 @@
 //! `docs/study-nudge.md` covers setup, migrations, key custody, and what this
 //! still cannot know.
 
+mod actuate;
 pub mod clock;
 pub mod constraints;
+mod deadline;
+pub mod observe;
 pub mod payload;
 pub mod presence;
+pub mod propose;
+mod sweep;
 pub mod waker;
 
 use std::time::Duration;
@@ -54,7 +59,7 @@ pub const WAKER_INTERVAL: Duration = Duration::from_secs(300);
 /// not answered in ten is not going to, and every second past that is a
 /// second the rest of the batch waits in the serial loop. A timed-out
 /// delivery is recorded as a failure, never a prune, never `Accepted`, and
-/// does not hand the claim back: see `waker::actuate`
+/// does not hand the claim back: see `actuate::actuate`
 /// (`PUSH_DELIVERY_TIMEOUT_MS`).
 pub const DELIVERY_TIMEOUT: Duration = Duration::from_millis(10_000);
 
@@ -78,3 +83,35 @@ const _: () = assert!(PASS_DEADLINE.as_secs() < WAKER_INTERVAL.as_secs(), "a pas
 /// renews roughly every 45s while visible, so this absorbs timer throttling
 /// and scheduling jitter (`NUDGE_PRESENCE_LEASE_TTL_SECONDS`).
 pub const PRESENCE_LEASE_TTL: Duration = Duration::from_secs(75);
+
+/// S9 (#489): `nudge/waker.rs` grew to 4,514 lines across eight stories before
+/// it was split by stage (docs/study-nudge.md, "Where each stage lives"). A
+/// module here that grows back past this many lines before its tests is the
+/// same drift, and fails here instead of in the next hotspot count.
+#[cfg(test)]
+const STAGE_MODULE_CEILING: usize = 700;
+
+#[cfg(test)]
+#[test]
+fn no_nudge_module_grows_back_into_the_monolith() {
+	let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/nudge"));
+	let mut read = 0;
+	let mut over = Vec::new();
+	for entry in std::fs::read_dir(dir).unwrap() {
+		let path = entry.unwrap().path();
+		if path.extension().is_none_or(|ext| ext != "rs") {
+			continue;
+		}
+		let text = std::fs::read_to_string(&path).unwrap();
+		let lines = text.lines().take_while(|line| *line != "#[cfg(test)]").count();
+		read += 1;
+		if lines > STAGE_MODULE_CEILING {
+			over.push(path.display().to_string() + ": " + &lines.to_string() + " lines before its tests");
+		}
+	}
+	assert!(read >= 6, "read only {read} modules under {}: is the path right?", dir.display());
+	assert!(
+		over.is_empty(),
+		"split by stage instead of growing one module past {STAGE_MODULE_CEILING} (#489): {over:#?}"
+	);
+}

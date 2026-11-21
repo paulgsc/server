@@ -407,7 +407,7 @@ impl SessionRepository {
 	///
 	/// **Nothing is lost by refusing to refresh here, which is the part
 	/// worth checking rather than assuming.** This method's only caller
-	/// (`nudge::waker::propose_a_session`, which as of #285/RCM8 is reached
+	/// (`nudge::propose::propose_a_session`, which as of #285/RCM8 is reached
 	/// by any warranted subject with nothing prepared, not only by the
 	/// `NothingToSay` verdict RCM2 first hung it off) is reached only when
 	/// `first_prepared` returned `None`, and this statement's conflict
@@ -505,7 +505,7 @@ impl SessionRepository {
 	/// doc comment for the full argument.
 	///
 	/// This method is the other half of that split: it is called from
-	/// `nudge::waker::refresh_stale_proposal`, *after* that pass holds its
+	/// `nudge::propose::refresh_stale_proposal`, *after* that pass holds its
 	/// claim, which is what makes rewriting content safe here and nowhere
 	/// else. Its own hazard is a different one, and needs this `WHERE`
 	/// clause rather than a claim: it reads a specific, already-existing row

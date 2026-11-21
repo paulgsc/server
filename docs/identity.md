@@ -550,7 +550,7 @@ nowhere is marked as such and belongs to review.
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
-   - the nudge waker, through `waker::unless_deleted`, which takes the lock
+   - the nudge waker, through `actuate::unless_deleted`, which takes the lock
      around one re-check of the subject's `engagement_gate` row and one write
      (`a_write_for_a_deleted_subject_is_skipped_and_waits_out_a_deletion`).
      It wraps the writes that check nothing a deletion removes: the

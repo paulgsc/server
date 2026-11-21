@@ -368,7 +368,7 @@ mod tests {
 
 	#[test]
 	fn first_contact_seeds_full_so_a_brand_new_subject_is_not_instantly_eligible() {
-		// The constraint `waker::observe`'s comment states, which #278's first
+		// The constraint `observe::observe`'s comment states, which #278's first
 		// contact must preserve exactly: "No rows means never seen, and
 		// `from_storage` starts such a subject full rather than empty — an
 		// empty charge is instantly eligible, so the alternative would nudge a

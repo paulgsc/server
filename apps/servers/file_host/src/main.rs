@@ -248,8 +248,8 @@ async fn main() -> Result<()> {
 	if app_state.nudge.is_some() && config.nudge_enabled {
 		// One-time reconciliation: a subscription recorded before #278 landed
 		// has no reason to be re-sent, so without this pass it would never
-		// reach `engagement_gate` at all. See `waker::backfill_first_contact`.
-		match nudge::waker::backfill_first_contact(&app_state.core.shared_db).await {
+		// reach `engagement_gate` at all. See `observe::backfill_first_contact`.
+		match nudge::observe::backfill_first_contact(&app_state.core.shared_db).await {
 			Ok(seeded) => tracing::info!(seeded, "first-contact backfill complete"),
 			Err(err) => tracing::error!(error = %err, "first-contact backfill failed; existing subscribers may stay ungated until next boot"),
 		}

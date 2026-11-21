@@ -503,47 +503,6 @@
       }
     }
   },
-  "apps/servers/file_host/src/nudge/waker.rs": {
-    "clippy::expect_used": {
-      "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop": {
-        "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
-        "engagement .save(subject_id, &levels, &now_str, &now_str) .await .expect(\"seed a due, nothing-prepared subject\");": 1,
-        "let all_sessions = sessions.list(subject_id).await.expect(\"list this subject's sessions\");": 1,
-        "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
-        "let provisioned_id = sessions .first_prepared(subject_id) .await .expect(\"read back the provisioned session\")": 1,
-        "let provisioned_id = sessions .first_prepared(subject_id) .await .expect(\"read back the provisioned session\") .expect(\"consider should have written a findable session even though admission later refused\");": 1,
-        "let record = sessions .get(subject_id, &provisioned_id) .await .expect(\"read the provisioned record\")": 1,
-        "let record = sessions .get(subject_id, &provisioned_id) .await .expect(\"read the provisioned record\") .expect(\"the id first_prepared returned should resolve to a real row\");": 1,
-        "let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect(\"build a current-thread runtime\");": 1,
-        "let still_the_same = sessions.first_prepared(subject_id).await.expect(\"read back again\").expect(\"still findable\");": 2,
-        "let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), \"mailto:test@example.com\").expect(\"the fixed test keypair validates\");": 1
-      },
-      "fn one_pass_reads_at_most_one_row_per_due_subject": {
-        "EngagementRepository::new(pool.clone()) .seed_if_absent(&subject_id, &[], &now_str, &past) .await .expect(\"seed a due subject's gate row\");": 1,
-        "MIGRATOR.run(&pool).await.expect(\"run the workspace migration history\");": 1,
-        "let pool = SqlitePoolOptions::new() .max_connections(1) .connect(\"sqlite::memory:\") .await .expect(\"open an in-memory sqlite database\");": 1,
-        "let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect(\"build a current-thread runtime\");": 1,
-        "let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), \"mailto:test@example.com\").expect(\"the fixed test keypair validates\");": 1,
-        "run_once(&pool, &nudge) .await .expect(\"a pass over freshly-drafted sessions and unconsented subjects should not error\");": 1,
-        "sessions_repo.upsert(&subject_id, &record).await.expect(\"seed a session row owned by this due subject\");": 1
-      }
-    },
-    "clippy::must_use_candidate": {
-      "fn materialize_provisioned_session": {
-        "pub fn materialize_provisioned_session(id: String, subject_id: &str, catalogue: &[ActivityRecord], inputs: &RankingInputs, now: DateTime<Utc>) -> SessionRecord {": 1
-      }
-    },
-    "clippy::too_long_first_doc_paragraph": {
-      "fn refresh_stale_proposal": {
-        "/// A provisioned session, fully materialised \u2014 #282 (RCM5), the story that /// closes out what #279 (RCM2) deliberately left empty. `recommend()` (#280, /// RCM3) picks the activities; `provision()` (#281, RCM4) sets each one's /// floor duration; this function's own naming and duration logic /// (`activity_repo::naming`, `activity_repo::provisioning::total_duration_ms`) /// fill in everything else #282's issue table asks for. /// /// **`status: Scheduled`, not `Draft`.** A deliberate change from what this": 1
-      }
-    },
-    "clippy::too_many_lines": {
-      "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop": {
-        "fn nothing_prepared_and_a_non_presence_dominant_deficit_gets_a_provisioned_session_not_a_warn_loop() {": 1
-      }
-    }
-  },
   "apps/servers/file_host/src/routes/ts_emitter.rs": {
     "clippy::disallowed_macros": {
       "fn api_base_path_constant_matches_the_json_snapshots_field": {
