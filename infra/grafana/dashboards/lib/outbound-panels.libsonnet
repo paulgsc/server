@@ -147,9 +147,17 @@ local perMinute(by) = '60 * sum by (' + by + ') (rate(outbound_requests_total[5m
     'Bps',
   ),
 
+  containersNamed: stat(
+    'CONTAINERS NAMED',
+    'Containers cadvisor reports with a `name` label, the label the two panels beside this group by. Every compose service is a container, so this should be about their count; no data means cadvisor names none of them (it cannot read Docker\'s own record of them), and the network panels then draw nothing rather than one sum of every cgroup.',
+    'count(count by (name) (container_network_receive_bytes_total{name!=""}))',
+    'none',
+    [{ color: 'green', value: null }],
+  ) { fieldConfig+: { defaults+: { decimals: 0 } } },
+
   containerTransmit: series(
     'Every container: sent',
-    'cadvisor\'s bytes sent per second, by container, every interface summed, over 5 minutes. Includes what a container sends on the compose network, not only to the outside.',
+    'cadvisor\'s bytes sent per second, by container name, every interface summed, over 5 minutes. A series without a name (a cgroup cadvisor could not match to a container) is left out, not summed into one. Includes what a container sends on the compose network, not only to the outside.',
     [{ expr: 'sum by (name) (rate(container_network_transmit_bytes_total{name!=""}[5m]))', legendFormat: '{{name}}', refId: 'A' }],
     'Bps',
     true,
