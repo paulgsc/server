@@ -63,7 +63,7 @@ fn a_bite_on_the_snap_to_come_is_about_that_snap() {
 			let said = offered_said(&then, &log, bite, scenario);
 			let accepts = plays_that_were(&over, &log, end, scenario).iter().any(|w| w.play_id == plays[target].id);
 			let picked = its_play(&over, &log, end, scenario, said, bite, bite, ANY).map(|(w, _)| position(&plays, &w.play_id));
-			let why = [format!("{scenario:?}"), String::from(" before "), play.id.clone()].concat();
+			let why = [scenario.id(), " before ", &play.id].concat();
 			match said {
 				Said::BeforeTheSnap if accepts => {
 					assert_eq!(picked, Some(target), "{why}");
