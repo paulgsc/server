@@ -4,6 +4,7 @@
 
 use crate::Game;
 use chrono::{DateTime, Utc};
+use game_scenarios::Kind;
 use nfl_feed::{log::Entry, summary::Play, GameState};
 use std::collections::HashMap;
 
@@ -282,6 +283,73 @@ fn gain_in(text: &str) -> Option<i64> {
 		let digits = rest.find(|c: char| !(c.is_ascii_digit() || c == '-')).map_or(rest, |end| &rest[..end]);
 		rest[digits.len()..].starts_with(" yard").then(|| digits.parse().ok()).flatten()
 	})
+}
+
+/// A play's gain as the big-play algebra reads it (#3048): its kind, the
+/// yards, and whether the side that gained is the team ESPN gave the ball
+/// (the offense on a snap, the kicking team on a kick). A return is the
+/// returner's: a pick-six is the defense's interception return, never the
+/// offense's pass, whose text names the target with "intended for" and the
+/// return's yards after it.
+pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
+	if wiped_out(play) || field_goal(play).is_some() {
+		return None;
+	}
+	let text = text(play);
+	let after = |word: &str| text.find(word).map(|at| &text[at + word.len()..]);
+	if kind(play) == "kickoff" {
+		return (!is_onside(play))
+			.then(|| after("kicks").and_then(return_yards).map(|y| (Kind::KickReturn, y, false)))
+			.flatten();
+	}
+	if is_punt(play) {
+		return after("punts").and_then(return_yards).map(|y| (Kind::PuntReturn, y, false));
+	}
+	if let Some(rest) = after("intercepted by") {
+		return return_yards(rest).map(|y| (Kind::InterceptionReturn, y, false));
+	}
+	if lost_fumble(play, &text) {
+		return after("recovered by").and_then(return_yards).map(|y| (Kind::FumbleReturn, y, false));
+	}
+	if !is_snap(play) {
+		return None;
+	}
+	let kind = if is_run(play) {
+		Kind::Run
+	} else if is_pass(play) {
+		Kind::Pass
+	} else {
+		return None;
+	};
+	gain(play).map(|y| (kind, y, true))
+}
+
+/// The yards of the return a kick's or turnover's text tells after its
+/// start: "C.Kiner to NE 31 for 26 yards"; none for a fair catch, a
+/// touchback or a return for no gain.
+fn return_yards(rest: &str) -> Option<i64> {
+	if rest.contains("fair catch") {
+		return None;
+	}
+	gain_in(rest)
+}
+
+/// A kickoff the kicking team tried to get back.
+pub(crate) fn is_onside(play: &Play) -> bool {
+	kind(play).contains("kickoff") && text(play).contains("onside")
+}
+
+/// The team that recovered an onside kick, from "recovered by NE-B.Bolden":
+/// ESPN's team, or none when the text names none.
+pub(crate) fn recovered_by(play: &Play) -> Option<String> {
+	let original = play.text.as_deref()?;
+	let at = original.to_ascii_lowercase().find("recovered by ")? + "recovered by ".len();
+	original[at..].split(['-', ' ']).next().filter(|team| !team.is_empty()).map(str::to_owned)
+}
+
+/// Whether play `play` ends the first half: ESPN's "End of Half".
+pub(crate) fn ends_the_half(play: &Play) -> bool {
+	kind(play) == "end of half"
 }
 
 /// The team flagged and the foul, from "PENALTY on NE-W.Campbell, False

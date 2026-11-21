@@ -11,6 +11,13 @@ what it `covers`, the `outcomes` home can later fill in (kebab-case slugs from
 our side), and the `moment`: the kind of moment the scenario engine (GWB3)
 writes its rule against.
 
+Beside the scenarios, the dump lists the closed dimensions a bite is read
+along (version 2, #3048): `halves` (`first`, `second`, `overtime`: the half
+an in-game bite was in) and `big_play`, the big-play algebra's `sizes` (each
+with the fewest yards it starts at) and `kinds` (each with the smallest size
+it counts from). Each is an enum here (`Half`, `Size`, `Kind`), so the engine
+and the phone's words agree on every value.
+
 ## One set, two readers
 
 - **The engine** compiles against `Scenario`.

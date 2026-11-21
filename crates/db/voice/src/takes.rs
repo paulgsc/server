@@ -1171,6 +1171,7 @@ mod tests {
 			(Some(8), Some("4:12"), Some("a catch for 12 yards")),
 			"the play's latest version"
 		);
+		assert_eq!(about.half, Some(game_scenarios::Half::Second), "its play is in the 3rd");
 		assert_eq!(game.duration_ms, Some(1000));
 
 		let interview = all.takes.iter().find(|take| take.id == "interview").unwrap();

@@ -1,0 +1,15 @@
+{
+  "id": "C871",
+  "made": "2026-11-21",
+  "by": "claude",
+  "paths": ["crates/game_scenarios/src/lib.rs", "crates/scenario_engine/src/read.rs", "crates/scenario_engine/src/rules.rs"],
+  "chose": "The big-play algebra's third size is `memorable` (60+ yards, \"the kind you remember\", the owner's words), and a kick return counts as big only from `huge` (40+): the recorded game's ordinary returns ran 22 to 29 yards, out of the end zone to about the 25, and the owner's examples of a big play were 50 and 70 yards. Each kind's smallest size is in the catalog dump (`kinds[].least`), so the phone shows the same rule. A return is credited to the returning side, and an onside kick is never a kick return.",
+  "options": [
+    "Kick returns from `huge` (chosen): no routine return reads as a big play; a 47-yard one does.",
+    "Every kind from `big` (20+, D8 as worded): every kickoff in the recorded game but one touchback would be a big play.",
+    "Measure a kick return by field position past the touchback line: closer to the feeling, but a second yardage rule the phone would have to learn."
+  ],
+  "gray": "D8 gave the sizes without saying whether they apply alike to every kind; the tier's slug was not named.",
+  "undo": "Make Kind::least return Size::Big for every kind, re-dump the catalog as a new version, and re-bless the replay.",
+  "refs": ["paulgsc/some-ui#3048", "paulgsc/some-ui#2908"]
+}

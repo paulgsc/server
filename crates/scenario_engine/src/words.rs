@@ -5,9 +5,10 @@
 
 use crate::{
 	read::{SoFar, Try},
-	Game, Strip,
+	BigPlay, Game, Strip,
 };
 use chrono::{DateTime, Utc};
+use game_scenarios::Kind;
 use nfl_feed::{GameState, Weather};
 
 /// `1st`, `2nd`, `3rd`, `4th`.
@@ -338,13 +339,36 @@ pub(crate) fn flag(team: &str, foul: Option<&str>) -> String {
 	foul.map_or_else(|| ["Flag on ", team].concat(), |foul| ["Flag on ", team, ", ", foul].concat())
 }
 
-/// `CHI gained 58`, `NE 48-yard touchdown`.
-pub(crate) fn big_play(offense: &str, yards: i64, touchdown: bool) -> String {
-	if touchdown {
-		[offense, " ", &yards.to_string(), "-yard touchdown"].concat()
-	} else {
-		[offense, " gained ", &yards.to_string()].concat()
+/// `CHI gained 58`, `NE 48-yard touchdown`, `CHI 30-yard interception
+/// return, touchdown`, `NE 45-yard kick return`.
+pub(crate) fn big_play(play: &BigPlay) -> String {
+	let yards = play.yards.to_string();
+	let returned = match play.kind {
+		Kind::Pass | Kind::Run => None,
+		Kind::KickReturn => Some("kick return"),
+		Kind::PuntReturn => Some("punt return"),
+		Kind::InterceptionReturn => Some("interception return"),
+		Kind::FumbleReturn => Some("fumble return"),
+	};
+	match (returned, play.scored) {
+		(None, true) => [&play.by, " ", &yards, "-yard touchdown"].concat(),
+		(None, false) => [&play.by, " gained ", &yards].concat(),
+		(Some(what), true) => [&play.by, " ", &yards, "-yard ", what, ", touchdown"].concat(),
+		(Some(what), false) => [&play.by, " ", &yards, "-yard ", what].concat(),
 	}
+}
+
+/// `Halftime, CHI up 13`; `Halftime, 10 all` with no side wanted.
+pub(crate) fn halftime(us: Option<&str>, margin_now: Option<i64>, score_now: &str) -> String {
+	match (us, margin_now) {
+		(Some(us), Some(m)) => ["Halftime, ", us, " ", &margin(m)].concat(),
+		_ => ["Halftime, ", score_now].concat(),
+	}
+}
+
+/// `NE onside kick, recovered by NE`; `NE onside kick`.
+pub(crate) fn onside(kicking: &str, recovered: Option<&str>) -> String {
+	recovered.map_or_else(|| [kicking, " onside kick"].concat(), |by| [kicking, " onside kick, recovered by ", by].concat())
 }
 
 /// `CHI field goal from 43, good`.

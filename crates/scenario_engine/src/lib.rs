@@ -18,13 +18,13 @@ mod rules;
 mod words;
 
 use chrono::{DateTime, FixedOffset, NaiveTime, TimeDelta, TimeZone, Utc};
-use game_scenarios::{Scenario, CATALOG_VERSION};
+use game_scenarios::{Kind, Scenario, Size, CATALOG_VERSION};
 use nfl_feed::{log::Entry, summary::Play, Status, Weather};
 use serde::{Serialize, Serializer};
 
 /// The engine's own version. Every offer carries it, so a bite records the
 /// rules it was offered under; bump it when a rule or a line changes.
-pub const ENGINE_VERSION: u32 = 2;
+pub const ENGINE_VERSION: u32 = 3;
 
 /// The recorder's three modes (the epic's "Settings: three modes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -219,6 +219,23 @@ pub struct Happened {
 	pub ago_seconds: i64,
 	/// `40 seconds ago`.
 	pub ago: String,
+	/// The play by the big-play algebra, for `in.big-play` only.
+	pub big_play: Option<BigPlay>,
+}
+
+/// A big play by the algebra (#3048): how big, what kind, who gained, and
+/// whether it scored and was good for the side wanted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BigPlay {
+	pub size: Size,
+	pub kind: Kind,
+	/// The team that gained: the returner's on a return.
+	pub by: String,
+	pub yards: i64,
+	/// A touchdown, by the side that gained.
+	pub scored: bool,
+	/// Good for the side the game is read for; `None` with no side wanted.
+	pub good: Option<bool>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes the field by reference

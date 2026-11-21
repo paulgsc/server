@@ -45,9 +45,24 @@ catalog order.
 | `red-zone` | `in.red-zone` | inside the 20 | ended a trip inside the 20 |
 | `two-minute` | `in.two-minute` | 2nd or 4th quarter, 2:00 or less | |
 | `kick` | `in.kick` | the try is to come, or 4th down within a 57-yard field goal | is a field goal, or a missed extra point |
-| `turnover`, `sack`, `big-play`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.big-play`, `in.penalty`, `in.injury` | never ahead of time | was an interception or lost fumble, a sack, a gain of 20+, a flag, a player hurt or back |
+| `turnover`, `sack`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.penalty`, `in.injury` | never ahead of time | was an interception or lost fumble, a sack, a flag, a player hurt or back |
+| `big-play` | `in.big-play` | never ahead of time | gained 20+ by the big-play algebra (below) |
+| `halftime` | `in.halftime` | from ESPN's end of the half until the second half's kickoff | |
+| `onside-kick` | `in.onside-kick` | never ahead of time | was a kickoff ESPN calls onside, with who recovered it (ESPN's "recovered by", else the receivers) |
 | `final` | `post.result`, `post.paths`, `post.pattern` | the game is final (paths only with a side wanted) | |
 | `watching` | `you.*` | the game is final, a side is wanted, the result is not a tie, and the phone has said whether the owner watched | |
+
+### The big-play algebra (#3048)
+
+A big play in "just happened" carries a `BigPlay` beside its line: its
+`size` (`big` 20+, `huge` 40+, `memorable` 60+), its `kind` (`pass`, `run`,
+`kick-return`, `punt-return`, `interception-return`, `fumble-return`), `by`
+(the side that gained: the returner's on a return, so a pick-six is the
+defense's, never the offense's pass), `yards`, `scored`, and `good` (for the
+side wanted; none without one). Sizes and kinds are `game_scenarios`'
+closed enums, and the catalog dump lists them. A kick return is big from
+`huge`: 20 to 39 yards is the ordinary one, out of the end zone to about
+the 25 (`Kind::least`). `read::gain_by` reads which side gained and how far.
 
 A game ESPN calls over that was not completed (postponed or cancelled), with
 no play in the log, offers nothing, and its strip says "Not played".

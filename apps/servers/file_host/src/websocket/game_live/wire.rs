@@ -245,6 +245,11 @@ pub struct Happened {
 	/// When home first saw the play, ISO 8601 to the second: the phone says
 	/// how long ago from its own clock and the offset.
 	pub at: String,
+	/// For `in.big-play` only: the play by the big-play algebra (#3048), its
+	/// `size` and `kind` slugs as the scenario catalog lists them. Absent on
+	/// every other scenario.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub big_play: Option<scenario_engine::BigPlay>,
 }
 
 /// The offer for the game the phone is on.
@@ -287,6 +292,7 @@ impl Offer {
 					play_id: happened.play_id,
 					line: happened.line,
 					at: stamp(now - chrono::TimeDelta::seconds(happened.ago_seconds)),
+					big_play: happened.big_play,
 				})
 				.collect(),
 		}
@@ -432,12 +438,29 @@ fn home_examples() -> [Outbound; 4] {
 				line: "NE on 3rd and 8".to_owned(),
 			},
 		],
-		just_happened: vec![Happened {
-			id: "in.sack".to_owned(),
-			play_id: "4018730101234".to_owned(),
-			line: "NE sacked on 2nd and 5".to_owned(),
-			at: "2026-10-23T01:52:20Z".to_owned(),
-		}],
+		just_happened: vec![
+			Happened {
+				id: "in.sack".to_owned(),
+				play_id: "4018730101234".to_owned(),
+				line: "NE sacked on 2nd and 5".to_owned(),
+				at: "2026-10-23T01:52:20Z".to_owned(),
+				big_play: None,
+			},
+			Happened {
+				id: "in.big-play".to_owned(),
+				play_id: "4018730101210".to_owned(),
+				line: "CHI 45-yard interception return, touchdown".to_owned(),
+				at: "2026-10-23T01:51:02Z".to_owned(),
+				big_play: Some(scenario_engine::BigPlay {
+					size: game_scenarios::Size::Huge,
+					kind: game_scenarios::Kind::InterceptionReturn,
+					by: "CHI".to_owned(),
+					yards: 45,
+					scored: true,
+					good: Some(false),
+				}),
+			},
+		],
 	};
 	let before = Offer {
 		game_id: "401873023".to_owned(),
@@ -542,6 +565,7 @@ mod tests {
 					play_id: "1".to_owned(),
 					line: "NE sacked on 2nd and 5".to_owned(),
 					at: "2026-10-23T01:52:20Z".to_owned(),
+					big_play: None,
 				}],
 			}),
 		};

@@ -1,0 +1,15 @@
+{
+  "id": "C872",
+  "made": "2026-11-21",
+  "by": "claude",
+  "paths": ["crates/db/voice/src/about.rs"],
+  "chose": "An in-game bite's half (D10) is derived when the takes API reads it, never stored: the quarter of its matched play, else of the newest play home had seen at the bite's start on home's clock (one indexed read back from the game's newest row). It sits on the game take itself (`half`), not on its match, so a bite not yet matched has one. A bite whose scenario is pre, post or you, one before the first play, or one after ESPN's End of Game has none.",
+  "options": [
+    "Derive at read time on the game take (chosen): no column, no migration, and it follows a later match.",
+    "Store it on bite_match at match time: a stored copy of what the play already says, and absent until the reconciler runs.",
+    "Have the phone send it with the bite: the phone's clock and view lag home's, and old bites would have none."
+  ],
+  "gray": "#3048 said each bite 'carries' its half without saying where; the coordinator relayed the proposal with it on `match`, which would leave an unmatched bite without one.",
+  "undo": "Drop `half` from GameAbout and `period_seen_by` from about.rs.",
+  "refs": ["paulgsc/some-ui#3048", "paulgsc/some-ui#3039"]
+}
