@@ -154,13 +154,17 @@ pub struct BiteAbout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchAbout {
-	/// `nearest` when a play was matched; else why not: `unmatched` (no play
-	/// the scenario's rule accepts), `not-a-play` (the scenario is about a
-	/// stretch of the game) or `no-scenario` (said first and never mapped).
+	/// `nearest` when a play at or before the bite was matched, `next` when a
+	/// play after it was (the snap to come for a bite on its offer, or the
+	/// nearer play for one tied to no offer); else
+	/// why not: `unmatched` (no play the scenario's rule accepts), `not-a-play`
+	/// (the scenario is about a stretch of the game) or `no-scenario` (said
+	/// first and never mapped).
 	pub method: Method,
 	/// The scenario it was matched under.
 	pub scenario: Option<String>,
-	/// The bite's start minus the play's time, in seconds; null without a play.
+	/// The bite's start minus the play's time, in seconds: negative when the
+	/// play came after (`next`); null without a play.
 	pub gap_seconds: Option<i64>,
 	/// The play, as home last saw it; null without one.
 	pub play: Option<Play>,

@@ -239,7 +239,7 @@ impl MailboxContext {
 		if archive_token.is_some() && !(MIN_ARCHIVE_DAYS..=MAX_ARCHIVE_DAYS).contains(&config.mailbox_archive_days) {
 			anyhow::bail!("MAILBOX_ARCHIVE_DAYS must be from 30 to 36500");
 		}
-		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+		let client = outbound::client(outbound::Caller::Mailbox).timeout(REQUEST_TIMEOUT).build()?;
 		let bell = bell::Bell::new(&url, Token::new(token.clone()), bell::Timings::new(UNHELD)).map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;
 		let mailbox = Mailbox::new(&url, Token::new(token), ReqwestTransport::new(client.clone())).map_err(|why| anyhow::anyhow!("MAILBOX_URL: {why}"))?;
 		let archive = archive_token
@@ -251,7 +251,10 @@ impl MailboxContext {
 		}
 		let notice = if let Some(path) = &config.fcm_service_account_file {
 			let account = crate::jobs_notice::load(path)?;
-			Some(Arc::new(fcm_kit::Sender::new(account, fcm_kit::ReqwestTransport::new(client))))
+			Some(Arc::new(fcm_kit::Sender::new(
+				account,
+				fcm_kit::ReqwestTransport::new(outbound::client(outbound::Caller::Notice).timeout(REQUEST_TIMEOUT).build()?),
+			)))
 		} else {
 			info!("FCM_SERVICE_ACCOUNT_FILE is not set; home will tell no phone when a run arrives");
 			None

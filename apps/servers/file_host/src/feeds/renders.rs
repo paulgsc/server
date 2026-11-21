@@ -42,7 +42,8 @@
 //!
 //! **A cards essay** (CARDS7, #854) is on the board too, as the
 //! `cards-essay` shelf, keyed by its key (`<slug>-<YYYY-MM-DD>`): no feed
-//! (its link is `feeds::videos`'s, paulgsc/some-ui#2999; nothing let go yet), each essay home holds (`cards_essays`)
+//! (its link is `feeds::videos`'s, paulgsc/some-ui#2999; nothing let go yet), each essay home holds and has not
+//! withdrawn for a deleted take (`cards_essays`, paulgsc/server#1055)
 //! waiting until its `cards.mp4` is made, failed with its log, as any
 //! episode, or done, and a done one played from
 //! `GET /cards-essays/:key/video` (`routes::cards_essays`).
@@ -580,8 +581,8 @@ pub struct Failed {
 	/// (`previews`: `no-sample`, `too-long`, `too-large`, `render`,
 	/// `overdue`), any shelf's the render policy refused (`too-long`,
 	/// `too-large`, `overflow`, with [`Over`]), and a cards essay home
-	/// refused for a spoken card's take (`take-missing`, `take-unheard`,
-	/// paulgsc/server#1052).
+	/// refused for what it names (`take-missing`, `take-unheard`,
+	/// paulgsc/server#1052; `snip-missing`, `clip-missing`, `essay_media`).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<&'static str>,
 	/// By how much the render policy refused it (#929).
@@ -1297,9 +1298,11 @@ async fn made_and_size(path: &Path, follows: bool) -> Option<(i64, Option<u64>)>
 enum Refused {
 	Over(Over),
 	/// A cards essay home refused to give the worker (WALK7,
-	/// paulgsc/server#1052, `cards_essays::pass`): `take-missing`, a take
-	/// a spoken card names that home doesn't hold, or `take-unheard`, one
-	/// home couldn't make out or heard nothing in. A class alone.
+	/// paulgsc/server#1052, `cards_essays::pass`, `essay_media`):
+	/// `take-missing`, a take a spoken card names that home doesn't hold,
+	/// `take-unheard`, one home couldn't make out or heard nothing in, or
+	/// `snip-missing` / `clip-missing`, a snip or clip frame a scene shows
+	/// that home doesn't hold. A class alone.
 	Home(&'static str),
 }
 
@@ -1308,6 +1311,8 @@ fn home_refusal(text: &str) -> Option<&'static str> {
 	match text.lines().find_map(|line| line.strip_prefix("reason="))? {
 		"take-missing" => Some("take-missing"),
 		"take-unheard" => Some("take-unheard"),
+		"snip-missing" => Some("snip-missing"),
+		"clip-missing" => Some("clip-missing"),
 		_ => None,
 	}
 }

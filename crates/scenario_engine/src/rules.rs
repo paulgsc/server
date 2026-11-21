@@ -8,7 +8,7 @@
 
 use crate::{
 	read::{self, Kick, SoFar, Turnover},
-	words, BigPlay, Game, Happened, Mode, Offered, Ranked, Situation, Tier, Watching,
+	words, BigPlay, Game, Happened, Mode, Offered, Ranked, Said, Situation, Tier, Watching,
 };
 use chrono::{DateTime, FixedOffset, Offset, TimeDelta, Utc};
 use game_scenarios::{Kind, Moment, Phase as When, Scenario, Unit};
@@ -542,10 +542,100 @@ const fn kick_words(kick: Kick) -> &'static str {
 
 /// Whether a play can be one of `moment`'s scenarios: the moments with a
 /// "just happened" rule in [`Cx::happened`]. The rest (pregame, the two-minute
-/// drill, the final and the owner's own) are about a stretch of the game, not
-/// one play.
+/// drill, halftime, the final and the owner's own) are about a stretch of the
+/// game, not one play.
 pub(crate) const fn about_a_play(moment: Moment) -> bool {
 	!matches!(moment, Moment::Pregame | Moment::TwoMinute | Moment::Final | Moment::Watching | Moment::Halftime)
+}
+
+/// When a bite offered as `scenario` at `at` was said relative to its play:
+/// before it when the moment's rule offers the snap to come, after it when
+/// the rule offers a play already in the log. One arm per moment, so a new
+/// moment must say which (#3040).
+pub(crate) fn offered_said(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, scenario: Scenario) -> Said {
+	let cx = Cx::new(game, so_far, at, Mode::Full, Utc.fix(), Watching::Unknown);
+	match scenario.entry().moment {
+		// A try is in its touchdown's own play: that play is in the log.
+		Moment::Kick if cx.try_pending().is_some() => Said::After,
+		// Offered on the drive the snap to come is in: its play ends it.
+		Moment::OpeningDrive | Moment::RedZone => Said::BeforeTheDrive,
+		// Offered on the snap to come, which is its play: the down and
+		// distance, a play call, a field goal try.
+		Moment::ThirdAndLong | Moment::FourthDown | Moment::Snap | Moment::Kick => Said::BeforeTheSnap,
+		// Offered up to a quarter hour ahead: its play is the opening kickoff.
+		Moment::Kickoff => Said::BeforeTheKickoff,
+		// Offered once the touchdown or the score is in the log; never offered
+		// ahead of time ("just happened" offers them); or about no one play.
+		Moment::Try
+		| Moment::LeadChange
+		| Moment::Turnover
+		| Moment::Penalty
+		| Moment::Sack
+		| Moment::BigPlay
+		| Moment::Injury
+		| Moment::Pregame
+		| Moment::TwoMinute
+		| Moment::Final
+		| Moment::Watching
+		// Halftime is about no one play; an onside kick is offered only once
+		// it is in the log.
+		| Moment::Halftime
+		| Moment::OnsideKick => Said::After,
+	}
+}
+
+/// The play of `so_far` a bite of `scenario` said as `said` is about
+/// ([`crate::its_play`] says how).
+#[allow(clippy::too_many_arguments)] // as `its_play`
+pub(crate) fn its_play(
+	game: &Game,
+	so_far: &SoFar<'_>,
+	now: DateTime<Utc>,
+	scenario: Scenario,
+	said: Said,
+	at: DateTime<Utc>,
+	offered: DateTime<Utc>,
+	window: TimeDelta,
+) -> Option<usize> {
+	let accepted = were(game, so_far, now, scenario);
+	let plays = &so_far.plays;
+	let before = || {
+		accepted
+			.iter()
+			.copied()
+			.filter(|i| plays[*i].at <= at && at - plays[*i].at <= window)
+			.max_by_key(|i| plays[*i].at)
+	};
+	let to_come = || {
+		(0..plays.len()).find(|i| {
+			let play = plays[*i].play;
+			plays[*i].first > offered && read::is_snap(play) && !read::wiped_out(play)
+		})
+	};
+	match said {
+		Said::After => before(),
+		// Not tied to an offer: the nearer in time of the nearest accepted
+		// play at or before the bite and the first after it, a tie looking
+		// back.
+		Said::Either => {
+			let after = accepted.iter().copied().find(|i| plays[*i].at > at && plays[*i].at - at <= window);
+			match (before(), after) {
+				(Some(b), Some(a)) => Some(if plays[a].at - at < at - plays[b].at { a } else { b }),
+				(b, a) => b.or(a),
+			}
+		}
+		Said::BeforeTheKickoff => so_far.opening_kickoff().filter(|i| plays[*i].first > offered && accepted.contains(i)),
+		Said::BeforeTheSnap => {
+			let next = to_come().filter(|i| (at - plays[*i].at).abs() <= window)?;
+			accepted.contains(&next).then_some(next)
+		}
+		// The window bounds the snap to come; the drive may end long after.
+		Said::BeforeTheDrive => {
+			let next = to_come().filter(|i| (at - plays[*i].at).abs() <= window)?;
+			let run = so_far.run(next)?;
+			accepted.into_iter().find(|i| *i >= next && so_far.run(*i) == Some(run))
+		}
+	}
 }
 
 /// The plays of `so_far`, in ESPN's order, that `scenario`'s rule says were

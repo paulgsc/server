@@ -43,6 +43,9 @@
 //! spoken card is given with the owner's takes it names, held back until
 //! each is heard, or refused (a failed row on Studio › Renders) when one is
 //! missing or home couldn't hear it ([`pass`]'s module doc has the rest).
+//! A take it plays deleted from My data withdraws it for good, its video and
+//! folder too, whenever that is (paulgsc/server#1055, as the Rust Rounds
+//! essay's).
 //!
 //! Cost: one request an hour, plus one per essay home lacks (a cut list is a
 //! few KB); per essay not yet given with a spoken card, a few indexed reads
@@ -109,7 +112,7 @@ impl CardsEssaysContext {
 	/// # Errors
 	/// An HTTP client that does not build.
 	pub fn new() -> anyhow::Result<Self> {
-		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+		let client = outbound::client(outbound::Caller::CardsEssays).timeout(REQUEST_TIMEOUT).build()?;
 		Ok(Self {
 			fetch: crate::game_feed::pass::ReqwestFetch::new(client),
 		})
@@ -186,6 +189,8 @@ async fn given(db: &SqlitePool, configured: Option<&str>) -> Result<pass::Given,
 		status: std::path::PathBuf::from(STATUS_FOLDER),
 		subject,
 		renders: std::path::PathBuf::from(RENDERS_FOLDER),
+		frames: std::path::PathBuf::from(crate::clips::FRAMES_FOLDER),
+		work: std::path::PathBuf::from(WORK_FOLDER),
 	})
 }
 
@@ -193,12 +198,19 @@ async fn given(db: &SqlitePool, configured: Option<&str>) -> Result<pass::Given,
 /// only when it did something, by counts.
 async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) {
 	let tidied = match given(db, configured).await {
-		Ok(given) => pass::tidy(db, &given).await,
+		Ok(given) => pass::tidy(db, &given, &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)).await,
 		Err(err) => Err(err),
 	};
 	match tidied {
 		Ok(done) if done == pass::Tidied::default() => {}
-		Ok(done) => info!(takes_removed = done.takes_removed, withdrawn = done.withdrawn, failed = done.failed, "cards essays tidied"),
+		Ok(done) => info!(
+			takes_removed = done.takes_removed,
+			taken_back = done.taken_back,
+			withdrawn = done.withdrawn,
+			removed = done.removed,
+			failed = done.failed,
+			"cards essays tidied"
+		),
 		Err(_) => error!(error = "storage", "cards essays tidy failed"),
 	}
 }
@@ -207,7 +219,8 @@ async fn tidy_tick(db: &SqlitePool, configured: Option<&str>) {
 ///
 /// Each is rendered (`<renders>/<key>/cards.mp4`) or waiting, and failed
 /// when `<status>/<key>.failed.log` is there, as every job's
-/// (`call_weeks::render::tally`). Nothing is let go yet (some-ui#2999).
+/// (`call_weeks::render::tally`). Nothing is let go yet (some-ui#2999); a
+/// withdrawn essay is not counted ([`held`]).
 ///
 /// # Errors
 /// A storage failure reading `cards_essay`.
@@ -216,16 +229,20 @@ pub async fn observe(db: &SqlitePool, renders: &Path, status: &Path) -> Result<R
 	Ok(tally(&held, &[], renders, status, VIDEO).await)
 }
 
-/// Each essay home holds, with when it took it, oldest day first.
+/// Each essay home holds and has not withdrawn, with when it took it,
+/// oldest day first: a withdrawn one has no video, and none is coming
+/// (`pass::tidy`).
 ///
 /// # Errors
 /// A storage failure reading `cards_essay`.
 pub(crate) async fn held(db: &SqlitePool) -> Result<Vec<Held>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
+	let gone = cards_essay_repo::gone(&mut conn).await?;
 	Ok(
 		cards_essay_repo::held(&mut conn)
 			.await?
 			.into_iter()
+			.filter(|essay| !gone.contains(&essay.key))
 			.map(|essay| Held {
 				key: essay.key,
 				taken_at: essay.taken_at,
@@ -255,13 +272,14 @@ async fn observe_renders(db: &SqlitePool) {
 /// It counts; it never names an essay's words.
 fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 	match result {
-		Ok(done) if done.added == 0 && done.exported == 0 && done.refused == 0 && done.failures.is_empty() => {}
+		Ok(done) if done.added == 0 && done.exported == 0 && done.refused == 0 && done.withdrawn == 0 && done.failures.is_empty() => {}
 		Ok(done) if done.failures.is_empty() => info!(
 			added = done.added,
 			held = done.held,
 			exported = done.exported,
 			waiting = done.waiting,
 			refused = done.refused,
+			withdrawn = done.withdrawn,
 			"cards essays pass"
 		),
 		Ok(done) => warn!(

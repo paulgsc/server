@@ -1743,6 +1743,7 @@ name = "fcm_kit"
 version = "0.0.0"
 dependencies = [
  "jwt-simple",
+ "outbound",
  "reqwest",
  "serde",
  "serde_json",
@@ -1819,6 +1820,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "outbound",
  "outcome_repo",
  "pd_fill_repo",
  "presence_repo",
@@ -3036,6 +3038,7 @@ name = "mailbox_kit"
 version = "0.0.0"
 dependencies = [
  "hex",
+ "outbound",
  "reqwest",
  "serde",
  "serde_json",
@@ -3647,6 +3650,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "outbound"
+version = "0.0.0"
+dependencies = [
+ "http 1.5.0",
+ "metrics",
+ "metrics-util",
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
 name = "outcome_repo"
 version = "0.0.0"
 dependencies = [
@@ -4036,6 +4050,7 @@ name = "push_kit"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "outbound",
  "reqwest",
  "serde",
  "serde_json",

@@ -125,6 +125,11 @@ impl<'a> SoFar<'a> {
 		self.plays.is_empty() && self.game.status.state == Some(GameState::Post) && !self.over()
 	}
 
+	/// Play `i`'s possession run, if it is a snap.
+	pub(crate) fn run(&self, i: usize) -> Option<usize> {
+		self.runs[i]
+	}
+
 	/// The index of the opening kickoff, the first kickoff in the log.
 	pub(crate) fn opening_kickoff(&self) -> Option<usize> {
 		self.plays.iter().position(|seen| kind(seen.play) == "kickoff")
