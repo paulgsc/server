@@ -75,9 +75,11 @@ marking them.
   attempts, then notes something waits on, the most waited-on first, then oldest. Urgency sits
   after `tried` on purpose: a wanted note that keeps failing would otherwise hold the queue,
   which TR1 forbids.
-- **Not yet built:** a hand-set source (the owner's fast-track, #1090), which is one more term of
-  the same order, and urgency passing through more than one edge, which arrives with the first
-  stage whose waiter is itself waited on.
+- **Not yet built:** the next source is the owner's fast-track (#1090), a take marked by hand,
+  one more term of the same order; the owner ruled that a fast-tracked take also skips the
+  lane's give (TR4). With two sources the order gets its closed type (`None`, `Wanted`,
+  `FastTrack`). Urgency passing through more than one edge arrives with the first stage whose
+  waiter is itself waited on.
 
 ## The cases to come
 
