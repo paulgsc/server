@@ -882,7 +882,7 @@ pub struct FastTracked {
 const ALREADY_HEARD: &str = "home has already heard this take: there is nothing to put first";
 
 /// What putting first a take home is not going to hear answers with.
-const NOT_WAITING: &str = "home is not going to hear this take as it stands (set aside, its recording let go, or every attempt spent)";
+const NOT_WAITING: &str = "home won't hear this take as it stands (set aside, its recording let go, or every attempt spent)";
 
 /// `POST /voice-notes/:id/fast-track`: the owner puts their take `id` at the
 /// front of the transcriber's line, or takes that back (paulgsc/server#1090,
@@ -892,10 +892,11 @@ const NOT_WAITING: &str = "home is not going to hear this take as it stands (set
 /// `voice_note_fast_track` (`voice_repo::fast_track::act`): `201` with
 /// `change: "recorded"`. A retry, the act the take's newest already is,
 /// writes nothing and is a `200` with `change: "unchanged"`. A mark is one
-/// try: until home's next attempt on the take, it is heard before every
-/// other waiting note but the one the contention guard is excusing, and the
-/// lane's give does not hold that try (the owner, 2026-11-21, on #1090);
-/// failed, it waits among notes tried as often, still ahead of those no one
+/// try: while the queue's model has never tried the note, it is heard before
+/// every other waiting note but the one the contention guard is excusing,
+/// and the lane's give does not hold that try (the owner's ruling on #1090,
+/// 2026-11-21); once tried, or marked again after a try, it waits behind
+/// every note tried fewer times, ahead of those tried as often that no one
 /// waits on (`voice_repo::transcript::waiting_first`). Any kind of the
 /// caller's notes may be marked.
 ///
@@ -905,8 +906,8 @@ const NOT_WAITING: &str = "home is not going to hear this take as it stands (set
 /// 401 without a session, 403 for a browser's or an untrusted origin, 422
 /// naming `fast` when the body is not one, 404 for a note the caller's
 /// subject does not hold, 409 for one home has already heard or found
-/// silent or is not going to hear (set aside, its recording let go, every
-/// attempt spent), and 500 for a storage failure.
+/// silent, or, for `fast: true` only, won't hear as it stands (set aside,
+/// its recording let go, every attempt spent; a model bump can change it), and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_fast_track_post", skip_all, fields(otel.kind = "server"))]
 pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {

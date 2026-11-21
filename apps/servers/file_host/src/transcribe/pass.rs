@@ -100,8 +100,9 @@ pub async fn run_once<H: Hear>(
 	run_once_telling(db, hear, meaning, deletion, per_note, (guard, &mut Turn::unbounded()), cancel, now, &|| {}).await
 }
 
-/// Whether `note` is a fast-tracked take's one try, which the give does not
-/// hold (the owner, 2026-11-21, on #1090).
+/// Whether `note` is a fast-tracked take's one try (marked, never tried by
+/// the queue's model), which the give does not hold (the owner's ruling on
+/// #1090, 2026-11-21).
 ///
 /// An excused try keeps no attempt, so the take the guard is excusing gives
 /// way as any note does: otherwise contention, when renders run, would let it

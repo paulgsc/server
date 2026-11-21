@@ -5,12 +5,14 @@
 //! in short:
 //!
 //! - **The newest act decides, and a mark is one try.** [`act`] appends
-//!   `fast` or `cancel`; a note's mark is live while its newest act is
-//!   `fast` and home has made no attempt on it since. The same act again
-//!   writes nothing. Any kind of note may be marked, a take most often.
-//! - **Only a note that still waits.** A note home has heard (or found
-//!   silent), set aside, let go of, or spent every attempt on is not put
-//!   first: nothing it could do.
+//!   `fast` or `cancel`; a marked note the queue's model has never tried is
+//!   `FastTrack`, and once tried it is `Wanted` (TR1 holds literally). The
+//!   same act again writes nothing. Any kind of note may be marked, a take
+//!   most often.
+//! - **Only a note that waits, as it stands.** A `fast` act on a note home
+//!   has heard (or found silent) with any model, set aside, let go of, or
+//!   spent every attempt on is refused: it would order nothing. A model
+//!   bump can change that answer.
 //! - **Read by the queue.** `crate::transcript::waiting_first` puts a
 //!   fast-tracked note first, and its [`crate::transcript::Urgency`] tells
 //!   the transcriber not to give the lane its turn before it.
@@ -51,9 +53,9 @@ pub enum Acted {
 	NotHeld,
 	/// Home has already heard it, or found it silent: nothing to put first.
 	Ended,
-	/// Home is not going to hear it as it stands (set aside, its recording
-	/// let go, or every attempt it gets spent): putting it first would do
-	/// nothing.
+	/// For a `fast` act: home won't hear it as it stands (set aside, its
+	/// recording let go, or every attempt it gets spent), so putting it
+	/// first would order nothing. A model bump can change this.
 	NotWaiting,
 }
 
@@ -63,9 +65,9 @@ pub enum Acted {
 /// transcriber's `ATTEMPTS`). Run it in the transaction that holds the
 /// request's subject.
 ///
-/// A `fast` act is one try (the migration's doc): it records how many
-/// attempts home has made on the note so far, and the queue treats the mark
-/// as live only until home makes another.
+/// A `fast` act is one try at the head of the line (the migration's doc):
+/// the queue reads it as [`transcript::Urgency::FastTrack`] while the
+/// queue's model has never tried the note, and as `Wanted` once it has.
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -77,11 +79,8 @@ pub async fn act(conn: &mut SqliteConnection, subject: &str, note_id: &str, act:
 	}
 	let state = sqlx::query!(
 		r#"SELECT
-		     COALESCE((SELECT f.act = 'fast' AND f.attempts = (SELECT COUNT(*) FROM voice_transcript t WHERE t.subject_id = ?1 AND t.note_id = ?2)
-		               FROM voice_note_fast_track f WHERE f.subject_id = ?1 AND f.note_id = ?2 ORDER BY f.n DESC LIMIT 1), 0) AS "live!: bool",
 		     COALESCE((SELECT f.act = 'fast' FROM voice_note_fast_track f
 		               WHERE f.subject_id = ?1 AND f.note_id = ?2 ORDER BY f.n DESC LIMIT 1), 0) AS "marked!: bool",
-		     (SELECT COUNT(*) FROM voice_transcript t WHERE t.subject_id = ?1 AND t.note_id = ?2) AS "tried!: i64",
 		     COALESCE((SELECT MAX(per) FROM (SELECT COUNT(*) AS per FROM voice_transcript t
 		                                     WHERE t.subject_id = ?1 AND t.note_id = ?2 GROUP BY t.model)), 0) AS "most!: i64",
 		     (n.of_kind <> 'jobs' AND EXISTS (SELECT 1 FROM voice_note_set_aside s WHERE s.subject_id = ?1 AND s.note_id = ?2))
@@ -92,17 +91,16 @@ pub async fn act(conn: &mut SqliteConnection, subject: &str, note_id: &str, act:
 	)
 	.fetch_one(&mut *conn)
 	.await?;
-	// Home keeps no model key here: a model that has spent every attempt on
-	// the note is taken as the queue's, so a new model hearing every note
-	// again may refuse a mark it would have heard; the owner marks it again
-	// once that model has tried it.
+	// As it stands, and for a `fast` act only. Home keeps no model key here:
+	// a model that has spent every attempt on the note is taken as the
+	// queue's, so right after a model bump this may refuse a mark the new
+	// model would have heard. (A note any model has heard is `Ended`, above.)
 	if act == Act::Fast && (state.out || state.most >= attempts) {
 		return Ok(Acted::NotWaiting);
 	}
-	// A live mark again is no change; a cancel clears a mark spent or not,
-	// since a spent one still puts the note ahead of those no one waits on.
+	// The same act again changes nothing the queue reads, so writes nothing.
 	let unchanged = match act {
-		Act::Fast => state.live,
+		Act::Fast => state.marked,
 		Act::Cancel => !state.marked,
 	};
 	if unchanged {
@@ -110,12 +108,11 @@ pub async fn act(conn: &mut SqliteConnection, subject: &str, note_id: &str, act:
 	}
 	let name = act.as_str();
 	sqlx::query!(
-		"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, attempts, acted_at)
-		 VALUES (?1, ?2, (SELECT COALESCE(MAX(n), 0) + 1 FROM voice_note_fast_track WHERE subject_id = ?1 AND note_id = ?2), ?3, ?4, ?5)",
+		"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, acted_at)
+		 VALUES (?1, ?2, (SELECT COALESCE(MAX(n), 0) + 1 FROM voice_note_fast_track WHERE subject_id = ?1 AND note_id = ?2), ?3, ?4)",
 		subject,
 		note_id,
 		name,
-		state.tried,
 		now
 	)
 	.execute(&mut *conn)
@@ -178,8 +175,8 @@ mod tests {
 	}
 
 	/// The newest act decides and the same act again writes nothing; a mark
-	/// is spent by the attempt that follows it, and marking again gives a new
-	/// try; another subject's note is not held; a heard note is not put first.
+	/// on a tried note still records (the queue reads it as `Wanted`);
+	/// another subject's note is not held; a heard note is not put first.
 	#[tokio::test]
 	async fn a_mark_is_one_try_and_only_a_note_that_waits_is_put_first() {
 		let pool = pool().await;
@@ -193,11 +190,15 @@ mod tests {
 		attempt(&pool, "take", "m", "deadline").await;
 		assert_eq!(
 			acted(&pool, A, "take", Act::Fast).await,
-			Acted::Recorded,
-			"tried since: the mark is spent, and marked again it is a new try"
+			Acted::Unchanged,
+			"tried since: still marked (the queue reads Wanted now), so nothing to write"
 		);
-		attempt(&pool, "take", "m", "deadline").await;
-		assert_eq!(acted(&pool, A, "take", Act::Cancel).await, Acted::Recorded, "a spent mark is still taken back");
+		assert_eq!(acted(&pool, A, "take", Act::Cancel).await, Acted::Recorded, "a tried mark is still taken back");
+		assert_eq!(
+			acted(&pool, A, "take", Act::Fast).await,
+			Acted::Recorded,
+			"marked again on a tried note: recorded, and the queue reads it as Wanted, never FastTrack"
+		);
 		assert_eq!(acts(&pool).await, 5, "append-only: one row per act that changed something");
 		attempt(&pool, "take", "m", "silent").await;
 		assert_eq!(acted(&pool, A, "take", Act::Fast).await, Acted::Ended);

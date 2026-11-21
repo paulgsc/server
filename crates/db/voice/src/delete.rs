@@ -885,7 +885,7 @@ mod tests {
 		.await;
 		run(
 			&pool,
-			"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, attempts, acted_at) VALUES (?1, ?2, 1, 'fast', 0, 'now')",
+			"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, acted_at) VALUES (?1, ?2, 1, 'fast', 'now')",
 			A,
 			"take",
 		)
