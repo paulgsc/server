@@ -756,3 +756,21 @@ groups:
         labels:
           objective: OB2
           says: "Home's {{ $labels.caller }} has had no answer from {{ $labels.host }} for 30 minutes: every request it sent timed out or could not connect. The OUTBOUND dashboard's Not OK panel shows since when."
+
+      - alert: OutboundRefused
+        # The game feed only (the owner, 2026-11-21): ESPN answers, but
+        # refuses every request (a 429 rate limit, another 4xx, a 5xx) for 30
+        # minutes, at least three of them, and not one is ok. The feed backs
+        # off on each refusal (GA2), so a refusal that lasts is one nobody
+        # would otherwise hear. A timeout among the refusals does not clear it
+        # (OutboundNoAnswer is cleared by a refusal, so a mix of the two would
+        # otherwise fire neither); one ok answer does. Other callers are left
+        # out: a push service's 410 is a browser that left, which the nudge
+        # handles, and the pollers' own failing alerts read their refusals.
+        expr: |
+          sum by (caller, host) (increase(outbound_requests_total{caller="game_feed",outcome=~"refused_4xx|refused_5xx"}[30m])) >= 3
+          unless on (caller, host)
+          sum by (caller, host) (increase(outbound_requests_total{caller="game_feed",outcome="ok"}[30m])) > 0
+        labels:
+          objective: OB3
+          says: "Home's game feed has been refused by {{ $labels.host }} for 30 minutes: every request it sent got a 4xx or 5xx (a 429 is a rate limit), and none was answered. The GAME FEED dashboard says what came back."

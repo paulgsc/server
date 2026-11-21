@@ -63,7 +63,8 @@ Two paths reach the owner, both through the Slack contact point in
   nudge waker or game feed, a watcher whose stamp is gone, a watcher whose
   every pass fails (the voice-note transcriber's too), a routine run that
   never came, file_host not answering, and a host that has stopped answering
-  one of home's workers (`OutboundNoAnswer`, from the OUTBOUND series). Prometheus evaluates
+  one of home's workers (`OutboundNoAnswer`) or keeps refusing the game feed
+  (`OutboundRefused`), both from the OUTBOUND series. Prometheus evaluates
   `infra/prometheus/rules/home.yml`, which `rules/home.test.yml` proves with
   `promtool test rules` in CI. Prometheus has no Alertmanager, so
   `provisioning/alerting/home-alerts.yml` reads what fires from `ALERTS`
