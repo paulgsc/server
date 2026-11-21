@@ -254,7 +254,10 @@ which reads bites and writes `bite_match`, is a separate worker (call C160,
   home's screen at the bite's start, or `reconcile::LAG` (5 s) before it if
   home was no longer offering it then (the phone had not heard yet). A bite
   on a first possession or a red-zone trip is `next` to the play that ends
-  that drive. Any other is `nearest`: the nearest at or before that time,
+  that drive; one on the coin toss, to the opening kickoff. A bite picked
+  from the whole set, or said first and mapped, takes the nearer of the
+  plays either side (`next` if after it). A bite from just happened is
+  `nearest`: the nearest at or before that time,
   within `reconcile::WINDOW` (90 s, the broadcast's delay plus the time to
   start talking, to be tuned on real
   Sundays). Otherwise the bite is kept and marked: `unmatched`, `not-a-play`
@@ -265,4 +268,6 @@ which reads bites and writes `bite_match`, is a separate worker (call C160,
   `scenario_engine::could_be` at the bite's time holds it; a refused one adds
   nothing, so the bite stays unmapped, never mislabelled.
 - **Append-only.** A pass adds a `bite_match` row only for a bite whose match
-  changed; a reader takes a bite's newest. Logs carry counts only.
+  changed; a reader takes a bite's newest. A bite whose newest match was made
+  under an older `ENGINE_VERSION` is matched again once, whatever its week, so
+  a rule change reaches every bite. Logs carry counts only.

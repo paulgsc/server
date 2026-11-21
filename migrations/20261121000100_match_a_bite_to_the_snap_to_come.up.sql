@@ -44,6 +44,17 @@ CREATE TABLE bite_match_new (
 INSERT INTO bite_match_new (match_id, subject_id, note_id, scenario_id, play_id, method, gap_seconds, engine_version, matched_at)
 SELECT match_id, subject_id, note_id, scenario_id, play_id, method, gap_seconds, engine_version, matched_at FROM bite_match;
 
+-- Carry AUTOINCREMENT's high-water mark across: copying every row keeps
+-- each match_id, but a higher id already handed out (to rows an account's
+-- deletion removed since) lives only in `sqlite_sequence`, and without it
+-- the rebuilt table could hand that id out again.
+INSERT INTO sqlite_sequence (name, seq)
+SELECT 'bite_match_new', seq FROM sqlite_sequence
+WHERE name = 'bite_match' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'bite_match_new');
+UPDATE sqlite_sequence
+SET seq = MAX(seq, (SELECT seq FROM sqlite_sequence WHERE name = 'bite_match'))
+WHERE name = 'bite_match_new' AND EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'bite_match');
+
 DROP TABLE bite_match;
 ALTER TABLE bite_match_new RENAME TO bite_match;
 

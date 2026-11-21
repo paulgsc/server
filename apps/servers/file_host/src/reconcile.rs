@@ -144,7 +144,7 @@ pub async fn pass(db: &SqlitePool, done: &mut Done, now: DateTime<Utc>) -> Resul
 		let mut conn = db.acquire().await?;
 		let week = game_feed_repo::week(&mut conn, &as_of).await?.unwrap_or_default();
 		let mut games: Vec<String> = week.games.into_iter().map(|game| game.id).collect();
-		for game in bite_match::games_with_bites_to_match(&mut conn).await? {
+		for game in bite_match::games_with_bites_to_match(&mut conn, i64::from(ENGINE_VERSION)).await? {
 			if !games.contains(&game) {
 				games.push(game);
 			}
@@ -246,17 +246,24 @@ async fn match_one(conn: &mut sqlx::SqliteConnection, game_id: &str, bite: &Game
 			_ => (game.clone(), at),
 		};
 		(offered_said(&then.0, log, then.1, scenario), then.1)
-	} else {
+	} else if bite.bite.how == voice_repo::How::JustHappened {
 		(Said::After, at)
+	} else {
+		// Picked from the whole set, or said first and mapped later: nothing
+		// says which side of its play it was said on.
+		(Said::Either, at)
 	};
 	Ok(match its_play(&game, log, now, scenario, said, at, offered, WINDOW) {
 		Some((was, gap)) => Match {
 			scenario: Some(named.to_owned()),
-			play: Some(was.play_id),
-			method: match said {
-				Said::BeforeTheSnap | Said::BeforeTheDrive => Method::Next,
-				Said::After => Method::Nearest,
+			// `next` whenever the bite was said ahead of its play: by its offer,
+			// or a bite not tied to one whose nearer play came after it.
+			method: if was.at > at || matches!(said, Said::BeforeTheSnap | Said::BeforeTheDrive | Said::BeforeTheKickoff) {
+				Method::Next
+			} else {
+				Method::Nearest
 			},
+			play: Some(was.play_id),
 			gap_seconds: Some(gap),
 			engine_version,
 		},
@@ -512,15 +519,15 @@ mod tests {
 		bite(&db, "before-the-snap", Some("in.third-long"), "offered", ahead, Some(0)).await;
 		bite(&db, "after-it", Some("in.third-long"), "just-happened", t + TimeDelta::seconds(15), Some(0)).await;
 		// Picked from the whole set before the snap: not tied to an offer, so
-		// it looks back, and finds no third and long before it.
+		// it takes the nearer play either side, the snap 20 s after it.
 		bite(&db, "from-the-set", Some("in.third-long"), "every-scenario", ahead, Some(0)).await;
 
 		let now = wall(plays.last().unwrap()) + TimeDelta::minutes(10);
 		let done = reconcile(&db, GAME, now).await.unwrap();
-		assert_eq!((done.bites, done.matched), (3, 2));
+		assert_eq!((done.bites, done.matched), (3, 3));
 		assert_eq!(matched(&db, "before-the-snap").await, (Method::Next, Some(play.id.clone()), Some(-20)));
 		assert_eq!(matched(&db, "after-it").await, (Method::Nearest, Some(play.id.clone()), Some(15)));
-		assert_eq!(matched(&db, "from-the-set").await.0, Method::Unmatched);
+		assert_eq!(matched(&db, "from-the-set").await, (Method::Next, Some(play.id.clone()), Some(-20)));
 	}
 
 	/// BM5: the phone heard of the snap a moment after home did, so the owner
@@ -543,6 +550,37 @@ mod tests {
 		reconcile(&db, GAME, now).await.unwrap();
 		assert_eq!(matched(&db, "phone-behind").await, (Method::Next, Some(play.id.clone()), Some(7)));
 		assert_eq!(matched(&db, "stale").await.0, Method::Unmatched);
+	}
+
+	/// A bite matched under an older engine is matched again once, by the
+	/// worker, whatever week it was in: a rule change reaches every bite.
+	#[tokio::test]
+	async fn a_bite_matched_under_an_older_engine_is_matched_again_once() {
+		let db = pool().await;
+		let plays = plays();
+		let play = third_long(&plays);
+		kept_game(&db, &play).await;
+		bite(&db, "old", Some("in.third-long"), "just-happened", wall(&play) + TimeDelta::seconds(30), Some(0)).await;
+		let older = scenario_engine::ENGINE_VERSION - 1;
+		sqlx::query(
+			"INSERT INTO bite_match (subject_id, note_id, scenario_id, play_id, method, gap_seconds, engine_version, matched_at)
+			 VALUES (?1, 'old', 'in.third-long', NULL, 'unmatched', NULL, ?2, '2026-10-23T05:00:00.000Z')",
+		)
+		.bind(SUBJECT)
+		.bind(older)
+		.execute(&db)
+		.await
+		.unwrap();
+		// The next week: the game is no longer on the newest scoreboard.
+		let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+		let next_week = json!({ "season": { "year": 2026, "type": 2 }, "week": { "number": 9 }, "events": [] }).to_string();
+		keep(&db, Fetched::Scoreboard, next_week.as_bytes(), end + TimeDelta::days(3)).await;
+		let later = end + TimeDelta::days(3) + TimeDelta::minutes(1);
+		let mut done = Done::default();
+		let first = pass(&db, &mut done, later).await.unwrap();
+		assert_eq!((first.games, first.added), (1, 1), "found by its old match");
+		assert_eq!(matched(&db, "old").await, (Method::Nearest, Some(play.id.clone()), Some(30)));
+		assert_eq!(pass(&db, &mut Done::default(), later).await.unwrap(), Pass::default(), "once: a restart finds nothing left");
 	}
 
 	#[tokio::test]

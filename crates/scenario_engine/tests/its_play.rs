@@ -80,6 +80,7 @@ fn a_bite_on_the_snap_to_come_is_about_that_snap() {
 					}
 				}
 				Said::After => assert!(picked.is_none_or(|i| i < k), "{why} is about a play in the log"),
+				Said::BeforeTheKickoff | Said::Either => panic!("{why}: no offer before a snap is of the kickoff, and only the reconciler says Either"),
 			}
 		}
 	}
@@ -151,4 +152,39 @@ fn a_bite_on_the_try_is_about_its_touchdown() {
 		}
 	}
 	assert!(tries >= 4 && kicks >= 4, "{tries} tries and {kicks} kicks offered");
+}
+
+/// BM5: the coin toss is offered up to a quarter hour before kickoff, and a
+/// bite on it is about the opening kickoff, however long after it came.
+#[test]
+fn a_bite_before_kickoff_is_about_the_opening_kickoff() {
+	let plays = plays();
+	let log = recorded_log(&plays);
+	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+	let over = game(Some("CHI"), status(GameState::Post, plays.last()), None);
+	let kickoff = plays.iter().position(|p| p.play_type.as_deref() == Some("Kickoff")).unwrap();
+	let bite = wall(&plays[kickoff]) - TimeDelta::minutes(10);
+	let then = game(Some("CHI"), status(GameState::Pre, None), None);
+	assert!(on_offer(&then, &log, bite, Scenario::CoinToss));
+	let said = offered_said(&then, &log, bite, Scenario::CoinToss);
+	assert_eq!(said, Said::BeforeTheKickoff);
+	let picked = its_play(&over, &log, end, Scenario::CoinToss, said, bite, bite, TimeDelta::seconds(90));
+	assert_eq!(picked.map(|(w, gap)| (w.play_id, gap)), Some((plays[kickoff].id.clone(), -600)));
+}
+
+/// BM5: a bite not tied to an offer takes the nearer in time of the play
+/// before it and the play after it.
+#[test]
+fn a_bite_not_tied_to_an_offer_takes_the_nearer_play() {
+	let plays = plays();
+	let log = recorded_log(&plays);
+	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+	let over = game(Some("CHI"), status(GameState::Post, plays.last()), None);
+	let sacks: Vec<usize> = plays.iter().enumerate().filter(|(_, p)| p.play_type.as_deref() == Some("Sack")).map(|(i, _)| i).collect();
+	// Two sacks in a row, with a window wide enough to reach both from
+	// between them: a bite just after the first, and one just before the next.
+	let (a, b) = (sacks[0], sacks[1]);
+	let near = |at| its_play(&over, &log, end, Scenario::Sack, Said::Either, at, at, ANY).map(|(w, _)| w.play_id);
+	assert_eq!(near(wall(&plays[b]) - TimeDelta::seconds(5)), Some(plays[b].id.clone()), "the sack 5 s after");
+	assert_eq!(near(wall(&plays[a]) + TimeDelta::seconds(5)), Some(plays[a].id.clone()), "the sack 5 s before");
 }

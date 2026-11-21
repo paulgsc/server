@@ -95,19 +95,23 @@ pub async fn bite_state(conn: &mut SqliteConnection, game: &str) -> Result<i64, 
 /// The games with a bite no pass has matched since it was said or last mapped.
 ///
 /// Whichever week they were in: a bite that reached home late, a game that
-/// left the newest scoreboard before it was reconciled, or a mapping added
-/// after.
+/// left the newest scoreboard before it was reconciled, a mapping added
+/// after, or a bite whose newest match was made under an engine older than
+/// `engine_version` (so a rule change re-matches every bite once, #3040).
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn games_with_bites_to_match(conn: &mut SqliteConnection) -> Result<Vec<String>, sqlx::Error> {
+pub async fn games_with_bites_to_match(conn: &mut SqliteConnection, engine_version: i64) -> Result<Vec<String>, sqlx::Error> {
 	sqlx::query_scalar!(
 		r#"SELECT DISTINCT n.of_ref AS "game!" FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
 		   WHERE n.of_kind = 'game'
 		     AND (NOT EXISTS (SELECT 1 FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id)
 		          OR (SELECT MAX(p.mapped_at) FROM bite_mapping p WHERE p.subject_id = b.subject_id AND p.note_id = b.note_id)
-		             >= (SELECT MAX(m.matched_at) FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id))
-		   ORDER BY n.of_ref"#
+		             >= (SELECT MAX(m.matched_at) FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id)
+		          OR (SELECT m.engine_version FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id
+		              ORDER BY m.match_id DESC LIMIT 1) < ?1)
+		   ORDER BY n.of_ref"#,
+		engine_version
 	)
 	.fetch_all(&mut *conn)
 	.await

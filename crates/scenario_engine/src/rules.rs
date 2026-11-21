@@ -449,7 +449,9 @@ pub(crate) fn offered_said(game: &Game, so_far: &SoFar<'_>, at: DateTime<Utc>, s
 		Moment::OpeningDrive | Moment::RedZone => Said::BeforeTheDrive,
 		// Offered on the snap to come, which is its play: the opening kickoff,
 		// the down and distance, a play call, a field goal try.
-		Moment::Kickoff | Moment::ThirdAndLong | Moment::FourthDown | Moment::Snap | Moment::Kick => Said::BeforeTheSnap,
+		Moment::ThirdAndLong | Moment::FourthDown | Moment::Snap | Moment::Kick => Said::BeforeTheSnap,
+		// Offered up to a quarter hour ahead: its play is the opening kickoff.
+		Moment::Kickoff => Said::BeforeTheKickoff,
 		// Offered once the touchdown or the score is in the log; never offered
 		// ahead of time ("just happened" offers them); or about no one play.
 		Moment::Try
@@ -481,24 +483,43 @@ pub(crate) fn its_play(
 ) -> Option<usize> {
 	let accepted = were(game, so_far, now, scenario);
 	let plays = &so_far.plays;
-	if said == Said::After {
-		return accepted
-			.into_iter()
+	let before = || {
+		accepted
+			.iter()
+			.copied()
 			.filter(|i| plays[*i].at <= at && at - plays[*i].at <= window)
-			.max_by_key(|i| plays[*i].at);
+			.max_by_key(|i| plays[*i].at)
+	};
+	let to_come = || {
+		(0..plays.len()).find(|i| {
+			let play = plays[*i].play;
+			plays[*i].first > offered && (read::is_snap(play) || read::kind(play) == "kickoff") && !read::wiped_out(play)
+		})
+	};
+	match said {
+		Said::After => before(),
+		// Not tied to an offer: the nearer in time of the nearest accepted
+		// play at or before the bite and the first after it, a tie looking
+		// back.
+		Said::Either => {
+			let after = accepted.iter().copied().find(|i| plays[*i].at > at && plays[*i].at - at <= window);
+			match (before(), after) {
+				(Some(b), Some(a)) => Some(if plays[a].at - at < at - plays[b].at { a } else { b }),
+				(b, a) => b.or(a),
+			}
+		}
+		Said::BeforeTheKickoff => so_far.opening_kickoff().filter(|i| plays[*i].first > offered && accepted.contains(i)),
+		Said::BeforeTheSnap => {
+			let next = to_come().filter(|i| (at - plays[*i].at).abs() <= window)?;
+			accepted.contains(&next).then_some(next)
+		}
+		// The window bounds the snap to come; the drive may end long after.
+		Said::BeforeTheDrive => {
+			let next = to_come().filter(|i| (at - plays[*i].at).abs() <= window)?;
+			let run = so_far.run(next)?;
+			accepted.into_iter().find(|i| *i >= next && so_far.run(*i) == Some(run))
+		}
 	}
-	let to_come = (0..plays.len()).find(|i| {
-		let play = plays[*i].play;
-		plays[*i].first > offered && (read::is_snap(play) || read::kind(play) == "kickoff") && !read::wiped_out(play)
-	})?;
-	if (at - plays[to_come].at).abs() > window {
-		return None;
-	}
-	if said == Said::BeforeTheSnap {
-		return accepted.contains(&to_come).then_some(to_come);
-	}
-	let run = so_far.run(to_come)?;
-	accepted.into_iter().find(|i| *i >= to_come && so_far.run(*i) == Some(run))
 }
 
 /// The plays of `so_far`, in ESPN's order, that `scenario`'s rule says were
