@@ -525,7 +525,7 @@ mod tests {
 	#[cfg(feature = "reqwest-transport")]
 	#[tokio::test]
 	async fn the_reqwest_transport_sends_nothing_outside_https() {
-		let transport = ReqwestTransport::new(reqwest::Client::new());
+		let transport = ReqwestTransport::new(outbound::client(outbound::Caller::Notice).build().unwrap());
 		for url in ["http://127.0.0.1:9/token", "not a url"] {
 			let request = Request {
 				url: String::from(url),

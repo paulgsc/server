@@ -408,6 +408,45 @@ tests:
         alertname: GameFeedFailing
         exp_alerts: []
 
+  # paulgsc/some-ui#3329: asleep between games the worker still wakes and
+  # stamps every 5 s, so GameFeedStale means a stopped worker, never a
+  # sleeping scoreboard; one asleep whose stamp stops is still stale.
+  - name: a game feed asleep between games is not stale unless it stops waking
+    interval: 1m
+    input_series:
+      - series: 'game_feed_enabled{job="file_host"}'
+        values: '1x40'
+      - series: 'game_feed_asleep{job="file_host"}'
+        values: '1x40'
+      - series: 'game_feed_next_fetch_timestamp_seconds{job="file_host"}'
+        values: '86400x40'
+      - series: 'game_feed_pass_failing{job="file_host"}'
+        values: '0x40'
+      - series: 'game_feed_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: GameFeedStale
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: GameFeedFailing
+        exp_alerts: []
+
+  - name: a game feed asleep that stops waking is stale
+    interval: 1m
+    input_series:
+      - series: 'game_feed_asleep{job="file_host"}'
+        values: '1x10'
+      - series: 'game_feed_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GameFeedStale
+        exp_alerts:
+          - exp_labels:
+              objective: GA4
+              says: "The game feed has not woken for two minutes."
+
   - name: a poller that keeps stamping, or is off, is not stale
     interval: 1m
     input_series:
@@ -1558,3 +1597,151 @@ tests:
               objective: AD2
               says: "Home turned a client away for sending too fast in the last 15 minutes (a 429; the phone shows Home busy). The Rate limiting row on the file_host dashboard shows when."
 
+
+  # OutboundNoAnswer (OB2, paulgsc/some-ui#3330). Counters start at 0, as
+  # crates/outbound sets them when a client is built.
+  - name: a host that stops answering a caller is heard after 30 minutes of no answer (OB2)
+    interval: 1m
+    input_series:
+      # The game feed asks ESPN once a minute: answered for 10 minutes, then
+      # every request times out from minute 10 to 60, then it answers again.
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="ok"}'
+        values: '0+1x10 10x50 11+1x30'
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="timeout"}'
+        values: '0x10 1+1x50 51x30'
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="no_answer"}'
+        values: '0x90'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OutboundNoAnswer
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: OutboundNoAnswer
+        exp_alerts:
+          - exp_labels:
+              objective: OB2
+              caller: game_feed
+              host: espn
+              says: "Home's game_feed has had no answer from espn for 30 minutes: every request it sent timed out or could not connect. The OUTBOUND dashboard's Not OK panel shows since when."
+      - eval_time: 65m
+        alertname: OutboundNoAnswer
+        exp_alerts: []
+
+  - name: a host that answers some of the time, refuses, or is asked too rarely is not dark (OB2)
+    interval: 1m
+    input_series:
+      # The mailbox: a timeout every other minute, but answers between them.
+      - series: 'outbound_requests_total{job="file_host",caller="mailbox",host="mailbox_worker",outcome="ok"}'
+        values: '0+1x60'
+      - series: 'outbound_requests_total{job="file_host",caller="mailbox",host="mailbox_worker",outcome="timeout"}'
+        values: '0+1x60'
+      # The game feed: ESPN refuses every request (a 429 is a 4xx). That is
+      # an answer, and the feed's own to back off on.
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="refused_4xx"}'
+        values: '0+1x60'
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="timeout"}'
+        values: '0x60'
+      # The nudge: two pushes in the hour, both with no answer.
+      - series: 'outbound_requests_total{job="file_host",caller="nudge",host="web_push",outcome="no_answer"}'
+        values: '0x20 1x20 2x20'
+      - series: 'outbound_requests_total{job="file_host",caller="nudge",host="web_push",outcome="ok"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: OutboundNoAnswer
+        exp_alerts: []
+
+  - name: each dark caller is named on its own (OB2)
+    interval: 1m
+    input_series:
+      - series: 'outbound_requests_total{job="file_host",caller="call_weeks",host="github_raw",outcome="no_answer"}'
+        values: '0+1x60'
+      - series: 'outbound_requests_total{job="file_host",caller="cards_essays",host="github_raw",outcome="no_answer"}'
+        values: '0x60'
+      - series: 'outbound_requests_total{job="file_host",caller="cards_essays",host="github_raw",outcome="ok"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: OutboundNoAnswer
+        exp_alerts:
+          - exp_labels:
+              objective: OB2
+              caller: call_weeks
+              host: github_raw
+              says: "Home's call_weeks has had no answer from github_raw for 30 minutes: every request it sent timed out or could not connect. The OUTBOUND dashboard's Not OK panel shows since when."
+
+  # OutboundRefused (OB3, paulgsc/some-ui#3330): the game feed refused by ESPN.
+  - name: the game feed refused by ESPN for 30 minutes is heard (OB3)
+    interval: 1m
+    input_series:
+      # Answered for 10 minutes, then a 429 every minute until 60, then ok again.
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="ok"}'
+        values: '0+1x10 10x50 11+1x30'
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="refused_4xx"}'
+        values: '0x10 1+1x50 51x30'
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="refused_5xx"}'
+        values: '0x90'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: OutboundRefused
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: OutboundRefused
+        exp_alerts:
+          - exp_labels:
+              objective: OB3
+              caller: game_feed
+              host: espn
+              says: "Home's game feed has been refused by espn for 30 minutes: every request it sent got a 4xx or 5xx (a 429 is a rate limit), and none was answered. The GAME FEED dashboard says what came back."
+      - eval_time: 45m
+        alertname: OutboundNoAnswer
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: OutboundRefused
+        exp_alerts: []
+
+  - name: refusals and timeouts mixed are still heard, one ok between is not (OB3)
+    interval: 1m
+    input_series:
+      # Minutes 0 to 60: a 5xx and a timeout every minute, with no ok, so
+      # OutboundNoAnswer is cleared by the refusals and this one must speak.
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="refused_5xx"}'
+        values: '0+1x60 60x60'
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="timeout"}'
+        values: '0+1x60 60x60'
+      # From minute 60 to 120: a 429 every minute, with one ok at minute 90.
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="refused_4xx"}'
+        values: '0x60 1+1x60'
+      - series: 'outbound_requests_total{job="file_host",caller="game_feed",host="espn",outcome="ok"}'
+        values: '0x90 1x30'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: OutboundRefused
+        exp_alerts:
+          - exp_labels:
+              objective: OB3
+              caller: game_feed
+              host: espn
+              says: "Home's game feed has been refused by espn for 30 minutes: every request it sent got a 4xx or 5xx (a 429 is a rate limit), and none was answered. The GAME FEED dashboard says what came back."
+      - eval_time: 100m
+        alertname: OutboundRefused
+        exp_alerts: []
+
+  - name: the nudge's 410s and a poller's refusals never fire it (OB3)
+    interval: 1m
+    input_series:
+      - series: 'outbound_requests_total{job="file_host",caller="nudge",host="web_push",outcome="refused_4xx"}'
+        values: '0+1x60'
+      - series: 'outbound_requests_total{job="file_host",caller="nudge",host="web_push",outcome="ok"}'
+        values: '0x60'
+      - series: 'outbound_requests_total{job="file_host",caller="mailbox",host="mailbox_worker",outcome="refused_5xx"}'
+        values: '0+1x60'
+      - series: 'outbound_requests_total{job="file_host",caller="mailbox",host="mailbox_worker",outcome="ok"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: OutboundRefused
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: OutboundNoAnswer
+        exp_alerts: []

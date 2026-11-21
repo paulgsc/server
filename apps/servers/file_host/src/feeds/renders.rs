@@ -581,8 +581,8 @@ pub struct Failed {
 	/// (`previews`: `no-sample`, `too-long`, `too-large`, `render`,
 	/// `overdue`), any shelf's the render policy refused (`too-long`,
 	/// `too-large`, `overflow`, with [`Over`]), and a cards essay home
-	/// refused for a spoken card's take (`take-missing`, `take-unheard`,
-	/// paulgsc/server#1052).
+	/// refused for what it names (`take-missing`, `take-unheard`,
+	/// paulgsc/server#1052; `snip-missing`, `clip-missing`, `essay_media`).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<&'static str>,
 	/// By how much the render policy refused it (#929).
@@ -1298,9 +1298,11 @@ async fn made_and_size(path: &Path, follows: bool) -> Option<(i64, Option<u64>)>
 enum Refused {
 	Over(Over),
 	/// A cards essay home refused to give the worker (WALK7,
-	/// paulgsc/server#1052, `cards_essays::pass`): `take-missing`, a take
-	/// a spoken card names that home doesn't hold, or `take-unheard`, one
-	/// home couldn't make out or heard nothing in. A class alone.
+	/// paulgsc/server#1052, `cards_essays::pass`, `essay_media`):
+	/// `take-missing`, a take a spoken card names that home doesn't hold,
+	/// `take-unheard`, one home couldn't make out or heard nothing in, or
+	/// `snip-missing` / `clip-missing`, a snip or clip frame a scene shows
+	/// that home doesn't hold. A class alone.
 	Home(&'static str),
 }
 
@@ -1309,6 +1311,8 @@ fn home_refusal(text: &str) -> Option<&'static str> {
 	match text.lines().find_map(|line| line.strip_prefix("reason="))? {
 		"take-missing" => Some("take-missing"),
 		"take-unheard" => Some("take-unheard"),
+		"snip-missing" => Some("snip-missing"),
+		"clip-missing" => Some("clip-missing"),
 		_ => None,
 	}
 }
