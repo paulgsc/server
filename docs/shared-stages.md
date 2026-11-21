@@ -66,8 +66,11 @@ marking them.
 - **The edge is a row.** `stage_want` (`stage_repo`) holds one row per item a waiter waits on
   now: the waiter (`Waiter::name`, only those with `Waiter::names_its_items`), its key, the
   stage, the subject and the item. Each waiter's pass replaces all its own rows in one
-  transaction, so a row lives only while its wait does; a row is written only for an item its
-  subject still holds, in the same statement, and rows leave with the account. The table's
+  transaction, under account deletion's hold, so a row lives only while its wait does; a row is
+  written only for an item its subject still holds, in the same statement, and rows leave with
+  the account and with the note itself (`voice_repo::delete`). No time is kept: that a wait is
+  there is what orders the queue. A failed write is counted on the pass (`want`), never undoes
+  what the pass gave. The table's
   checks hold the same closed sets as `Stage` and `Waiter` (`stage::tests`).
 - **The cards essays name their takes.** An essay held back for a take not heard yet
   (`essay_media::Given::Waiting`, takes listed by id) wants each of them.

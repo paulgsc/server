@@ -208,11 +208,6 @@ mod tests {
 		let waiters: std::collections::BTreeSet<_> = Waiter::ALL.iter().filter(|waiter| waiter.names_its_items()).map(|waiter| waiter.name()).collect();
 		assert_eq!(checked("stage"), stages);
 		assert_eq!(checked("waiter"), waiters);
-		for waiter in Waiter::ALL {
-			match waiter {
-				Waiter::CardsEssays | Waiter::RenderLane => {}
-			}
-		}
 	}
 
 	/// Every stage is listed once, with a promise the alerts can carry.

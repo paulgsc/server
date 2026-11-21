@@ -15,7 +15,9 @@
 --   stage       -- the stage it waits on, one of `stage::Stage`'s names.
 --   subject_id  -- whose item: the takes an essay plays are a subject's.
 --   item_key    -- the item, by its stage's own key: a note id.
---   since       -- when the waiter's pass first saw it waiting.
+--
+-- No time is kept: what orders the queue is that the wait is there, and a
+-- timeline of the owner's waits is nothing anyone reads.
 --
 -- Names a subject's note, so it leaves with the account (docs/identity.md
 -- invariant 12), and holds no words, audio or text of anyone's.
@@ -25,12 +27,14 @@ CREATE TABLE stage_want (
     stage      TEXT NOT NULL CHECK (stage IN ('transcriber')),
     subject_id TEXT NOT NULL,
     item_key   TEXT NOT NULL,
-    since      TEXT NOT NULL,
     PRIMARY KEY (stage, subject_id, item_key, waiter, waiter_key)
 );
 
 -- A waiter's own rows, which its pass replaces.
 CREATE INDEX stage_want_by_waiter ON stage_want (waiter, waiter_key);
+
+-- A subject's rows, which an account's or a note's deletion removes.
+CREATE INDEX stage_want_by_subject ON stage_want (subject_id, item_key);
 
 CREATE TRIGGER stage_want_leaves_with_account
 AFTER DELETE ON account

@@ -249,7 +249,7 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	),
 	(
 		"stage_want",
-		"which of the owner's voice notes a cards essay home holds back is waiting to have heard (paulgsc/server#1091): the essay's key, the note's id and since when, so the transcriber hears those first; rewritten each pass, never what was said; see docs/shared-stages.md",
+		"which of the owner's voice notes a cards essay home holds back is waiting to have heard (paulgsc/server#1091): the essay's key and the note's id, so the transcriber hears those first; rewritten each pass, never what was said; see docs/shared-stages.md",
 	),
 	(
 		"studio_take_on_drive",

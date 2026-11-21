@@ -212,15 +212,23 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, given: &Given, clock
 	let mut pass = Pass::default();
 	take_new(db, fetch, clock, &mut pass).await?;
 	export(db, given, clock, &mut pass).await?;
-	want(db, given, clock, &pass).await?;
+	if want(db, given, &pass).await.is_err() {
+		// What the essays wait on orders the transcriber, nothing more: the
+		// essays given stand, and the next pass says it again.
+		pass.failures.push("want");
+	}
 	Ok(pass)
 }
 
 /// Says which takes the essays held back wait on (`stage_want`, the
 /// transcriber's [`crate::stage::Waiter::CardsEssays`] edges), replacing
 /// what the last pass said, so the transcriber hears them first
-/// (paulgsc/server#1091). With no subject, nothing waits on a take.
-async fn want(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Utc> + Sync), pass: &Pass) -> Result<(), sqlx::Error> {
+/// (paulgsc/server#1091). With no subject, nothing waits on a take. Under
+/// account deletion's hold, and only for notes the subject still holds
+/// (docs/identity.md invariant 9). A pass that failed before this leaves the
+/// last pass's rows, which only order the transcriber and leave with the
+/// account; one whose essays' folder could not be made says nothing waits.
+async fn want(db: &SqlitePool, given: &Given, pass: &Pass) -> Result<(), sqlx::Error> {
 	let subject = given.subject.as_deref().unwrap_or_default();
 	let wants: Vec<_> = pass
 		.wanted_takes
@@ -233,9 +241,9 @@ async fn want(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Utc>
 			item: take,
 		})
 		.collect();
-	let now = clock().to_rfc3339_opts(SecondsFormat::Millis, true);
+	let _hold = given.deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	stage_repo::replace(&mut tx, crate::stage::Waiter::CardsEssays.name(), &wants, &now).await?;
+	stage_repo::replace(&mut tx, crate::stage::Waiter::CardsEssays.name(), &wants).await?;
 	tx.commit().await
 }
 
@@ -262,6 +270,9 @@ pub struct Given {
 	/// The worker's work folder ([`super::WORK_FOLDER`]): a withdrawn
 	/// essay's waiting work goes with it.
 	pub work: PathBuf,
+	/// Account deletion's lock, held around writing what the essays wait on
+	/// (docs/identity.md invariant 9).
+	pub deletion: crate::auth::DeletionLock,
 }
 
 impl Given {
@@ -739,6 +750,7 @@ mod tests {
 			frames: dir.join("frames-held"),
 			snips: None,
 			work: dir.join("work"),
+			deletion: crate::auth::DeletionLock::default(),
 		}
 	}
 
@@ -1099,6 +1111,10 @@ mod tests {
 		};
 		let waiting_on = vec![(String::from("hello-2026-11-20"), String::from(ME), String::from("take-2"))];
 		assert_eq!(wants().await, waiting_on, "the transcriber hears what the essay waits on first (#1091)");
+		run_once(&pool, &fake, &given(dir.path()), &clock).await.unwrap();
+		assert!(wants().await.is_empty(), "with no subject, nothing waits on a take");
+		run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!(wants().await, waiting_on, "and with one again, it does");
 
 		hear(&pool, "take-2", "From home.", None).await;
 		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
@@ -1159,6 +1175,8 @@ mod tests {
 
 		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
 		assert_eq!((done.exported, done.refused, done.waiting, done.waiting_on_takes), (0, 0, 1, 0));
+		let wanted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stage_want").fetch_one(&pool).await.unwrap();
+		assert_eq!(wanted, 0, "a snip is not the transcriber's to hear");
 	}
 
 	/// A clip frame a scene shows is given beside the essay in `<key>.clips/`
