@@ -382,5 +382,11 @@
         "least": "big"
       }
     ]
-  }
+  },
+  "units": [
+    "offense",
+    "defense",
+    "special-teams",
+    "coaching"
+  ]
 }

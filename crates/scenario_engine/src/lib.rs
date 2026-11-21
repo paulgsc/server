@@ -18,7 +18,7 @@ mod rules;
 mod words;
 
 use chrono::{DateTime, FixedOffset, NaiveTime, Offset, TimeDelta, TimeZone, Utc};
-use game_scenarios::{Kind, Scenario, Size, CATALOG_VERSION};
+use game_scenarios::{Kind, Scenario, Size, Unit, CATALOG_VERSION};
 use nfl_feed::{log::Entry, summary::Play, Status, Weather};
 use serde::{Serialize, Serializer};
 
@@ -182,6 +182,37 @@ pub struct Offer {
 	pub scenarios: Vec<Offered>,
 	/// Recent plays as scenarios, newest first, at most the mode's count.
 	pub just_happened: Vec<Happened>,
+	/// Every scenario of the set once, the most plausible first (#3049): the
+	/// cards first, exactly as `scenarios` lists them.
+	pub ranked: Vec<Ranked>,
+}
+
+/// How plausible a scenario is at the moment, as [`Offer::ranked`] orders
+/// them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Tier {
+	/// One of the cards on offer now, in their order.
+	Now,
+	/// Plausible at any time of a game week: the stakes, the pattern.
+	Always,
+	/// The rest of the set, in its order, still pickable.
+	Rest,
+}
+
+/// One scenario of the ranked list, with what a bite of it is about by
+/// default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ranked {
+	#[serde(rename = "id", serialize_with = "scenario_id")]
+	pub scenario: Scenario,
+	pub tier: Tier,
+	/// The unit a bite of it is about unless the owner changes it; `None`
+	/// before kickoff, after the final, or about the owner.
+	pub unit: Option<Unit>,
+	/// Whose unit, the team's code; `None` when about no one team.
+	pub unit_side: Option<String>,
 }
 
 /// The live strip, in words.
@@ -221,6 +252,12 @@ pub struct Happened {
 	pub ago: String,
 	/// The play by the big-play algebra, for `in.big-play` only.
 	pub big_play: Option<BigPlay>,
+	/// What a bite of this play is about by default (#3049): the unit and
+	/// whose, the team's code; read off this play, so one scenario can be
+	/// about two teams at once (a 4th down that just happened, and the next).
+	pub unit: Option<Unit>,
+	/// Whose unit, the team's code; `None` when about no one team.
+	pub unit_side: Option<String>,
 }
 
 /// A big play by the algebra (#3048): how big, what kind, who gained, and
@@ -256,6 +293,7 @@ pub fn offer(game: &Game, log: &[Entry], now: DateTime<FixedOffset>, mode: Mode,
 	scenarios.truncate(mode.cards());
 	let mut just_happened = rules::just_happened(game, &so_far, at, mode);
 	just_happened.truncate(mode.just_happened());
+	let ranked = rules::every_scenario(game, &so_far, at, *now.offset(), watching, &scenarios);
 	Offer {
 		engine_version: ENGINE_VERSION,
 		catalog_version: CATALOG_VERSION,
@@ -263,6 +301,7 @@ pub fn offer(game: &Game, log: &[Entry], now: DateTime<FixedOffset>, mode: Mode,
 		strip: words::strip(game, &so_far, at),
 		scenarios,
 		just_happened,
+		ranked,
 	}
 }
 
