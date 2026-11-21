@@ -91,7 +91,8 @@ pub struct Pass {
 	/// Essays held back: a take a spoken card names is not heard yet, or no
 	/// subject holds takes.
 	pub waiting: usize,
-	/// Essays refused: a take a spoken card names is missing or unheard.
+	/// Essays refused: an item they name is missing, unheard or gone
+	/// (`essay_media::Refusal::reason`).
 	pub refused: usize,
 	/// Each failure, by kind: `timeout`, `connect`, `transport`, `refused`
 	/// (a status other than 200), `too_big`, `unreadable`, and `export`
