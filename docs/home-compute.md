@@ -143,9 +143,11 @@ tick it reads:
   both are the host's: `/proc/meminfo` is not namespaced, `/proc/pressure`
   is the system-wide PSI rather than the container's cgroup, and Docker
   masks neither.
-- Whether interactive work is waiting: a counter in file_host's `AppState`
-  that the transcriber holds while it hears a note and Rust Rounds holds
-  while the runner records a program. Rust Rounds' toolchain ask, made at
+- Whether interactive work is waiting: a counter per kind (`Kind`: voice,
+  rust_rounds) in file_host's `AppState` that the transcriber holds while it
+  hears a note and Rust Rounds holds while the runner records a program. The
+  lane decides on any kind held; the kinds are kept apart only to say which
+  work held it (`lane_busy_ticks_total`). Rust Rounds' toolchain ask, made at
   the start of every pass whether or not a program waits, holds nothing:
   held, it would mark home busy every minute, and a render could never pass
   its hold-down. A pass with nothing to do holds nothing, and while the
@@ -198,7 +200,9 @@ how long, and `CallRenderOverdue` fires on the week left waiting.
 
 - **Metrics** (`metrics/lane.rs`): the verb and reason (`lane_verb`,
   `lane_why`, and `lane_ticks_total` counting each tick by both, so the time
-  spent held back and why is exact), `lane_stops` and `lane_stuck`, every
+  spent held back and why is exact; `lane_busy_ticks_total` counts the ticks
+  each kind of interactive work held, so `busy` splits exactly by kind too,
+  paulgsc/some-ui#3332), `lane_stops` and `lane_stuck`, every
   signal it read and whether each could be (`lane_signal_readable`), the
   policy, and when it last wrote a decision.
 - **The CALL dashboard's LANE row:** what the lane said and why over time,

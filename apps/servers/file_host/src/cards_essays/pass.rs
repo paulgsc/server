@@ -103,6 +103,9 @@ pub struct Pass {
 	/// Essays held back: a take a spoken card names is not heard yet, or no
 	/// subject holds takes.
 	pub waiting: usize,
+	/// Of those, the essays held back because a take is not heard yet:
+	/// what waits on the transcriber (`crate::stage`, paulgsc/some-ui#3333).
+	pub waiting_on_takes: usize,
 	/// Essays refused: an item they name is missing, unheard or gone
 	/// (`essay_media::Refusal::reason`).
 	pub refused: usize,
@@ -567,8 +570,11 @@ async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Ut
 		};
 		let media = match named {
 			Ok(essay_media::Given::Ready(media)) => media,
-			Ok(essay_media::Given::Waiting) => {
+			Ok(essay_media::Given::Waiting(kinds)) => {
 				pass.waiting += 1;
+				// Waiting on the transcriber, not on there being no subject.
+				let on_takes = given.subject.is_some() && kinds.contains(&essay_media::Kind::Takes);
+				pass.waiting_on_takes += usize::from(on_takes);
 				// An item that was missing and is now home waits (a take to be
 				// heard): no longer a refusal.
 				clear_refused(&given.status, &essay.key).await;
@@ -1041,11 +1047,19 @@ mod tests {
 		hear(&pool, "take-1", "I build things.", Some("heard")).await;
 
 		let none = run_once(&pool, &fake, &given(dir.path()), &clock).await.unwrap();
-		assert_eq!((none.exported, none.waiting), (0, 1), "with no subject, a spoken card waits");
+		assert_eq!(
+			(none.exported, none.waiting, none.waiting_on_takes),
+			(0, 1, 0),
+			"with no subject, a spoken card waits, and not on a take"
+		);
 		let mut mine = given(dir.path());
 		mine.subject = Some(String::from(ME));
 		let early = run_once(&pool, &fake, &mine, &clock).await.unwrap();
-		assert_eq!((early.exported, early.waiting, early.refused), (0, 1, 0), "take-2 is not heard yet");
+		assert_eq!(
+			(early.exported, early.waiting, early.waiting_on_takes, early.refused),
+			(0, 1, 1, 0),
+			"take-2 is not heard yet"
+		);
 		assert!(!dir.path().join("hello-2026-11-20.json").exists());
 
 		hear(&pool, "take-2", "From home.", None).await;
@@ -1088,6 +1102,24 @@ mod tests {
 		let mut essay: Value = serde_json::from_slice(&essay(day)).unwrap();
 		essay["shots"] = Value::Array(shots);
 		essay.to_string().into_bytes()
+	}
+
+	/// An essay held for a snip not fetched yet waits, and not on a take:
+	/// only a take not heard yet is the transcriber's waiter
+	/// (`crate::stage::Waiter::CardsEssays`).
+	#[tokio::test]
+	async fn an_essay_waiting_on_a_snip_is_not_waiting_on_a_take() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let mut mine = given(dir.path());
+		mine.subject = Some(String::from(ME));
+		mine.snips = Some(dir.path().join("snips"));
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&["snipped-2026-11-21"]));
+		let snip = serde_json::json!({ "kind": "screen", "of": { "from": "snips", "id": "web:/settings:phone:1.2.3:0123456789ab", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "at": [] } });
+		fake.ok("snipped-2026-11-21.json", &showing_essay("2026-11-21", &[snip]));
+
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.exported, done.refused, done.waiting, done.waiting_on_takes), (0, 0, 1, 0));
 	}
 
 	/// A clip frame a scene shows is given beside the essay in `<key>.clips/`
