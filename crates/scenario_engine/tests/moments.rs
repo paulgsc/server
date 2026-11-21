@@ -980,3 +980,50 @@ fn a_fake_is_the_offenses_run_or_pass_never_a_kick() {
 	);
 	assert!(happened(&at_the_punt(kicked), Scenario::Kick));
 }
+
+/// ESPN's play text spells six teams otherwise than its header: HOU is
+/// "HST" in "PENALTY on HST" and "recovered by HST-J.Watson". Each is read
+/// as the header's team, so a flag says "HOU" and a fumble HOU fell on is
+/// no turnover. The texts are ESPN's own, from 2025's regular season.
+#[test]
+fn a_team_the_play_text_spells_otherwise_is_the_headers_team() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let shaped = |kind: &str, text: &str| Play {
+		play_type: Some(kind.to_owned()),
+		text: Some(text.to_owned()),
+		possession: Some("HOU".to_owned()),
+		..plays[punt].clone()
+	};
+	let just = |play: Play| {
+		let seen = wall(&play) + TimeDelta::seconds(10);
+		let mut log = PlayLog::default();
+		log.apply(GAME, 1, &seen.to_rfc3339_opts(SecondsFormat::Secs, true), std::slice::from_ref(&play));
+		let entries: Vec<Entry> = log.entries().to_vec();
+		let g = Game {
+			home: "IND".to_owned(),
+			away: "HOU".to_owned(),
+			..game(Some("IND"), status(GameState::In, Some(&play)), None)
+		};
+		offer(&g, &entries, pacific(seen + TimeDelta::seconds(5)), Mode::Full, Watching::Unknown)
+			.just_happened
+			.into_iter()
+			.map(|j| (j.scenario, j.line))
+			.collect::<Vec<_>>()
+	};
+	// HOU at IND, 2025.
+	let flag = just(shaped("Penalty", "(Punt formation) PENALTY on HST, Delay of Game, 4 yards, enforced at HST 9 - No Play."));
+	assert!(flag.contains(&(Scenario::Penalty, "Flag on HOU, delay of game".to_owned())), "{flag:?}");
+	// A fumble HOU fell on is HOU's ball still.
+	let own = just(Play {
+		down: Some(1),
+		..shaped(
+			"Fumble Recovery (Own)",
+			"C.Stroud sacked at HST 30 for -6 yards (D.Buckner). FUMBLES (D.Buckner), RECOVERED by HST-N.Collins at HST 28.",
+		)
+	});
+	assert!(own.iter().all(|(s, _)| *s != Scenario::Turnover), "{own:?}");
+}

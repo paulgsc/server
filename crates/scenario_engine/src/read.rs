@@ -178,12 +178,12 @@ impl<'a> SoFar<'a> {
 	/// Timeouts `team` has left in the half of `period`: three a half, two in
 	/// overtime, less each "Timeout ... by TEAM" play in that half.
 	pub(crate) fn timeouts_left(&self, team: &str, period: i64) -> i64 {
-		let needle = [" by ", team, " at "].concat().to_ascii_lowercase();
+		let by_team = |text: &str| text.split(" by ").skip(1).any(|rest| rest.split_once(" at ").is_some_and(|(by, _)| self::team(by) == team));
 		let used = self
 			.plays
 			.iter()
 			.filter(|seen| seen.play.period.is_some_and(|p| half(p) == half(period)))
-			.filter(|seen| kind(seen.play) == "timeout" && text(seen.play).contains(&needle))
+			.filter(|seen| kind(seen.play) == "timeout" && by_team(&text(seen.play)))
 			.count();
 		let allowed = if period >= 5 { 2 } else { 3 };
 		(allowed - i64::try_from(used).unwrap_or(allowed)).max(0)
@@ -198,6 +198,17 @@ pub(crate) const fn half(period: i64) -> i64 {
 	} else {
 		(period + 1) / 2
 	}
+}
+
+/// The teams ESPN's play text spells otherwise than its header (and so
+/// `possession`, and the game's teams), as (text, header).
+const SPELLED: [(&str, &str); 6] = [("ARZ", "ARI"), ("BLT", "BAL"), ("CLV", "CLE"), ("HST", "HOU"), ("LA", "LAR"), ("WAS", "WSH")];
+
+/// A team named in ESPN's play text ("PENALTY on HST", "recovered by
+/// BLT-S.Kane"), as the header names it ("HOU", "BAL"), in upper case.
+pub(crate) fn team(code: &str) -> String {
+	let code = code.to_ascii_uppercase();
+	SPELLED.iter().find(|(text, _)| *text == code).map_or(code, |(_, header)| (*header).to_owned())
 }
 
 /// An ISO-8601 time as ESPN and the log write it.
@@ -374,7 +385,7 @@ fn flagged_against_the_returners(play: &Play) -> bool {
 		let end = starts.get(n + 1).copied().unwrap_or(lower.len());
 		let clause = &lower[*start..end];
 		let team = original[start + "penalty on ".len()..end].split(['-', ',', ' ']).next().unwrap_or_default();
-		!clause.contains("declined") && !team.is_empty() && play.possession.as_deref() != Some(team)
+		!clause.contains("declined") && !team.is_empty() && play.possession.as_deref() != Some(self::team(team).as_str())
 	})
 }
 
@@ -399,7 +410,7 @@ pub(crate) fn recovered_by(play: &Play) -> Option<String> {
 	let original = play.text.as_deref()?;
 	let at = original.to_ascii_lowercase().find("recovered by ")? + "recovered by ".len();
 	let (team, _) = original[at..].split_once('-')?;
-	(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase())).then(|| team.to_owned())
+	(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase())).then(|| self::team(team))
 }
 
 /// Whether ESPN's text says a touchdown on the play was taken away.
@@ -426,7 +437,7 @@ pub(crate) fn penalty(play: &Play) -> Option<(String, Option<String>)> {
 		.nth(1)
 		.map(|foul| foul.trim().to_ascii_lowercase())
 		.filter(|foul| !foul.is_empty() && !foul.ends_with("yards"));
-	Some((team.to_owned(), foul))
+	Some((self::team(team), foul))
 }
 
 /// How a field goal went, and from how far.
@@ -499,7 +510,7 @@ fn lost_fumble(play: &Play, text: &str) -> bool {
 		return false;
 	};
 	let by = text[at + "recovered by ".len()..].split(['-', ' ']).next();
-	text.contains("fumble") && by.is_some_and(|by| !by.eq_ignore_ascii_case(offense))
+	text.contains("fumble") && by.is_some_and(|by| team(by) != offense)
 }
 
 /// A fourth-down try from scrimmage that came up short: no kick, no score,
@@ -529,7 +540,7 @@ pub(crate) fn injured_team(play: &Play) -> Option<String> {
 			.split(|c: char| c.is_whitespace() || c == '(' || c == ';')
 			.filter_map(|word| {
 				let (team, player) = word.split_once('-')?;
-				(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase()) && player.starts_with(|c: char| c.is_ascii_uppercase())).then(|| team.to_owned())
+				(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase()) && player.starts_with(|c: char| c.is_ascii_uppercase())).then(|| self::team(team))
 			})
 			.collect()
 	};

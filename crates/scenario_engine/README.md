@@ -130,7 +130,9 @@ kickoff or a score and the next snap, and then neither does the situation,
 so the down rules wait for the snap after. A replay, which knows the next
 play, passes `Situation::before(next)`. ESPN's timeouts left are carried by
 `nfl_feed` but not read here: the two-minute line still counts them from the
-log's timeout plays.
+log's timeout plays. ESPN's play text spells six teams otherwise than its header
+(`HST` for HOU, `BLT` BAL, `ARZ` ARI, `CLV` CLE, `LA` LAR, `WAS` WSH);
+`read::team` reads each as the header's, so a flag says "Flag on HOU".
 
 ## Which play a bite is about (#3040)
 
