@@ -39,7 +39,8 @@ pub trait PushTransport: Send + Sync {
 pub mod reqwest_transport {
 	use super::{PreparedPush, PushResponse, PushTransport};
 
-	/// The adapter for hosts that already have a `reqwest` client.
+	/// The adapter for hosts that already have a client, built by
+	/// `outbound::client` so each request is recorded as its caller's.
 	///
 	/// Assembled by hand rather than through `web_push::request_builder`, which
 	/// returns an `http 0.2` request that `reqwest 0.12` (on `http 1`) cannot
@@ -47,19 +48,13 @@ pub mod reqwest_transport {
 	/// [`PreparedPush`] exists; what is left is four headers.
 	#[derive(Debug, Clone)]
 	pub struct ReqwestTransport {
-		client: reqwest::Client,
+		client: outbound::Client,
 	}
 
 	impl ReqwestTransport {
 		#[must_use]
-		pub const fn new(client: reqwest::Client) -> Self {
+		pub const fn new(client: outbound::Client) -> Self {
 			Self { client }
-		}
-	}
-
-	impl Default for ReqwestTransport {
-		fn default() -> Self {
-			Self::new(reqwest::Client::new())
 		}
 	}
 

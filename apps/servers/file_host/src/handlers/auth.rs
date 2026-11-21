@@ -1667,6 +1667,10 @@ mod tests {
 		"INSERT INTO interview_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w47', 'now', '{}', 'now')",
 		"INSERT INTO rust_week_paste (subject_id, week_id, at, text, note_id, received_at) VALUES (?1, '2026-w46', 'now', 'e', NULL, 'now')",
 		"INSERT INTO rust_essay_video_link (subject_id, week_id, youtube_id, recorded_at) VALUES (?1, '2026-w46', 'dQw4w9WgXcQ', 'now')",
+		// A cards essay is no one's; its withdrawal for a deleted take is the
+		// take's subject's. One essay each, keyed plain by the subject's hex.
+		"INSERT INTO cards_essay (essay_key, day, sha256, size, body, taken_at) VALUES (lower(hex(?1)) || '-2026-11-21', '2026-11-21', printf('%064d', 0), 2, x'7b7d', 'now')",
+		"INSERT INTO cards_essay_video_deletion (essay_key, step, cause, subject_id, youtube_id, note_id, size, deleted_at) VALUES (lower(hex(?1)) || '-2026-11-21', 'video', 'take-deleted', ?1, NULL, 'n', 1, 'now')",
 		"INSERT INTO rust_essay_video_deletion (subject_id, week_id, step, cause, youtube_id, note_id, size, deleted_at) VALUES (?1, '2026-w46', 'video', 'let-go', 'dQw4w9WgXcQ', NULL, 1, 'now')",
 		"INSERT INTO interview_essay_video_link (subject_id, week_id, youtube_id, recorded_at) VALUES (?1, '2026-w47', 'dQw4w9WgXcQ', 'now')",
 		"INSERT INTO interview_essay_video_deletion (subject_id, week_id, step, cause, youtube_id, note_id, size, deleted_at) VALUES (?1, '2026-w47', 'video', 'let-go', 'dQw4w9WgXcQ', NULL, 1, 'now')",

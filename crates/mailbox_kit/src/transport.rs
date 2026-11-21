@@ -71,15 +71,16 @@ pub trait MailboxTransport: Send + Sync {
 pub mod reqwest_transport {
 	use super::{MailboxTransport, Method, Request, Response};
 
-	/// The adapter for hosts that already have a `reqwest` client.
+	/// The adapter for hosts that already have a client, built by
+	/// `outbound::client` so each request is recorded as its caller's.
 	#[derive(Debug, Clone)]
 	pub struct ReqwestTransport {
-		client: reqwest::Client,
+		client: outbound::Client,
 	}
 
 	impl ReqwestTransport {
 		#[must_use]
-		pub const fn new(client: reqwest::Client) -> Self {
+		pub const fn new(client: outbound::Client) -> Self {
 			Self { client }
 		}
 	}

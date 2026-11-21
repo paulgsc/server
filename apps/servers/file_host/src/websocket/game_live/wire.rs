@@ -245,6 +245,18 @@ pub struct Happened {
 	/// When home first saw the play, ISO 8601 to the second: the phone says
 	/// how long ago from its own clock and the offset.
 	pub at: String,
+	/// For `in.big-play` only: the play by the big-play algebra (#3048), its
+	/// `size` and `kind` slugs as the scenario catalog lists them. Absent on
+	/// every other scenario.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub big_play: Option<scenario_engine::BigPlay>,
+	/// What a bite of this play is about by default, read off the play
+	/// itself (#3049): the catalog's `units`, or null as on [`Ranked`]. A
+	/// scenario can be here about one team and in `ranked` about the other
+	/// (NE's 4th down just happened, CHI's is to come).
+	pub unit: Option<game_scenarios::Unit>,
+	/// Whose unit: the team's code, or null when about no one team.
+	pub unit_side: Option<String>,
 }
 
 /// The offer for the game the phone is on.
@@ -257,6 +269,27 @@ pub struct Offer {
 	pub scenarios: Vec<Offered>,
 	/// Newest first, at most the mode's count.
 	pub just_happened: Vec<Happened>,
+	/// Every scenario of the set once, the most plausible first (#3049): what
+	/// the "what was that about" list shows, each with its default unit. The
+	/// `now` entries are exactly `scenarios`, in its order: every `now` id is
+	/// a card and every card a `now` id. Then `always`, then `rest`.
+	pub ranked: Vec<Ranked>,
+}
+
+/// One scenario of the ranked list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ranked {
+	/// The catalog's id.
+	pub id: String,
+	/// `now`, `always` or `rest`.
+	pub tier: scenario_engine::Tier,
+	/// The catalog's `units`, or null (before kickoff, after the final, for a
+	/// pregame, final or owner's scenario, or with the team unknown).
+	pub unit: Option<game_scenarios::Unit>,
+	/// Whose unit: the team's code (`CHI`), or null when about no one team.
+	/// The phone reads ours or theirs from the side wanted.
+	pub unit_side: Option<String>,
 }
 
 impl Offer {
@@ -287,6 +320,19 @@ impl Offer {
 					play_id: happened.play_id,
 					line: happened.line,
 					at: stamp(now - chrono::TimeDelta::seconds(happened.ago_seconds)),
+					big_play: happened.big_play,
+					unit: happened.unit,
+					unit_side: happened.unit_side,
+				})
+				.collect(),
+			ranked: offer
+				.ranked
+				.into_iter()
+				.map(|ranked| Ranked {
+					id: ranked.scenario.id().to_owned(),
+					tier: ranked.tier,
+					unit: ranked.unit,
+					unit_side: ranked.unit_side,
 				})
 				.collect(),
 		}
@@ -326,8 +372,15 @@ impl State {
 /// A message from home.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outbound {
-	Offer { seq: u64, state: State },
-	Pong { phone_at: u64, home_at: u64 },
+	/// The state boxed: it holds the offer, many times a pong's size.
+	Offer {
+		seq: u64,
+		state: Box<State>,
+	},
+	Pong {
+		phone_at: u64,
+		home_at: u64,
+	},
 }
 
 impl Outbound {
@@ -432,12 +485,8 @@ fn home_examples() -> [Outbound; 4] {
 				line: "NE on 3rd and 8".to_owned(),
 			},
 		],
-		just_happened: vec![Happened {
-			id: "in.sack".to_owned(),
-			play_id: "4018730101234".to_owned(),
-			line: "NE sacked on 2nd and 5".to_owned(),
-			at: "2026-10-23T01:52:20Z".to_owned(),
-		}],
+		just_happened: just_happened_example(),
+		ranked: ranked_example(),
 	};
 	let before = Offer {
 		game_id: "401873023".to_owned(),
@@ -449,37 +498,110 @@ fn home_examples() -> [Outbound; 4] {
 		},
 		scenarios: Vec::new(),
 		just_happened: Vec::new(),
+		ranked: ranked_before_example(),
 	};
 	[
 		Outbound::Offer {
 			seq: 1_761_178_000_042,
-			state: State {
+			state: Box::new(State {
 				following: true,
 				games: games.clone(),
 				offer: Some(live),
-			},
+			}),
 		},
 		Outbound::Offer {
 			seq: 1_761_178_000_043,
-			state: State {
+			state: Box::new(State {
 				following: true,
 				games,
 				offer: Some(before),
-			},
+			}),
 		},
 		Outbound::Offer {
 			seq: 1_761_178_000_044,
-			state: State {
+			state: Box::new(State {
 				following: false,
 				games: Vec::new(),
 				offer: None,
-			},
+			}),
 		},
 		Outbound::Pong {
 			phone_at: 1_761_178_500_000,
 			home_at: 1_761_178_500_012,
 		},
 	]
+}
+
+/// The example offer's "just happened": a sack, and a big play with its
+/// reading by the big-play algebra.
+fn just_happened_example() -> Vec<Happened> {
+	vec![
+		Happened {
+			id: "in.sack".to_owned(),
+			play_id: "4018730101234".to_owned(),
+			line: "NE sacked on 2nd and 5".to_owned(),
+			at: "2026-10-23T01:52:20Z".to_owned(),
+			big_play: None,
+			unit: Some(game_scenarios::Unit::Offense),
+			unit_side: Some("NE".to_owned()),
+		},
+		Happened {
+			id: "in.big-play".to_owned(),
+			play_id: "4018730101210".to_owned(),
+			line: "CHI 45-yard interception return, touchdown".to_owned(),
+			at: "2026-10-23T01:51:02Z".to_owned(),
+			big_play: Some(scenario_engine::BigPlay {
+				size: game_scenarios::Size::Huge,
+				kind: game_scenarios::Kind::InterceptionReturn,
+				by: "CHI".to_owned(),
+				yards: 45,
+				scored: true,
+				good: Some(false),
+			}),
+			unit: Some(game_scenarios::Unit::Defense),
+			unit_side: Some("CHI".to_owned()),
+		},
+	]
+}
+
+/// The example offer's ranked list, abridged (home lists every scenario of
+/// the set once): the cards, then a few of the rest, one of each tier, with
+/// and without a unit. The game has no side wanted, so a unit goes by the
+/// ball: NE's, on 3rd and 8.
+fn ranked_example() -> Vec<Ranked> {
+	ranked_of(&[
+		("in.third-long", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Offense, Some("NE")))),
+		("in.play-call", scenario_engine::Tier::Now, Some((game_scenarios::Unit::Offense, Some("NE")))),
+		("pre.stakes", scenario_engine::Tier::Always, None),
+		("in.fourth-down", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, Some("NE")))),
+		("in.halftime", scenario_engine::Tier::Rest, Some((game_scenarios::Unit::Coaching, None))),
+		("pre.weather", scenario_engine::Tier::Rest, None),
+	])
+}
+
+/// Before kickoff, abridged: no cards, so the list opens on the always
+/// plausible, and no scenario is about a unit yet.
+fn ranked_before_example() -> Vec<Ranked> {
+	ranked_of(&[
+		("pre.stakes", scenario_engine::Tier::Always, None),
+		("post.pattern", scenario_engine::Tier::Always, None),
+		("pre.weather", scenario_engine::Tier::Rest, None),
+		("in.fourth-down", scenario_engine::Tier::Rest, None),
+	])
+}
+
+type Example<'a> = (&'a str, scenario_engine::Tier, Option<(game_scenarios::Unit, Option<&'a str>)>);
+
+fn ranked_of(list: &[Example<'_>]) -> Vec<Ranked> {
+	list
+		.iter()
+		.map(|&(id, tier, unit)| Ranked {
+			id: id.to_owned(),
+			tier,
+			unit: unit.map(|(unit, _)| unit),
+			unit_side: unit.and_then(|(_, side)| side.map(str::to_owned)),
+		})
+		.collect()
 }
 
 #[cfg(test)]
@@ -524,6 +646,22 @@ mod tests {
 	}
 
 	#[test]
+	fn the_ranked_list_and_units_are_named_as_the_phone_reads_them() {
+		let examples = examples();
+		let live = &examples["home"][0]["offer"];
+		let ranked = live["ranked"].as_array().unwrap();
+		let tiers: Vec<&str> = ranked.iter().map(|r| r["tier"].as_str().unwrap()).collect();
+		assert!(tiers.contains(&"now") && tiers.contains(&"always") && tiers.contains(&"rest"), "{tiers:?}");
+		let now: Vec<&Value> = ranked.iter().filter(|r| r["tier"] == "now").map(|r| &r["id"]).collect();
+		let cards: Vec<&Value> = live["scenarios"].as_array().unwrap().iter().map(|c| &c["id"]).collect();
+		assert_eq!(now, cards, "now is exactly the cards, in their order");
+		assert_eq!((&ranked[0]["unit"], &ranked[0]["unitSide"]), (&json!("offense"), &json!("NE")));
+		assert!(ranked.iter().any(|r| r["unit"].is_null() && r.as_object().unwrap().contains_key("unitSide")));
+		let happened = &live["justHappened"][1];
+		assert_eq!((&happened["unit"], &happened["unitSide"]), (&json!("defense"), &json!("CHI")));
+	}
+
+	#[test]
 	fn a_play_moving_by_a_second_is_nothing_new() {
 		let state = State {
 			following: true,
@@ -542,7 +680,11 @@ mod tests {
 					play_id: "1".to_owned(),
 					line: "NE sacked on 2nd and 5".to_owned(),
 					at: "2026-10-23T01:52:20Z".to_owned(),
+					big_play: None,
+					unit: None,
+					unit_side: None,
 				}],
+				ranked: Vec::new(),
 			}),
 		};
 		let mut later = state.clone();

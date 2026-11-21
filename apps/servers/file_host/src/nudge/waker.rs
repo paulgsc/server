@@ -1887,7 +1887,10 @@ mod tests {
 				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").expect("the fixed test keypair validates");
 				let nudge = NudgeContext {
 					clock: NudgeClock::resolve(Some("UTC")).0,
-					sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+					sender: std::sync::Arc::new(Sender::new(
+						vapid.clone(),
+						ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+					)),
 					vapid,
 					enabled: true,
 					quiet_hours_start: 22,
@@ -1997,7 +2000,10 @@ mod tests {
 				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").expect("the fixed test keypair validates");
 				let nudge = NudgeContext {
 					clock: NudgeClock::resolve(Some("UTC")).0,
-					sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+					sender: std::sync::Arc::new(Sender::new(
+						vapid.clone(),
+						ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+					)),
 					vapid,
 					enabled: true,
 					quiet_hours_start: 22,
@@ -2155,7 +2161,10 @@ mod tests {
 			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 			let nudge = NudgeContext {
 				clock: NudgeClock::resolve(Some("UTC")).0,
-				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				sender: std::sync::Arc::new(Sender::new(
+					vapid.clone(),
+					ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+				)),
 				vapid,
 				enabled: true,
 				quiet_hours_start: 22,
@@ -2280,7 +2289,10 @@ mod tests {
 			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 			let nudge = NudgeContext {
 				clock: NudgeClock::resolve(Some("UTC")).0,
-				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				sender: std::sync::Arc::new(Sender::new(
+					vapid.clone(),
+					ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+				)),
 				vapid,
 				enabled: true,
 				// Disabled outright (start == end never matches, per
@@ -2400,7 +2412,10 @@ mod tests {
 				let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 				let nudge = NudgeContext {
 					clock: NudgeClock::resolve(Some("UTC")).0,
-					sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+					sender: std::sync::Arc::new(Sender::new(
+						vapid.clone(),
+						ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+					)),
 					vapid,
 					enabled: true,
 					quiet_hours_start: 0,
@@ -2529,7 +2544,10 @@ mod tests {
 			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 			let nudge = NudgeContext {
 				clock: NudgeClock::resolve(Some("UTC")).0,
-				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				sender: std::sync::Arc::new(Sender::new(
+					vapid.clone(),
+					ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+				)),
 				vapid,
 				enabled: true,
 				quiet_hours_start: 0,
@@ -2631,7 +2649,10 @@ mod tests {
 			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 			let nudge = NudgeContext {
 				clock: NudgeClock::resolve(Some("UTC")).0,
-				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				sender: std::sync::Arc::new(Sender::new(
+					vapid.clone(),
+					ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+				)),
 				vapid,
 				enabled: true,
 				quiet_hours_start: 0,
@@ -2727,7 +2748,10 @@ mod tests {
 			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 			let nudge = NudgeContext {
 				clock: NudgeClock::resolve(Some("UTC")).0,
-				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				sender: std::sync::Arc::new(Sender::new(
+					vapid.clone(),
+					ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+				)),
 				vapid,
 				enabled: true,
 				quiet_hours_start: 22,
@@ -2807,7 +2831,10 @@ mod tests {
 			let vapid = VapidIdentity::from_config(Some(VAPID_PRIVATE), Some(VAPID_PUBLIC), "mailto:test@example.com").unwrap();
 			let nudge = NudgeContext {
 				clock: NudgeClock::resolve(Some("UTC")).0,
-				sender: std::sync::Arc::new(Sender::new(vapid.clone(), ReqwestTransport::default())),
+				sender: std::sync::Arc::new(Sender::new(
+					vapid.clone(),
+					ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build().unwrap()),
+				)),
 				vapid,
 				enabled: true,
 				quiet_hours_start: 22,
@@ -3171,7 +3198,7 @@ mod tests {
 			"mailto:test@example.com",
 		)
 		.unwrap();
-		let transport = ReqwestTransport::new(reqwest::Client::builder().no_proxy().build().unwrap());
+		let transport = ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).no_proxy().build().unwrap());
 
 		NudgeContext {
 			clock: NudgeClock::resolve(Some("UTC")).0,
@@ -3621,7 +3648,7 @@ mod tests {
 			});
 			let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 			rt.block_on(async {
-				let _ = reqwest::Client::builder().no_proxy().build().unwrap().get(&url).send().await;
+				let _ = outbound::client(outbound::Caller::Nudge).no_proxy().build().unwrap().get(&url).send().await;
 			});
 			captured.lines()
 		}
