@@ -1,4 +1,4 @@
--- Reverses 20261121000200_add_unit_to_game_bite.up.sql.
+-- Reverses 20261121000300_add_unit_to_game_bite.up.sql.
 --
 -- **It refuses rather than discards,** as 20261028000300's down does: once a
 -- bite holds a unit, dropping the columns would lose what the owner said, so

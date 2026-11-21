@@ -2473,7 +2473,9 @@ mod tests {
 	/// refuses the rollback and nothing goes; without, the round trip is clean.
 	#[tokio::test]
 	async fn the_unit_columns_go_back_only_while_no_bite_holds_one() {
-		const BEFORE_UNIT: i64 = 20_261_121_000_100;
+		// The version before the unit migration: #1071's `cards_essay_video_deletion`,
+		// whose own down is not this test's to run.
+		const BEFORE_UNIT: i64 = 20_261_121_000_200;
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
 		MIGRATOR.run(&pool).await.unwrap();
 		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
