@@ -463,7 +463,7 @@ pub async fn get_takes(
 	};
 	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
 	let mut conn = db.begin().await?;
-	voice_repo::takes::library(&mut conn, paired.subject.as_str(), &ask)
+	voice_repo::takes::library(&mut conn, paired.subject.as_str(), &now(), &ask)
 		.await
 		.map_err(refusal)?
 		.map(Json)
@@ -824,6 +824,9 @@ const NOTHING_ASKED: &str = "home heard this take, or has not judged it yet: the
 /// What a request to hear again a take an attempt ended answers with.
 const ENDED: &str = "home heard this take through, garbled or with nothing said: hearing it again gives the same, so record it again instead";
 
+/// What a request to hear again a take home would not hear answers with.
+const NOT_HEARABLE: &str = "home would not hear this take again: its recording was let go, or it was set aside";
+
 /// What a request to hear a take again inside the snooze answers with; its
 /// `details.nextAt` says when it may be asked.
 const SNOOZED: &str = "home was asked to hear this take again a short while ago: ask again from nextAt";
@@ -871,6 +874,7 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 		Acted::Unchanged(verdict) => (StatusCode::OK, "unchanged", verdict),
 		Acted::NothingAsked => return Err(FileHostError::Conflict(NOTHING_ASKED)),
 		Acted::Ended(_) => return Err(FileHostError::Conflict(ENDED)),
+		Acted::NotHearable(_) => return Err(FileHostError::Conflict(NOT_HEARABLE)),
 		Acted::Snoozed { next_at, .. } => {
 			return Err(FileHostError::ConflictNaming {
 				reason: SNOOZED,
@@ -1329,9 +1333,10 @@ mod tests {
 	}
 
 	/// paulgsc/some-ui#3339: the owner asks home to hear a failed take again.
-	/// It is a 201 that keeps the take listed as being heard again, a resend
-	/// a 200, a take an attempt ended a 409, and, once the fresh set has
-	/// failed too, a second ask inside the snooze a 409 naming `nextAt`.
+	/// It is a 201 that takes it off the list while home hears it again (the
+	/// takes read says so), a resend a 200, a take an attempt ended a 409,
+	/// and, once the fresh set has failed too and the take is back, a second
+	/// ask inside the snooze a 409 naming `nextAt`.
 	#[tokio::test]
 	async fn the_owner_asks_home_to_hear_a_failed_take_again_once_per_snooze() {
 		const ATTENTION: &str = "/voice-notes/attention";
@@ -1359,11 +1364,16 @@ mod tests {
 		assert_eq!((status, &answer["change"], &answer["act"]), (StatusCode::CREATED, &json!("recorded"), &json!("hear-again")));
 		assert_eq!(post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await.0, StatusCode::OK, "a resend");
 		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
-		let t1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
+		assert!(
+			listed["takes"].as_array().unwrap().iter().all(|take| take["id"] != "t1"),
+			"answered, and being heard again: off the list"
+		);
+		let library = get(&app, "/voice-notes/takes", Some(&phone)).await.1;
+		let t1 = library["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
 		assert_eq!(
-			(&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"]),
-			(&json!(true), &json!(false)),
-			"still listed, being heard"
+			(&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"], &t1["verdict"]),
+			(&json!(true), &json!(false), &json!(null)),
+			"the takes read says home is hearing it, and has not judged it yet"
 		);
 		assert!(t1["hearAgain"]["nextAt"].is_string());
 		assert_eq!(
@@ -1372,10 +1382,14 @@ mod tests {
 			"garbled: heard through"
 		);
 
-		// Its fresh set fails too: asked again inside the snooze.
+		// Its fresh set fails too: back on the list, asked again inside the
+		// snooze.
 		for n in 4..=6 {
 			failed(&pool, "t1", n, n == 6, "2026-11-14T01:00:00Z").await;
 		}
+		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
+		let t1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
+		assert_eq!((&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"]), (&json!(false), &json!(false)), "snoozed");
 		let (status, refused) = post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await;
 		assert_eq!((status, &refused["error"]["code"]), (StatusCode::CONFLICT, &json!("conflict")));
 		assert!(refused["error"]["details"]["nextAt"][0].is_string(), "{refused}");
@@ -1849,13 +1863,15 @@ mod tests {
 						"size": TAKE.len(), "durationMs": null, "setAsideAt": null, "heard": null, "verdict": null,
 						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
 						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
-						"about": { "key": "studio:library:t2", "form": "loose", "ref": "library:t2" } },
+						"about": { "key": "studio:library:t2", "form": "loose", "ref": "library:t2" },
+						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null } },
 					{ "id": "t1", "kind": "studio", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
 						"size": TAKE.len(), "durationMs": 1000, "setAsideAt": null,
 						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" }, "verdict": null,
 						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
 						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
-						"about": { "key": "studio:ep04", "form": "scene", "project": "ep04", "shot": "s1", "take": "1" } }
+						"about": { "key": "studio:ep04", "form": "scene", "project": "ep04", "shot": "s1", "take": "1" },
+						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null } }
 				],
 				"total": 2, "matched": null, "by": "newest", "next": null
 			}),
@@ -1958,6 +1974,7 @@ mod tests {
 			[
 				"about",
 				"durationMs",
+				"hearAgain",
 				"heard",
 				"id",
 				"kept",

@@ -400,6 +400,7 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 			 WHERE w.subject_id = ?1 AND w.note_id = ?2
 			   AND w.model = (SELECT t.model FROM voice_transcript t
 			                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
+			                    AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt)
 			                  ORDER BY t.heard_at DESC, t.model DESC LIMIT 1)
 			 ORDER BY w.word_index"#,
 			subject,
@@ -457,6 +458,7 @@ pub async fn heard(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 		   FROM voice_note n
 		   LEFT JOIN voice_transcript t
 		     ON t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt)
 		   WHERE n.subject_id = ?1 AND n.note_id = ?2
 		   ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
 		   LIMIT 1"#,
@@ -1129,5 +1131,32 @@ mod tests {
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		let left: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject_id FROM voice_transcript_word").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B], "A's words went with A's account, B's stayed");
+	}
+
+	/// paulgsc/some-ui#3339: every read that chooses a take's ending or its
+	/// final verdict skips the attempts a request to hear it again superseded,
+	/// by one predicate written the same way in each, so no reader can pick a
+	/// stale ending another reader skips. Counted per file, so a new chooser
+	/// that leaves it out, or a removed one, fails here until this is changed.
+	#[test]
+	fn every_reader_skips_what_a_request_to_hear_again_superseded() {
+		const PREDICATE: &str = "AND h.act = 'hear_again' AND h.model = ";
+		let readers = [
+			("transcript.rs", include_str!("transcript.rs"), 2),
+			("verdict.rs", include_str!("verdict.rs"), 3),
+			("kept.rs", include_str!("kept.rs"), 4),
+			("takes.rs", include_str!("takes.rs"), 1),
+			("meaning.rs", include_str!("meaning.rs"), 2),
+			("interview.rs", include_str!("interview.rs"), 1),
+			("attention.rs", include_str!("attention.rs"), 4),
+		];
+		for (file, source, readers) in readers {
+			// This test's own copy of the predicate is not a reader.
+			let own = usize::from(file == "transcript.rs");
+			let found = source.matches(PREDICATE).count() - own;
+			assert_eq!(found, readers, "{file}");
+			let skipped = source.matches("h.attempt >= ").count() - own;
+			assert_eq!(skipped, readers, "{file}: each says the attempt it answered, and those before it");
+		}
 	}
 }

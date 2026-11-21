@@ -68,7 +68,8 @@ async fn held(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<
 		r#"SELECT note.note_id AS "note_id!", note.of_ref AS "of_ref!", note.recorded_at AS "recorded_at!",
 		          EXISTS (SELECT 1 FROM voice_transcript AS heard
 		                  WHERE heard.subject_id = note.subject_id AND heard.note_id = note.note_id
-		                    AND heard.outcome IN ('heard', 'silent')) AS "ended!: bool"
+		                    AND heard.outcome IN ('heard', 'silent')
+		                    AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = heard.subject_id AND h.note_id = heard.note_id AND h.act = 'hear_again' AND h.model = heard.model AND h.attempt >= heard.attempt)) AS "ended!: bool"
 		   FROM voice_note AS note
 		   WHERE note.of_kind = ?1 AND note.of_ref >= ?2 AND note.of_ref < ?3 AND note.subject_id = ?4"#,
 		of,

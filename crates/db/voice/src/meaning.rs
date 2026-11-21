@@ -85,9 +85,10 @@ pub async fn index(conn: &mut SqliteConnection, subject: &str, note_id: &str, em
 	// hearing by `heard_at`, then model. Kept equal by
 	// `a_takes_vector_is_made_from_the_words_the_library_lists`.
 	let words = sqlx::query_scalar!(
-		r#"SELECT text AS "text!: String" FROM voice_transcript
-		   WHERE subject_id = ?1 AND note_id = ?2 AND outcome = 'heard'
-		   ORDER BY heard_at DESC, model DESC
+		r#"SELECT t.text AS "text!: String" FROM voice_transcript t
+		   WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt)
+		   ORDER BY t.heard_at DESC, t.model DESC
 		   LIMIT 1"#,
 		subject,
 		note_id
@@ -134,7 +135,8 @@ pub async fn unindexed(conn: &mut SqliteConnection, model: &str, limit: i64) -> 
 		r#"SELECT n.subject_id AS "subject_id!", n.note_id AS "note_id!" FROM voice_note n
 		 WHERE n.of_kind = ?1
 		   AND EXISTS (SELECT 1 FROM voice_transcript t
-		               WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome = 'heard')
+		               WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome = 'heard'
+		                 AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = t.subject_id AND h.note_id = t.note_id AND h.act = 'hear_again' AND h.model = t.model AND h.attempt >= t.attempt))
 		   AND NOT EXISTS (SELECT 1 FROM voice_note_meaning m
 		                   WHERE m.subject_id = n.subject_id AND m.note_id = n.note_id AND m.model = ?2)
 		 ORDER BY n.stored_at, n.subject_id, n.note_id

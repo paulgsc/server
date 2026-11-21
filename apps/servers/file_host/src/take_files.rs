@@ -95,12 +95,9 @@ pub async fn hand_off(conn: &mut SqliteConnection, subject: &str, ask: Ask<'_>) 
 				return Ok(Take::Absent { deleted });
 			}
 			voice_repo::transcript::Hearing::Waiting => {
-				// Every attempt failed for good: never to be heard, unless the
-				// owner asked home to hear it again (some-ui#3339), when its
-				// fresh attempts are still to come.
+				// Every attempt failed for good: never to be heard.
 				let verdict = voice_repo::verdict::of_note(conn, subject, ask.take).await?;
-				let failed = verdict.is_some_and(|verdict| verdict.kind != voice_repo::verdict::Kind::Heard);
-				return Ok(if failed && !voice_repo::attention::hearing_again(conn, subject, ask.take).await? {
+				return Ok(if verdict.is_some_and(|verdict| verdict.kind != voice_repo::verdict::Kind::Heard) {
 					Take::NotMadeOut
 				} else {
 					Take::NotHeardYet

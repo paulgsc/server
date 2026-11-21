@@ -304,7 +304,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 		          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String",
 		          (SELECT v.verdict FROM voice_transcript_verdict AS v
 		           WHERE v.subject_id = note.subject_id AND v.note_id = note.note_id
-		             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed'))
+		             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed' AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = v.subject_id AND h.note_id = v.note_id AND h.act = 'hear_again' AND h.model = v.model AND h.attempt >= v.attempt)))
 		           ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
 		           LIMIT 1) AS "verdict?: String",
 		          (SELECT gone.deleted_at FROM voice_note_deletion AS gone WHERE gone.subject_id = note.subject_id AND gone.note_id = note.note_id)
@@ -315,6 +315,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 		     SELECT hearing.rowid FROM voice_transcript AS hearing
 		     WHERE hearing.subject_id = note.subject_id AND hearing.note_id = note.note_id
 		       AND hearing.outcome IN ('heard', 'silent')
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = hearing.subject_id AND h.note_id = hearing.note_id AND h.act = 'hear_again' AND h.model = hearing.model AND h.attempt >= hearing.attempt)
 		     ORDER BY hearing.outcome = 'heard' DESC, hearing.heard_at DESC, hearing.model DESC
 		     LIMIT 1
 		   )
@@ -338,7 +339,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 			          heard.outcome AS "outcome?: String", heard.duration_ms AS "duration_ms?: i64", heard.text AS "text?: String",
 			          (SELECT v.verdict FROM voice_transcript_verdict AS v
 			           WHERE v.subject_id = note.subject_id AND v.note_id = note.note_id
-			             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed'))
+			             AND ((v.model = heard.model AND v.attempt = heard.attempt) OR (heard.rowid IS NULL AND v.verdict = 'failed' AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = v.subject_id AND h.note_id = v.note_id AND h.act = 'hear_again' AND h.model = v.model AND h.attempt >= v.attempt)))
 			           ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
 			           LIMIT 1) AS "verdict?: String",
 			          (SELECT gone.deleted_at FROM voice_note_deletion AS gone WHERE gone.subject_id = note.subject_id AND gone.note_id = note.note_id)
@@ -349,6 +350,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, of: Of, on: &[De
 			     SELECT hearing.rowid FROM voice_transcript AS hearing
 			     WHERE hearing.subject_id = note.subject_id AND hearing.note_id = note.note_id
 			       AND hearing.outcome IN ('heard', 'silent')
+			       AND NOT EXISTS (SELECT 1 FROM voice_note_attention h WHERE h.subject_id = hearing.subject_id AND h.note_id = hearing.note_id AND h.act = 'hear_again' AND h.model = hearing.model AND h.attempt >= hearing.attempt)
 			     ORDER BY hearing.outcome = 'heard' DESC, hearing.heard_at DESC, hearing.model DESC
 			     LIMIT 1
 			   )

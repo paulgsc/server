@@ -202,10 +202,7 @@ pub async fn run_once_telling<H: Hear>(
 			duration_ms: attempted.duration_ms,
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
-		// Final once the note's set is spent: its attempts since the owner
-		// last asked home to hear it again, or all of them (some-ui#3339).
-		let spent = note.spent;
-		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n - spent >= ATTEMPTS);
+		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n - note.spent >= ATTEMPTS);
 		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(kind, took);
