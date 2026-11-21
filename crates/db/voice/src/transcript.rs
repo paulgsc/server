@@ -156,9 +156,10 @@ pub struct Waiting {
 	pub urgency: Urgency,
 }
 
-/// Why a note is heard ahead of others (paulgsc/server#1091,
-/// docs/shared-stages.md, "Who waits drives order"): a closed set, in
-/// ascending order. Each source orders the queue in [`waiting_first`], and
+/// Why a note is heard ahead of others: a closed set, in ascending order.
+///
+/// paulgsc/server#1091, docs/shared-stages.md, "Who waits drives order".
+/// Each source orders the queue in [`waiting_first`], and
 /// the transcriber reads it before each note: a [`Urgency::FastTrack`] note
 /// is not held by the lane's give (the owner, 2026-11-21, on #1090).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
