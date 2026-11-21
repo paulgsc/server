@@ -89,12 +89,12 @@ pub async fn fetch_capped<F: Fetch>(fetch: &F, url: &str, max: usize) -> Result<
 /// its status: the game feed keeps every response raw, uncapped (GA3).
 #[derive(Debug, Clone)]
 pub struct ReqwestFetch {
-	client: reqwest::Client,
+	client: outbound::Client,
 }
 
 impl ReqwestFetch {
 	#[must_use]
-	pub const fn new(client: reqwest::Client) -> Self {
+	pub const fn new(client: outbound::Client) -> Self {
 		Self { client }
 	}
 }

@@ -97,7 +97,7 @@ impl GameFeedContext {
 	/// # Errors
 	/// An HTTP client that does not build.
 	pub fn new() -> anyhow::Result<Self> {
-		let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+		let client = outbound::client(outbound::Caller::GameFeed).timeout(REQUEST_TIMEOUT).build()?;
 		Ok(Self {
 			fetch: pass::ReqwestFetch::new(client),
 			cadence: CADENCE,
