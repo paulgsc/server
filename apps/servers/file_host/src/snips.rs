@@ -588,13 +588,16 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		let newest = runs.into_iter().filter(|run| &run.head_sha == commit).max_by_key(|run| (run.id, run.run_attempt));
 		let mark = marked(folder, commit).await;
 		let Some(run) = newest else {
-			let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 			if mark.is_none() {
 				picked.gone += 1;
 				if mark_gone(folder, commit, None, "no-run").await.is_err() {
 					picked.failures.push("drive");
+					continue;
 				}
 			}
+			// Only once it is marked gone: a mark the drive refused leaves it
+			// at the back, never at the head.
+			let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 			continue;
 		};
 		if mark.as_deref() == Some(run.mark().as_str()) {
@@ -631,10 +634,11 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 				picked.fetched += 1;
 			}
 			Ok(Some(reason)) => {
-				let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 				picked.gone += 1;
 				if mark_gone(folder, commit, Some(&run), reason).await.is_err() {
 					picked.failures.push("drive");
+				} else {
+					let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
 				}
 			}
 			// Its retry mark stays: to the back of the queue, so it holds no

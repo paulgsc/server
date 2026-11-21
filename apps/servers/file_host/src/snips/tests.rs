@@ -364,7 +364,11 @@ async fn a_pass_cut_off_mid_request_leaves_its_commit_at_the_back() {
 	let cut = tokio::time::timeout(std::time::Duration::from_millis(50), run_once(&pool, &Stalled, &dirs.essays, &dirs.cache)).await;
 	assert!(cut.is_err(), "the pass's deadline cuts it off");
 	assert!(retry_of(&dirs.cache, &commit(0)).exists(), "the commit it was on is marked to retry");
+	// Both commits can be fetched now: the one cut off waits behind the other.
+	fake.run(run(1, 0), Ok(Some(bundle(&commit(0), &[(b"a", "/a")], |_| {}))));
 	fake.run(run(2, 1), Ok(Some(bundle(&commit(1), &[(b"b", "/b")], |_| {}))));
 	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap().fetched, 1);
 	assert_eq!(*fake.asked.lock().unwrap(), [2], "the next pass asks the other commit first");
+	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.cache).await.unwrap().fetched, 1);
+	assert_eq!(*fake.asked.lock().unwrap(), [2, 1], "then the one cut off");
 }
