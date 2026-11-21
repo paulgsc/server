@@ -33,7 +33,9 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    batch work waits, it hears nothing for `transcribe::turn::GIVE`
    (10 minutes) or until no batch work waits, checked before each note and
    never midway through one (TR4, C899; 2026-11-20, when a run of deadlines
-   held every render for hours). A run ends when the queue is empty, so
+   held every render for hours). Decided with the owner's ask that renders
+   not be starved by a busy transcriber, through paulgsc/some-ui#3333's
+   coordinator (2026-11-21); `TURN` and `GIVE` are policy constants. A run ends when the queue is empty, so
    notes heard as they arrive never add up to a turn. Held by
    `transcribe::turn`'s and `transcribe::pass`'s tests.
 3. **A yield is never a failure, and resumed work never pays twice for a
