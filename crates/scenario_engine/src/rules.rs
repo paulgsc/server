@@ -314,7 +314,9 @@ impl<'s> Cx<'s> {
 			kind,
 			by: by.to_owned(),
 			yards,
-			scored: read::is_touchdown(play),
+			// As the play stood: a touchdown a review reversed into a turnover
+			// did not score.
+			scored: read::is_touchdown(&read::as_it_stood(play)),
 			good: self.us.map(|us| us == by),
 		})
 	}

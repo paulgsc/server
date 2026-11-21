@@ -1148,7 +1148,7 @@ fn a_big_play_is_the_play_as_it_stood() {
 		)
 		.map(|(kind, ..)| kind),
 		None,
-		"20 yards is no punt return of note, and the touchdown never stood"
+		"the touchdown never stood, and a reversed return's yards are not read"
 	);
 	// A pass reversed into an interception is a turnover, so big.
 	let reversed_into = at(
@@ -1178,6 +1178,35 @@ fn a_big_play_is_the_play_as_it_stood() {
 	// The punter's fumble the other side fell on is a turnover, so big.
 	let lost = at(punt, "Punt", "R.Dixon FUMBLES (Aborted) at NE 30, RECOVERED by CHI-S.Brown at NE 28.");
 	assert_eq!(lost.map(|(kind, by, _)| (kind, by)), Some((Kind::FumbleReturn, "CHI".to_owned())));
+	// A touchdown reversed into an interception in the end zone scored nothing.
+	let pass_td = just_after(
+		&plays[..pass],
+		Play {
+			play_type: Some("Passing Touchdown".to_owned()),
+			text: Some("D.Maye pass short left to H.Henry for 10 yards, TOUCHDOWN. The Replay Official reviewed the pass completion ruling, and the play was REVERSED. D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard in End Zone. Touchback.".to_owned()),
+			..plays[pass].clone()
+		},
+	);
+	let (p, line) = big(&pass_td).unwrap();
+	assert_eq!((p.kind, p.by.as_str(), p.scored), (Kind::InterceptionReturn, "CHI", false), "{line}");
+	// A flag on the try leaves the return touchdown before it standing.
+	assert_eq!(
+		at(
+			punt,
+			"Punt Return Touchdown",
+			"R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond to NE 0 for 90 yards, TOUCHDOWN. C.Santos extra point is GOOD, Center-S.Daly, Holder-T.Taylor. PENALTY on CHI-K.Raymond, Taunting, 15 yards, enforced on the kickoff."
+		)
+		.map(|(kind, by, _)| (kind, by)),
+		Some((Kind::PuntReturn, "CHI".to_owned()))
+	);
+	// A kick in words read nowhere else ("free kick") is still a kick: the
+	// returners' muff the kickers fell on is turned over.
+	let free = at(
+		punt,
+		"Kickoff",
+		"R.Dixon free kick 60 yards from NE 20 to CHI 20. K.Raymond MUFFS catch, RECOVERED by NE-J.Elliss at CHI 20.",
+	);
+	assert_eq!(free.map(|(kind, by, _)| (kind, by)), Some((Kind::FumbleReturn, "NE".to_owned())));
 	// A return touchdown under an accepted flag on the returners is no big play.
 	assert_eq!(
 		at(

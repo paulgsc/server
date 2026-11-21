@@ -427,8 +427,10 @@ pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
 		let fumbled = ["muff", "fumble"].iter().filter_map(|word| text.find(word)).min();
 		// A fumble before the kick (the punter's, a bad snap) is the kicking
 		// team's from scrimmage: a turnover only if the other side has it,
-		// read below.
-		if fumbled.is_none_or(|fumbled| kicked.is_some_and(|kicked| fumbled >= kicked)) {
+		// read below. ESPN marks one "(Aborted)"; a kick it names in no word
+		// read here is still read as a kick.
+		let before_the_kick = text.contains("aborted") || fumbled.is_some_and(|fumbled| kicked.is_some_and(|kicked| fumbled < kicked));
+		if !before_the_kick {
 			// On a kick ESPN gives the ball to the kickers, so a ball the
 			// returners muffed or fumbled is turned over when the kickers
 			// recover it.
@@ -438,8 +440,9 @@ pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
 			}
 			let returned = !is_blocked_kick(play) || recovered_by_the_other_side(&stood);
 			let kind = if kickoff || !is_punt(play) { Kind::KickReturn } else { Kind::PuntReturn };
-			// A return under an accepted flag on the returners was not the play.
-			let scored = is_touchdown(&stood) && !flagged_against_the_returners(&stood);
+			// A return under an accepted flag on the returners was not the play;
+			// a flag on the try, after it, leaves it standing.
+			let scored = is_touchdown(&stood) && !flagged_against_the_returners(&before_the_try(&stood));
 			return (scored && returned && !kickers).then_some((kind, false));
 		}
 	}
@@ -452,10 +455,23 @@ pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
 	}
 }
 
+/// `play` up to its try, as `wiped_out` reads it: what follows the try's
+/// words (a flag on the try, a foul on the kickoff after) is not the play.
+fn before_the_try(play: &Play) -> std::borrow::Cow<'_, Play> {
+	let original = play.text.as_deref().unwrap_or_default();
+	let lower = original.to_ascii_lowercase();
+	TRY_WORDS.iter().filter_map(|word| lower.find(word)).min().map_or(std::borrow::Cow::Borrowed(play), |end| {
+		std::borrow::Cow::Owned(Play {
+			text: Some(original[..end].to_owned()),
+			..play.clone()
+		})
+	})
+}
+
 /// `play` as it stood after a review that reversed it: ESPN's text after the
 /// last "REVERSED.", and no type, which ESPN writes for the play as first
 /// ruled. A play no review reversed is itself.
-fn as_it_stood(play: &Play) -> std::borrow::Cow<'_, Play> {
+pub(crate) fn as_it_stood(play: &Play) -> std::borrow::Cow<'_, Play> {
 	let original = play.text.as_deref().unwrap_or_default();
 	original.to_ascii_lowercase().rfind("reversed.").map_or(std::borrow::Cow::Borrowed(play), |at| {
 		std::borrow::Cow::Owned(Play {

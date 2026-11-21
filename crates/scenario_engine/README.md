@@ -68,7 +68,8 @@ Any turnover (an interception, or a fumble lost, a muffed kick the kickers
 recover included) and any special-teams touchdown (a kick, punt or
 blocked-kick return) is a big play whatever its yards: big at least, and
 bigger if its yards earn it (the owner, 2026-11-21, C967). A turnover on
-downs is not one (the owner, C967 closed), and a field goal never is. Everything else is big by its yards alone (D8). A blocked punt the
+downs is not one (the owner, C967 closed), nor is a field goal kicked,
+made or missed (a blocked one run back is its kick return). Everything else is big by its yards alone (D8). A blocked punt the
 other side runs back is its punt return, a blocked field goal its kick
 return (#3334); the kickers' own recovery gains nothing.
 
@@ -76,8 +77,10 @@ A play is read as it stood. After a review that reversed it, only ESPN's
 ruling after "REVERSED." counts, so a return touchdown taken back is not
 big, and a pass reversed into an interception is. A fumble before the kick
 (the punter's, a bad snap) is the kicking team's play from scrimmage, a
-turnover only if the other side recovers it. A return touchdown under an
-accepted flag on the returners was not the play.
+turnover only if the other side recovers it (ESPN marks it "(Aborted)").
+A return touchdown under an accepted flag on the returners was not the
+play; a flag on the try after it leaves it standing. Whether it scored is
+read as it stood too.
 
 ### One ranked list, and what a bite is about (#3049)
 
