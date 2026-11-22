@@ -46,7 +46,7 @@ catalog order.
 | `two-minute` | `in.two-minute` | 2nd or 4th quarter, 2:00 or less | |
 | `kick` | `in.kick` | the try is to come, or 4th down within a 57-yard field goal | is a field goal, or a missed extra point |
 | `turnover`, `sack`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.penalty`, `in.injury` | never ahead of time | was an interception or lost fumble, a sack, a flag, a player hurt or back |
-| `big-play` | `in.big-play` | never ahead of time | gained 20+ by the big-play algebra (below) |
+| `big-play` | `in.big-play` | never ahead of time | gained 20+, or was a turnover or a special-teams touchdown, by the big-play algebra (below) |
 | `halftime` | `in.halftime` | from ESPN's end of the half until the second half's kickoff | |
 | `onside-kick` | `in.onside-kick` | never ahead of time | was a kickoff ESPN calls onside, with who recovered it (ESPN's "recovered by", else the receivers) |
 | `final` | `post.result`, `post.paths`, `post.pattern` | the game is final (paths only with a side wanted) | |
@@ -63,6 +63,24 @@ side wanted; none without one). Sizes and kinds are `game_scenarios`'
 closed enums, and the catalog dump lists them. A kick return is big from
 `huge`: 20 to 39 yards is the ordinary one, out of the end zone to about
 the 25 (`Kind::least`). `read::gain_by` reads which side gained and how far.
+
+Any turnover (an interception, or a fumble lost, a muffed kick the kickers
+recover included) and any special-teams touchdown (a kick, punt or
+blocked-kick return) is a big play whatever its yards: big at least, and
+bigger if its yards earn it (the owner, 2026-11-21, C967). A turnover on
+downs is not one (the owner, C967 closed), nor is a field goal kicked,
+made or missed (a blocked one run back is its kick return). Everything else is big by its yards alone (D8). A blocked punt the
+other side runs back is its punt return, a blocked field goal its kick
+return (#3334); the kickers' own recovery gains nothing.
+
+A play is read as it stood. After a review that reversed it, only ESPN's
+ruling after "REVERSED." counts, so a return touchdown taken back is not
+big, and a pass reversed into an interception is. A fumble before the kick
+(the punter's, a bad snap) is the kicking team's play from scrimmage, a
+turnover only if the other side recovers it (ESPN marks it "(Aborted)").
+A return touchdown under an accepted flag on the returners was not the
+play; a flag on the try after it leaves it standing. Whether it scored is
+read as it stood too.
 
 ### One ranked list, and what a bite is about (#3049)
 
@@ -98,7 +116,9 @@ is the team that kicks off next: the latest onside kick's while nothing has
 scored since, else the last scorer's. None before kickoff (until the log
 holds the opening kickoff, whatever ESPN's state says) or after the final,
 for a pregame, final or owner's scenario, or when the team it would name is
-unknown. A unit with no side is about no one team. Units are catalogue v2's
+unknown. A play in "just happened" (and the moment log) keeps the unit read
+off it after the final, a fact about the play (C1020). A unit with no side
+is about no one team. Units are catalogue v2's
 (C873): a bite said under catalogue 1 carries none. The owner can change
 it with one tap; home keeps what the phone sends, once, with the bite.
 
@@ -114,6 +134,28 @@ canvas board `Say it: what can be happening now`: "3rd and 8, down 4",
 false start". A line about the team with the ball names it unless it is the
 side wanted; a margin is that team's. Timeouts left are counted from the
 log's timeout plays in the half.
+
+## A game's moment log
+
+```rust
+moment_log(&game, &log, now) -> Vec<Logged>
+```
+
+Every play of the game in ESPN's order, each as every scenario it was, most
+specific first within a play: a `Happened`, exactly as "just happened"
+carries it at `now`, with the quarter and clock of its snap. "Just
+happened" is one reading of it (the newest few, within the mode's window);
+the log is the same rule (`rules::Cx::was`) over every play, with no window
+and no count, so the two cannot disagree about a play (tested:
+`just_happened_is_the_newest_of_the_log`). It is read in Full mode, which
+only moves the pregame window, never what a play was. Which entries are big,
+or have a bite beside them, is the reader's to choose: the engine serves the
+log, not a policy. An entry's unit is read off its play, as in "just happened",
+and is a fact about the play: it holds after the final too (C1020), where
+the default for a new bite on the ranked list is the game's, none. One pass over the log, each play read against every scenario (a
+few rules look back over the log, so it grows faster than the plays): about 3 ms
+for the recorded game's 180 plays in a release build. `file_host` serves it
+to the phone as `GET /games/:id/moments`.
 
 ## The next snap is not in the log
 

@@ -145,7 +145,9 @@ struct PingFields {
 	phone_at: u64,
 }
 
-fn game_id(id: &str) -> bool {
+/// Whether `id` can be an ESPN event id: what the hello's game and the
+/// moment log's path are held to.
+pub(crate) fn game_id(id: &str) -> bool {
 	!id.is_empty() && id.len() <= MAX_GAME_ID && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
@@ -242,8 +244,9 @@ pub struct Happened {
 	/// ESPN's play id.
 	pub play_id: String,
 	pub line: String,
-	/// When home first saw the play, ISO 8601 to the second: the phone says
-	/// how long ago from its own clock and the offset.
+	/// When the play happened, ISO 8601 to the second: ESPN's wallclock, or
+	/// else when home first saw it. The phone says how long ago from its own
+	/// clock and the offset.
 	pub at: String,
 	/// For `in.big-play` only: the play by the big-play algebra (#3048), its
 	/// `size` and `kind` slugs as the scenario catalog lists them. Absent on
@@ -257,6 +260,25 @@ pub struct Happened {
 	pub unit: Option<game_scenarios::Unit>,
 	/// Whose unit: the team's code, or null when about no one team.
 	pub unit_side: Option<String>,
+}
+
+impl Happened {
+	/// The engine's entry as the phone is sent it, `now` being the time the
+	/// engine read it at. "Just happened" and the game's moment log
+	/// (`routes::games`) both send their entries through here, so the two
+	/// cannot drift.
+	#[must_use]
+	pub fn from_engine(happened: scenario_engine::Happened, now: DateTime<Utc>) -> Self {
+		Self {
+			id: happened.scenario.id().to_owned(),
+			play_id: happened.play_id,
+			line: happened.line,
+			at: stamp(now - chrono::TimeDelta::seconds(happened.ago_seconds)),
+			big_play: happened.big_play,
+			unit: happened.unit,
+			unit_side: happened.unit_side,
+		}
+	}
 }
 
 /// The offer for the game the phone is on.
@@ -312,19 +334,7 @@ impl Offer {
 					line: offered.line,
 				})
 				.collect(),
-			just_happened: offer
-				.just_happened
-				.into_iter()
-				.map(|happened| Happened {
-					id: happened.scenario.id().to_owned(),
-					play_id: happened.play_id,
-					line: happened.line,
-					at: stamp(now - chrono::TimeDelta::seconds(happened.ago_seconds)),
-					big_play: happened.big_play,
-					unit: happened.unit,
-					unit_side: happened.unit_side,
-				})
-				.collect(),
+			just_happened: offer.just_happened.into_iter().map(|happened| Happened::from_engine(happened, now)).collect(),
 			ranked: offer
 				.ranked
 				.into_iter()

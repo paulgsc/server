@@ -339,7 +339,7 @@ fn gain_in(text: &str) -> Option<i64> {
 /// offense's pass, whose text names the target with "intended for" and the
 /// return's yards after it.
 pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
-	if wiped_out(play) || field_goal(play).is_some() || touchdown_nullified(play) {
+	if wiped_out(play) || touchdown_nullified(play) {
 		return None;
 	}
 	let text = text(play);
@@ -348,8 +348,22 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 	// flag on the returning side (not the team ESPN gave the ball: the kicking
 	// team, or the offense that lost it) is enforced from a spot ESPN does not
 	// restate as yards, and a muff or fumble on it is the kicking team's ball.
-	let clean_return = !flagged_against_the_returners(play) && !text.contains("reversed.");
+	// A flag on the try, after the return, leaves it standing.
+	let clean_return = !flagged_against_the_returners(&before_the_try(play)) && !text.contains("reversed.");
 	let kept = !text.contains("muff") && !text.contains("fumble");
+	// A blocked punt or field goal the other side recovers is its return, from
+	// "is BLOCKED by ..., RECOVERED by DEN-T.Hufanga at DEN 37. T.Hufanga to
+	// DEN 42 for 5 yards": a punt's is a punt return, a field goal's a kick
+	// return. The kicking team's own recovery gains nothing.
+	if is_blocked_kick(play) {
+		let kind = if is_punt(play) { Kind::PuntReturn } else { Kind::KickReturn };
+		return (recovered_by_the_other_side(play) && clean_return && kept)
+			.then(|| after("recovered by").and_then(return_yards).map(|y| (kind, y, false)))
+			.flatten();
+	}
+	if field_goal(play).is_some() {
+		return None;
+	}
 	if kind(play).contains("kickoff") {
 		return (!is_onside(play) && clean_return && kept)
 			.then(|| after("kicks").and_then(return_yards).map(|y| (Kind::KickReturn, y, false)))
@@ -381,6 +395,92 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 		Kind::Run
 	};
 	gain(play).map(|y| (kind, y, true))
+}
+
+/// A punt or field goal ESPN says was blocked.
+fn is_blocked_kick(play: &Play) -> bool {
+	text(play).contains(" is blocked") && (is_punt(play) || field_goal(play).is_some())
+}
+
+/// Whether the side ESPN did not give the ball recovered it ("RECOVERED by
+/// TEN-O.Oladejo" on IND's punt).
+fn recovered_by_the_other_side(play: &Play) -> bool {
+	recovered_by(play).is_some_and(|team| play.possession.as_deref() != Some(team.as_str()))
+}
+
+/// A play that is a big play whatever its yards (the owner, 2026-11-21,
+/// C967): any turnover, and any special-teams touchdown (a kick, punt or
+/// blocked-kick return). Its kind, and whether the side that gained is the
+/// team ESPN gave the ball. Its size is at least big; its yards may make it
+/// bigger.
+pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
+	if wiped_out(play) || touchdown_nullified(play) {
+		return None;
+	}
+	// Read the play as it stood: after a review that reversed it, only the
+	// ruling ESPN writes after "REVERSED." counts, and its type (written for
+	// the play as first ruled) is not read for a score or a turnover.
+	let stood = as_it_stood(play);
+	let text = text(&stood);
+	let kickoff = kind(play).contains("kickoff");
+	if kickoff || is_punt(play) || is_blocked_kick(play) {
+		let kicked = ["kicks", "punts", "punt is", "field goal"].iter().filter_map(|word| text.find(word)).min();
+		let fumbled = ["muff", "fumble"].iter().filter_map(|word| text.find(word)).min();
+		// A fumble before the kick (the punter's, a bad snap) is the kicking
+		// team's from scrimmage: a turnover only if the other side has it,
+		// read below. ESPN marks one "(Aborted)"; a kick it names in no word
+		// read here is still read as a kick.
+		let before_the_kick = text.contains("aborted") || fumbled.is_some_and(|fumbled| kicked.is_some_and(|kicked| fumbled < kicked));
+		if !before_the_kick {
+			// On a kick ESPN gives the ball to the kickers, so a ball the
+			// returners muffed or fumbled is turned over when the kickers
+			// recover it.
+			let kickers = recovered_by(&stood).is_some_and(|team| play.possession.as_deref() == Some(team.as_str()));
+			if fumbled.is_some() && kickers && !is_onside(play) {
+				return Some((Kind::FumbleReturn, true));
+			}
+			let returned = !is_blocked_kick(play) || recovered_by_the_other_side(&stood);
+			let kind = if kickoff || !is_punt(play) { Kind::KickReturn } else { Kind::PuntReturn };
+			// A return under an accepted flag on the returners was not the play;
+			// a flag on the try, after it, leaves it standing.
+			let scored = is_touchdown(&stood) && !flagged_against_the_returners(&before_the_try(&stood));
+			return (scored && returned && !kickers).then_some((kind, false));
+		}
+	}
+	match turnover(&stood)? {
+		Turnover::Interception => Some((Kind::InterceptionReturn, false)),
+		Turnover::Fumble => Some((Kind::FumbleReturn, false)),
+		// Not a big play (the owner, 2026-11-21, C967 closed): no kind in
+		// catalog v2 names a stop.
+		Turnover::OnDowns => None,
+	}
+}
+
+/// `play` up to its try, as `wiped_out` reads it: what follows the try's
+/// words (a flag on the try, a foul on the kickoff after) is not the play.
+fn before_the_try(play: &Play) -> std::borrow::Cow<'_, Play> {
+	let original = play.text.as_deref().unwrap_or_default();
+	let lower = original.to_ascii_lowercase();
+	TRY_WORDS.iter().filter_map(|word| lower.find(word)).min().map_or(std::borrow::Cow::Borrowed(play), |end| {
+		std::borrow::Cow::Owned(Play {
+			text: Some(original[..end].to_owned()),
+			..play.clone()
+		})
+	})
+}
+
+/// `play` as it stood after a review that reversed it: ESPN's text after the
+/// last "REVERSED.", and no type, which ESPN writes for the play as first
+/// ruled. A play no review reversed is itself.
+pub(crate) fn as_it_stood(play: &Play) -> std::borrow::Cow<'_, Play> {
+	let original = play.text.as_deref().unwrap_or_default();
+	original.to_ascii_lowercase().rfind("reversed.").map_or(std::borrow::Cow::Borrowed(play), |at| {
+		std::borrow::Cow::Owned(Play {
+			text: Some(original[at + "reversed.".len()..].trim().to_owned()),
+			play_type: None,
+			..play.clone()
+		})
+	})
 }
 
 /// Whether an accepted flag on the play is on the side ESPN did not give the

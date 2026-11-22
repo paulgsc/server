@@ -9,6 +9,7 @@ pub mod cors;
 pub mod db;
 pub mod episode_notes;
 pub mod feed_videos;
+pub mod games;
 pub mod health;
 pub mod ideas;
 pub mod interview_weeks;
