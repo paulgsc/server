@@ -121,8 +121,9 @@ pub enum Surface {
 /// affordance by the registry's ids, the surface, and when.
 ///
 /// Which optional fields an event carries is its kind's: `offeredAt` and
-/// `ending` for `passed-over`, `startedAt` and `place` for `left`, `answer`
-/// for `said`, none for `offered` and `taken`. They are left out of the body
+/// `ending` for `passed-over`, `startedAt` and `place` for `left` (and
+/// `next` when the phone knows it), `answer` for `said`, none for `offered`
+/// and `taken`. They are left out of the body
 /// when absent, so each kind is stored as exactly its own fields. Which ids
 /// the registry lists is the phone's to check (`checkEvent`); home holds
 /// that each is a name from the app's code.
@@ -157,6 +158,12 @@ pub struct Engagement {
 	/// A `said`'s answer: one of the affordance's answers.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub answer: Option<String>,
+	/// The screen a `left` went to (paulgsc/some-ui#3367, the owner's
+	/// answer): another of the affordance's places, `<affordance>.<place>` of
+	/// its pipeline, or `elsewhere` for a screen the phone can't name. Left
+	/// out only when the app went to the back, or by a build before the field.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub next: Option<String>,
 }
 
 /// An app event: its family, and the shape that family has.
@@ -272,16 +279,23 @@ fn engagement_problems(event: &Engagement, problems: &mut Vec<Problem>) {
 		Kind::Left => &["startedAt", "place"],
 		Kind::Said => &["answer"],
 	};
+	// What a kind may carry besides its own: a `left`'s `next`, which a build
+	// before it, or a move it can't see the end of, leaves out.
+	let may: &[&str] = match event.kind {
+		Kind::Left => &["next"],
+		Kind::Offered | Kind::Taken | Kind::PassedOver | Kind::Said => &[],
+	};
 	for (field, present) in [
 		("offeredAt", event.offered_at.is_some()),
 		("ending", event.ending.is_some()),
 		("startedAt", event.started_at.is_some()),
 		("place", event.place.is_some()),
 		("answer", event.answer.is_some()),
+		("next", event.next.is_some()),
 	] {
-		match (own.contains(&field), present) {
-			(true, false) => problems.push((field, "is what this kind of event carries")),
-			(false, true) => problems.push((field, "is not a field this kind of event carries")),
+		match (own.contains(&field), may.contains(&field), present) {
+			(true, _, false) => problems.push((field, "is what this kind of event carries")),
+			(false, false, true) => problems.push((field, "is not a field this kind of event carries")),
 			_ => {}
 		}
 	}
@@ -290,7 +304,7 @@ fn engagement_problems(event: &Engagement, problems: &mut Vec<Problem>) {
 			earlier_problems(field, earlier, &event.at, problems);
 		}
 	}
-	for (field, name) in [("place", &event.place), ("answer", &event.answer)] {
+	for (field, name) in [("place", &event.place), ("answer", &event.answer), ("next", &event.next)] {
 		if name.as_deref().is_some_and(|name| !is_name(name)) {
 			problems.push((field, NAME));
 		}
@@ -439,6 +453,21 @@ mod tests {
 			let parsed = parse_event("g1", sent.to_string().as_bytes()).unwrap_or_else(|problems| panic!("{sent}: {problems:?}"));
 			assert_eq!(serde_json::to_value(&parsed).unwrap(), sent, "{kind} is stored as exactly its own fields");
 		}
+	}
+
+	/// paulgsc/some-ui#3367: a `left` may say the screen it went to, by id,
+	/// and stores it as sent; no other kind carries it, and a sentence is no id.
+	#[test]
+	fn a_left_may_name_the_screen_it_went_to() {
+		let mut onward = engagement("left");
+		onward["next"] = json!("decide");
+		let parsed = parse_event("g1", onward.to_string().as_bytes()).unwrap_or_else(|problems| panic!("{problems:?}"));
+		assert_eq!(serde_json::to_value(&parsed).unwrap(), onward, "stored as sent");
+		let mut taken = engagement("taken");
+		taken["next"] = json!("decide");
+		assert_eq!(fields("g1", &taken), ["next"]);
+		onward["next"] = json!("went back to Today");
+		assert_eq!(fields("g1", &onward), ["next"]);
 	}
 
 	#[test]
