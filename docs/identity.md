@@ -214,7 +214,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want`, `voice_note_fast_track` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent, card-era log and work spans | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log`, `rust_work_span_event` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -1486,9 +1486,10 @@ nowhere is marked as such and belongs to review.
     essay video only if the essay plays it ((c) of the essay videos, above).
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
-    vectors in the meaning index (invariant 35), its set-aside mark and its
-    moves along the conveyor (`studio_take_move`, below) in one
-    transaction, and keeps a copy of its words
+    vectors in the meaning index (invariant 35), its set-aside mark, its
+    moves along the conveyor (`studio_take_move`, below), the owner's
+    fast-track acts on it (`voice_note_fast_track`) and what waits on it
+    (`stage_want`) in one transaction, and keeps a copy of its words
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
@@ -1717,7 +1718,10 @@ nowhere is marked as such and belongs to review.
     (paulgsc/server#462; words since paulgsc/some-ui#2085). `file_host`'s `transcribe` worker, on only when
     `TRANSCRIBE_ENABLED`, reads each note's audio and hears it on home's CPU
     with whisper.cpp: the note the contention guard is excusing first, then
-    those tried fewest times, then oldest first, one
+    those tried fewest times, then among those the most urgent
+    (`transcript::Urgency`: a note the owner fast-tracked and not yet tried,
+    then one wanted, by a waiter or by a mark already tried), then the most
+    waited on, then oldest first (paulgsc/server#1091), one
     at a time, on a blocking thread by a deadline, never on a request's path
     (so a note that keeps failing never keeps a newer one waiting: TR1). Each attempt is a row: the model
     file and engine, the attempt's number, its outcome (`heard`, with the

@@ -102,6 +102,7 @@ pub mod attention;
 pub mod bite_match;
 pub mod conveyor;
 pub mod delete;
+pub mod fast_track;
 pub mod interview;
 pub mod kept;
 pub mod meaning;
