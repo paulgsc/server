@@ -24,7 +24,7 @@ use serde::{Serialize, Serializer};
 
 /// The engine's own version. Every offer carries it, so a bite records the
 /// rules it was offered under; bump it when a rule or a line changes.
-pub const ENGINE_VERSION: u32 = 5;
+pub const ENGINE_VERSION: u32 = 7;
 
 /// The recorder's three modes (the epic's "Settings: three modes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -436,6 +436,42 @@ pub fn plays_that_were(game: &Game, log: &[Entry], now: DateTime<Utc>, scenario:
 			play_id: so_far.plays[i].play.id.clone(),
 			at: so_far.plays[i].at,
 			first: so_far.plays[i].first,
+		})
+		.collect()
+}
+
+/// One entry of a game's moment log: a play as one scenario it was, in the
+/// shape "just happened" carries it, and where it sits in the game.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Logged {
+	/// The entry, exactly as [`Offer::just_happened`] would carry it at `now`.
+	#[serde(flatten)]
+	pub happened: Happened,
+	/// The quarter of the play's snap; 5 is overtime.
+	pub period: Option<i64>,
+	/// The game clock at the snap (`4:05`).
+	pub clock: Option<String>,
+}
+
+/// The game's moment log as of `now`: every play of `game` in `log`, in
+/// ESPN's order, as each scenario it was, most specific first within a play.
+///
+/// The family "just happened" is one reading of (the last few, newest
+/// first, within a window): the same rule over every play, with no window
+/// and no count (SE3), so an entry here and its "just happened" twin are the
+/// same [`Happened`]. Each play is read at its latest version seen by `now`
+/// (SE2); a play that was no scenario has no entry. Which entries are big,
+/// or which have a bite beside them, is the reader's to choose. One pass
+/// over the log, each play against every scenario.
+#[must_use]
+pub fn moment_log(game: &Game, log: &[Entry], now: DateTime<Utc>) -> Vec<Logged> {
+	let so_far = read::SoFar::new(game, log, now);
+	rules::moment_log(game, &so_far, now)
+		.into_iter()
+		.map(|(i, happened)| Logged {
+			happened,
+			period: so_far.plays[i].play.period,
+			clock: so_far.plays[i].play.clock.clone(),
 		})
 		.collect()
 }

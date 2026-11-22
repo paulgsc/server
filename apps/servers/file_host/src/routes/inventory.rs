@@ -39,7 +39,7 @@
 
 use super::table::Module;
 use super::{
-	admin_settings, aph, app_events, auth, cards_essays, clips, compat, db, episode_notes, feed_videos, health, ideas, interview_weeks, jobs, korean, leetype_files,
+	admin_settings, aph, app_events, auth, cards_essays, clips, compat, db, episode_notes, feed_videos, games, health, ideas, interview_weeks, jobs, korean, leetype_files,
 	leetype_log, outcomes, presence, previews, push, readiness, renders, routine, rust_rounds, shelf, signals, studio_log, studio_videos, study_notes, subjects, sync,
 	tab_metadata, utterance, voice,
 };
@@ -130,6 +130,7 @@ where
 		jobs::jobs(),
 		korean::korean(),
 		voice::voice(),
+		games::games(),
 		study_notes::study_notes(),
 		rust_rounds::rust_rounds(),
 		interview_weeks::interview_weeks(),

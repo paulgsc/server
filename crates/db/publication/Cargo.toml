@@ -1,7 +1,7 @@
 [package]
 name = "publication_repo"
 description = "The append-only log of published material, and its epoch"
-readme = "README.md"
+readme.workspace = true
 categories = ["database"]
 keywords = ["curriculum", "publication", "sqlite", "repository"]
 version.workspace = true

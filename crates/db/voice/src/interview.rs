@@ -194,6 +194,9 @@ mod tests {
 	use sqlx::sqlite::SqlitePoolOptions;
 	use sqlx::SqliteConnection;
 
+	/// The schema, built once: an inline `migrate!` is a local array that grows with every migration.
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 
@@ -263,7 +266,7 @@ mod tests {
 	#[tokio::test]
 	async fn each_questions_first_is_its_earliest_note() {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
-		sqlx::migrate!("../../../migrations").run(&pool).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 		assert!(firsts(&mut conn, A, "2026-w47").await.unwrap().is_empty(), "none held");
 		note(&mut conn, A, "late", "2026-w47:about-you", "2026-11-18T09:00:00.000Z").await;
@@ -292,7 +295,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_closing_week_keeps_first_newest_and_sent_and_lets_go_the_rest() {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
-		sqlx::migrate!("../../../migrations").run(&pool).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 		// about-you: six takes, hourly; the final names the third.
 		for (id, at) in [
