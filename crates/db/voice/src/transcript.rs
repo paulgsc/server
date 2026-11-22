@@ -1452,7 +1452,11 @@ mod tests {
 			.bind(text)
 			.execute(&pool)
 			.await;
-			assert!(second.is_err(), "a second {outcome} ending from one model, at the same heard_at");
+			let refused = second.unwrap_err().to_string();
+			assert!(
+				refused.contains("UNIQUE constraint failed: voice_transcript.subject_id, voice_transcript.note_id, voice_transcript.model"),
+				"a second {outcome} ending from one model, at the same heard_at, by voice_transcript_one_ending: {refused}"
+			);
 		}
 		assert_eq!(keep(&pool, A, "n", &attempt(MEDIUM, heard("other words"))).await, Kept::Added(1), "another model may");
 	}
