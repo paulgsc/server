@@ -235,6 +235,18 @@ jobs:
           docker run --rm -v "$PWD/infra/prometheus:/prometheus-config:ro" -w /prometheus-config/rules
           --entrypoint promtool prom/prometheus:v3.5.0 test rules home.test.yml
 
+      # Home's dashboard-builder compiles every dashboard at each deploy, and
+      # a dashboard that does not compile rolls the whole release back
+      # (release 131 on 2026-11-22: an apostrophe closed a jsonnet string).
+      # Run the very image home runs, by the digest release.json pins, over
+      # this PR's sources, so that break is red here instead.
+      - name: Build the dashboards as home does
+        run: |
+          image=$(jq -er '.services["dashboard-builder"].image' deploy/home/release.json)
+          mkdir -p "$RUNNER_TEMP/generated"
+          docker run --rm -v "$PWD/infra/grafana/dashboards:/workspace:ro" \
+            -v "$RUNNER_TEMP/generated:/generated" "$image"
+
       # CW5, CW6 (paulgsc/some-ui#2659): home's render worker, one pass at a
       # time with a fake recorder. Here for the same reason: required, on
       # every PR, and the worker is infra no other job runs.
