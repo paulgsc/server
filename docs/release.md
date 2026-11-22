@@ -84,9 +84,16 @@ per CLAUDE.md, "Drift is loud, not silent".
   tracked path, mounted read-only. State git does not hold (file_host's
   `data/`, `logs/` and `config/`, Grafana's built dashboards) is mounted
   from `${STATE_ROOT}`, the owner's checkout, which envctl sets for
-  `make up` and the deploy alike (`--state-root`). `envctl check` refuses a
-  `${REPO_ROOT}` mount that is writable or names an untracked path
-  (`apps/envctl/src/mounts.rs`).
+  `make up` and the deploy alike (`--state-root`). Every `${REPO_ROOT}`
+  mount also lies inside a tree the release's key reads (`infra/` or
+  `docker-compose.yml`, RL11). The deploy takes a commit whose key it has
+  already applied as that release, and restarts nothing, so a mounted file
+  outside those trees could change on main and never reach home. The check
+  and the key read one list (`mounts::KEYED`), so they cannot drift. A fix
+  to a mounted file needs no new serial: the next `make home-deploy` on main
+  applies it as a release of its own (#1132). `envctl check` refuses a
+  `${REPO_ROOT}` mount that is writable, names an untracked path, or lies
+  outside those trees (`apps/envctl/src/mounts.rs`).
 - **RL11. Applied whole, or put back whole.** `envctl deploy` brings up a
   release only after every image is pulled and the set checks, and records
   it applied only once every service runs that release's image and is ready
@@ -97,7 +104,9 @@ per CLAUDE.md, "Drift is loud, not silent".
   fails, or any of whose services does not come up, is put back: the release
   last applied, its tree and its images, already here, so the rollback pulls
   nothing. A release is its serial and the git trees compose reads
-  (`infra/`, `deploy/<role>/`, `docker-compose.yml`): a commit that moves
+  (`infra/`, `deploy/<role>/`, `docker-compose.yml`), both read at main's
+  commit, never at `server_commit`, which records only where CI formed the
+  serial. A commit that moves
   either is applied, judged and remembered as a release of its own; one
   that moves neither is the release applied, and restarts nothing. An image
   named by tag alone is not the release's bytes (RL4) and is pulled only
