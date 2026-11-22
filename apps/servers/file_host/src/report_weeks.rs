@@ -58,7 +58,10 @@
 //!
 //! Cost: every [`INTERVAL`], one read of the weeks held and, for each of the
 //! [`LOOKBACK`] weeks home does not hold, its weekly read (four range reads
-//! of `app_event_by_family` and one grouped read), after one indexed read
+//! of `app_event_by_family` and one grouped read, then the friction
+//! measures: one read joined against 28 day edges, one range read of the
+//! window's `left`s with an indexed lookup each, at most `WINDOW_READ`, and
+//! one range read of `jobs_event_order`), after one indexed read
 //! of whether it is held; each minute, four `read_dir`s, and for what the
 //! render worker made, one read of the weeks held and of those let go and up
 //! to two `stat`s per week held.

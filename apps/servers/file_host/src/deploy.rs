@@ -39,19 +39,19 @@ use std::time::Duration;
 /// `${STORAGE}/deploy` on the host: the marker `file_host` writes and the
 /// state home's deploy writes. Beside the database, as `call_weeks`'
 /// folder is.
-pub const FOLDER: &str = "/app/dbs/deploy";
+pub(crate) const FOLDER: &str = "/app/dbs/deploy";
 /// The deploy-wanted marker's file name in [`FOLDER`].
-pub const WANTED: &str = "wanted";
+pub(crate) const WANTED: &str = "wanted";
 /// The file name, in [`FOLDER`], of what home's deploy last did
 /// (`envctl deploy --on-demand`). Read only here.
-pub const STATE: &str = "state.json";
+pub(crate) const STATE: &str = "state.json";
 
 /// The shortest time between two pulls.
-pub const PULL_GAP: Duration = Duration::from_secs(10 * 60);
+pub(crate) const PULL_GAP: Duration = Duration::from_secs(10 * 60);
 /// How long a need the last pull could not meet waits before another.
-pub const UNMET_RETRY: Duration = Duration::from_secs(6 * 60 * 60);
+pub(crate) const UNMET_RETRY: Duration = Duration::from_secs(6 * 60 * 60);
 /// How far above this build's epoch a `needs` is believed.
-pub const CEILING: u32 = 1000;
+pub(crate) const CEILING: u32 = 1000;
 
 /// What home's deploy recorded after its last run (`state.json`). Every
 /// field may be missing: a first deploy has written nothing.
@@ -140,7 +140,7 @@ impl Deploy {
 
 /// [`decide`]'s answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Decision {
+pub(crate) struct Decision {
 	pub supported: bool,
 	pub deploy: Deploy,
 	pub retry_after: Option<Duration>,
@@ -151,7 +151,7 @@ pub struct Decision {
 /// At `now` (seconds since the epoch), given what the deploy recorded and
 /// whether a marker is waiting. `Wanted` means: write the marker. Pure; the bounds are the module doc's.
 #[must_use]
-pub fn decide(needs: u32, now: i64, recorded: &Recorded, marker_waiting: bool) -> Decision {
+pub(crate) fn decide(needs: u32, now: i64, recorded: &Recorded, marker_waiting: bool) -> Decision {
 	let answer = |supported, deploy, retry_after| Decision { supported, deploy, retry_after };
 	if needs < OLDEST_SUPPORTED {
 		return answer(false, Deploy::ClientBehind, None);
@@ -180,7 +180,7 @@ pub fn decide(needs: u32, now: i64, recorded: &Recorded, marker_waiting: bool) -
 /// What [`FOLDER`]'s `state.json` says, or nothing recorded when it is
 /// missing or unreadable.
 #[must_use]
-pub fn read_recorded(folder: &Path) -> Recorded {
+pub(crate) fn read_recorded(folder: &Path) -> Recorded {
 	std::fs::read(folder.join(STATE))
 		.ok()
 		.and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -190,7 +190,7 @@ pub fn read_recorded(folder: &Path) -> Recorded {
 /// Whether a marker is waiting in `folder`, and since when (seconds since
 /// the epoch, from its modification time).
 #[must_use]
-pub fn marker_since(folder: &Path) -> Option<i64> {
+pub(crate) fn marker_since(folder: &Path) -> Option<i64> {
 	let modified = std::fs::metadata(folder.join(WANTED)).ok()?.modified().ok()?;
 	let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
 	i64::try_from(since.as_secs()).ok()
@@ -213,7 +213,7 @@ struct Marker {
 /// # Errors
 ///
 /// The folder cannot be made, or the file written.
-pub fn request(folder: &Path, needs: u32, now: i64) -> std::io::Result<bool> {
+pub(crate) fn request(folder: &Path, needs: u32, now: i64) -> std::io::Result<bool> {
 	// Each ask its own temporary file, made exclusively: two asks in the
 	// same second must never share one, or the second could truncate what
 	// the first had already linked as the marker.

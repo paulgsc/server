@@ -557,7 +557,7 @@ nowhere is marked as such and belongs to review.
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
-   - the nudge waker, through `waker::unless_deleted`, which takes the lock
+   - the nudge waker, through `actuate::unless_deleted`, which takes the lock
      around one re-check of the subject's `engagement_gate` row and one write
      (`a_write_for_a_deleted_subject_is_skipped_and_waits_out_a_deletion`).
      It wraps the writes that check nothing a deletion removes: the
@@ -737,6 +737,13 @@ nowhere is marked as such and belongs to review.
     `PUT /jobs/events/:id` and `POST /sync/jobs/batch` (each event as that
     route), readable only by its own subject, and deleted with
     the account by both the sweep and the migration's trigger (invariant 12).
+    The one figure that leaves it in aggregate is Applying's debrief friction
+    (`jobs_repo::debrief_frictions`, 1 to 5 only): its count and median over
+    28 days, the median unsaid below 5, in the subject's own weekly read and
+    `report_week`, and so in its drive file, the report's video and the
+    published walkthrough made from it (the owner's C861, paulgsc/some-ui
+    WALK5; `report_week`'s own paragraph, below). No pick, company, chip
+    or word goes with it.
     *Enforced by* `jobs_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced` and
     `the_record_leaves_with_the_account`, and `handlers::jobs`'s
@@ -2495,7 +2502,13 @@ nowhere is marked as such and belongs to review.
     ENG12, #2700; #821). `report_week` holds, per subject and ISO week, the
     period read `GET /app-events/weeks/:week` answers, exactly as
     `report_weeks` gave it to the render worker: counts per pipeline,
-    affordance and surface, and days, nothing more than that read holds. It
+    affordance and surface, and days, and the walkthrough's friction
+    measures over the 28 days ending with the week (paulgsc/some-ui WALK5,
+    the owner's C861: days opened per affordance, the days measured, lefts
+    per place with how many moved on and their median time, whether that
+    read was partial, Applying's debrief count and median friction from
+    `jobs_event`; a median of fewer than 5 is not said), nothing more than
+    that read holds. It
     is written once a week has ended, never updated (a trigger aborts an
     `UPDATE`), and deleted only with the account; its file on the drive,
     `report-weeks/<week>.json`, and the video and work made from it, leave

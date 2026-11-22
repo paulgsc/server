@@ -29,7 +29,7 @@
 
 use activity_repo::{ActivityMaturity, ActivityRecord, LayoutTree};
 use chrono::{TimeZone, Utc};
-use file_host::nudge::waker::materialize_provisioned_session;
+use file_host::nudge::propose::materialize_provisioned_session;
 use std::io::{self, Write};
 
 /// The four seeded activities, transcribed from
@@ -99,7 +99,7 @@ fn main() -> io::Result<()> {
 		"session-fixture-provisioned".to_owned(),
 		"fixture-subject",
 		&catalogue,
-		&file_host::nudge::waker::RankingInputs::default(),
+		&file_host::nudge::propose::RankingInputs::default(),
 		now,
 	);
 

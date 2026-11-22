@@ -201,7 +201,7 @@ impl PushSubscriptionRepository {
 	/// Every subject who has ever subscribed, deduplicated.
 	///
 	/// The one caller is the first-contact backfill run at startup —
-	/// reconciling subscriptions that predate `waker::first_contact` against
+	/// reconciling subscriptions that predate `observe::first_contact` against
 	/// `engagement_gate`. [`Self::for_subject`] is not reusable here: this asks
 	/// for the distinct *owners*, not one owner's devices.
 	///

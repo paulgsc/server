@@ -1,7 +1,7 @@
 [package]
 name = "jobs_repo"
 description = "The owner's Jobs record: append-only events per subject — storage layer"
-readme = "README.md"
+readme.workspace = true
 categories = ["database"]
 keywords = ["jobs", "record", "sqlite", "repository"]
 version.workspace = true

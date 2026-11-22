@@ -338,7 +338,7 @@ pub enum Shed {
 /// The `Retry-After`, in whole seconds, on every [`FileHostError::Busy`]:
 /// long enough for a burst to drain, short enough that a person's next tap
 /// is not turned away for it.
-pub const BUSY_RETRY_AFTER_S: u32 = 5;
+pub(crate) const BUSY_RETRY_AFTER_S: u32 = 5;
 
 impl IntoResponse for FileHostError {
 	fn into_response(self) -> Response<Body> {

@@ -1,7 +1,7 @@
 [package]
 name = "aph_repo"
 description = "The owner's aph record: append-only entries and settings per subject — storage layer"
-readme = "README.md"
+readme.workspace = true
 categories = ["database"]
 keywords = ["aph", "record", "sqlite", "repository"]
 version.workspace = true

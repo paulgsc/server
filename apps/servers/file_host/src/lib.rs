@@ -9,28 +9,29 @@ use ws_events::{tabsched::JobEnvelope, UnifiedEvent};
 
 pub mod admission;
 pub mod auth;
-pub mod cache;
+pub(crate) mod cache;
 pub mod call_weeks;
 pub mod cards_essays;
 pub mod clips;
-pub mod config;
+pub(crate) mod config;
 pub mod contention;
 pub mod contract;
 pub mod db;
-pub mod deploy;
-pub mod error;
+pub(crate) mod deploy;
+pub(crate) mod error;
 pub mod essay_media;
 pub mod feeds;
 pub mod game_feed;
 pub mod handlers;
-pub mod health;
+pub(crate) mod health;
 pub mod jobs_notice;
+#[cfg(test)]
+mod lifecycle;
 pub mod listen;
 pub mod mailbox;
 pub mod meaning;
 pub mod metrics;
 pub mod migrate;
-pub mod models;
 pub mod net;
 pub mod nudge;
 pub mod pd_fills;
@@ -42,7 +43,7 @@ pub mod reconcile;
 pub mod redacted;
 pub mod report_weeks;
 pub mod routes;
-pub mod routine_watch;
+pub(crate) mod routine_watch;
 pub mod rust_essays;
 pub mod rust_rounds;
 pub mod schema;
@@ -62,11 +63,11 @@ pub mod websocket;
 pub const API_V1_BASE_PATH: &str = "/api/v1";
 
 pub use crate::websocket::WebSocketFsm;
-pub use cache::{CacheConfig, CacheStore, DedupCache};
 pub use config::*;
 pub use handlers::utterance::UtteranceMetadata;
 pub use health::perform_health_check;
 pub use metrics::{ObservabilityError, OtelGuard};
+pub use some_cache::{CacheConfig, CacheStore, DedupCache};
 
 /// Core: defines the universe - stable, global, rarely changes
 #[derive(Clone)]

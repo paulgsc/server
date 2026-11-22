@@ -117,37 +117,6 @@ impl WebSocketFsm {
 		Ok(client_key)
 	}
 
-	/// Get connections by client ID with observability
-	pub async fn get_client_connections(&self, client_id: &ClientId) -> Vec<String> {
-		let start = Instant::now();
-
-		let connections: Vec<String> = self
-			.store
-			.keys()
-			.into_iter()
-			.filter(|key| {
-				if let Some(handle) = self.store.get(key) {
-					&handle.connection.client_id == client_id
-				} else {
-					false
-				}
-			})
-			.collect();
-
-		let elapsed = start.elapsed();
-
-		if !connections.is_empty() {
-			info!(
-				client_id = %client_id,
-				connection_count = connections.len(),
-				query_duration_ms = elapsed.as_millis(),
-				"Retrieved client connections"
-			);
-		}
-
-		connections
-	}
-
 	/// Remove a connection with comprehensive cleanup and observability.
 	///
 	/// Infallible on purpose: a key already gone is the race every removal

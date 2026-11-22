@@ -47,24 +47,6 @@ pub fn record_error(operation: &str, error_type: &str) {
 	counter!("operation_errors_total", "operation" => operation.to_string(), "error_type" => error_type.to_string()).increment(1);
 }
 
-/// Record file download with metadata
-pub fn record_file_download(file_id: &str, mime_type: &str, size_bytes: usize, cache_type: &str) {
-	counter!(
-		"file_downloads_total",
-		"file_id" => file_id.to_string(),
-		"mime_type" => mime_type.to_string(),
-		"cache_type" => cache_type.to_string()
-	)
-	.increment(1);
-
-	histogram!(
-		"file_size_bytes",
-		"mime_type" => mime_type.to_string(),
-		"cache_type" => cache_type.to_string()
-	)
-	.record(size_bytes as f64);
-}
-
 /// Record cache invalidation
 pub fn record_cache_invalidation(operation: &str, keys_invalidated: usize) {
 	counter!(
