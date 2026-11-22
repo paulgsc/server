@@ -302,9 +302,10 @@ pub(crate) fn is_punt(play: &Play) -> bool {
 /// Yards gained, from ESPN's "for 12 yards" / "for no gain", unless the play
 /// was wiped out ("No Play"). A reviewed play is read as the review left it:
 /// from the text after the last "reversed." or "upheld.", or, when an upheld
-/// ruling is not restated, from the ruling before it.
+/// ruling is not restated, from the ruling before it. A touchdown's try is
+/// not the play (`before_the_try`).
 pub(crate) fn gain(play: &Play) -> Option<i64> {
-	let text = text(play);
+	let text = text(&before_the_try(play));
 	let review = ["reversed.", "upheld."]
 		.into_iter()
 		.filter_map(|word| text.rfind(word).map(|at| (at, word)))
@@ -337,8 +338,10 @@ fn gain_in(text: &str) -> Option<i64> {
 /// (the offense on a snap, the kicking team on a kick). A return is the
 /// returner's: a pick-six is the defense's interception return, never the
 /// offense's pass, whose text names the target with "intended for" and the
-/// return's yards after it.
+/// return's yards after it. A touchdown's try is not the play: no flag,
+/// turnover or yards of it are read (`before_the_try`).
 pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
+	let play = &*before_the_try(play);
 	if wiped_out(play) || touchdown_nullified(play) {
 		return None;
 	}
@@ -348,8 +351,7 @@ pub(crate) fn gain_by(play: &Play) -> Option<(Kind, i64, bool)> {
 	// flag on the returning side (not the team ESPN gave the ball: the kicking
 	// team, or the offense that lost it) is enforced from a spot ESPN does not
 	// restate as yards, and a muff or fumble on it is the kicking team's ball.
-	// A flag on the try, after the return, leaves it standing.
-	let clean_return = !flagged_against_the_returners(&before_the_try(play)) && !text.contains("reversed.");
+	let clean_return = !flagged_against_the_returners(play) && !text.contains("reversed.");
 	let kept = !text.contains("muff") && !text.contains("fumble");
 	// A blocked punt or field goal the other side recovers is its return, from
 	// "is BLOCKED by ..., RECOVERED by DEN-T.Hufanga at DEN 37. T.Hufanga to
@@ -412,8 +414,9 @@ fn recovered_by_the_other_side(play: &Play) -> bool {
 /// C967): any turnover, and any special-teams touchdown (a kick, punt or
 /// blocked-kick return). Its kind, and whether the side that gained is the
 /// team ESPN gave the ball. Its size is at least big; its yards may make it
-/// bigger.
+/// bigger. A touchdown's try is not the play (`before_the_try`).
 pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
+	let play = &*before_the_try(play);
 	if wiped_out(play) || touchdown_nullified(play) {
 		return None;
 	}
@@ -441,9 +444,9 @@ pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
 			}
 			let returned = !is_blocked_kick(play) || recovered_by_the_other_side(&stood);
 			let kind = if kickoff || !is_punt(play) { Kind::KickReturn } else { Kind::PuntReturn };
-			// A return under an accepted flag on the returners was not the play;
-			// a flag on the try, after it, leaves it standing.
-			let scored = is_touchdown(&stood) && !flagged_against_the_returners(&before_the_try(&stood));
+			// A return under an accepted flag on the returners was not the play
+			// (`stood` holds no try, so a flag on the try leaves it standing).
+			let scored = is_touchdown(&stood) && !flagged_against_the_returners(&stood);
 			return (scored && returned && !kickers).then_some((kind, false));
 		}
 	}
@@ -469,18 +472,22 @@ fn before_the_try(play: &Play) -> std::borrow::Cow<'_, Play> {
 	})
 }
 
-/// `play` as it stood after a review that reversed it: ESPN's text after the
-/// last "REVERSED.", and no type, which ESPN writes for the play as first
-/// ruled. A play no review reversed is itself.
+/// `play` as it stood: up to its try (`before_the_try`), and after a review
+/// that reversed it, ESPN's text after the last "REVERSED." before the try,
+/// with no type, which ESPN writes for the play as first ruled. A review of
+/// the try is the try's, not the play's. A play no review reversed is itself
+/// up to its try.
 pub(crate) fn as_it_stood(play: &Play) -> std::borrow::Cow<'_, Play> {
-	let original = play.text.as_deref().unwrap_or_default();
-	original.to_ascii_lowercase().rfind("reversed.").map_or(std::borrow::Cow::Borrowed(play), |at| {
-		std::borrow::Cow::Owned(Play {
+	let cut = before_the_try(play);
+	let original = cut.text.as_deref().unwrap_or_default();
+	match original.to_ascii_lowercase().rfind("reversed.") {
+		None => cut,
+		Some(at) => std::borrow::Cow::Owned(Play {
 			text: Some(original[at + "reversed.".len()..].trim().to_owned()),
 			play_type: None,
 			..play.clone()
-		})
-	})
+		}),
+	}
 }
 
 /// Whether an accepted flag on the play is on the side ESPN did not give the
@@ -603,7 +610,10 @@ pub(crate) enum Turnover {
 	OnDowns,
 }
 
+/// How the ball changed hands on the play, never on its try: a fumble or an
+/// interception on a touchdown's try is the try's (`before_the_try`).
 pub(crate) fn turnover(play: &Play) -> Option<Turnover> {
+	let play = &*before_the_try(play);
 	let text = text(play);
 	if wiped_out(play) {
 		None
@@ -636,8 +646,9 @@ fn on_downs(play: &Play) -> bool {
 		&& play.distance.is_some_and(|distance| gain(play).is_some_and(|gained| gained < distance))
 }
 
+/// A sack on the play, never on its try (`before_the_try`).
 pub(crate) fn is_sack(play: &Play) -> bool {
-	!wiped_out(play) && (kind(play) == "sack" || text(play).contains(" sacked"))
+	!wiped_out(play) && (kind(play) == "sack" || text(&before_the_try(play)).contains(" sacked"))
 }
 
 /// The team of the player an injury note names, from "NE-K.Byard has

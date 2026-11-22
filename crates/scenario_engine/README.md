@@ -79,8 +79,15 @@ big, and a pass reversed into an interception is. A fumble before the kick
 (the punter's, a bad snap) is the kicking team's play from scrimmage, a
 turnover only if the other side recovers it (ESPN marks it "(Aborted)").
 A return touchdown under an accepted flag on the returners was not the
-play; a flag on the try after it leaves it standing. Whether it scored is
-read as it stood too.
+play. Whether it scored is read as it stood too.
+
+A touchdown's try is not its play (#1103). ESPN writes the try into the
+touchdown's own text ("extra point", "TWO-POINT CONVERSION", "kick is"), and
+nothing after those words is read for the play: not a No-Play flag, a
+fumble, an interception, a sack, a review, or the try's own yards. So a
+60-yard run whose try was flagged is still a 60-yard run, and an
+interception on the try is not a pick-six. Only the moments about the try
+read it: `try`, `kick`, and a flag or an injury on it (`penalty`, `injury`).
 
 ### One ranked list, and what a bite is about (#3049)
 
@@ -254,6 +261,16 @@ keeps says which the phone showed.
   every mode: `every_line_is_in_the_persons_terms`.
 - **SE5: read through one team.** Nothing that needs a side wanted (stakes,
   fell behind, paths, `you.*`) is offered for a game with none.
+- **SE6: the try is not its touchdown's play.** No reading of a touchdown
+  (whether it scored, its big play's kind, side, yards and size, a turnover,
+  a sack, and every other moment but `try`, `kick`, `penalty` and `injury`)
+  changes with what its try's text says. Family: each try outcome (made or
+  missed, either kind; a No-Play flag on either side; a fumble either side
+  recovers; an interception; a sack; a review that reversed it) after each
+  touchdown (run, pass, kick, punt, blocked-punt, blocked-field-goal,
+  interception and fumble returns, big or not). Proof:
+  `tests/moments.rs`' `the_try_never_changes_its_touchdowns_reading`, which
+  reads each pair against the same touchdown with its try to come.
 
 ## Tests replay a recorded game
 
