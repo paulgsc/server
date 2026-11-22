@@ -201,6 +201,7 @@ dependencies = [
  "call_week_repo",
  "chrono",
  "chrono-tz",
+ "jobs_repo",
  "serde",
  "serde_json",
  "sqlx",
