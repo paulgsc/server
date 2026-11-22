@@ -20,9 +20,9 @@
 -- least 3: `file_host::transcribe::pass::ATTEMPTS`, past which the worker does
 -- not try that model again. A take of every kind, with no list of kinds
 -- (C976, the owner: "we never descend to the granular; we implement
--- solutions that target the family"): a kind added to `voice_repo::Of` is
--- covered with no change here, and the test that proves this walks
--- `Of::ALL`. One judged here is listed under Needs your attention (VH5) like
+-- solutions that target the family"): no clause here reads the kind, so
+-- every kind is covered, and its test walks `voice_repo::Of::ALL`, which the
+-- compiler keeps whole. One judged here is listed under Needs your attention (VH5) like
 -- any take home couldn't hear, and a Rust Rounds or interview take is filed,
 -- so its week stops waiting. It raises no alert: `TranscriptGarbled` counts
 -- verdicts as the worker keeps them, not rows.

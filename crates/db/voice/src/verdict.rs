@@ -635,17 +635,20 @@ mod tests {
 
 	/// paulgsc/server#913: 20261122004001 judges each model's last failed
 	/// attempt, numbered at least 3, that ran out before HEARD1, on a take of
-	/// every kind (C976: [`crate::Of::ALL`], so a kind added there is held
-	/// here too), as `judge` would have; and nothing else, nor anything
+	/// every kind (C976): the migration names no kind, and this walks
+	/// [`crate::Of::ALL`], which the compiler keeps whole. A kind the schema
+	/// before it doesn't know yet is skipped: it can't have taken that ran
+	/// out before HEARD1. As `judge` would have; nothing else, nor anything
 	/// twice.
 	#[tokio::test]
 	async fn a_take_that_ran_out_before_verdicts_is_judged_failed() {
 		const BEFORE: i64 = 20_261_121_000_500;
 		let pool = pool().await;
 		MIGRATOR.undo(&pool, BEFORE).await.unwrap();
+		let mut known = Vec::new();
 		for of in crate::Of::ALL {
 			let note = String::from("ran-out-") + of.as_str();
-			sqlx::query(
+			let held = sqlx::query(
 				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
 				 VALUES (?1, ?2, ?3, 'r', 'then', 'audio/webm', 1, 's', 'now')",
 			)
@@ -653,8 +656,12 @@ mod tests {
 			.bind(&note)
 			.bind(of.as_str())
 			.execute(&pool)
-			.await
-			.unwrap();
+			.await;
+			match held {
+				Ok(_) => known.push(of),
+				Err(err) if err.to_string().contains("CHECK constraint failed") => continue,
+				Err(err) => panic!("{err}"),
+			}
 			for n in 1..=3 {
 				sqlx::query(
 					"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
@@ -703,7 +710,8 @@ mod tests {
 			expected.map(|(model, attempt, verdict, reasons, at)| (model.to_owned(), attempt, verdict.to_owned(), reasons.to_owned(), at.to_owned())),
 			"each judged as judge would, dated at its attempt"
 		);
-		for of in crate::Of::ALL {
+		assert!(known.len() >= 10, "the ten kinds of HEARD1's day are all walked: {known:?}");
+		for of in known {
 			let kept: Option<(i64, String, String)> = sqlx::query_as("SELECT attempt, verdict, reasons FROM voice_transcript_verdict WHERE note_id = ?1")
 				.bind(String::from("ran-out-") + of.as_str())
 				.fetch_optional(&pool)

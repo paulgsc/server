@@ -134,82 +134,75 @@ pub const NOTE_CEILING: usize = 1024 * 1024;
 const MAX_ID_CHARS: usize = 64;
 const MAX_REF_CHARS: usize = 200;
 
-/// What a note was said for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Of {
+/// What a note was said for: the closed family of take kinds.
+///
+/// The enum, [`Of::ALL`] and [`Of::as_str`] are made from this one list, so
+/// a kind added here is in every walk of `ALL` (the transcriber's backfill
+/// test among them, C976) and has its stored name, by the compiler.
+macro_rules! kinds {
+	($($(#[$doc:meta])* $kind:ident => $name:literal,)*) => {
+		#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+		pub enum Of {
+			$($(#[$doc])* #[serde(rename = $name)] $kind,)*
+		}
+
+		impl Of {
+			/// Every kind, in the order they are listed.
+			const ALL: [Self; [$($name),*].len()] = [$(Self::$kind),*];
+
+			/// The wire and stored name.
+			#[must_use]
+			pub const fn as_str(self) -> &'static str {
+				match self {
+					$(Self::$kind => $name,)*
+				}
+			}
+		}
+	};
+}
+
+kinds! {
 	/// A study session's reflection.
-	Reflection,
+	Reflection => "reflection",
 	/// A Jobs pick or scout.
-	Jobs,
+	Jobs => "jobs",
 	/// A drama prompt's next scene, said aloud.
-	Scene,
+	Scene => "scene",
 	/// A game bite: said while watching an NFL game, about one scenario
 	/// (paulgsc/some-ui#2074). Its `ref` is the game's id, and the bite's own
 	/// description is [`Bite`].
-	Game,
+	Game => "game",
 	/// A Studio take: the phone's Studio records one per shot of a video
 	/// (paulgsc/some-ui#2260, ST12). Its `ref` names the take as
 	/// `<project>:<shot>:<take>` (`build-journal-ep04:s3:2`), within the rule
 	/// every `ref` meets and checked no further, as no other kind's `ref` is.
 	/// A redo is a new take, so a new note: nothing is ever rewritten.
-	Studio,
+	Studio => "studio",
 	/// A soundbite (paulgsc/some-ui#2180, HF5): something the owner said on
 	/// the phone's soundbites page. Its `ref` is how it came to be recorded
 	/// (`direct`, `sessions`, `reminder`, or the retired `capture` and
 	/// `wrap`), checked no further. What the phone noted around it is the
 	/// soundbite's `study_note`.
-	Soundbite,
+	Soundbite => "soundbite",
 	/// The owner reading a grammar-lens line aloud after its reveal
 	/// (paulgsc/some-ui#2180, HF5). Its `ref` is the line, as the phone names
 	/// it.
-	Lens,
+	Lens => "lens",
 	/// A spoken answer in a `LeetType` phone session (paulgsc/some-ui#2180,
 	/// HF5). Its `ref` is the session file and its screen, `<file>:<screen>`.
 	/// What it answered and the points ticked are the answer's `study_note`,
 	/// which names the take by this note's id.
-	Leetype,
+	Leetype => "leetype",
 	/// A note said on a Rust Rounds card (paulgsc/some-ui#2237, RR6), its
 	/// `ref` as [`is_rust_round_ref`] says.
-	#[serde(rename = "rust-round")]
-	RustRound,
+	RustRound => "rust-round",
 	/// A take said in a week of mock interview (paulgsc/some-ui#2932, IW1):
 	/// an answer to one of the week's questions, or a teleprompter card read
 	/// aloud. Its `ref` as [`is_interview_ref`] says.
-	Interview,
+	Interview => "interview",
 }
 
 impl Of {
-	const ALL: [Self; 10] = [
-		Self::Reflection,
-		Self::Jobs,
-		Self::Scene,
-		Self::Game,
-		Self::Studio,
-		Self::Soundbite,
-		Self::Lens,
-		Self::Leetype,
-		Self::RustRound,
-		Self::Interview,
-	];
-
-	/// The wire and stored name.
-	#[must_use]
-	pub const fn as_str(self) -> &'static str {
-		match self {
-			Self::Reflection => "reflection",
-			Self::Jobs => "jobs",
-			Self::Scene => "scene",
-			Self::Game => "game",
-			Self::Studio => "studio",
-			Self::Soundbite => "soundbite",
-			Self::Lens => "lens",
-			Self::Leetype => "leetype",
-			Self::RustRound => "rust-round",
-			Self::Interview => "interview",
-		}
-	}
-
 	/// The kind `name` names, if any.
 	#[must_use]
 	pub fn named(name: &str) -> Option<Self> {
