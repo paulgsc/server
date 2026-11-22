@@ -9,7 +9,6 @@
 //! and inspects the world. The cost of that convenience is that "why" can never
 //! be part of the decision, only "when".
 
-use crate::nudge::waker;
 use crate::subject::SubjectId;
 use crate::{AppState, FileHostError};
 use axum::{extract::State, Json};
@@ -39,7 +38,7 @@ pub struct SignalAccepted {
 pub async fn observe(State(state): State<AppState>, subject: SubjectId, Json(signal): Json<StudySignal>) -> Result<Json<SignalAccepted>, FileHostError> {
 	tracing::Span::current().record("signal", signal.kind());
 
-	let eligible_at = waker::observe(&state.core.shared_db, subject.as_str(), &signal)
+	let eligible_at = crate::nudge::observe::observe(&state.core.shared_db, subject.as_str(), &signal)
 		.await
 		.map_err(|err| FileHostError::operation(&err, Some(&err)))?;
 

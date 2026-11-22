@@ -66,7 +66,7 @@
 //! afterwards.
 //!
 //! No caller yet, same as [`crate::recommend`] before it: RCM5 (`#282`) is
-//! what wires this into `nudge::waker::materialize_provisioned_session`.
+//! what wires this into `nudge::propose::materialize_provisioned_session`.
 
 use serde::Serialize;
 

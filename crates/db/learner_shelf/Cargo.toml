@@ -1,7 +1,7 @@
 [package]
 name = "learner_shelf_repo"
 description = "Learner-owned content a subject chose to keep: the per-subject shelf — storage layer"
-readme = "README.md"
+readme.workspace = true
 categories = ["database"]
 keywords = ["shelf", "lessons", "sqlite", "repository"]
 version.workspace = true

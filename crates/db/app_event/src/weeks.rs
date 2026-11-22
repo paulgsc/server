@@ -17,7 +17,9 @@
 //! - **Bounded by the index.** Each week is one range read of
 //!   `app_event_by_family` over seven days; [`Seen`] is one grouped read of
 //!   the subject's engagement events before `to`, as `summary`'s last taken
-//!   is. Nothing is held per signal or per week between reads.
+//!   is; its `lastOpenedDay` is what silence (paulgsc/some-ui#3338) reads.
+//!   The friction measures beside them are `friction`'s, over 28 days.
+//!   Nothing is held per signal or per week between reads.
 //!
 //! Weeks are ISO weeks on the owner's clock, [`ZONE`]: Monday midnight to
 //! the next Monday midnight, half-open, as some-ui's report writer counts
@@ -25,6 +27,7 @@
 //! week that crosses a clock change is an hour shorter or longer in UTC.
 //! [`Seen`]'s days are that clock's days too.
 
+use crate::friction::Friction;
 use crate::EventError;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, SecondsFormat, Utc, Weekday};
 use chrono_tz::Tz;
@@ -105,19 +108,19 @@ impl IsoWeek {
 	/// The week's first instant, as `at` is stored.
 	#[must_use]
 	pub fn from(self) -> String {
-		Self::instant(self.monday)
+		Self::midnight(self.monday)
 	}
 
 	/// The instant after the week's last: the next Monday's first.
 	#[must_use]
 	pub fn to(self) -> String {
-		Self::instant(self.monday + Duration::weeks(1))
+		Self::midnight(self.monday + Duration::weeks(1))
 	}
 
 	/// `day`'s midnight on [`ZONE`]'s clock, in UTC. A midnight that falls
 	/// in a clock change's gap (none does on [`ZONE`], whose changes are at
 	/// 02:00) is read as UTC's, so a week always has edges.
-	fn instant(day: NaiveDate) -> String {
+	pub(crate) fn midnight(day: NaiveDate) -> String {
 		let midnight = day.and_time(NaiveTime::MIN);
 		midnight
 			.and_local_timezone(ZONE)
@@ -187,10 +190,14 @@ pub struct Seen {
 	pub surface: String,
 	pub first_day: String,
 	pub last_taken_day: Option<String>,
+	/// The day it was last `offered` or `taken`: what a module's root says
+	/// of its last opening, for silence (paulgsc/some-ui#3338), which the
+	/// report writer names from the registry it holds.
+	pub last_opened_day: Option<String>,
 }
 
 /// What `GET /app-events/weeks/:week` answers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Weekly {
 	/// The asked week, `2026-W46`.
 	pub week: String,
@@ -199,6 +206,9 @@ pub struct Weekly {
 	pub weeks: Vec<Week>,
 	/// Every affordance seen before this week's end, in order.
 	pub seen: Vec<Seen>,
+	/// The walkthrough's friction measures over the 28 days ending with
+	/// this week ([`friction`](crate::friction)).
+	pub friction: Friction,
 }
 
 /// `subject`'s engagement over `week` and its three comparison weeks, as of
@@ -237,7 +247,8 @@ pub async fn weekly(conn: &mut SqliteConnection, subject: &str, week: IsoWeek, n
 
 	let seen = sqlx::query!(
 		r#"SELECT pipeline AS "pipeline!: String", affordance AS "affordance!: String", surface AS "surface!: String",
-			MIN(at) AS "first!: String", MAX(CASE WHEN kind = 'taken' THEN at END) AS "last_taken: String"
+			MIN(at) AS "first!: String", MAX(CASE WHEN kind = 'taken' THEN at END) AS "last_taken: String",
+			MAX(CASE WHEN kind IN ('offered', 'taken') THEN at END) AS "last_opened: String"
 		FROM (SELECT at, json_extract(body, '$.pipeline') AS pipeline, json_extract(body, '$.affordance') AS affordance,
 				json_extract(body, '$.surface') AS surface, json_extract(body, '$.kind') AS kind
 			FROM app_event WHERE subject_id = ?1 AND family = 'engagement' AND at < ?2)
@@ -256,11 +267,18 @@ pub async fn weekly(conn: &mut SqliteConnection, subject: &str, week: IsoWeek, n
 			surface: row.surface,
 			first_day: day_of(&row.first)?,
 			last_taken_day: row.last_taken.as_deref().map(day_of).transpose()?,
+			last_opened_day: row.last_opened.as_deref().map(day_of).transpose()?,
 		})
 	})
 	.collect::<Result<Vec<_>, EventError>>()?;
 
-	Ok(Weekly { week: week.label(), weeks, seen })
+	let friction = crate::friction::friction(conn, subject, week, first.as_deref()).await?;
+	Ok(Weekly {
+		week: week.label(),
+		weeks,
+		seen,
+		friction,
+	})
 }
 
 /// The day on [`ZONE`]'s clock of `at`, a stored instant, as `2026-11-12`.

@@ -1,7 +1,7 @@
 [package]
 name = "leetype_runner"
 description = "Compiles and runs a LeetType round's programs offline, recording one RunResult per variant and constraint set"
-readme = "README.md"
+readme.workspace = true
 categories = ["development-tools"]
 keywords = ["leetype", "rounds", "runner", "rustc"]
 version.workspace = true
