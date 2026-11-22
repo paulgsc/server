@@ -1,7 +1,7 @@
 [package]
 name = "mailbox_repo"
 description = "Home's append-only copy of the Jobs mailbox's files, per subject — storage layer"
-readme = "README.md"
+readme.workspace = true
 categories = ["database"]
 keywords = ["jobs", "mailbox", "sqlite", "repository"]
 version.workspace = true

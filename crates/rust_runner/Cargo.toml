@@ -1,7 +1,7 @@
 [package]
 name = "rust_runner"
 description = "Compiles and runs one Rust program under limits, for LeetType's recorder and the rust-runner service that records Rust Rounds"
-readme = "README.md"
+readme.workspace = true
 categories = ["development-tools"]
 keywords = ["rustc", "runner", "sandbox", "rust-rounds"]
 version.workspace = true

@@ -155,6 +155,32 @@ pub async fn record(conn: &mut SqliteConnection, subject: &str) -> Result<Record
 	Ok(Record { events })
 }
 
+/// The friction (1 to 5) of every `debrief` `subject` said between `from`
+/// (included) and `to` (excluded), as `at` is stored, lowest first; a
+/// debrief whose friction went unsaid is not one.
+///
+/// The one figure of the record the walkthrough's friction measures read
+/// (paulgsc/some-ui WALK5, the owner's C861: "Applying's median debrief
+/// friction"): no pick, company, chip or word leaves here. One range read of
+/// `jobs_event_order`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn debrief_frictions(conn: &mut SqliteConnection, subject: &str, from: &str, to: &str) -> Result<Vec<i64>, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"SELECT friction AS "friction!: i64"
+		FROM (SELECT json_extract(body, '$.friction') AS friction FROM jobs_event
+			WHERE subject_id = ?1 AND at >= ?2 AND at < ?3 AND json_extract(body, '$.type') = 'debrief')
+		WHERE friction IS NOT NULL
+		ORDER BY friction"#,
+		subject,
+		from,
+		to
+	)
+	.fetch_all(&mut *conn)
+	.await
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{put_event, record, Change, JobsError};

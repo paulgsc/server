@@ -59,7 +59,7 @@ pub struct Schedule {
 /// # Errors
 /// The first entry that does not parse, by its text: a schedule that is
 /// silently ignored is the failure this exists to catch.
-pub fn parse_schedules(text: &str) -> Result<Vec<Schedule>, String> {
+pub(crate) fn parse_schedules(text: &str) -> Result<Vec<Schedule>, String> {
 	let mut schedules: Vec<Schedule> = Vec::new();
 	for entry in text.split(';').map(str::trim).filter(|entry| !entry.is_empty()) {
 		let parts: Vec<&str> = entry.split_whitespace().collect();
@@ -83,7 +83,7 @@ pub fn parse_schedules(text: &str) -> Result<Vec<Schedule>, String> {
 /// is due at the first instant after the gap; on a day it repeats it, at the
 /// first of the two.
 #[must_use]
-pub fn last_due(schedule: &Schedule, now: DateTime<Utc>) -> DateTime<Utc> {
+pub(crate) fn last_due(schedule: &Schedule, now: DateTime<Utc>) -> DateTime<Utc> {
 	let today = now.with_timezone(&schedule.zone).date_naive();
 	due_on(schedule, today)
 		.filter(|due| *due <= now)
@@ -115,7 +115,7 @@ const RECORDS_READ: i64 = 5;
 ///
 /// # Errors
 /// Any storage failure.
-pub async fn last_started(db: &SqlitePool, subject: &str, routine: Routine, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, mailbox_repo::MailboxError> {
+pub(crate) async fn last_started(db: &SqlitePool, subject: &str, routine: Routine, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, mailbox_repo::MailboxError> {
 	let mut conn = db.acquire().await.map_err(mailbox_repo::MailboxError::Storage)?;
 	let records = match routine {
 		Routine::Jobs => mailbox_repo::jobs_runs(&mut conn, subject, RECORDS_READ).await,
@@ -132,7 +132,7 @@ fn started_at(body: &[u8]) -> Option<DateTime<Utc>> {
 
 /// Set both gauges for every scheduled routine. A read that fails leaves
 /// that routine's last-run gauge as it was and says so in the log.
-pub async fn stamp(db: &SqlitePool, subject: &str, schedules: &[Schedule], now: DateTime<Utc>) {
+pub(crate) async fn stamp(db: &SqlitePool, subject: &str, schedules: &[Schedule], now: DateTime<Utc>) {
 	for schedule in schedules {
 		let routine = schedule.routine.name();
 		crate::metrics::routine::record_due(routine, last_due(schedule, now));

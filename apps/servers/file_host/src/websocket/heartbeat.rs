@@ -19,20 +19,3 @@ impl Default for HeartbeatPolicy {
 		}
 	}
 }
-
-impl HeartbeatPolicy {
-	pub fn with_stale_timeout(mut self, timeout: Duration) -> Self {
-		self.stale_after = timeout;
-		self
-	}
-
-	pub fn with_remove_timeout(mut self, timeout: Duration) -> Self {
-		self.remove_after_stale = timeout;
-		self
-	}
-
-	pub fn with_scan_interval(mut self, interval: Duration) -> Self {
-		self.scan_interval = interval;
-		self
-	}
-}

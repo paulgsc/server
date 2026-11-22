@@ -1,7 +1,7 @@
 [package]
 name = "rust_rounds_wire"
 description = "What the rust-runner is asked and answers, and what a recording holds: the half of the runner a client links, which starts no process"
-readme = "README.md"
+readme.workspace = true
 categories = ["development-tools"]
 keywords = ["rustc", "protocol", "rust-rounds"]
 version.workspace = true
