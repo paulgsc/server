@@ -292,3 +292,21 @@ async fn a_week_not_made_within_a_day_and_a_half_is_taken_back() {
 	assert!(done.refused.unwrap().contains("Prometheus"));
 	assert!(!folders.shots.join("2026-11-23.json").exists(), "the worker stops making it");
 }
+
+#[tokio::test]
+async fn a_cap_an_earlier_attempt_met_is_not_the_failure_said() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let (mailbox, _fake) = mailbox(vec![]);
+	run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	// An attempt the worker took as a yield met the cap; the next one failed on Grafana.
+	std::fs::write(
+		folders.status.join("2026-11-23.failed.log"),
+		"the server clip is 900000 bytes even at half size, over the mailbox's 786432\nthe recorder exited 2 soon after a pause\nGrafana's health answered 503\nthe recorder exited 1\n",
+	)
+	.unwrap();
+	let done = run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	assert_eq!(done.render_failed.as_deref(), Some("Grafana's health answered 503"));
+	assert!(done.refused.is_none());
+	assert!(folders.shots.join("2026-11-23.json").exists());
+}

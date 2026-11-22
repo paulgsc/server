@@ -338,8 +338,13 @@ pub async fn run_once<T: MailboxTransport>(mailbox: &Mailbox<T>, folders: &Folde
 			}
 		}
 	} else if now - ended > DRAWN_WITHIN {
-		// Whatever the worker makes now is drawn too late: it stops here.
-		Some(String::from("not made before Prometheus let the week's first hours go"))
+		// Whatever the worker makes now is drawn too late: it stops here,
+		// naming a failure no pass has said yet.
+		let late = String::from("not made before Prometheus let the week's first hours go");
+		Some(match failed(folders, &day).await? {
+			Failure::New(line) | Failure::Final(line) => late + "; the worker last said: " + &line,
+			Failure::None | Failure::Said => late,
+		})
 	} else {
 		match failed(folders, &day).await? {
 			Failure::None | Failure::Said => return Ok(done),
@@ -397,13 +402,18 @@ async fn failed(folders: &Folders, day: &str) -> std::io::Result<Failure> {
 	}
 	let text = tokio::fs::read_to_string(&log).await?;
 	write_whole(&folders.shots, &file(day, ".said"), b"").await?;
-	// The log is the last episode's, from its start: a cap anywhere in it
-	// is this attempt's.
-	if let Some(line) = text.lines().find(|line| line.contains(OVER_THE_CAP)) {
-		return Ok(Failure::Final(line.trim().to_owned()));
-	}
-	let why = text.lines().rev().map(str::trim).find(|line| !line.is_empty() && !line.starts_with(EXITED));
-	Ok(Failure::New(why.unwrap_or("it failed").to_owned()))
+	// The log is the episode's, every attempt appended, the worker's own
+	// line after each: the last attempt's last line before it is why. A cap
+	// an earlier attempt met (one the worker took as a yield) is not this
+	// failure's.
+	let why = text
+		.lines()
+		.rev()
+		.map(str::trim)
+		.find(|line| !line.is_empty() && !line.starts_with(EXITED))
+		.unwrap_or("it failed")
+		.to_owned();
+	Ok(if why.contains(OVER_THE_CAP) { Failure::Final(why) } else { Failure::New(why) })
 }
 
 #[cfg(test)]
