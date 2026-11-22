@@ -1,6 +1,6 @@
 {
-  "serial": 131,
-  "server_commit": "d7720f7a371766433c14a939b2a480ed7d121dc4",
+  "serial": 132,
+  "server_commit": "a8cb2d5fa00e71e32f0aa24108ba4e80507f89c7",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:v0@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"},
@@ -18,7 +18,7 @@
     "redis": {"image": "redis:8.10@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53"},
     "redis-exporter": {"image": "oliver006/redis_exporter:v1.97.0@sha256:f5f903fbe77571d455ede0453b084d6840bc62fc105efac001034421cab83b99"},
     "redisinsight": {"image": "redislabs/redisinsight:3.8@sha256:b5e19ee240abef6edb435871b90ff8a210995422e8e018ab61c0339d318a1f84"},
-    "render": {"image": "pgathondu/render:c5acea6c3f93b152a73e1779326bbf68ea4f2517@sha256:5d5b684b35e593ac15ce18b380da4e26db528d1ce4e13b95463443787cce6a3e"},
+    "render": {"image": "pgathondu/render:d7ad595679e90ff2553c91ded8af8fb0385c8e07@sha256:21b618120f94319c5e554e742369c08e0f508f7ea7aa680fe8d96fa815abc547"},
     "resume-render": {"image": "pgathondu/resume-render:11476468271838c7b7c9e31f96f6fa14aaa37a0d@sha256:bc7609abdebd091aa22dfa18be3705cf2281319f7edfa6aa5bb2a5cba29f1be2"},
     "rust-runner": {"image": "pgathondu/rust-runner:9750c1e0d653cb947a3b0893b30d3fecd67faacb@sha256:652ddd68ca1df0601e371389781adfde229692b626a65cf07b7155865584e0bf"},
     "www": {"image": "pgathondu/www:0.1.74@sha256:72b7c67b2647ae4971d902f686be749f9408e9ad746277cab703017a5cea6c63"}
