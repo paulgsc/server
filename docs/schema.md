@@ -110,8 +110,9 @@ the seed). They are classified by today's code, and the call may move them.
    - `curriculum_publication.curriculum_id` → `activities` or `curriculum`, depending on `source`;
    - `note_id` → `voice_note`, from `voice_note_audio`, `voice_transcript`,
      `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_meaning`,
-     `voice_note_set_aside`, `voice_note_attention`, `studio_take_move`, `mailbox_transcript` and
-     `game_bite`;
+     `voice_note_set_aside`, `voice_note_attention`, `voice_note_fast_track`,
+     `studio_take_move`, `mailbox_transcript` and `game_bite`, and `stage_want.item_key` for
+     the transcriber's stage;
    - `mailbox_leetype_log.session_id` → `leetype_session_event.session_id`;
    - `studio_friction.sitting_id` → `studio_sitting_event.sitting_id`.
 

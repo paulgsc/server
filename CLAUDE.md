@@ -145,7 +145,7 @@ the shortest life that works, and nothing recreated leaves its old copy behind.
     SHA tags. That is Docker Hub's storage, not this repo's.
   - `.github/docker-changesets/<sha>.json`: one per image-affecting merge, consumed by
     `publish-image-changesets.yml` and never deleted afterwards, so they accumulate on
-    `main` (54 files in October, 256 and 80 KB on 2026-11-21). Small, but a tail; removing
+    `main` (54 files in October; 256 files and 80 KB on 2026-11-21). Small, but a tail; removing
     consumed ones would add a writer to `main`, so it is left as it is until that is
     decided.
   - Bot branches (`bot/server-route-snapshot` in some-ui,

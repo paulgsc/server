@@ -213,7 +213,7 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 	(
 		"stage_want",
 		State,
-		"what each waiter waits on in a shared stage right now (#1091): derived from the waiter's own record and replaced whole by its next pass",
+		"what each waiter waits on in a shared stage right now (#1091): derived from the waiter's own record, replaced whole by its next pass, and deleted with a take or its account",
 	),
 	("storage_sample", AppendOnly, "one row set per UTC day; never replaced or deleted"),
 	("studio_friction", AppendOnly, "how each Studio sitting went"),
