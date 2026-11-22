@@ -41,13 +41,28 @@
 //! transcript carries it, so no reader judges a transcript for itself.
 //!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
-//! 500 MB while loaded, for as long as the server runs, and hears a minute
-//! of speech in about a minute on two threads. Off unless
-//! `TRANSCRIBE_ENABLED`; on, the server refuses to start without a model,
-//! the VAD model and ffmpeg.
+//! 500 MB while loaded, for as long as the server runs. It hears on
+//! [`default_threads`] (two, under file-host's compose cap). Measured on one
+//! 2.1 GHz Xeon core, the decode takes about 1.3 s a second of speech, two
+//! threads a little over half that, and each language detection
+//! an encoder pass, bounded by the speech (`engine`, TR2, has the figures). Off unless `TRANSCRIBE_ENABLED`; on, the
+//! server refuses to start without a model, the VAD model and ffmpeg.
+//!
+//! **What it says while it works** (TR3, C898): a line per attempt as it
+//! ends (`log_attempt`), its kind, how long it took, and how much work it
+//! was, beside the pass's own line at the end. A pass of [`pass::BATCH`]
+//! notes can take hours; the worker says something at least once a note's
+//! [`DEADLINE`] while it hears, except of an attempt a shutdown cut short or
+//! one whose note left with its account midway, which keep nothing.
+//!
+//! **It gives the lane a turn** (`turn`, TR4): after [`turn::TURN`] of
+//! hearing in a row while a render waits, it hears nothing for
+//! [`turn::GIVE`], so a backlog never holds the renders for good
+//! (docs/home-compute.md invariant 2).
 
 pub mod engine;
 pub mod pass;
+pub mod turn;
 pub mod verbatim;
 pub mod verdict;
 
@@ -81,6 +96,18 @@ pub const MIN_DEADLINE: Duration = Duration::from_secs(60);
 pub const DEADLINE: Duration = Duration::from_secs(600);
 
 const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && DEADLINE.as_secs() >= MIN_DEADLINE.as_secs());
+
+/// The transcriber's promise as a shared stage (`crate::stage`, VH7).
+///
+/// A note is heard within this long of reaching home, or the stage is
+/// degraded. Policy, moved by a call (C900, moved by C904,
+/// paulgsc/some-ui#3333): the worst a working transcriber does by design
+/// fits, with room to spare: a turn given to the renders ([`turn::GIVE`],
+/// TR4) holding every note, an interval to be picked up, and one
+/// deadline-long note ahead of it.
+pub const HEARD_WITHIN: Duration = Duration::from_secs(25 * 60);
+
+const _: () = assert!(HEARD_WITHIN.as_secs() > turn::GIVE.as_secs() + INTERVAL.as_secs() + DEADLINE.as_secs());
 
 /// The whisper model, where compose mounts `TRANSCRIBE_MODELS_DIR`
 /// (`infra/compose/file_host.yml`) and `nix/whisper-manager` downloads it
@@ -123,7 +150,12 @@ impl TranscribeContext {
 			info!("voice-note transcription is not enabled; home keeps notes without hearing them");
 			return Ok(None);
 		}
-		let engine = Whisper::load(&PathBuf::from(MODEL), &PathBuf::from(VAD_MODEL), default_threads())?;
+		let threads = default_threads();
+		let engine = Whisper::load(&PathBuf::from(MODEL), &PathBuf::from(VAD_MODEL), threads)?;
+		// What whisper.cpp was built with (AVX2, FMA, F16C…) and how many
+		// threads it hears on: a hearing's speed turns on both, and nothing
+		// else says them.
+		info!(threads, system_info = whisper_rs::print_system_info(), "voice-note transcriber loaded");
 		Ok(Some(Self {
 			engine: Arc::new(engine),
 			interval: INTERVAL,
@@ -163,7 +195,7 @@ impl<H: Hear> Hear for Held<H> {
 	}
 
 	fn hear(&self, audio: &[u8], decode: Decode, language: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
-		let _hold = self.interactive.hold();
+		let _hold = self.interactive.hold(crate::call_weeks::lane::Kind::Voice);
 		self.inner.hear(audio, decode, language, deadline, cancel)
 	}
 }
@@ -173,6 +205,7 @@ impl<H: Hear> Hear for Held<H> {
 fn spawn(state: &AppState, context: TranscribeContext) {
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
+	let interactive = state.interactive.clone();
 	let engine = Arc::new(Held {
 		inner: Arc::clone(&context.engine),
 		interactive: state.interactive.clone(),
@@ -188,6 +221,8 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 		let mut ticker = tokio::time::interval(context.interval);
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut guard = crate::contention::Guard::host();
+		// How long it may hold the lane in a row while a render waits (TR4).
+		let mut turn = turn::Turn::new(interactive);
 		loop {
 			tokio::select! {
 				() = cancel.cancelled() => {
@@ -200,7 +235,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 					// Each transcript heard wakes the mailbox's pass as soon as
 					// it is kept, not when the batch ends (MBP2).
 					let filed = || outbox.filed();
-					let result = pass::run_once_telling(&db, &engine, meaning, &context.deletion, context.deadline, &mut guard, &cancel, &crate::mailbox::pass::now, &filed).await;
+					let result = pass::run_once_telling(&db, &engine, meaning, &context.deletion, context.deadline, (&mut guard, &mut turn), &cancel, &crate::mailbox::pass::now, &filed).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
 				}
@@ -222,6 +257,13 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 		crate::metrics::contention::record("transcribe", guard);
 		if done.excused > 0 {
 			info!("voice-note transcription gave way: a note ran to its deadline while the box was contended, so it is nobody's and heard again next pass");
+		}
+		if done.gave_way {
+			info!(
+				turn_minutes = turn::TURN.as_secs() / 60,
+				give_minutes = turn::GIVE.as_secs() / 60,
+				"voice-note transcription gave the lane a turn: it had heard for its turn while a render waited"
+			);
 		}
 		if done.judged_anyway > 0 {
 			warn!(
@@ -250,6 +292,21 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 	}
 }
 
+/// One attempt's log line, as it ends (TR3, C898). Never a note's text,
+/// audio, id or subject (docs/identity.md invariant 23).
+pub(crate) fn log_attempt(kind: &'static str, verbatim: bool, took: Duration, audio_ms: Option<i64>, work: engine::Work) {
+	info!(
+		kind,
+		verbatim,
+		took_s = took.as_secs(),
+		audio_s = audio_ms.map(|ms| ms / 1000),
+		speech_s = work.speech_ms.map(|ms| ms / 1000),
+		detections = work.detections,
+		runs = work.runs,
+		"voice-note transcription attempt"
+	);
+}
+
 /// What failed, without the database's own message.
 const fn kind(err: &voice_repo::VoiceError) -> &'static str {
 	match err {
@@ -262,6 +319,7 @@ const fn kind(err: &voice_repo::VoiceError) -> &'static str {
 mod tests {
 	use super::{Cancelled, Decode, Hear, Heard, Held};
 	use crate::call_weeks::lane::Interactive;
+	use crate::transcribe::engine::Work;
 	use std::sync::{Arc, Mutex};
 	use std::time::Instant;
 	use tokio_util::sync::CancellationToken;
@@ -288,6 +346,7 @@ mod tests {
 				outcome: Outcome::Silent,
 				duration_ms: None,
 				measures: None,
+				work: Work::none(),
 			})
 		}
 	}

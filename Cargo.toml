@@ -25,6 +25,7 @@ members = [
   "crates/db/game_feed",
   "crates/db/call_week",
   "crates/db/cards_essay",
+  "crates/db/stage",
   "crates/db/clip_frame",
   "crates/db/pd_fill",
   "crates/db/korean",
@@ -175,6 +176,7 @@ curriculum_repo = { path = "crates/db/curriculum" }
 game_feed_repo = { path = "crates/db/game_feed" }
 call_week_repo = { path = "crates/db/call_week" }
 cards_essay_repo = { path = "crates/db/cards_essay" }
+stage_repo = { path = "crates/db/stage" }
 clip_frame_repo = { path = "crates/db/clip_frame" }
 lane = { path = "crates/lane" }
 pd_fill_repo = { path = "crates/db/pd_fill" }

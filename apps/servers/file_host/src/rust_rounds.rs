@@ -172,7 +172,7 @@ fn say(change: Change) {
 /// from ever passing its hold-down.
 impl<R: Runner> Runner for Held<R> {
 	fn exchange(&self, request: &Request, timeout: Duration) -> Result<Response, AskError> {
-		let _hold = matches!(request, Request::Record { .. }).then(|| self.interactive.hold());
+		let _hold = matches!(request, Request::Record { .. }).then(|| self.interactive.hold(crate::call_weeks::lane::Kind::RustRounds));
 		self.inner.exchange(request, timeout)
 	}
 }

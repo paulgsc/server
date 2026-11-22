@@ -7,7 +7,7 @@
 //! (`lane_idle`). No label carries a job id or a week: the verb, the reason
 //! and the signal's name are the only labels, each from a closed set.
 
-use crate::call_weeks::lane::Readable;
+use crate::call_weeks::lane::{ByKind, Kind, Readable};
 use ::lane::{Decision, Policy, Signals, Verb, Why};
 
 const VERBS: [Verb; 3] = [Verb::Run, Verb::Pause, Verb::Stop];
@@ -37,6 +37,7 @@ pub fn record_started(policy: &Policy, declared_peak_bytes: u64) {
 	metrics::gauge!("lane_pressure_limit_pct").set(policy.pressure_limit_pct);
 	metrics::gauge!("lane_declared_peak_bytes").set(as_f64(declared_peak_bytes));
 	metrics::gauge!("lane_last_decision_timestamp_seconds").set(0.0);
+	record_busy_by([false; Kind::ALL.len()]);
 }
 
 /// One tick: the decision, the signals, and whether it was written. A
@@ -69,6 +70,19 @@ pub fn record(decision: &Decision, signals: &Signals, readable: &Readable, idle:
 	}
 	if let Some(at) = written_at {
 		metrics::gauge!("lane_last_decision_timestamp_seconds").set(signed(at));
+	}
+}
+
+/// Of each kind of interactive work, whether it held the lane this tick.
+///
+/// A count of ticks, as `lane_ticks_total` is, so the share of an hour the
+/// lane was held for each kind is exact, whatever the scrape interval:
+/// `increase(lane_busy_ticks_total[1h])` over `lane_ticks_total`'s
+/// (paulgsc/some-ui#3332, #3333's "who waits" on the transcriber).
+pub fn record_busy_by(busy_by: ByKind<bool>) {
+	// `ByKind` is in `Kind::ALL`'s order.
+	for (kind, busy) in Kind::ALL.into_iter().zip(busy_by) {
+		metrics::counter!("lane_busy_ticks_total", "kind" => kind.name()).increment(u64::from(busy));
 	}
 }
 

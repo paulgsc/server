@@ -33,9 +33,15 @@ pub fn record_pass_started() {
 }
 
 /// Whether the pass failed: storage, or any essay it could not read or write.
+///
+/// A pass that read its essays also says how many wait on a take not heard
+/// yet, the transcriber's waiter (`crate::stage::Waiter::CardsEssays`).
 pub fn record_pass(result: &Result<Pass, sqlx::Error>) {
 	let failing = !result.as_ref().is_ok_and(|done| done.failures.is_empty());
 	metrics::gauge!("cards_essays_pass_failing").set(if failing { 1.0 } else { 0.0 });
+	if let Ok(done) = result {
+		metrics::gauge!("cards_essays_waiting_on_takes").set(count(done.waiting_on_takes));
+	}
 }
 
 /// What the render worker has made of the essays home holds. A time that is

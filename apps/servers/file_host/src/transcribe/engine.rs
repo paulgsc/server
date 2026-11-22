@@ -43,6 +43,23 @@
 //! Its cuts are still detected, and the language detected for longest is
 //! kept as a signal of its verdict ([`Measures::detected`]).
 //!
+//! **What a hearing costs is bounded by its speech, never by its pauses**
+//! (TR2, C897). Each detection
+//! is an encoder pass over 30 seconds of mel, whatever the cut's length:
+//! measured on one thread, 16 s for a two-second cut as for an eight-second
+//! one, so a 69-second take of 24 cuts spent most of its 464 seconds
+//! detecting (206 s with the bound below), and a take with more pauses, on
+//! a slower box, ran to `transcribe::DEADLINE` and was never heard. So a hearing detects at most
+//! [`most_detections`] cuts: the first, and the longest of the rest, four a
+//! window of speech; a take with fewer pauses than that has every cut a
+//! second or longer detected, as ST23 had it, and in one with more, a cut
+//! not detected joins the run before it, as a short cut does. And each
+//! detection after the first runs only while the decode keeps its share of
+//! the deadline, reckoned from the dearest detection so far
+//! ([`leaves_the_decode_its_time`]), so a slow or loaded box detects less
+//! rather than runs out of time: on home's box, where a take of twelve cuts
+//! is within the count, that is the bound that holds it.
+//!
 //! **Each word keeps its time, and how sure Whisper was of it**
 //! (paulgsc/some-ui#2085, GWB11; paulgsc/server#577, ST22). Whisper
 //! times each token it hears ([`FullParams::set_token_timestamps`]); its
@@ -121,6 +138,8 @@ pub struct Heard {
 	/// What `super::verdict` judges a heard note on (HEARD1); none when no
 	/// speech was found, or the audio did not decode.
 	pub measures: Option<Measures>,
+	/// How much work hearing it took, whatever its outcome (TR3).
+	pub work: Work,
 }
 
 impl Heard {
@@ -129,6 +148,35 @@ impl Heard {
 			outcome,
 			duration_ms: None,
 			measures: None,
+			work: Work::none(),
+		}
+	}
+}
+
+/// How much work a hearing took (TR3, C898): what its log line says beside
+/// how long it took, so a slow hearing tells which part was slow. Counts and
+/// a length only, never what was said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Work {
+	/// How long the speech the VAD found is, once Whisper is run on it.
+	pub speech_ms: Option<i64>,
+	/// Language detections asked for: an encoder pass each, unless the cut's
+	/// mel could not be made.
+	pub detections: usize,
+	/// Runs decoded, each in its own language: an encoder pass a window each,
+	/// and its decode.
+	pub runs: usize,
+}
+
+impl Work {
+	/// No work counted: the audio did not decode, or the VAD found no speech
+	/// or could not run, so no detection or run was made.
+	#[must_use]
+	pub const fn none() -> Self {
+		Self {
+			speech_ms: None,
+			detections: 0,
+			runs: 0,
 		}
 	}
 }
@@ -355,29 +403,10 @@ impl Whisper {
 		Some((speech, cuts))
 	}
 
-	/// What Whisper hears in `speech`, cut from the note at `cuts`, by
-	/// `deadline`.
-	///
-	/// Each segment's signals go to `segments`, and the language detected
-	/// for longest to `detected`, as they are heard (HEARD1).
-	#[allow(clippy::too_many_arguments)] // the speech, how to hear it, and where its signals go
-	fn transcribe(
-		&self,
-		speech: &[f32],
-		cuts: &[Cut],
-		(decoding, language): (Decode, Option<&str>),
-		deadline: Instant,
-		cancel: &CancellationToken,
-		segments: &mut Vec<Segment>,
-		detected: &mut Option<(String, f64)>,
-	) -> Result<Outcome, Cancelled> {
-		let failed = |cancel: &CancellationToken| stopped(deadline, cancel).unwrap_or(Ok(Outcome::Failed));
-		let Ok(threads) = i32::try_from(self.threads) else {
-			return Ok(Outcome::Failed);
-		};
-		let Ok(mut state) = self.context.create_state() else {
-			return failed(cancel);
-		};
+	/// Which language each piece of `speech`, cut from the note at `cuts`, is
+	/// heard in, detected with `state` by `deadline`, counting its detections
+	/// in `work` ([`plan_runs`]).
+	fn plan(&self, state: &mut whisper_rs::WhisperState, speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken, work: &mut Work) -> Planned {
 		// The language per piece of speech the VAD found (ST23): detected at
 		// each cut a second or longer, from a mel of that cut alone, with its
 		// probability, which `full` does not report; a shorter cut joins the
@@ -390,16 +419,51 @@ impl Whisper {
 		// clamps a mel against its loudest frame, so a mel of the whole speech
 		// would let the cuts after this one decide its language. `full` makes
 		// each run's own mel before it hears that run.
+		let dearest = std::cell::Cell::new(Duration::ZERO);
 		let detect = |cut: &[f32]| -> Option<(String, f64)> {
+			let started = Instant::now();
+			work.detections += 1;
 			let mut pcm = cut[..cut.len().min(DETECT_WINDOW)].to_vec();
 			pcm.resize(pcm.len().max(DETECT_PAD), 0.0);
-			state.pcm_to_mel(&pcm, self.threads).ok()?;
-			let (id, probabilities) = state.lang_detect(0, self.threads).ok()?;
-			let language = whisper_rs::get_lang_str(id)?;
-			let probability = usize::try_from(id).ok().and_then(|id| probabilities.get(id).copied())?;
-			Some((language.to_owned(), f64::from(probability)))
+			let detected = state.pcm_to_mel(&pcm, self.threads).ok().and_then(|()| {
+				let (id, probabilities) = state.lang_detect(0, self.threads).ok()?;
+				let language = whisper_rs::get_lang_str(id)?;
+				let probability = usize::try_from(id).ok().and_then(|id| probabilities.get(id).copied())?;
+				Some((language.to_owned(), f64::from(probability)))
+			});
+			dearest.set(dearest.get().max(started.elapsed()));
+			detected
 		};
-		let runs = match plan_runs(speech, cuts, deadline, cancel, detect) {
+		let afford = |runs: usize| leaves_the_decode_its_time(Instant::now(), deadline, dearest.get(), speech.len(), runs);
+		plan_runs(speech, cuts, deadline, cancel, detect, afford)
+	}
+
+	/// What Whisper hears in `speech`, cut from the note at `cuts`, by
+	/// `deadline`.
+	///
+	/// Each segment's signals go to `segments`, and the language detected
+	/// for longest to `detected`, as they are heard (HEARD1), and how much
+	/// work it took to `work` (TR3).
+	#[allow(clippy::too_many_arguments)] // the speech, how to hear it, and where its signals go
+	fn transcribe(
+		&self,
+		speech: &[f32],
+		cuts: &[Cut],
+		(decoding, language): (Decode, Option<&str>),
+		deadline: Instant,
+		cancel: &CancellationToken,
+		segments: &mut Vec<Segment>,
+		detected: &mut Option<(String, f64)>,
+		work: &mut Work,
+	) -> Result<Outcome, Cancelled> {
+		let failed = |cancel: &CancellationToken| stopped(deadline, cancel).unwrap_or(Ok(Outcome::Failed));
+		let Ok(threads) = i32::try_from(self.threads) else {
+			return Ok(Outcome::Failed);
+		};
+		let Ok(mut state) = self.context.create_state() else {
+			return failed(cancel);
+		};
+		let runs = match self.plan(&mut state, speech, cuts, deadline, cancel, work) {
 			Planned::Runs(runs) => runs,
 			Planned::Undetected => return failed(cancel),
 			Planned::Stopped(stopped) => return stopped,
@@ -412,6 +476,7 @@ impl Whisper {
 			Some(language) => held_to(&runs, language),
 			None => runs,
 		};
+		work.runs = runs.len();
 		let mut text = String::new();
 		let mut heard = Vec::new();
 		let special = self.context.token_eot();
@@ -527,6 +592,7 @@ impl Hear for Whisper {
 			outcome,
 			duration_ms,
 			measures: None,
+			work: Work::none(),
 		};
 		let Some((speech, cuts)) = self.speech(&pcm) else {
 			return Ok(heard(Outcome::Failed));
@@ -541,9 +607,13 @@ impl Hear for Whisper {
 			return Ok(heard(Outcome::Deadline));
 		}
 		let (mut segments, mut detected) = (Vec::new(), None);
-		let outcome = self.transcribe(&speech, &cuts, (decoding, language), deadline, cancel, &mut segments, &mut detected)?;
+		let mut work = Work {
+			speech_ms: i64::try_from(speech.len() * 1000 / SAMPLE_RATE).ok(),
+			..Work::none()
+		};
+		let outcome = self.transcribe(&speech, &cuts, (decoding, language), deadline, cancel, &mut segments, &mut detected, &mut work)?;
 		let measures = matches!(outcome, Outcome::Heard { .. }).then(|| Measures::of(&speech, segments, detected));
-		Ok(Heard { measures, ..heard(outcome) })
+		Ok(Heard { measures, work, ..heard(outcome) })
 	}
 }
 
@@ -708,14 +778,28 @@ enum Planned {
 /// Which language each cut of `speech` is heard in: `detect(samples)` says
 /// the language of one cut's own samples, and nothing past its end, and how
 /// sure, asked for the first cut and every cut at least [`DETECT_MIN_MS`]
-/// long; a shorter cut, or one whose detection fails, joins the run before
-/// it, and consecutive cuts in one language are one run. Each detection is an
-/// encoder pass, so the deadline and `cancel` are checked before each, as
-/// the runs are before each is heard.
-fn plan_runs(speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken, mut detect: impl FnMut(&[f32]) -> Option<(String, f64)>) -> Planned {
+/// long that [`detected_cuts`] picks; a shorter cut, one not picked, or one
+/// whose detection fails, joins the run before it, and consecutive cuts in
+/// one language are one run. Each detection is an encoder pass, so the
+/// deadline and `cancel` are checked before each, as the runs are before
+/// each is heard, and every detection after the first is asked of
+/// `afford(runs)`, with the runs planned so far: once it says no, no other
+/// cut is detected, and the rest of the speech joins the run before it
+/// (TR2, C897).
+fn plan_runs(
+	speech: &[f32],
+	cuts: &[Cut],
+	deadline: Instant,
+	cancel: &CancellationToken,
+	mut detect: impl FnMut(&[f32]) -> Option<(String, f64)>,
+	mut afford: impl FnMut(usize) -> bool,
+) -> Planned {
+	let picked = detected_cuts(cuts, speech.len());
 	let mut runs: Vec<Run> = Vec::new();
-	for cut in cuts {
-		let detected = if runs.is_empty() || cut.len * 1000 / SAMPLE_RATE >= DETECT_MIN_MS {
+	let mut affordable = true;
+	for (n, cut) in cuts.iter().enumerate() {
+		affordable = affordable && (runs.is_empty() || !picked[n] || afford(runs.len()));
+		let detected = if runs.is_empty() || (picked[n] && affordable) {
 			if let Some(stopped) = stopped(deadline, cancel) {
 				return Planned::Stopped(stopped);
 			}
@@ -744,6 +828,69 @@ fn plan_runs(speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &Cancellat
 	} else {
 		Planned::Runs(runs)
 	}
+}
+
+/// How many encoder windows `speech_len` samples of speech fill: what the
+/// decode pays for it at least, one encoder pass a window.
+const fn windows(speech_len: usize) -> usize {
+	let windows = speech_len.div_ceil(DETECT_WINDOW);
+	if windows == 0 {
+		1
+	} else {
+		windows
+	}
+}
+
+/// The most detections one hearing makes, a window of speech.
+const DETECTS_PER_WINDOW: usize = 4;
+
+/// The most detections a hearing of `speech_len` samples makes: the first
+/// cut's, and [`DETECTS_PER_WINDOW`] a window (TR2, C897).
+const fn most_detections(speech_len: usize) -> usize {
+	1 + DETECTS_PER_WINDOW * windows(speech_len)
+}
+
+/// Which of `cuts` [`plan_runs`] may detect, by index (TR2, C897): the
+/// first always, and of those at least [`DETECT_MIN_MS`] long, the longest,
+/// as many as [`most_detections`] leaves, the earlier first between two of
+/// a length. A take with fewer pauses than that has every such cut detected,
+/// as ST23 had it; a take with more has its longest pieces of speech told,
+/// and each other cut joins the run before it, as a short cut does.
+fn detected_cuts(cuts: &[Cut], speech_len: usize) -> Vec<bool> {
+	let mut picked = vec![false; cuts.len()];
+	let Some(first) = picked.first_mut() else { return picked };
+	*first = true;
+	let mut long: Vec<(usize, usize)> = cuts
+		.iter()
+		.enumerate()
+		.skip(1)
+		.filter(|(_, cut)| cut.len * 1000 / SAMPLE_RATE >= DETECT_MIN_MS)
+		.map(|(n, cut)| (n, cut.len))
+		.collect();
+	long.sort_by(|(a, a_len), (b, b_len)| b_len.cmp(a_len).then(a.cmp(b)));
+	for (n, _) in long.into_iter().take(most_detections(speech_len) - 1) {
+		picked[n] = true;
+	}
+	picked
+}
+
+/// What the decode of a window may take, in encoder passes, held back from
+/// detection: a window decodes in about two and a half of its encoder's
+/// passes on one thread (measured for TR2), and whisper.cpp's fallback at a
+/// higher temperature decodes a hard window again.
+const DECODE_PASSES_PER_WINDOW: u32 = 4;
+
+/// Whether one more detection, costing `pass` as the dearest so far did,
+/// still leaves the decode of `speech_len` samples its share before
+/// `deadline`, with `runs` planned so far (TR2, C897):
+/// [`DECODE_PASSES_PER_WINDOW`] passes for each window, and a pass for each
+/// run past the first, which opens a window of its own, the run this
+/// detection may start included.
+fn leaves_the_decode_its_time(now: Instant, deadline: Instant, pass: Duration, speech_len: usize, runs: usize) -> bool {
+	let windows = u32::try_from(windows(speech_len)).unwrap_or(u32::MAX);
+	let extra_runs = u32::try_from(runs).unwrap_or(u32::MAX);
+	let reserve = pass.saturating_mul(DECODE_PASSES_PER_WINDOW.saturating_mul(windows).saturating_add(extra_runs).saturating_add(1));
+	now.checked_add(reserve).is_some_and(|after| after <= deadline)
 }
 
 /// `runs` as one run heard in `language` (HEARD1): every cut of the speech,
@@ -1317,7 +1464,7 @@ mod tests {
 		let (speech, cuts) = speech_of(&[2_000, 500, 3_000, 1_500, 1_200]);
 		let mut asked = Vec::new();
 		let languages = [Some(("en", 0.9)), None, Some(("ko", 0.8)), Some(("en", 0.95)), None];
-		let Planned::Runs(runs) = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
+		let Planned::Runs(runs) = plan(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
 			let n = which_cut(samples);
 			asked.push(n);
 			languages[n].map(|(language, p)| (String::from(language), p))
@@ -1339,12 +1486,118 @@ mod tests {
 		assert_eq!(super::held_to(&runs, "pt"), [run("pt", 0.0, 0, 8_200)], "never detected: no probability");
 		let never = |_: &[f32]| None;
 		assert_eq!(
-			plan_runs(&speech, &cuts, later(), &CancellationToken::new(), never),
+			plan(&speech, &cuts, later(), &CancellationToken::new(), never),
 			Planned::Undetected,
 			"nothing to hear in a language nobody could tell"
 		);
 		let english = |_: &[f32]| Some((String::from("en"), 1.0));
-		assert_eq!(plan_runs(&[], &[], later(), &CancellationToken::new(), english), Planned::Undetected);
+		assert_eq!(plan(&[], &[], later(), &CancellationToken::new(), english), Planned::Undetected);
+	}
+
+	/// [`plan_runs`] on a box with all the time it needs: every detection
+	/// picked is affordable.
+	fn plan(speech: &[f32], cuts: &[Cut], deadline: Instant, cancel: &CancellationToken, detect: impl FnMut(&[f32]) -> Option<(String, f64)>) -> Planned {
+		plan_runs(speech, cuts, deadline, cancel, detect, |_| true)
+	}
+
+	/// TR2 (C897): a hearing's detections are bounded by its speech's
+	/// length, never by its pauses. Generated over every number of cuts from
+	/// 1 to 60 and every cut length from half a second to 40 seconds, in
+	/// three shapes (all alike, growing, alternating short and long): the
+	/// first cut is always detected; no more than `most_detections` are; only
+	/// cuts a second or longer are, after the first; a take with no more such
+	/// cuts than that has every one detected, as ST23 had it; and the cuts
+	/// detected are the longest.
+	#[test]
+	fn a_takes_detections_are_bounded_by_its_length_not_its_pauses() {
+		let shapes: [&dyn Fn(usize, usize) -> usize; 3] = [&|_, len| len, &|n, len| len + n * 250, &|n, len| if n % 2 == 0 { 600 } else { len }];
+		for count in 1..=60 {
+			for len_ms in [500, 900, 1_000, 1_900, 7_900, 15_000, 40_000] {
+				for shape in shapes {
+					let lens: Vec<usize> = (0..count).map(|n| shape(n, len_ms)).collect();
+					let (speech, cuts) = speech_of(&lens);
+					let picked = super::detected_cuts(&cuts, speech.len());
+					let detected: Vec<usize> = (0..count).filter(|&n| picked[n]).collect();
+					let long: Vec<usize> = (1..count).filter(|&n| lens[n] >= super::DETECT_MIN_MS).collect();
+					let most = super::most_detections(speech.len());
+					assert!(picked[0], "{lens:?}: the first cut");
+					assert!(
+						detected.len() <= most,
+						"{lens:?}: {} detections for {} windows",
+						detected.len(),
+						super::windows(speech.len())
+					);
+					assert!(detected.iter().skip(1).all(|n| long.contains(n)), "{lens:?}: only cuts a second or longer");
+					if long.len() < most {
+						assert_eq!(detected.len(), long.len() + 1, "{lens:?}: every cut ST23 would detect");
+					}
+					let shortest_picked = detected.iter().skip(1).map(|&n| lens[n]).min();
+					let longest_left = long.iter().filter(|n| !picked[**n]).map(|&n| lens[n]).max();
+					if let (Some(picked), Some(left)) = (shortest_picked, longest_left) {
+						assert!(picked >= left, "{lens:?}: a {left} ms cut left for a {picked} ms one");
+					}
+					// The plan detects exactly the cuts picked, and its runs cover
+					// the whole speech, end to end.
+					let mut asked = Vec::new();
+					let Planned::Runs(runs) = plan(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
+						asked.push(which_cut(samples));
+						Some((String::from(if asked.len() % 2 == 0 { "ko" } else { "en" }), 0.9))
+					}) else {
+						panic!("no runs");
+					};
+					assert_eq!(asked, detected, "{lens:?}");
+					assert_eq!((runs[0].at, runs.iter().map(|run| run.len).sum::<usize>()), (0, speech.len()), "{lens:?}");
+				}
+			}
+		}
+	}
+
+	/// TR2 (C897): a hearing on a slow or loaded box detects less rather than
+	/// runs to its deadline. Generated over what one encoder pass costs, from
+	/// a second to two minutes, every speech length from a second to the ten
+	/// minutes the worker hears, and a cut every two seconds: on a clock
+	/// that moves by a pass at each detection, planning stops detecting while
+	/// the decode still has `DECODE_PASSES_PER_WINDOW` passes a window, and a
+	/// pass a run, before the deadline, whenever the first detection left
+	/// it that. A box fast enough for every pick detects every one.
+	#[test]
+	fn detection_leaves_the_decode_its_time_on_every_box() {
+		let deadline = Duration::from_secs(600);
+		for pass_s in [1, 4, 8, 16, 30, 60, 120] {
+			let pass = Duration::from_secs(pass_s);
+			for speech_s in [1, 10, 30, 31, 60, 80, 120, 240, 600] {
+				// A cut every two seconds, or as many as `speech_of` can tell
+				// apart over the longest speech.
+				let len_ms = 2_000.max(speech_s * 1_000 / 200);
+				let lens = vec![len_ms; speech_s * 1_000 / len_ms + 1];
+				let (speech, cuts) = speech_of(&lens);
+				let start = Instant::now();
+				let clock = std::cell::Cell::new(Duration::ZERO);
+				let planned = plan_runs(
+					&speech,
+					&cuts,
+					later(),
+					&CancellationToken::new(),
+					|samples| {
+						clock.set(clock.get() + pass);
+						Some((String::from(if which_cut(samples).is_multiple_of(3) { "en" } else { "ko" }), 0.9))
+					},
+					|runs| super::leaves_the_decode_its_time(start + clock.get(), start + deadline, pass, speech.len(), runs),
+				);
+				let Planned::Runs(runs) = planned else { panic!("no runs") };
+				let windows = u32::try_from(super::windows(speech.len())).unwrap();
+				let decode = |runs: usize| pass * (super::DECODE_PASSES_PER_WINDOW * windows + u32::try_from(runs).unwrap() - 1);
+				let took = clock.get() + decode(runs.len());
+				if pass + decode(1) <= deadline {
+					assert!(took <= deadline, "a {pass_s} s pass, {speech_s} s of speech: {took:?} with {} runs", runs.len());
+				}
+				let picked = super::detected_cuts(&cuts, speech.len()).iter().filter(|picked| **picked).count();
+				let detections = u32::try_from(picked).unwrap();
+				if pass * (2 * detections + super::DECODE_PASSES_PER_WINDOW * windows + 1) <= deadline {
+					assert_eq!(clock.get(), pass * detections, "a {pass_s} s pass, {speech_s} s of speech: room for every pick");
+				}
+			}
+		}
 	}
 
 	/// Speech of cuts `lens_ms` long, run end to end, each cut's samples its
@@ -1379,7 +1632,7 @@ mod tests {
 	fn a_detection_is_handed_only_its_own_cut() {
 		let (speech, cuts) = speech_of(&[1_500, 1_000, 20_000, 300, 2_000]);
 		let mut handed: Vec<Vec<f32>> = Vec::new();
-		let planned = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
+		let planned = plan(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
 			handed.push(samples.to_vec());
 			Some((String::from(if which_cut(samples) == 1 { "ko" } else { "en" }), 0.9))
 		});
@@ -1396,7 +1649,7 @@ mod tests {
 		let (speech, cuts) = speech_of(&[2_000, 2_000, 2_000, 2_000]);
 		let cancel = CancellationToken::new();
 		let mut asked = 0;
-		let planned = plan_runs(&speech, &cuts, later(), &cancel, |_| {
+		let planned = plan(&speech, &cuts, later(), &cancel, |_| {
 			asked += 1;
 			if asked == 2 {
 				cancel.cancel();
@@ -1408,7 +1661,7 @@ mod tests {
 
 		let deadline = Instant::now() + Duration::from_millis(500);
 		let mut asked = 0;
-		let planned = plan_runs(&speech, &cuts, deadline, &CancellationToken::new(), |_| {
+		let planned = plan(&speech, &cuts, deadline, &CancellationToken::new(), |_| {
 			asked += 1;
 			if asked == 2 {
 				std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
@@ -1419,7 +1672,7 @@ mod tests {
 		assert_eq!(asked, 2, "no detection runs past the deadline");
 
 		let mut asked = 0;
-		let planned = plan_runs(&speech, &cuts, Instant::now(), &CancellationToken::new(), |_| {
+		let planned = plan(&speech, &cuts, Instant::now(), &CancellationToken::new(), |_| {
 			asked += 1;
 			None
 		});
@@ -1488,7 +1741,7 @@ mod tests {
 	fn a_run_is_heard_from_its_own_samples_and_its_words_land_where_it_sits_in_the_note() {
 		let (speech, cuts) = speech_of(&[2_000, 500, 3_000, 1_500]);
 		let languages = ["en", "", "ko", "en"];
-		let Planned::Runs(runs) = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
+		let Planned::Runs(runs) = plan(&speech, &cuts, later(), &CancellationToken::new(), |samples| {
 			Some((String::from(languages[which_cut(samples)]), 0.9))
 		}) else {
 			panic!("no runs");
@@ -1509,7 +1762,7 @@ mod tests {
 
 		// A note heard in one language is one run, the whole speech: nothing
 		// past it to leak, and its times are the speech's own.
-		let Planned::Runs(one) = plan_runs(&speech, &cuts, later(), &CancellationToken::new(), |_| Some((String::from("en"), 0.9))) else {
+		let Planned::Runs(one) = plan(&speech, &cuts, later(), &CancellationToken::new(), |_| Some((String::from("en"), 0.9))) else {
 			panic!("no runs");
 		};
 		assert_eq!(one.len(), 1);

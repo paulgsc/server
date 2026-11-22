@@ -33,7 +33,9 @@ the cheapest invariant in the repo the most expensive one to run. Instead:
     Grafana is currently making.
   * and every `expr:` in an alert rule (`infra/prometheus/rules/*.yml`
     and `infra/grafana/provisioning/alerting/*.yml`, AS7 #525): an alert
-    on a name nothing emits never fires, which is the same lie.
+    on a name nothing emits never fires, which is the same lie. A
+    `record:` in those files emits its series (Prometheus writes it), so it
+    counts as emitted, and is held to being queried like any other name.
 
 Not in scope, both by the same reasoning inventory.rs states for routes:
 label-set correctness (names only) and PromQL semantic validation (a
@@ -177,6 +179,14 @@ def emitted_metrics() -> dict[str, list[str]]:
 				continue  # a non-const, non-literal first argument (e.g. a runtime String) — not lexically resolvable, and not a name this check can assert about either way
 			lineno = text.count("\n", 0, match.start()) + 1
 			sites.setdefault(name, []).append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
+	# A recording rule emits its series too (Prometheus writes it), from
+	# inputs its own `expr:` queries, so it is held to both directions like
+	# a facade name: queried somewhere, and its inputs emitted.
+	for path in alert_rule_sources():
+		for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+			match = YAML_RECORD.match(line)
+			if match:
+				sites.setdefault(match.group(1), []).append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
 	return sites
 
 
@@ -195,6 +205,7 @@ def alert_rule_sources() -> list[Path]:
 # A YAML `expr:` either inline or as a `|` block whose lines sit deeper than
 # the key. Line-based on purpose, like the rest of this stdlib-only scan.
 YAML_EXPR = re.compile(r"^(\s*)expr:\s*(.*)$")
+YAML_RECORD = re.compile(r"^\s*-?\s*record:\s*([a-zA-Z_:][a-zA-Z0-9_:]*)\s*$")
 
 
 def yaml_exprs(text: str) -> list[tuple[int, str]]:

@@ -175,9 +175,11 @@ environment variable a binary or compose reads (a new one, or a class change) it
 (`infra/env-classes.json` only shrinks). For a new table, a table rebuild, or SQL that rewrites
 or deletes rows, it is `docs/schema.md`, "Invariants": every table has a lifecycle, an
 append-only table keeps its trigger, and nothing rewrites one outside a listed discard site. For
-Studio takes on the conveyor (`studio_take_move`,
-`voice_repo::conveyor`) it is `docs/conveyor.md`, "Invariants": moves are ordered by their
-number, never by a clock. Those sections are the source of truth;
+a shared stage (`crate::stage`, a node other pipelines wait on) it is `docs/shared-stages.md`,
+"Invariants": read over the whole queue, never the batch, a time not an age, the bound is
+policy. For Studio takes on the conveyor (`studio_take_move`, `voice_repo::conveyor`) it is
+`docs/conveyor.md`, "Invariants": moves are ordered by their number, never by a clock. Those
+sections are the source of truth;
 this list is only a pointer to them. If the change
 would break one, **stop and raise it** on the issue or PR. Name the invariant and the shape that
 breaks it, and wait for a decision instead of building it or patching around it. Two things
