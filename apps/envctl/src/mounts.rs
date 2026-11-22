@@ -43,13 +43,10 @@ pub(crate) fn problems(raw: &Value, tracked: &[&str]) -> Vec<String> {
 			let Some(source) = volume.get("source").and_then(Value::as_str) else {
 				continue;
 			};
-			let Some(rest) = source
-				.strip_prefix(REPO_ROOT)
-				.and_then(|rest| rest.split_once('}'))
-				.map(|(_, path)| path.trim_start_matches('/'))
-			else {
+			let Some(after) = source.strip_prefix(REPO_ROOT).and_then(|rest| rest.split_once('}')).map(|(_, path)| path) else {
 				continue;
 			};
+			let rest = after.trim_start_matches('/');
 			let target = volume.get("target").and_then(Value::as_str).unwrap_or("?");
 			let held = tracked
 				.iter()
@@ -59,7 +56,9 @@ pub(crate) fn problems(raw: &Value, tracked: &[&str]) -> Vec<String> {
 					"service {service} mounts ${{REPO_ROOT}}/{rest} at {target}, which git does not hold, so a release's worktree has none: mount it from ${{STATE_ROOT}} (docs/release.md, RL10)"
 				));
 			}
-			if !keyed(rest) {
+			// `${REPO_ROOT}infra/…` names a sibling of the worktree, not a
+			// path inside it, so only what follows a slash is the tree's.
+			if !(after.starts_with('/') && keyed(rest)) {
 				problems.push(format!(
 					"service {service} mounts ${{REPO_ROOT}}/{rest} at {target}, outside the trees a release's key reads ({}): a change to it would be taken as the release already applied and never reach home; keep what compose mounts under infra/ (docs/release.md, RL10)",
 					KEYED.join(", ")
@@ -119,6 +118,7 @@ mod tests {
 			"${REPO_ROOT:?x}/",
 			"${REPO_ROOT:?x}/infra/../scripts/render.sh",
 			"${REPO_ROOT:?x}/infrastructure",
+			"${REPO_ROOT:?x}infra/nats/nats.conf",
 		] {
 			let found = problems(&raw(source, true), &tracked);
 			assert!(
