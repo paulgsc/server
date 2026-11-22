@@ -634,32 +634,39 @@ mod tests {
 	}
 
 	/// paulgsc/server#913: 20261122004001 judges each model's last failed
-	/// attempt, numbered at least 3, that ran out before HEARD1 on a Rust
-	/// Rounds or interview take, as `judge` would have; and nothing else, nor
-	/// anything twice. Other kinds wait on the owner (C976).
+	/// attempt, numbered at least 3, that ran out before HEARD1, on a take of
+	/// every kind (C976: [`crate::Of::ALL`], so a kind added there is held
+	/// here too), as `judge` would have; and nothing else, nor anything
+	/// twice.
 	#[tokio::test]
 	async fn a_take_that_ran_out_before_verdicts_is_judged_failed() {
 		const BEFORE: i64 = 20_261_121_000_500;
 		let pool = pool().await;
 		MIGRATOR.undo(&pool, BEFORE).await.unwrap();
-		sqlx::query(
-			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
-			 VALUES (?1, 'thought', 'reflection', 'session-1', 'then', 'audio/webm', 1, 's', 'now')",
-		)
-		.bind(A)
-		.execute(&pool)
-		.await
-		.unwrap();
-		for n in 1..=3 {
+		for of in crate::Of::ALL {
+			let note = String::from("ran-out-") + of.as_str();
 			sqlx::query(
-				"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
-				 VALUES (?1, 'thought', 'ran-out', 'e', ?2, 'deadline', 1, '2026-11-10')",
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, ?3, 'r', 'then', 'audio/webm', 1, 's', 'now')",
 			)
 			.bind(A)
-			.bind(n)
+			.bind(&note)
+			.bind(of.as_str())
 			.execute(&pool)
 			.await
 			.unwrap();
+			for n in 1..=3 {
+				sqlx::query(
+					"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+					 VALUES (?1, ?2, 'm', 'e', ?3, 'deadline', 1, '2026-11-10')",
+				)
+				.bind(A)
+				.bind(&note)
+				.bind(n)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
 		}
 		for n in 1..=3 {
 			let at = String::from("2026-11-10T0") + &n.to_string() + ":00:00.000Z";
@@ -696,11 +703,14 @@ mod tests {
 			expected.map(|(model, attempt, verdict, reasons, at)| (model.to_owned(), attempt, verdict.to_owned(), reasons.to_owned(), at.to_owned())),
 			"each judged as judge would, dated at its attempt"
 		);
-		let other: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_transcript_verdict WHERE note_id = 'thought'")
-			.fetch_one(&pool)
-			.await
-			.unwrap();
-		assert_eq!(other, 0, "a reflection waits on the owner's word (C976)");
+		for of in crate::Of::ALL {
+			let kept: Option<(i64, String, String)> = sqlx::query_as("SELECT attempt, verdict, reasons FROM voice_transcript_verdict WHERE note_id = ?1")
+				.bind(String::from("ran-out-") + of.as_str())
+				.fetch_optional(&pool)
+				.await
+				.unwrap();
+			assert_eq!(kept, Some((3, String::from("failed"), String::from("deadline"))), "{}: every kind is judged", of.as_str());
+		}
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(of_ending(&mut conn, A, "n", "ended").await.unwrap(), None, "an ending kept before verdicts stays unjudged");
 	}

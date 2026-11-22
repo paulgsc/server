@@ -18,12 +18,14 @@
 --
 -- The attempt judged is a model's last on a note, a failure, numbered at
 -- least 3: `file_host::transcribe::pass::ATTEMPTS`, past which the worker does
--- not try that model again. Only a Rust Rounds or interview take, the kinds
--- a week waits on (C976): whether old takes of every other kind should be
--- judged too, and so listed under Needs your attention (VH5), is the owner's
--- to say, and a later migration can widen this once they have. One judged
--- here is listed there like any take home couldn't hear. It raises no alert:
--- `TranscriptGarbled` counts verdicts as the worker keeps them, not rows.
+-- not try that model again. A take of every kind, with no list of kinds
+-- (C976, the owner: "we never descend to the granular; we implement
+-- solutions that target the family"): a kind added to `voice_repo::Of` is
+-- covered with no change here, and the test that proves this walks
+-- `Of::ALL`. One judged here is listed under Needs your attention (VH5) like
+-- any take home couldn't hear, and a Rust Rounds or interview take is filed,
+-- so its week stops waiting. It raises no alert: `TranscriptGarbled` counts
+-- verdicts as the worker keeps them, not rows.
 --
 -- Each is dated at its attempt's own `heard_at`, when `judge` would have
 -- judged it, so a note's newest verdict (`voice_repo::verdict::newest`, by
@@ -36,9 +38,7 @@ SELECT t.subject_id, t.note_id, t.model, t.attempt, 'heard-1', 'failed',
        CASE t.outcome WHEN 'failed' THEN 'engine' ELSE t.outcome END,
        t.heard_at
 FROM voice_transcript t
-JOIN voice_note note ON note.subject_id = t.subject_id AND note.note_id = t.note_id
-WHERE note.of_kind IN ('rust-round', 'interview')
-  AND t.outcome IN ('unreadable', 'too_long', 'deadline', 'failed')
+WHERE t.outcome IN ('unreadable', 'too_long', 'deadline', 'failed')
   AND t.attempt >= 3
   AND t.attempt = (SELECT MAX(later.attempt) FROM voice_transcript later
                    WHERE later.subject_id = t.subject_id AND later.note_id = t.note_id AND later.model = t.model)
