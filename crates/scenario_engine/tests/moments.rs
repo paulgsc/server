@@ -1336,6 +1336,12 @@ fn the_try_never_changes_its_touchdowns_reading() {
 		let big_play = alone.iter().find(|h| h.scenario == Scenario::BigPlay).and_then(|h| h.big_play.clone());
 		assert_eq!(big_play.is_some(), is_big, "{touchdown}: {alone:?}");
 		assert!(big_play.is_none_or(|b| b.scored && b.by == s), "{touchdown}: {alone:?}");
+		// The onside kick is read too, so its case is not vacuous.
+		assert_eq!(
+			alone.iter().any(|h| h.scenario.id() == "in.onside-kick"),
+			touchdown.contains("onside"),
+			"{touchdown}: {alone:?}"
+		);
 		for try_text in tries(s, d) {
 			let text = format!("{touchdown} {try_text}");
 			assert_eq!(read(k, kind, &text), alone, "{text}");

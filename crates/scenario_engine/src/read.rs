@@ -459,18 +459,18 @@ pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
 	}
 }
 
-/// A touchdown `play` up to its try, as `wiped_out` reads it: what follows
-/// the try's words (a flag on the try, a foul on the kickoff after) is not
-/// the play. Only a touchdown has a try, so any other play is itself: a try
-/// word elsewhere ("kick is" on a kickoff) cuts nothing.
+/// A touchdown `play` up to its try: what follows the try's words after
+/// "TOUCHDOWN" (a flag on the try, a foul on the kickoff after) is not the
+/// play. Only a touchdown has a try, so any other play is itself, and a try
+/// word before the score ("onside kick is recovered") cuts nothing. A
+/// touchdown only its type names is cut at the first try word. `wiped_out`
+/// keeps its own, wider cut: any try word on any play.
 fn before_the_try(play: &Play) -> std::borrow::Cow<'_, Play> {
 	let original = play.text.as_deref().unwrap_or_default();
 	let lower = original.to_ascii_lowercase();
-	TRY_WORDS
-		.iter()
-		.filter_map(|word| lower.find(word))
-		.min()
-		.filter(|end| kind(play).contains("touchdown") || lower[..*end].contains("touchdown"))
+	let from = lower.find("touchdown").or_else(|| kind(play).contains("touchdown").then_some(0));
+	from
+		.and_then(|from| TRY_WORDS.iter().filter_map(|word| lower[from..].find(word)).min().map(|at| from + at))
 		.map_or(std::borrow::Cow::Borrowed(play), |end| {
 			std::borrow::Cow::Owned(Play {
 				text: Some(original[..end].to_owned()),
