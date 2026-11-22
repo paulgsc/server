@@ -36,7 +36,22 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    held every render for hours). Decided with the owner's ask that renders
    not be starved by a busy transcriber, through paulgsc/some-ui#3333's
    coordinator (2026-11-21); `TURN` and `GIVE` are policy constants. A run ends when the queue is empty, so
-   notes heard as they arrive never add up to a turn. Held by
+   notes heard as they arrive never add up to a turn. A give holds every
+   note, a take recorded during it included, for at most `GIVE`, with one
+   exception: a note the owner fast-tracked (`POST /voice-notes/:id/fast-track`,
+   paulgsc/server#1090) is heard through the give on its one try, while the
+   queue's model has never tried it, and only that one. The authority is the
+   owner's ruling on paulgsc/server#1090 (2026-11-21): "a fast-tracked take
+   skips the give"; C1017 bounds it to one try. It is bounded by the owner's
+   own hand: within one run of `file_host`, at most one deadline per marked
+   note per model, since marking a
+   tried note again never makes it `FastTrack`, and a note excused by the
+   contention guard gives way as every other note does. (The guard's streak is
+   kept in memory, so a restart during an excused try brings the note back
+   `FastTrack` and not excused: one more try per restart.) Its retries wait for the give like the
+   rest. And a job
+   the lane holds stopped still counts as waiting (paulgsc/server#1088,
+   bounded by `GIVE` either way). Held by
    `transcribe::turn`'s and `transcribe::pass`'s tests.
 3. **A yield is never a failure, and resumed work never pays twice for a
    step it kept.** A pause or a stop leaves no `failed.log`, and the job
@@ -80,6 +95,12 @@ that adds it.
 | **Interactive** | `rust-runner`, `orchestrator`, `www`, `resume-render`, `home-deploy` | Short work someone may be waiting on. The default. `www` serves every page of the web app and each call it proxies to file_host while someone is on it; `resume-render` renders a résumé while the owner waits, and does nothing between. Anything that runs inside `file-host` takes its class and adds no service: the voice-note transcriber, which would be interactive on its own, and every worker loop file_host runs. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
 | **Batch**, the lowest | `render`, `kokoro` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
+
+`file-host` may use three of home's four cores (`cpus: 3.0`; four, as #710
+has it), so the voice-note transcriber inside it hears on two threads
+(`transcribe::default_threads`), and holds the lane (LA1) for a little over
+half as long as on one (`transcribe`, "What it costs"). It is a cap, not a
+reservation. The owner chose it (C919).
 
 The lane (below) decides when the batch class may run: a render starts
 only when no interactive work waits and its peak fits, pauses for
@@ -140,9 +161,11 @@ tick it reads:
   both are the host's: `/proc/meminfo` is not namespaced, `/proc/pressure`
   is the system-wide PSI rather than the container's cgroup, and Docker
   masks neither.
-- Whether interactive work is waiting: a counter in file_host's `AppState`
-  that the transcriber holds while it hears a note and Rust Rounds holds
-  while the runner records a program. Rust Rounds' toolchain ask, made at
+- Whether interactive work is waiting: a counter per kind (`Kind`: voice,
+  rust_rounds) in file_host's `AppState` that the transcriber holds while it
+  hears a note and Rust Rounds holds while the runner records a program. The
+  lane decides on any kind held; the kinds are kept apart only to say which
+  work held it (`lane_busy_ticks_total`). Rust Rounds' toolchain ask, made at
   the start of every pass whether or not a program waits, holds nothing:
   held, it would mark home busy every minute, and a render could never pass
   its hold-down. A pass with nothing to do holds nothing, and while the
@@ -195,7 +218,9 @@ how long, and `CallRenderOverdue` fires on the week left waiting.
 
 - **Metrics** (`metrics/lane.rs`): the verb and reason (`lane_verb`,
   `lane_why`, and `lane_ticks_total` counting each tick by both, so the time
-  spent held back and why is exact), `lane_stops` and `lane_stuck`, every
+  spent held back and why is exact; `lane_busy_ticks_total` counts the ticks
+  each kind of interactive work held, so `busy` splits exactly by kind too,
+  paulgsc/some-ui#3332), `lane_stops` and `lane_stuck`, every
   signal it read and whether each could be (`lane_signal_readable`), the
   policy, and when it last wrote a decision.
 - **The CALL dashboard's LANE row:** what the lane said and why over time,

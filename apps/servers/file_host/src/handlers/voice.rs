@@ -56,6 +56,7 @@
 use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modified};
 use crate::meaning::MeaningContext;
 use crate::subject::{Paired, SubjectId};
+use crate::transcribe::Hears;
 use crate::FileHostError;
 use axum::{
 	body::Bytes,
@@ -77,6 +78,7 @@ use voice_repo::{
 	attention::{Act, Acted, Take as TakeNeedingAttention},
 	conveyor::{Advanced, AtStation, Said as MoveSaid, Station, TakeStation},
 	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
+	fast_track::{Act as FastAct, Acted as FastActed},
 	kept::{KindKept, NoteKept, WeekKept},
 	meaning::Embed as _,
 	set_aside::SetAside,
@@ -104,6 +106,9 @@ pub struct NoteQuery {
 	offset: Option<String>,
 	mode: Option<String>,
 	catalog: Option<String>,
+	unit: Option<String>,
+	#[serde(rename = "unitSide")]
+	unit_side: Option<String>,
 }
 
 /// `PUT /voice-notes/:id`
@@ -177,6 +182,8 @@ pub async fn put_note(
 			offset: query.offset.as_deref(),
 			mode: query.mode.as_deref(),
 			catalog: query.catalog.as_deref(),
+			unit: query.unit.as_deref(),
+			unit_side: query.unit_side.as_deref(),
 		},
 	};
 	let note = voice_repo::describe(&id, said, &body).map_err(FileHostError::unprocessable_entity)?;
@@ -454,6 +461,7 @@ pub async fn get_takes(
 	paired: Paired,
 	State(db): State<SqlitePool>,
 	State(meaning): State<Option<MeaningContext>>,
+	State(Hears(hears)): State<Hears>,
 	Query(query): Query<Vec<(String, String)>>,
 ) -> Result<Json<Library>, FileHostError> {
 	let ask = Ask::parse(&query).map_err(FileHostError::unprocessable_entity)?;
@@ -468,7 +476,7 @@ pub async fn get_takes(
 		plain: &plain,
 		verbatim: &verbatim,
 	};
-	voice_repo::takes::library(&mut conn, paired.subject.as_str(), keys, &now(), &ask)
+	voice_repo::takes::library(&mut conn, paired.subject.as_str(), hears.then_some(keys), &now(), &ask)
 		.await
 		.map_err(refusal)?
 		.map(Json)
@@ -799,14 +807,16 @@ pub struct Attention {
 /// it), and 500 for a storage failure or a verdict that does not read back.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_attention_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_attention(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Attention>, FileHostError> {
+pub async fn get_attention(paired: Paired, State(db): State<SqlitePool>, State(Hears(hears)): State<Hears>) -> Result<Json<Attention>, FileHostError> {
 	let mut tx = db.begin().await?;
 	let (plain, verbatim) = crate::transcribe::keys();
 	let keys = voice_repo::transcript::Keys {
 		plain: &plain,
 		verbatim: &verbatim,
 	};
-	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str(), keys, &now()).await.map_err(refusal)?;
+	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str(), hears.then_some(keys), &now())
+		.await
+		.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(Attention { takes, total }))
 }
@@ -838,6 +848,10 @@ const NOT_JUDGED: &str = "home has not judged this take yet: it is still hearing
 /// What a request to hear again a take home would not hear answers with.
 const NOT_HEARABLE: &str = "home would not hear this take again: its recording was let go, or it was set aside";
 
+/// What a request to hear a take again answers with on a home that runs no
+/// transcriber.
+const NOT_HEARING: &str = "home isn't hearing takes right now: its transcriber is off";
+
 /// What a request to hear a take again inside the snooze answers with; its
 /// `details.nextAt` says when it may be asked.
 const SNOOZED: &str = "home was asked to hear this take again a short while ago: ask again from nextAt";
@@ -849,11 +863,13 @@ const SNOOZED: &str = "home was asked to hear this take again a short while ago:
 /// the take as it is, will record it again, or asks home to hear it again
 /// (paulgsc/some-ui#3339): any take home has judged, a heard one included,
 /// gets a fresh transcription, a new key with a fresh set of the
-/// transcriber's attempts, and reads as not judged yet until it ends
-/// (`hearAgain.hearing` on the takes read). Asked at most once per
+/// transcriber's attempts. Asked at most once per
 /// `voice_repo::attention::HEAR_AGAIN_SNOOZE` on a take: inside it, a `409`
 /// whose `details.nextAt` says when; on a take home would not hear (its
-/// recording let go, or set aside), a `409`. The act answers the take's
+/// recording let go, or set aside), or while home runs no transcriber, a
+/// `409`. While home hears it again its old words stay as they were, marked
+/// `hearAgain.hearing`; the fresh words replace them once heard, and if every
+/// fresh attempt fails the old words stay (the owner, 2026-11-22). The act answers the take's
 /// newest verdict and is appended to `voice_note_attention` with that verdict's key and
 /// when home recorded it (`voice_repo::attention::act`): `201` with
 /// `change: "recorded"`. Nothing is edited: a different act later is a new
@@ -872,7 +888,13 @@ const SNOOZED: &str = "home was asked to hear this take again a short while ago:
 /// for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_attention_post", skip_all, fields(otel.kind = "server"))]
-pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
+pub async fn post_attention(
+	paired: Paired,
+	State(db): State<SqlitePool>,
+	State(Hears(hears)): State<Hears>,
+	Path(id): Path<String>,
+	body: Bytes,
+) -> Result<Response, FileHostError> {
 	let said = serde_json::from_slice::<AttentionBody>(&body).ok();
 	let (act, name) = match said.as_ref().map(|body| body.act.as_str()) {
 		Some("keep") => (Act::Kept, "keep"),
@@ -887,7 +909,7 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 			plain: &plain,
 			verbatim: &verbatim,
 		};
-		voice_repo::attention::hear_again(&mut tx, paired.subject.as_str(), &id, keys, &now()).await
+		voice_repo::attention::hear_again(&mut tx, paired.subject.as_str(), &id, hears.then_some(keys), &now()).await
 	} else {
 		voice_repo::attention::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await
 	}
@@ -899,6 +921,7 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 		Acted::NothingAsked if act == Act::HearAgain => return Err(FileHostError::Conflict(NOT_JUDGED)),
 		Acted::NothingAsked => return Err(FileHostError::Conflict(NOTHING_ASKED)),
 		Acted::NotHearable(_) => return Err(FileHostError::Conflict(NOT_HEARABLE)),
+		Acted::NotHearing(_) => return Err(FileHostError::Conflict(NOT_HEARING)),
 		Acted::Snoozed { next_at, .. } => {
 			return Err(FileHostError::ConflictNaming {
 				reason: SNOOZED,
@@ -908,6 +931,75 @@ pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(i
 		Acted::NotHeld => return Err(FileHostError::NotFound),
 	};
 	Ok((status, Json(Reconciled { change, act: name, verdict })).into_response())
+}
+
+/// `POST /voice-notes/:id/fast-track`'s body: whether to put the take first.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FastTrackBody {
+	fast: bool,
+}
+
+/// `POST /voice-notes/:id/fast-track`
+#[derive(Debug, Serialize)]
+pub struct FastTracked {
+	/// `recorded`, or `unchanged` when the take's newest act already says so.
+	pub change: &'static str,
+	/// Whether the take is fast-tracked now.
+	pub fast: bool,
+}
+
+/// What putting first a take home has already heard answers with.
+const ALREADY_HEARD: &str = "home has already heard this take: there is nothing to put first";
+
+/// What putting first a take home is not going to hear answers with.
+const NOT_WAITING: &str = "home won't hear this take as it stands (set aside, its recording let go, or every attempt spent)";
+
+/// `POST /voice-notes/:id/fast-track`: the owner puts their take `id` at the
+/// front of the transcriber's line, or takes that back (paulgsc/server#1090,
+/// paulgsc/server#1091).
+///
+/// The body is `{"fast": true | false}`. The act is appended to
+/// `voice_note_fast_track` (`voice_repo::fast_track::act`): `201` with
+/// `change: "recorded"`. A retry, the act the take's newest already is,
+/// writes nothing and is a `200` with `change: "unchanged"`. A mark is one
+/// try: while the queue's model has never tried the note, it is heard before
+/// every other waiting note but the one the contention guard is excusing,
+/// and the lane's give does not hold that try (the owner's ruling on #1090,
+/// 2026-11-21); once tried, or marked again after a try, it waits behind
+/// every note tried fewer times, ahead of those tried as often that no one
+/// waits on (`voice_repo::transcript::waiting_first`). Any kind of the
+/// caller's notes may be marked.
+///
+/// `BEGIN IMMEDIATE`, so the read and the write see one snapshot.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's or an untrusted origin, 422
+/// naming `fast` when the body is not one, 404 for a note the caller's
+/// subject does not hold, 409 for one home has already heard or found
+/// silent (either act), or, for `fast: true` only, won't hear as it stands
+/// (set aside, its recording let go, every attempt spent; a model bump can
+/// change it), and 500 for a storage failure.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "voice_fast_track_post", skip_all, fields(otel.kind = "server"))]
+pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
+	let Some(FastTrackBody { fast }) = serde_json::from_slice::<FastTrackBody>(&body).ok() else {
+		return Err(FileHostError::unprocessable_entity([("fast", "true or false")]));
+	};
+	let act = if fast { FastAct::Fast } else { FastAct::Cancel };
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, crate::transcribe::pass::ATTEMPTS, &now())
+		.await
+		.map_err(refusal)?;
+	tx.commit().await?;
+	let (status, change) = match acted {
+		FastActed::Recorded => (StatusCode::CREATED, "recorded"),
+		FastActed::Unchanged => (StatusCode::OK, "unchanged"),
+		FastActed::Ended => return Err(FileHostError::Conflict(ALREADY_HEARD)),
+		FastActed::NotWaiting => return Err(FileHostError::Conflict(NOT_WAITING)),
+		FastActed::NotHeld => return Err(FileHostError::NotFound),
+	};
+	Ok((status, Json(FastTracked { change, fast })).into_response())
 }
 
 #[cfg(test)]
@@ -948,6 +1040,14 @@ mod tests {
 		auth: AuthContext,
 		meaning: Option<MeaningContext>,
 		outbox: crate::mailbox::Outbox,
+		/// Whether its home runs the transcriber.
+		hears: bool,
+	}
+
+	impl FromRef<TestState> for crate::transcribe::Hears {
+		fn from_ref(state: &TestState) -> Self {
+			Self(state.hears)
+		}
 	}
 
 	impl FromRef<TestState> for Option<MeaningContext> {
@@ -986,6 +1086,7 @@ mod tests {
 			pool,
 			meaning: None,
 			outbox: crate::mailbox::Outbox::default(),
+			hears: true,
 		}
 	}
 
@@ -1037,7 +1138,7 @@ mod tests {
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
-		assert_eq!(module().descriptors().count(), 14);
+		assert_eq!(module().descriptors().count(), 15);
 		// A route named under `/voice-notes/` takes that name from the notes'
 		// ids, so `voice_repo` must refuse it as one (`ROUTE_NAMES`).
 		for route in module().descriptors() {
@@ -1328,6 +1429,46 @@ mod tests {
 		assert_eq!(remove(&app, "/voice-notes/n1", &phone).await.0, StatusCode::CONFLICT, "heard: kept for good");
 	}
 
+	/// paulgsc/server#1090: a paired phone puts its own take first and takes
+	/// it back; a retry changes nothing, another's take is not found, a bad
+	/// body is refused, and a take home has heard is not put first.
+	#[tokio::test]
+	async fn the_owner_puts_a_take_first_and_takes_it_back() {
+		const FAST: &str = "/voice-notes/t1/fast-track";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let browser = session(&state, A, Carrier::Cookie).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		let path = "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z";
+		assert_eq!(put(&app, path, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		let fast = json!({ "fast": true });
+
+		assert_eq!(post(&app, FAST, None, &fast).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(post(&app, FAST, Some(&browser), &fast).await.0, StatusCode::FORBIDDEN, "a paired phone's only");
+		assert_eq!(post(&app, FAST, Some(&other), &fast).await.0, StatusCode::NOT_FOUND, "A's take is A's");
+		for bad in [json!({}), json!({ "fast": "yes" }), json!({ "fast": true, "extra": 1 })] {
+			assert_eq!(post(&app, FAST, Some(&phone), &bad).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+		}
+		assert_eq!(
+			post(&app, FAST, Some(&phone), &fast).await,
+			(StatusCode::CREATED, json!({ "change": "recorded", "fast": true }))
+		);
+		assert_eq!(
+			post(&app, FAST, Some(&phone), &fast).await,
+			(StatusCode::OK, json!({ "change": "unchanged", "fast": true }))
+		);
+		let back = json!({ "fast": false });
+		assert_eq!(
+			post(&app, FAST, Some(&phone), &back).await,
+			(StatusCode::CREATED, json!({ "change": "recorded", "fast": false }))
+		);
+
+		hear(&pool, A, "t1", "m", voice_repo::transcript::Outcome::Silent, "2026-11-14T00:00:00Z").await;
+		assert_eq!(post(&app, FAST, Some(&phone), &fast).await.0, StatusCode::CONFLICT, "heard: nothing to put first");
+	}
+
 	/// `model`'s failed attempt `n` on `id`, judged `failed` when `last`.
 	async fn failed(pool: &SqlitePool, id: &str, model: &str, n: i64, last: bool, at: &str) {
 		sqlx::query(
@@ -1397,9 +1538,9 @@ mod tests {
 		let library = get(&app, "/voice-notes/takes", Some(&phone)).await.1;
 		let t1 = library["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
 		assert_eq!(
-			(&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"], &t1["verdict"]),
-			(&json!(true), &json!(false), &json!(null)),
-			"the takes read says home is hearing it, and has not judged it yet"
+			(&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"], &t1["verdict"]["kind"]),
+			(&json!(true), &json!(false), &json!("failed")),
+			"the takes read says home is hearing it again, the verdict it had still shown (answer (b))"
 		);
 		assert!(t1["hearAgain"]["nextAt"].is_string());
 		assert_eq!(
@@ -1426,6 +1567,32 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(acts, 1, "a refusal writes nothing");
+	}
+
+	/// Round 4 of paulgsc/some-ui#3339: on a home that runs no transcriber, a
+	/// request to hear a take again is refused and the take is never offered
+	/// one, nor read as "being heard again", since nothing would hear it.
+	#[tokio::test]
+	async fn a_home_that_runs_no_transcriber_is_never_asked_to_hear_a_take_again() {
+		let state = TestState { hears: false, ..state().await };
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(
+			put(&app, "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z", Some(&phone), "audio/webm", TAKE)
+				.await
+				.0,
+			StatusCode::OK
+		);
+		for n in 1..=3 {
+			failed(&pool, "t1", "m", n, n == 3, "2026-11-14T00:00:00Z").await;
+		}
+		let listed = get(&app, "/voice-notes/attention", Some(&phone)).await.1;
+		assert_eq!(listed["takes"][0]["hearAgain"]["open"], json!(false), "{listed}");
+		let (status, refused) = post(&app, "/voice-notes/t1/attention", Some(&phone), &json!({ "act": "hear-again" })).await;
+		assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+		let acts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_attention").fetch_one(&pool).await.unwrap();
+		assert_eq!(acts, 0, "nothing written");
 	}
 
 	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves
@@ -2226,7 +2393,7 @@ mod tests {
 	async fn a_game_bite_reaches_home_with_its_metadata() {
 		const BITE: &str = "/voice-notes/b1?of=game&ref=401772981&at=2026-10-26T20:41:09Z&scenario=in.third-long&how=offered&seq=12\
 			&strip=KC%2017%20%E2%80%93%20BUF%2014%20%C2%B7%20Q3%204%3A12&context=Mahomes%209%2F14&watching=1\
-			&started=2026-10-26T20:41:07.250Z&offset=-1350&mode=standard&catalog=1";
+			&started=2026-10-26T20:41:07.250Z&offset=-1350&mode=standard&catalog=2&unit=coaching&unitSide=BUF";
 		let state = state().await;
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state);
@@ -2238,7 +2405,7 @@ mod tests {
 			json!({
 				"scenario": "in.third-long", "how": "offered", "seq": 12, "strip": "KC 17 – BUF 14 · Q3 4:12",
 				"context": "Mahomes 9/14", "watching": true, "started": "2026-10-26T20:41:07.250Z", "offset": -1350,
-				"mode": "standard", "catalog": 1
+				"mode": "standard", "catalog": 2, "unit": "coaching", "unitSide": "BUF"
 			})
 		);
 	}

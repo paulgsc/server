@@ -25,14 +25,17 @@
 //!   heard one included, and the transcriber hears the note afresh under a
 //!   new key with a fresh set of its attempts (`crate::transcript::again`,
 //!   `crate::transcript::waiting`). It is asked at most once per
-//!   [`HEAR_AGAIN_SNOOZE`] on a note. It answers its verdict as any act
-//!   does, and the attempts it supersedes (those of its model numbered up
-//!   to the one it answered) are skipped by every reader that chooses an
-//!   ending or a verdict, so while home hears the take again it reads as
-//!   not heard yet everywhere, and when the fresh set ends its attempt is
-//!   what is read: nothing is rewritten, and no clock is read. Whether
-//!   home is hearing it ([`HearAgain::hearing`]) is told by what is on home,
-//!   not by the acts.
+//!   [`HEAR_AGAIN_SNOOZE`] on a note, and only while home runs the
+//!   transcriber. With it, in the same transaction, go the keys that had
+//!   made something of the note (`voice_note_hear_again_supersedes`): what
+//!   it may supersede, and nothing else. While home hears it again, the old
+//!   words stay what every reader chooses, and [`HearAgain::hearing`] says
+//!   so (the owner, 2026-11-22, answer (b)); once the fresh key ends the
+//!   note, the listed keys are skipped by every reader that chooses an
+//!   ending, words or a verdict (`voice_note_superseded`); if every fresh
+//!   attempt fails, nothing is skipped and the old words stay (answer (a)).
+//!   Nothing is rewritten, and no clock is read. Whether home is hearing it
+//!   is told by what is on home, not by the acts.
 //! - **Per subject.** Every query takes the subject and filters on it.
 
 use crate::{
@@ -130,27 +133,32 @@ pub struct HearAgain {
 }
 
 /// A request to hear a note again: when, the verdict it answered by that
-/// verdict's key, and the key the note is heard again under.
+/// verdict's key, the key the note was heard under when asked, and the key
+/// it is heard again under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Request {
 	asked_at: String,
 	model: String,
 	attempt: i64,
 	rule: String,
+	asked_under: String,
 	hears_under: String,
 }
 
-/// The newest request to hear `subject`'s note `note_id` again.
-async fn newest_request(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<Request>, VoiceError> {
+/// The newest request to hear `subject`'s note `note_id` again; with
+/// `under`, the newest asked under that key.
+async fn newest_request(conn: &mut SqliteConnection, subject: &str, note_id: &str, under: Option<&str>) -> Result<Option<Request>, VoiceError> {
 	Ok(
 		sqlx::query_as!(
 			Request,
-			r#"SELECT acted_at AS "asked_at!", model AS "model!", attempt AS "attempt!: i64", rule AS "rule!", hears_under AS "hears_under!"
+			r#"SELECT acted_at AS "asked_at!", model AS "model!", attempt AS "attempt!: i64", rule AS "rule!",
+			          asked_under AS "asked_under!", hears_under AS "hears_under!"
 			   FROM voice_note_attention
-			   WHERE subject_id = ?1 AND note_id = ?2 AND act = 'hear_again'
+			   WHERE subject_id = ?1 AND note_id = ?2 AND act = 'hear_again' AND (?3 IS NULL OR asked_under = ?3)
 			   ORDER BY n DESC LIMIT 1"#,
 			subject,
-			note_id
+			note_id,
+			under
 		)
 		.fetch_optional(&mut *conn)
 		.await?,
@@ -159,8 +167,8 @@ async fn newest_request(conn: &mut SqliteConnection, subject: &str, note_id: &st
 
 /// The note's kind, and whether home would hear it at all: its recording
 /// is held, and the owner has not set it aside (a Jobs note is heard though
-/// set aside), as `crate::transcript::waiting` and `voice_note_superseding`
-/// ask. `None` for a note the subject does not hold.
+/// set aside), as `crate::transcript::waiting` asks. `None` for a note the
+/// subject does not hold.
 async fn hearable(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<(String, bool)>, VoiceError> {
 	let row = sqlx::query!(
 		r#"SELECT n.of_kind AS "of_kind!",
@@ -187,23 +195,28 @@ fn base_for<'a>(of_kind: &str, keys: Keys<'a>) -> &'a str {
 }
 
 /// The request home is hearing `subject`'s note `note_id` again for, if
-/// any: told by what is on home, never by the acts alone. Its newest request
-/// stands while its key, `hears_under`, has not ended the note or been
-/// judged final, home would still hear the note ([`hearable`]), and its key
-/// is one of the model `keys` hears with: after a change of model the
-/// request is moot, and the owner may ask again under the new one. So a
-/// later act, a recording let go, a mark set aside or a new model never
-/// leaves a take "hearing" for good.
-async fn hearing(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys: Keys<'_>) -> Result<Option<Request>, VoiceError> {
-	let Some(request) = newest_request(conn, subject, note_id).await? else {
+/// any: told by what is on home, never by the acts alone.
+///
+/// `keys` are the keys home hears with, `None` while it runs no
+/// transcriber: then nothing is being heard, so no take reads "being heard
+/// again" for good on a home that will not hear it. Otherwise it is the
+/// note's newest request asked under the key the note is heard under now (the
+/// one the queue waits on, `crate::transcript::STANDING_KEY`), while that
+/// request's fresh key has neither ended the note nor been judged final, and
+/// home would still hear the note ([`hearable`]). After a change of model a
+/// request asked under the old one is moot, and the owner may ask again
+/// under the new one. So a recording let go, a mark set aside, a new model or
+/// a transcriber switched off never leaves a take "hearing" for good.
+async fn hearing(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys: Option<Keys<'_>>) -> Result<Option<Request>, VoiceError> {
+	let Some(keys) = keys else {
 		return Ok(None);
 	};
 	let Some((of_kind, true)) = hearable(conn, subject, note_id).await? else {
 		return Ok(None);
 	};
-	if transcript::base_of(&request.hears_under) != base_for(&of_kind, keys) {
+	let Some(request) = newest_request(conn, subject, note_id, Some(base_for(&of_kind, keys))).await? else {
 		return Ok(None);
-	}
+	};
 	let done = sqlx::query_scalar!(
 		r#"SELECT EXISTS (SELECT 1 FROM voice_transcript t
 		                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.model = ?3 AND t.outcome IN ('heard', 'silent'))
@@ -218,6 +231,16 @@ async fn hearing(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys
 	Ok((!done).then_some(request))
 }
 
+/// Whether home is hearing `subject`'s note `note_id` again under `keys`,
+/// the keys it hears with: what an essay that plays the take waits on rather
+/// than refuse it for its old verdict.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn being_heard_again(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys: Keys<'_>) -> Result<bool, VoiceError> {
+	Ok(hearing(conn, subject, note_id, Some(keys)).await?.is_some())
+}
+
 /// The kind of the verdict the owner's newest request to hear `subject`'s
 /// note `note_id` again answered, if any.
 ///
@@ -230,7 +253,7 @@ async fn hearing(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
 pub async fn asked_of(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<Kind>, VoiceError> {
-	let Some(request) = newest_request(conn, subject, note_id).await? else {
+	let Some(request) = newest_request(conn, subject, note_id, None).await? else {
 		return Ok(None);
 	};
 	Ok(answered(conn, subject, note_id, &request).await?.map(|verdict| verdict.kind))
@@ -264,7 +287,7 @@ async fn answerable(conn: &mut SqliteConnection, subject: &str, note_id: &str) -
 	if let Some(newest) = verdict::newest(conn, subject, note_id).await? {
 		return Ok(Some(newest));
 	}
-	let Some(request) = newest_request(conn, subject, note_id).await? else {
+	let Some(request) = newest_request(conn, subject, note_id, None).await? else {
 		return Ok(None);
 	};
 	Ok(answered(conn, subject, note_id, &request).await?.map(|verdict| Newest {
@@ -284,16 +307,17 @@ fn snoozed_until(asked_at: &str, now: &str) -> Option<String> {
 }
 
 /// Where `subject`'s note `note_id` stands with hearing it again at `now`,
-/// `keys` being the keys home hears with.
+/// `keys` being the keys home hears with, `None` while it runs no
+/// transcriber (then it is never open).
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
-pub async fn hear_again_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys: Keys<'_>, now: &str) -> Result<HearAgain, VoiceError> {
+pub async fn hear_again_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys: Option<Keys<'_>>, now: &str) -> Result<HearAgain, VoiceError> {
 	let hearing = hearing(conn, subject, note_id, keys).await?.is_some();
-	let request = newest_request(conn, subject, note_id).await?;
+	let request = newest_request(conn, subject, note_id, None).await?;
 	let next_at = request.as_ref().and_then(|request| snoozed_until(&request.asked_at, now));
 	let hearable = matches!(hearable(conn, subject, note_id).await?, Some((_, true)));
-	let askable = !hearing && next_at.is_none() && hearable && answerable(conn, subject, note_id).await?.is_some();
+	let askable = keys.is_some() && !hearing && next_at.is_none() && hearable && answerable(conn, subject, note_id).await?.is_some();
 	Ok(HearAgain {
 		open: askable,
 		hearing,
@@ -304,10 +328,14 @@ pub async fn hear_again_of(conn: &mut SqliteConnection, subject: &str, note_id: 
 
 /// Asks home to hear `subject`'s note `note_id` again at `now`.
 ///
-/// paulgsc/some-ui#3339. `keys` are the keys home hears with. Writes a
-/// `hear_again` act answering the verdict [`answerable`] reads, naming the
-/// key the note is heard again under, its base key with as many requests as
-/// were made under it (`crate::transcript::again`).
+/// paulgsc/some-ui#3339. `keys` are the keys home hears with, `None` while it
+/// runs no transcriber, which refuses the request ([`Acted::NotHearing`]).
+/// Writes a `hear_again` act answering the verdict [`answerable`] reads,
+/// naming the key the note is heard under now and the key it is heard again
+/// under, that key with as many requests as were made under it
+/// (`crate::transcript::again`); and, beside it, every key that had made
+/// something of the note: what this request may supersede once its fresh key
+/// ends the note (`voice_note_superseded`).
 ///
 /// Any verdict may be answered, a heard one included. A resend while home
 /// still hears it is answered as it was, and writes nothing. Run it in a
@@ -315,7 +343,7 @@ pub async fn hear_again_of(conn: &mut SqliteConnection, subject: &str, note_id: 
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
-pub async fn hear_again(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys: Keys<'_>, now: &str) -> Result<Acted, VoiceError> {
+pub async fn hear_again(conn: &mut SqliteConnection, subject: &str, note_id: &str, keys: Option<Keys<'_>>, now: &str) -> Result<Acted, VoiceError> {
 	let Some((of_kind, hearable)) = hearable(conn, subject, note_id).await? else {
 		return Ok(Acted::NotHeld);
 	};
@@ -327,30 +355,37 @@ pub async fn hear_again(conn: &mut SqliteConnection, subject: &str, note_id: &st
 	let Some(answering) = answerable(conn, subject, note_id).await? else {
 		return Ok(Acted::NothingAsked);
 	};
+	let Some(keys) = keys else {
+		return Ok(Acted::NotHearing(answering.verdict));
+	};
 	if !hearable {
 		return Ok(Acted::NotHearable(answering.verdict));
 	}
-	if let Some(next_at) = newest_request(conn, subject, note_id).await?.and_then(|request| snoozed_until(&request.asked_at, now)) {
+	if let Some(next_at) = newest_request(conn, subject, note_id, None)
+		.await?
+		.and_then(|request| snoozed_until(&request.asked_at, now))
+	{
 		return Ok(Acted::Snoozed {
 			verdict: answering.verdict,
 			next_at,
 		});
 	}
 	let base = base_for(&of_kind, keys);
-	let asked = sqlx::query_scalar!(
-		r#"SELECT hears_under AS "hears_under!" FROM voice_note_attention
-		   WHERE subject_id = ?1 AND note_id = ?2 AND act = 'hear_again'"#,
+	let times = sqlx::query_scalar!(
+		r#"SELECT COUNT(*) AS "times!: i64" FROM voice_note_attention
+		   WHERE subject_id = ?1 AND note_id = ?2 AND act = 'hear_again' AND asked_under = ?3"#,
 		subject,
-		note_id
+		note_id,
+		base
 	)
-	.fetch_all(&mut *conn)
+	.fetch_one(&mut *conn)
 	.await?;
-	let times = asked.iter().filter(|key| transcript::base_of(key) == base).count();
-	let hears_under = transcript::again(base, i64::try_from(times).unwrap_or(i64::MAX - 1) + 1);
+	let hears_under = transcript::again(base, times.saturating_add(1));
 	let name = Act::HearAgain.as_str();
-	sqlx::query!(
-		"INSERT INTO voice_note_attention (subject_id, note_id, n, act, model, attempt, rule, acted_at, hears_under)
-		 VALUES (?1, ?2, (SELECT COALESCE(MAX(n), 0) + 1 FROM voice_note_attention WHERE subject_id = ?1 AND note_id = ?2), ?3, ?4, ?5, ?6, ?7, ?8)",
+	let n = sqlx::query_scalar!(
+		r#"INSERT INTO voice_note_attention (subject_id, note_id, n, act, model, attempt, rule, acted_at, asked_under, hears_under)
+		   VALUES (?1, ?2, (SELECT COALESCE(MAX(n), 0) + 1 FROM voice_note_attention WHERE subject_id = ?1 AND note_id = ?2), ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+		   RETURNING n AS "n!: i64""#,
 		subject,
 		note_id,
 		name,
@@ -358,7 +393,17 @@ pub async fn hear_again(conn: &mut SqliteConnection, subject: &str, note_id: &st
 		answering.attempt,
 		answering.verdict.rule,
 		now,
+		base,
 		hears_under
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	sqlx::query!(
+		"INSERT INTO voice_note_hear_again_supersedes (subject_id, note_id, model, n)
+		 SELECT DISTINCT t.subject_id, t.note_id, t.model, ?3 FROM voice_transcript t WHERE t.subject_id = ?1 AND t.note_id = ?2",
+		subject,
+		note_id,
+		n
 	)
 	.execute(&mut *conn)
 	.await?;
@@ -398,7 +443,7 @@ async fn answer_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, ne
 ///
 /// # Errors
 /// Any `sqlx` failure, or a stored verdict this build does not know.
-pub async fn needing(conn: &mut SqliteConnection, subject: &str, keys: Keys<'_>, now: &str) -> Result<(Vec<Take>, i64), VoiceError> {
+pub async fn needing(conn: &mut SqliteConnection, subject: &str, keys: Option<Keys<'_>>, now: &str) -> Result<(Vec<Take>, i64), VoiceError> {
 	let limit = i64::try_from(LISTED).unwrap_or(i64::MAX);
 	// The chosen verdict is `verdict::newest`'s: the verdict of the ending
 	// `transcript::heard` chooses, else, with no ending, the newest failure;
@@ -411,14 +456,14 @@ pub async fn needing(conn: &mut SqliteConnection, subject: &str, keys: Keys<'_>,
 		               AND ((v.model, v.attempt) = (
 		                      SELECT t.model, t.attempt FROM voice_transcript t
 		                      WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')
-		                        AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model)
+		                        AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.model = t.model)
 		                      ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
 		                      LIMIT 1)
 		                    OR (NOT EXISTS (
 		                          SELECT 1 FROM voice_transcript t
 		                          WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')
-		                            AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model))
-		                        AND v.verdict = 'failed' AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = v.subject_id AND sup.note_id = v.note_id AND sup.hears_under <> v.model)))
+		                            AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.model = t.model))
+		                        AND v.verdict = 'failed' AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = v.subject_id AND sup.note_id = v.note_id AND sup.model = v.model)))
 		             ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
 		             LIMIT 1) AS chosen_row
 		     FROM voice_note n
@@ -426,7 +471,7 @@ pub async fn needing(conn: &mut SqliteConnection, subject: &str, keys: Keys<'_>,
 		       AND EXISTS (
 		         SELECT 1 FROM voice_transcript_verdict w
 		         WHERE w.subject_id = n.subject_id AND w.note_id = n.note_id AND w.verdict <> 'heard'
-		           AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = w.subject_id AND sup.note_id = w.note_id AND sup.hears_under <> w.model)
+		           AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = w.subject_id AND sup.note_id = w.note_id AND sup.model = w.model)
 		           AND NOT EXISTS (
 		             SELECT 1 FROM voice_note_attention a
 		             WHERE a.subject_id = w.subject_id AND a.note_id = w.note_id
@@ -502,6 +547,9 @@ pub enum Acted {
 	/// [`Act::HearAgain`] on a take home would not hear: its recording let
 	/// go, or the owner set it aside. Nothing written.
 	NotHearable(Verdict),
+	/// [`Act::HearAgain`] on a home that runs no transcriber: it would never
+	/// be heard. Nothing written.
+	NotHearing(Verdict),
 	/// [`Act::HearAgain`] asked within [`HEAR_AGAIN_SNOOZE`] of the last
 	/// request: nothing written; it may be asked from this time.
 	Snoozed { verdict: Verdict, next_at: String },
@@ -657,7 +705,7 @@ pub(crate) mod tests {
 
 	async fn listed(pool: &SqlitePool, subject: &str) -> (Vec<String>, i64) {
 		let mut conn = pool.acquire().await.unwrap();
-		let (takes, total) = needing(&mut conn, subject, KEYS, "2026-11-21T00:00:00.000Z").await.unwrap();
+		let (takes, total) = needing(&mut conn, subject, Some(KEYS), "2026-11-21T00:00:00.000Z").await.unwrap();
 		(takes.into_iter().map(|take| take.id).collect(), total)
 	}
 
@@ -683,7 +731,7 @@ pub(crate) mod tests {
 		heard(&pool, B, "theirs", "m", Kind::Garbled, "2026-11-10").await;
 
 		let mut conn = pool.acquire().await.unwrap();
-		let (takes, total) = needing(&mut conn, A, KEYS, "2026-11-21T00:00:00.000Z").await.unwrap();
+		let (takes, total) = needing(&mut conn, A, Some(KEYS), "2026-11-21T00:00:00.000Z").await.unwrap();
 		drop(conn);
 		assert_eq!(total, 2);
 		assert_eq!(takes.iter().map(|take| take.id.as_str()).collect::<Vec<_>>(), ["silent", "garbled"]);
@@ -756,12 +804,12 @@ pub(crate) mod tests {
 		};
 		let mut conn = pool.acquire().await.unwrap();
 		keep(&mut conn, judged, &failed, "2026-11-09").await.unwrap();
-		let (takes, _) = needing(&mut conn, A, KEYS, "2026-11-21T00:00:00.000Z").await.unwrap();
+		let (takes, _) = needing(&mut conn, A, Some(KEYS), "2026-11-21T00:00:00.000Z").await.unwrap();
 		assert_eq!(takes.first().map(|take| (take.verdict.kind, take.heard.is_none())), Some((Kind::Failed, true)));
 		drop(conn);
 		heard(&pool, A, "t", "better", Kind::NothingSaid, "2026-11-10").await;
 		let mut conn = pool.acquire().await.unwrap();
-		let (takes, _) = needing(&mut conn, A, KEYS, "2026-11-21T00:00:00.000Z").await.unwrap();
+		let (takes, _) = needing(&mut conn, A, Some(KEYS), "2026-11-21T00:00:00.000Z").await.unwrap();
 		let newest = crate::verdict::newest(&mut conn, A, "t").await.unwrap().unwrap();
 		assert_eq!(takes.first().map(|take| take.verdict.clone()), Some(newest.verdict), "the ending replaces the failure");
 		drop(conn);
@@ -824,12 +872,12 @@ pub(crate) mod tests {
 
 	async fn hear_again_at(pool: &SqlitePool, id: &str, now: &str) -> Acted {
 		let mut conn = pool.acquire().await.unwrap();
-		super::hear_again(&mut conn, A, id, KEYS, now).await.unwrap()
+		super::hear_again(&mut conn, A, id, Some(KEYS), now).await.unwrap()
 	}
 
 	async fn standing(pool: &SqlitePool, id: &str, now: &str) -> super::HearAgain {
 		let mut conn = pool.acquire().await.unwrap();
-		super::hear_again_of(&mut conn, A, id, KEYS, now).await.unwrap()
+		super::hear_again_of(&mut conn, A, id, Some(KEYS), now).await.unwrap()
 	}
 
 	/// What waits on model `m`, and the key each is heard under.
@@ -862,9 +910,10 @@ pub(crate) mod tests {
 
 	/// paulgsc/some-ui#3339: the owner asks home to hear a take again. Each
 	/// request is a fresh transcription under a new key, `m+again<k>`, with a
-	/// fresh set of attempts; the verdict it answered is skipped while home
-	/// hears it, so it leaves the list and reads as not judged yet; the fresh
-	/// set's final verdict brings it back; it is asked again only once the
+	/// fresh set of attempts; the verdict it answered stays what is read while
+	/// home hears it (answer (b)), answered, so it leaves the list; the fresh
+	/// set's final verdict brings it back, the old one still read (answer
+	/// (a)); it is asked again only once the
 	/// snooze has passed; one home would not hear is refused; no row is
 	/// rewritten.
 	#[tokio::test]
@@ -889,9 +938,10 @@ pub(crate) mod tests {
 		assert_eq!(waiting_keys(&pool).await, keyed(&[("t", "m+again1")]), "a fresh key, its own three attempts");
 		assert_eq!(listed(&pool, A).await, (Vec::new(), 0), "being heard again: off the list");
 		let mut conn = pool.acquire().await.unwrap();
-		assert!(
-			crate::verdict::newest(&mut conn, A, "t").await.unwrap().is_none(),
-			"the answered verdict is skipped, not rewritten"
+		assert_eq!(
+			crate::verdict::newest(&mut conn, A, "t").await.unwrap().map(|newest| newest.model),
+			Some(String::from("m")),
+			"the answered verdict still read while home hears it, not rewritten"
 		);
 		drop(conn);
 		assert_eq!(
@@ -912,6 +962,11 @@ pub(crate) mod tests {
 		failed(&pool, "t", "m+again1", 3, true, "2026-11-21T02:20:00.000Z").await;
 		assert!(waiting_keys(&pool).await.is_empty(), "the fresh set spent");
 		assert_eq!(listed(&pool, A).await, (vec![String::from("t")], 1), "back, with the new verdict");
+		let superseded: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_superseded WHERE note_id = 't'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(superseded, 0, "a fresh set that failed supersedes nothing (answer (a))");
 		let snoozed = standing(&pool, "t", "2026-11-21T03:00:00.000Z").await;
 		assert!(
 			!snoozed.open && !snoozed.hearing && snoozed.next_at.as_deref() == Some("2026-11-21T06:00:00.000Z"),
@@ -967,9 +1022,9 @@ pub(crate) mod tests {
 
 	/// paulgsc/some-ui#3339 (C924): a take home heard, a heard one or a
 	/// garbled one, may be heard again too, beside its old ending (a model
-	/// ends a note once under a key). While home hears it the old words are
-	/// skipped, and once the fresh key ends the note, its ending is what is
-	/// read, a silence included over the old words.
+	/// ends a note once under a key). While home hears it the old words stay
+	/// what is read (answer (b)), and once the fresh key ends the note, its
+	/// ending is what is read, a silence included over the old words.
 	#[tokio::test]
 	async fn a_heard_take_heard_again_is_read_as_its_fresh_ending() {
 		let pool = pool().await;
@@ -983,13 +1038,12 @@ pub(crate) mod tests {
 		assert!(matches!(hear_again_at(&pool, "h", "2026-11-21T00:00:00.000Z").await, Acted::Recorded(v) if v.kind == Kind::Heard));
 		assert_eq!(waiting_keys(&pool).await, keyed(&[("h", "m+again1")]));
 		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(
-			transcript::heard(&mut conn, A, "h").await.unwrap(),
-			Hearing::Waiting,
-			"the old words skipped while home hears it"
-		);
-		assert!(transcript::words(&mut conn, A, "h").await.unwrap().is_empty());
+		match transcript::heard(&mut conn, A, "h").await.unwrap() {
+			Hearing::Heard(old) => assert_eq!(old.model, "m", "the old words stay while home hears it"),
+			other => panic!("{other:?}"),
+		}
 		drop(conn);
+		assert!(standing(&pool, "h", "2026-11-21T00:10:00.000Z").await.hearing, "and it says so");
 
 		heard(&pool, A, "h", "m+again1", Kind::NothingSaid, "2026-11-21T01:00:00.000Z").await;
 		assert!(waiting_keys(&pool).await.is_empty(), "the fresh key ended it");
@@ -1011,8 +1065,8 @@ pub(crate) mod tests {
 
 	/// Asking home to hear a take again never makes it undeletable: while
 	/// home hears it, the delete rule reads the verdict the request answered
-	/// (a garbled reflection, deletable as one home could not hear), and My
-	/// data's `deletable` agrees.
+	/// (a garbled reflection, deletable as one home could not hear), still
+	/// its newest, and My data's `deletable` agrees.
 	#[tokio::test]
 	async fn a_take_being_heard_again_can_still_be_deleted() {
 		let pool = pool().await;
@@ -1021,7 +1075,11 @@ pub(crate) mod tests {
 		heard(&pool, A, "r", "m", Kind::Garbled, "2026-11-10").await;
 		assert!(matches!(hear_again_at(&pool, "r", "2026-11-21T00:00:00.000Z").await, Acted::Recorded(_)));
 		let mut conn = pool.acquire().await.unwrap();
-		assert!(crate::verdict::newest(&mut conn, A, "r").await.unwrap().is_none(), "being heard again");
+		assert_eq!(
+			crate::verdict::newest(&mut conn, A, "r").await.unwrap().map(|newest| newest.verdict.kind),
+			Some(Kind::Garbled),
+			"being heard again, the verdict it had still read"
+		);
 		assert_eq!(super::asked_of(&mut conn, A, "r").await.unwrap(), Some(Kind::Garbled));
 		let kept = crate::kept::newest(&mut conn, A, crate::Of::Reflection, crate::delete::SWITCHED_ON, None).await.unwrap();
 		assert!(kept.iter().any(|note| note.id == "r" && note.deletable), "My data says it may go");
@@ -1041,10 +1099,10 @@ pub(crate) mod tests {
 
 	/// The review of be9410a: a take with endings under two models (before
 	/// and after a change of model) is heard again under the current model's
-	/// fresh key, whichever model's verdict the request answered; every other
-	/// key's ending is skipped while home hears it, so nothing shows through,
-	/// and the fresh key's silence is read over the older model's words; a
-	/// mark set aside ends the supersession, and the old ending reads again.
+	/// fresh key, whichever model's verdict the request answered; while home
+	/// hears it the older model's words stay what is read, and the fresh
+	/// key's silence is read over them; nothing lapses after (round 4): a mark
+	/// set aside, or a recording let go, leaves what was heard as it was.
 	#[tokio::test]
 	async fn a_take_heard_by_two_models_is_heard_again_under_the_current_ones_fresh_key() {
 		let pool = pool().await;
@@ -1065,8 +1123,10 @@ pub(crate) mod tests {
 			"the current model's fresh key, not the answered model's"
 		);
 		let mut conn = pool.acquire().await.unwrap();
-		assert_eq!(transcript::heard(&mut conn, A, "t").await.unwrap(), Hearing::Waiting, "no other key shows through");
-		assert!(crate::verdict::newest(&mut conn, A, "t").await.unwrap().is_none());
+		match transcript::heard(&mut conn, A, "t").await.unwrap() {
+			Hearing::Heard(old) => assert_eq!(old.model, "old", "the older model's words while home hears it"),
+			other => panic!("{other:?}"),
+		}
 		drop(conn);
 		assert!(standing(&pool, "t", "2026-11-21T01:00:00.000Z").await.hearing);
 		assert_eq!(listed(&pool, A).await, (Vec::new(), 0), "not back on the list mid-hearing");
@@ -1080,16 +1140,18 @@ pub(crate) mod tests {
 		drop(conn);
 		assert!(!standing(&pool, "t", "2026-11-21T03:00:00.000Z").await.hearing);
 
-		// Set aside: the supersession ends, and every key reads as before.
-		sqlx::query("INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 't', 'then', 'now')")
-			.bind(A)
-			.execute(&pool)
-			.await
-			.unwrap();
-		let mut conn = pool.acquire().await.unwrap();
-		match transcript::heard(&mut conn, A, "t").await.unwrap() {
-			Hearing::Heard(read) => assert_eq!(read.model, "old", "the older model's words read again"),
-			other => panic!("{other:?}"),
+		// Set aside, then its recording let go: what was heard stays as it
+		// was, the fresh silence still read, never the superseded words.
+		for statement in [
+			"INSERT INTO voice_note_set_aside (subject_id, note_id, set_aside_at, stored_at) VALUES (?1, 't', 'then', 'now')",
+			"DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = 't'",
+		] {
+			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
+			let mut conn = pool.acquire().await.unwrap();
+			match transcript::heard(&mut conn, A, "t").await.unwrap() {
+				Hearing::Heard(read) => assert_eq!(read.model, "m+again1", "{statement}: nothing lapses"),
+				other => panic!("{other:?}"),
+			}
 		}
 	}
 
@@ -1109,26 +1171,83 @@ pub(crate) mod tests {
 		};
 		let mut conn = pool.acquire().await.unwrap();
 		assert!(matches!(
-			super::hear_again(&mut conn, A, "t", old, "2026-11-01T00:00:00.000Z").await.unwrap(),
+			super::hear_again(&mut conn, A, "t", Some(old), "2026-11-01T00:00:00.000Z").await.unwrap(),
 			Acted::Recorded(_)
 		));
-		assert!(super::hear_again_of(&mut conn, A, "t", old, "2026-11-01T01:00:00.000Z").await.unwrap().hearing);
-		let moot = super::hear_again_of(&mut conn, A, "t", KEYS, "2026-11-21T00:00:00.000Z").await.unwrap();
+		assert!(super::hear_again_of(&mut conn, A, "t", Some(old), "2026-11-01T01:00:00.000Z").await.unwrap().hearing);
+		let moot = super::hear_again_of(&mut conn, A, "t", Some(KEYS), "2026-11-21T00:00:00.000Z").await.unwrap();
 		assert!(!moot.hearing && moot.open, "under the new model: moot, and open {moot:?}");
 		assert!(matches!(
-			super::hear_again(&mut conn, A, "t", KEYS, "2026-11-21T00:00:00.000Z").await.unwrap(),
+			super::hear_again(&mut conn, A, "t", Some(KEYS), "2026-11-21T00:00:00.000Z").await.unwrap(),
 			Acted::Recorded(_)
 		));
 		drop(conn);
 		assert_eq!(waiting_keys(&pool).await, keyed(&[("t", "m+again1")]));
 	}
 
+	/// The agreed root shape (paulgsc/some-ui#3339, 2026-11-22): a request
+	/// supersedes only the keys it found. A key that comes after it (a new
+	/// model's) is never superseded by it, though the request's fresh key
+	/// ended the take under the old model; the backlog counts a take heard
+	/// again under its fresh key as the queue does; and a marked take no
+	/// model has heard gets its one try at the head of the line under a fresh
+	/// key, as under a new model's.
+	#[tokio::test]
+	async fn a_request_supersedes_only_the_keys_it_found() {
+		let pool = pool().await;
+		note(&pool, A, "t", "studio", "2026-11-01").await;
+		audio(&pool, "t").await;
+		for n in 1..=3 {
+			failed(&pool, "t", "m", n, n == 3, "2026-11-20T01:00:00.000Z").await;
+		}
+		let mut conn = pool.acquire().await.unwrap();
+		let fast = crate::fast_track::Act::Fast;
+		assert_eq!(
+			crate::fast_track::act(&mut conn, A, "t", fast, 3, "2026-11-20T02:00:00.000Z").await.unwrap(),
+			crate::fast_track::Acted::NotWaiting,
+			"every attempt spent: nothing to put first"
+		);
+		let backlog = crate::transcript::backlog(&mut conn, KEYS, 3).await.unwrap();
+		assert_eq!(backlog.count, 0, "every attempt spent: nothing waits");
+		drop(conn);
+		assert!(matches!(hear_again_at(&pool, "t", "2026-11-21T00:00:00.000Z").await, Acted::Recorded(_)));
+		let mut conn = pool.acquire().await.unwrap();
+		assert_eq!(
+			crate::fast_track::act(&mut conn, A, "t", fast, 3, "2026-11-21T00:01:00.000Z").await.unwrap(),
+			crate::fast_track::Acted::Recorded,
+			"being heard again under a fresh key: it may be put first"
+		);
+		let backlog = crate::transcript::backlog(&mut conn, KEYS, 3).await.unwrap();
+		assert_eq!(backlog.count, 1, "the backlog reads the fresh key the queue waits on");
+		let waiting = crate::transcript::waiting(&mut conn, KEYS, 3, 20).await.unwrap();
+		assert_eq!(
+			waiting.iter().map(|w| (w.key.as_str(), w.urgency)).collect::<Vec<_>>(),
+			[("m+again1", crate::transcript::Urgency::FastTrack)],
+			"marked, never heard, never tried under the fresh key: its one try at the head"
+		);
+		drop(conn);
+
+		// A new model hears it before the fresh key does: its words are not
+		// superseded by a request that never knew of them.
+		heard(&pool, A, "t", "new", Kind::Heard, "2026-11-21T01:00:00.000Z").await;
+		heard(&pool, A, "t", "m+again1", Kind::Heard, "2026-11-21T00:30:00.000Z").await;
+		let mut conn = pool.acquire().await.unwrap();
+		let found: Vec<String> = sqlx::query_scalar("SELECT model FROM voice_note_superseded WHERE note_id = 't' ORDER BY model")
+			.fetch_all(&mut *conn)
+			.await
+			.unwrap();
+		assert_eq!(found, ["m"], "only the key the request found");
+		match transcript::heard(&mut conn, A, "t").await.unwrap() {
+			Hearing::Heard(read) => assert_eq!(read.model, "new", "the newer model's words, never superseded"),
+			other => panic!("{other:?}"),
+		}
+		assert!(transcript::superseded(&mut conn, A, "t", "m").await.unwrap());
+		assert!(!transcript::superseded(&mut conn, A, "t", "new").await.unwrap());
+	}
+
 	#[test]
 	fn a_fresh_key_is_its_base_and_the_times_asked() {
 		assert_eq!(transcript::again("ggml-small-q5_1.bin", 0), "ggml-small-q5_1.bin");
 		assert_eq!(transcript::again("ggml-small-q5_1.bin", 2), "ggml-small-q5_1.bin+again2");
-		assert_eq!(transcript::base_of("ggml-small-q5_1.bin+verbatim-1+again1"), "ggml-small-q5_1.bin+verbatim-1");
-		assert_eq!(transcript::base_of("ggml-small-q5_1.bin"), "ggml-small-q5_1.bin");
-		assert_eq!(transcript::base_of("m+again"), "m+again", "no number: not a fresh key");
 	}
 }

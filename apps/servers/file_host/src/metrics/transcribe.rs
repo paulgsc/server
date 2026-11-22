@@ -6,6 +6,7 @@
 //! pass starts, and stale means the task died or a note hangs past its
 //! deadline. Labels are attempt kinds only, never a note or a subject.
 
+use crate::stage::{Ended, Stage};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use voice_repo::transcript::Outcome;
 
@@ -37,10 +38,30 @@ pub fn record_pass(succeeded: bool) {
 	metrics::gauge!("transcribe_pass_failing").set(if succeeded { 0.0 } else { 1.0 });
 }
 
-/// One kept attempt: its kind, and how long it took.
-pub fn record_attempt(kind: &'static str, took: Duration) {
+/// One kept attempt: its kind, and how long it took, and how it ended for
+/// the transcriber as a shared stage (`crate::stage`).
+pub fn record_attempt(outcome: &Outcome, took: Duration) {
+	let kind = outcome.kind();
 	metrics::counter!("transcribe_attempts_total", "outcome" => kind).increment(1);
 	metrics::histogram!("transcribe_attempt_seconds", "outcome" => kind).record(took.as_secs_f64());
+	super::stage::record_attempt(Stage::Transcriber, ended(outcome));
+}
+
+/// How an attempt ended for the stage: heard or found silent is done; a
+/// note that doesn't decode or is past the longest heard is refused, which
+/// is the stage working; a deadline or a failure is the stage not working.
+const fn ended(outcome: &Outcome) -> Ended {
+	match outcome {
+		Outcome::Heard { .. } | Outcome::Silent => Ended::Done,
+		Outcome::Unreadable | Outcome::TooLong => Ended::Refused,
+		Outcome::Deadline | Outcome::Failed => Ended::Failed,
+	}
+}
+
+/// Every note still waiting, the transcriber's headline signal as a shared
+/// stage: when the oldest reached home, and how many wait.
+pub fn record_backlog(backlog: &voice_repo::transcript::Backlog) {
+	super::stage::record_waiting(Stage::Transcriber, backlog.oldest.as_deref(), backlog.count);
 }
 
 /// Every verdict kind at 0 at start, so `TranscriptGarbled` reads an

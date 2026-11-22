@@ -1,4 +1,4 @@
--- Reverses 20261121000200_hear_a_take_again.up.sql.
+-- Reverses 20261122000100_hear_a_take_again.up.sql.
 --
 -- **It refuses rather than discards:** a `hear_again` act is the owner's
 -- record, so once one is held this fails on the CHECK below and the
@@ -7,7 +7,9 @@ CREATE TEMP TABLE voice_note_attention_hears_none_again (n INTEGER NOT NULL CHEC
 INSERT INTO voice_note_attention_hears_none_again (n) SELECT COUNT(*) FROM voice_note_attention WHERE act = 'hear_again';
 DROP TABLE voice_note_attention_hears_none_again;
 
-DROP VIEW voice_note_superseding;
+DROP VIEW voice_note_superseded;
+DROP TRIGGER voice_note_hear_again_supersedes_leaves_with_account;
+DROP TABLE voice_note_hear_again_supersedes;
 
 CREATE TABLE voice_note_attention_prev (
     subject_id TEXT    NOT NULL,

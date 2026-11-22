@@ -214,12 +214,13 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_hear_again_supersedes`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want`, `voice_note_fast_track` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent, card-era log and work spans | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log`, `rust_work_span_event` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
 | Rust Rounds' essay videos: their links and what was let go (their files on the drive go too: invariant 23) | `rust_essay_video_link`, `rust_essay_video_deletion` |
 | A week of mock interview's essay videos: the same, for its essay (IW6; invariant 23) | `interview_essay_video_link`, `interview_essay_video_deletion` |
+| Cards essays withdrawn because a take their spoken cards played was deleted: which, and that take's id (the essay and its link are no one's and stay; invariant 23) | `cards_essay_video_deletion` |
 | How each recording ended | `app_event` |
 | Each week's engagement report, as written for its video, and that video's links and what was let go (its files on the drive go too: invariant 34) | `report_week`, `report_video_link`, `report_video_deletion` |
 | Sign-in | `account`, `passkey`, `auth_session` |
@@ -481,7 +482,9 @@ nowhere is marked as such and belongs to review.
    any collector: see "What is still exposed".
 
 3. **Fingerprinting headers are named only in `net.rs`,** other than as a
-   write that puts one on a request, which is how tests prove they're ignored.
+   write that puts one on a request: how tests prove they're ignored, and how
+   home names its own fixed user agent on a request it sends (the snips
+   pickup to GitHub's API), which reads nothing of a person's.
    These are `User-Agent`, `X-Forwarded-For`, `X-Real-IP`, `Forwarded` and the
    CDN variants. The check matches any mention rather than a list of read
    methods, because every such list turned out to have another way through.
@@ -543,7 +546,7 @@ nowhere is marked as such and belongs to review.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
    exists and its write.** A deletion, or a sign-out everywhere, holds it
-   exclusively for its one transaction. There are six such writers today:
+   exclusively for its one transaction. There are seven such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
@@ -571,6 +574,11 @@ nowhere is marked as such and belongs to review.
      then a connection, around keeping each week, in one statement that
      checks the subject's `account` row (`app_event_repo::report::keep`;
      `no_owner_writes_nothing_and_a_week_no_longer_the_owners_leaves_the_drive`).
+   - the cards essays' pass, which takes the lock around writing which of the
+     subject's notes its held-back essays wait on (`cards_essays::pass::want`,
+     `stage_want`), in one statement per note that checks the subject still
+     holds it (`stage_repo::replace`;
+     `an_unknown_waiter_is_refused_and_an_unknown_item_is_not_wanted`).
 
    A new writer of subject-scoped rows outside a request must do the same,
    or its rows can outlive a deleted account. Every hold is short, so a
@@ -1371,20 +1379,43 @@ nowhere is marked as such and belongs to review.
     it", relayed by the coordinator of run paulgsc/some-ui#3311): an essay
     whose spoken cards name the owner's takes is given them in
     `cards-essays/<key>.takes/` (`cards_essays::pass`, through the one take
-    hand-off every essay uses, `take_files::hand_off`), and the rules hold
+    hand-off every essay uses, `essay_media::takes::hand_off`), and the rules hold
     only as far as this says. (a) holds: the takes are the mailbox
     subject's only, and with no subject home's tidy takes back every essay
     given with takes within a minute; (b) holds: the takes folder goes once
     the video is made, and a folder a stopped pass left half written goes
-    too; (c) holds **only until the worker starts its render**: a take
-    deleted from My data before then takes the essay and its takes back
-    from the worker within a minute, and it is refused from then on, but a
-    render already under way may still make the video, and a video made
-    keeps the owner's voice, both open in paulgsc/server#1055; (d) is
+    too; (c) holds (paulgsc/server#1055): a take an essay's spoken cards
+    play that is deleted from My data, or whose recording is let go, takes
+    that essay's video and folder with it within a minute, whether its
+    render has not started, is under way or is done, by the same steps as
+    the Rust Rounds essay's: both receipts in `cards_essay_video_deletion`
+    (`cards_essay_repo::withdraw`, cause `take-deleted`, naming the note
+    beside the note's own receipt, and the link it had), then its input,
+    takes, renders and work folders; it is never given to the worker again
+    and no list shows it (`cards_essay_repo::gone`), and a video a render
+    under way finishes after that is removed by the next minute's tidy,
+    while its cut list stays in `cards_essay`; `GET /cards-essays/:key/video`
+    never serves a withdrawn one meanwhile, and an essay never given is
+    withdrawn by the pass the same way. Receipts are read as the mailbox
+    subject's (`mailbox::pass_subject`), so while none resolves nothing is
+    withdrawn; a made video once the account is gone is
+    paulgsc/server#1064. Home has no `YouTube` access, so a copy the owner
+    uploaded stays theirs to take down: the receipt keeps its link (no
+    route serves it yet), and some-ui's My data and Renders words say the
+    copy is theirs (the owner, 2026-11-21, via the coordinator
+    of run paulgsc/some-ui#3311: "A copy you uploaded to YouTube is yours to
+    take down"). A cards essay is kept once,
+    so what it plays is its one body's, and a spoken card has no silence to
+    play in a take's place (C812): any such take withdraws it. (d) is
     some-ui's side (what My data says of a cards video). *Enforced by*
     `cards_essays::pass`' `no_copy_of_a_take_outlives_its_video_or_its_note`,
-    `every_kind_of_unheard_or_gone_take_is_said_and_a_wait_is_no_refusal`
-    and `a_spoken_card_is_given_its_takes_once_each_is_heard`. A note
+    `every_kind_of_unheard_or_gone_take_is_said_and_a_wait_is_no_refusal`,
+    `a_spoken_card_is_given_its_takes_once_each_is_heard`,
+    `a_take_deleted_before_during_or_after_the_render_withdraws_its_essay_for_good`,
+    `an_essay_never_given_is_withdrawn_by_the_pass_not_refused`
+    and `only_a_deleted_take_an_essay_plays_withdraws_it`, and
+    `cards_essay_repo`'s
+    `an_essay_whose_take_is_deleted_is_withdrawn_both_steps_at_once_linked_or_not_and_leaves_with_the_account`. A note
     is never updated (each table's trigger aborts an `UPDATE`) or replaced
     (other bytes or another description under a held id is a `409`), and
     never deleted but with the account, after it is transcribed as before
@@ -1455,9 +1486,10 @@ nowhere is marked as such and belongs to review.
     essay video only if the essay plays it ((c) of the essay videos, above).
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
-    vectors in the meaning index (invariant 35), its set-aside mark and its
-    moves along the conveyor (`studio_take_move`, below) in one
-    transaction, and keeps a copy of its words
+    vectors in the meaning index (invariant 35), its set-aside mark, its
+    moves along the conveyor (`studio_take_move`, below), the owner's
+    fast-track acts on it (`voice_note_fast_track`) and what waits on it
+    (`stage_want`) in one transaction, and keeps a copy of its words
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
@@ -1524,7 +1556,7 @@ nowhere is marked as such and belongs to review.
     are each a `404`, so no audio leaves home but to its own subject's paired
     phone, and a kind added later stays home until it is listed. It reads only, its span skips every
     argument, and `voice_repo::audio_head` and `voice_repo::audio_body` have
-    one other caller, `take_files::hand_off`, the one take hand-off: through it
+    one other caller, `essay_media::takes::hand_off`, the one take hand-off: through it
     `rust_essays` copies a final week's `rust-round` or `interview` takes, and
     `cards_essays` a spoken card's takes (reading their audio with
     `voice_repo::transcript::audio`, any kind; its tidy reads only a note's
@@ -1685,7 +1717,11 @@ nowhere is marked as such and belongs to review.
     was said is `voice_transcript_word`, append-only too**
     (paulgsc/server#462; words since paulgsc/some-ui#2085). `file_host`'s `transcribe` worker, on only when
     `TRANSCRIBE_ENABLED`, reads each note's audio and hears it on home's CPU
-    with whisper.cpp: those tried fewest times first, then oldest first, one
+    with whisper.cpp: the note the contention guard is excusing first, then
+    those tried fewest times, then among those the most urgent
+    (`transcript::Urgency`: a note the owner fast-tracked and not yet tried,
+    then one wanted, by a waiter or by a mark already tried), then the most
+    waited on, then oldest first (paulgsc/server#1091), one
     at a time, on a blocking thread by a deadline, never on a request's path
     (so a note that keeps failing never keeps a newer one waiting: TR1). Each attempt is a row: the model
     file and engine, the attempt's number, its outcome (`heard`, with the
@@ -1764,22 +1800,36 @@ nowhere is marked as such and belongs to review.
     ending, words and verdict stay as they are beside the new, the
     transcriber hears the take under `hears_under` with its own set of
     `ATTEMPTS`, and nothing is rewritten and no clock read (C925, the
-    coordinator's calls on run paulgsc/some-ui#3311). **A request supersedes
-    the take, not a model**: while it stands (its take still heard: its
-    recording held, not set aside), every read that chooses the take's ending
-    or final verdict skips each row whose key is not the request's
-    `hears_under`, whatever model wrote it, through the one view
-    `voice_note_superseding` and one predicate written the same way in each,
-    the mailbox's filers included (`transcript`'s
+    coordinator's calls on run paulgsc/some-ui#3311). The act names the key
+    it was asked under too, `asked_under`, so no key is ever parsed apart:
+    the queue and its backlog read the note's newest request asked under the
+    key home hears it under now (`voice_repo::transcript::STANDING_KEY`, one
+    fragment in both). **A request supersedes the keys it found, once it is
+    answered** (the agreed root shape, paulgsc/some-ui#3339, 2026-11-22):
+    with each request, in its transaction, go the keys that had made
+    something of the take (`voice_note_hear_again_supersedes`, model names
+    only, append-only, leaving with the account alone), and a row is skipped
+    by every read that chooses the take's ending, words or final verdict only
+    once a request that listed its key has had its fresh key end the take
+    (heard, or found silent), through the one view `voice_note_superseded`
+    and one predicate written the same way in each, the mailbox's filers
+    included (`transcript`'s
     `every_reader_skips_what_a_request_to_hear_again_superseded`, asserted per
-    query). So while home hears the take again it reads as not judged yet
-    everywhere (the takes read, the essays, Needs your attention, My data,
-    the mailbox), and when the fresh key ends it, its ending is what is read,
-    a silence over older words included; a mark set aside or a recording let
-    go ends the supersession, and the old rows read again. A request named
-    under a model home no longer hears with is moot, and may be asked again.
+    query). So while home hears a take again its old words and verdict stay
+    what every reader chooses, marked `hearAgain.hearing` (the owner's answer
+    (b), 2026-11-22); when the fresh key ends it, its ending is what is read,
+    a silence over older words included; if every fresh attempt fails,
+    nothing is superseded and the old words stay (answer (a)). A key that
+    comes after a request (a new model) is never superseded by it, and
+    nothing lapses: a mark set aside or a recording let go afterwards leaves
+    what was heard as it was. A request asked under a model home no longer
+    hears with is moot, and may be asked again; on a home that runs no
+    transcriber a request is refused (`409`) and no take reads as being
+    heard again. An essay that plays a take being heard again waits for its
+    fresh words rather than refuse it for its old verdict.
     The meaning index follows the ending read, its vector removed when that
-    ending has no words. A take is asked again
+    ending has no words, and a search by meaning finds only a take whose
+    chosen ending heard words. A take is asked again
     at most once per `voice_repo::attention::HEAR_AGAIN_SNOOZE`, six hours,
     a policy constant and not a setting; inside it the answer is a `409`
     whose `details.nextAt` says when (C926). While home hears a take again,
@@ -1790,10 +1840,13 @@ nowhere is marked as such and belongs to review.
     and on Needs your attention carries `hearAgain` (`open`, `hearing`,
     `askedAt`, `nextAt`), `hearing` told by what is on home (a request whose
     key has not ended or judged the take, under the model home hears with,
-    the take still heard) and never by the acts alone;
+    the take still heard, the transcriber running) and never by the acts
+    alone;
     its `of` and `ref` are its source, as the take library keeps them, and
-    no new link is made (C927). The mailbox never files a superseded attempt,
-    a filer that read one before the request checks again in the
+    no new link is made (C927). The mailbox files the old words while home
+    hears a take again, as every reader reads them, and never a superseded
+    attempt once the fresh key has ended it;
+    a filer that read one before the fresh key ended it checks again in the
     transaction that files, and a fresh key's transcript is filed as another
     model's; what the routines make of a take heard again beyond that is
     paulgsc/server#1073. Every read that gives

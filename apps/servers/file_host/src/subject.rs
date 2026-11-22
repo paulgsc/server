@@ -175,6 +175,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each session of the owner's card-era Rust Rounds log (paulgsc/some-ui#2689, RR14), every revision as the phone sent it: the cards played, what was picked or skipped, which voice notes were said on them (by id), what rustc printed, the pins, the errors pasted from their own code, and the cards the tutor guessed wrong; when it started and reached home. See docs/identity.md invariant 28",
 	),
 	(
+		"cards_essay_video_deletion",
+		"each cards essay withdrawn because a take its spoken cards played was deleted from My data or let go (paulgsc/server#1055): the essay's key, video or rest, that take's voice-note id, the essay's YouTube id if it had one, the bytes that went and when. See docs/identity.md invariant 23",
+	),
+	(
 		"rust_essay_video_deletion",
 		"each step of a week's Rust Rounds essay video let go (paulgsc/some-ui#2691, RR16): the week, video or rest, whether the owner let it go or a take it played was deleted (that take's voice-note id), its YouTube id, the bytes that went and when. See docs/identity.md invariant 23",
 	),
@@ -242,6 +246,18 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 	(
 		"voice_note_attention",
 		"each act of the owner's reconciling a voice note home could not hear (paulgsc/server#912, HEARD3): the note's id, whether the owner kept it, will record it again or deleted it, which verdict that answered, and when; never what was said; see docs/identity.md invariant 23",
+	),
+	(
+		"voice_note_hear_again_supersedes",
+		"per request to hear a take again (paulgsc/some-ui#3339), the transcription keys (model names) that had made something of the note when the owner asked: what that request may supersede; the note's id and the request's number, never what was said; see docs/identity.md invariant 23",
+	),
+	(
+		"voice_note_fast_track",
+		"each time the owner put one of their takes at the front of home's transcriber's line, or took that back (paulgsc/server#1090): the take's id, the act and when; never what was said; see docs/identity.md invariant 23",
+	),
+	(
+		"stage_want",
+		"which of the owner's voice notes a cards essay home holds back is waiting to have heard (paulgsc/server#1091): the essay's key and the note's id, so the transcriber hears those first; rewritten each pass, never what was said; see docs/shared-stages.md",
 	),
 	(
 		"studio_take_on_drive",

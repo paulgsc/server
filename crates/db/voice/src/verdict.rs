@@ -291,7 +291,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, note_id: &str) -
 		r#"WITH ending AS (
 		     SELECT t.model, t.attempt FROM voice_transcript t
 		     WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome IN ('heard', 'silent')
-		       AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model)
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.model = t.model)
 		     ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
 		     LIMIT 1)
 		   SELECT v.model AS "model!", v.attempt AS "attempt!", v.rule AS "rule!", v.verdict AS "verdict!", v.reasons AS "reasons!",
@@ -301,7 +301,7 @@ pub async fn newest(conn: &mut SqliteConnection, subject: &str, note_id: &str) -
 		   WHERE v.subject_id = ?1 AND v.note_id = ?2
 		     AND (EXISTS (SELECT 1 FROM ending e WHERE e.model = v.model AND e.attempt = v.attempt)
 		          OR (NOT EXISTS (SELECT 1 FROM ending) AND v.verdict = 'failed'
-		              AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = v.subject_id AND sup.note_id = v.note_id AND sup.hears_under <> v.model)))
+		              AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = v.subject_id AND sup.note_id = v.note_id AND sup.model = v.model)))
 		   ORDER BY v.judged_at DESC, v.rule DESC, v.model DESC, v.attempt DESC
 		   LIMIT 1"#,
 		subject,
@@ -353,7 +353,7 @@ pub async fn of_ending(conn: &mut SqliteConnection, subject: &str, note_id: &str
 		   JOIN voice_transcript_verdict v
 		     ON v.subject_id = t.subject_id AND v.note_id = t.note_id AND v.model = t.model AND v.attempt = t.attempt
 		   WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.model = ?3
-		     AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.hears_under <> t.model)
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.model = t.model)
 		   ORDER BY t.outcome IN ('heard', 'silent') DESC, t.attempt DESC, v.judged_at DESC, v.rule DESC
 		   LIMIT 1"#,
 		subject,

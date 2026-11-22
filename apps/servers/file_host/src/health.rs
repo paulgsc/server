@@ -81,6 +81,16 @@ fn ready_url(host: &str, port: u16) -> Result<Url, String> {
 	Ok(url)
 }
 
+/// `GET url`, within ten seconds, on the probe's own client.
+async fn probe(url: Url) -> Result<reqwest::Response, reqwest::Error> {
+	outbound::client(outbound::Caller::HealthProbe)
+		.timeout(std::time::Duration::from_secs(10))
+		.build()?
+		.get(url)
+		.send()
+		.await
+}
+
 /// Exits 0 when `/ready` says ready or degraded, 1 otherwise, saying why on
 /// the way out: Docker keeps the line in `docker inspect`'s health log.
 ///
@@ -88,7 +98,7 @@ fn ready_url(host: &str, port: u16) -> Result<Url, String> {
 /// Never returns: it always exits. The `Result` is `main`'s.
 pub async fn perform_health_check(config: &Config) -> Result<()> {
 	let verdict = match ready_url(&config.health_check_host, config.health_check_port) {
-		Ok(url) => match reqwest::Client::new().get(url).timeout(std::time::Duration::from_secs(10)).send().await {
+		Ok(url) => match probe(url).await {
 			Ok(response) => {
 				let code = response.status().as_u16();
 				let body = response.text().await.unwrap_or_default();

@@ -97,8 +97,8 @@ fn served_routes(config: &Config, rate_limiter: &Arc<HttpLimiter>) -> (Router<fi
 }
 
 // Worker threads are a source constant (#617), not tokio's own
-// TOKIO_WORKER_THREADS: compose gave this 2-CPU container 4, so 4 it is,
-// and nothing about how it runs changes.
+// TOKIO_WORKER_THREADS: compose gave it 4, so 4 it is, whatever the
+// container's CPU cap.
 #[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
 	// Its whole environment is what it was started with: compose's env_file
@@ -123,13 +123,17 @@ async fn main() -> Result<()> {
 	// (#213/F2) needs a bucket above `admission::ANSWER_WITHIN`'s 8 s, and the
 	// exporter's default buckets top out at 10s — see
 	// `metrics::http::HTTP_DURATION_BUCKETS`'s own doc comment.
-	let metrics_builder = some_metrics::PrometheusBuilder::new().set_buckets_for_metric(some_metrics::Matcher::Full(HTTP_DURATION_METRIC.to_string()), HTTP_DURATION_BUCKETS)?;
+	// And `outbound`'s, whose callers time out at up to 30 s (`outbound::DURATION_BUCKETS`).
+	let metrics_builder = some_metrics::PrometheusBuilder::new()
+		.set_buckets_for_metric(some_metrics::Matcher::Full(HTTP_DURATION_METRIC.to_string()), HTTP_DURATION_BUCKETS)?
+		.set_buckets_for_metric(some_metrics::Matcher::Full(outbound::DURATION_METRIC.to_string()), outbound::DURATION_BUCKETS)?;
 	let metrics_handle = some_metrics::install_with(metrics_builder)?;
 
 	// #213 (F4): which build the dashboard is describing, stamped once at
 	// startup so a restart shows as a discontinuity rather than an inference
 	// from a gap in an unrelated series.
 	file_host::metrics::build_info::record();
+	file_host::metrics::stage::record_started();
 
 	// Every refusal series at 0 from the start, so "never refused" reads as
 	// zero rather than as a missing family — see `refusals::register_all`.

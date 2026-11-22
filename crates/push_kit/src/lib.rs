@@ -14,7 +14,8 @@
 //! vtable to reach one implementation is paying for nothing.
 //!
 //! ```ignore
-//! let sender = Sender::new(identity, ReqwestTransport::default());
+//! let client = outbound::client(outbound::Caller::Nudge).build()?;
+//! let sender = Sender::new(identity, ReqwestTransport::new(client));
 //! match sender.deliver(&subscription, payload_bytes).await {
 //!     SendOutcome::Expired => repo.delete(&subscription.endpoint).await?,
 //!     outcome => repo.record(&subscription.endpoint, outcome).await?,

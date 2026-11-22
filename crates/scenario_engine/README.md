@@ -45,9 +45,62 @@ catalog order.
 | `red-zone` | `in.red-zone` | inside the 20 | ended a trip inside the 20 |
 | `two-minute` | `in.two-minute` | 2nd or 4th quarter, 2:00 or less | |
 | `kick` | `in.kick` | the try is to come, or 4th down within a 57-yard field goal | is a field goal, or a missed extra point |
-| `turnover`, `sack`, `big-play`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.big-play`, `in.penalty`, `in.injury` | never ahead of time | was an interception or lost fumble, a sack, a gain of 20+, a flag, a player hurt or back |
+| `turnover`, `sack`, `penalty`, `injury` | `in.turnover`, `in.sack`, `in.penalty`, `in.injury` | never ahead of time | was an interception or lost fumble, a sack, a flag, a player hurt or back |
+| `big-play` | `in.big-play` | never ahead of time | gained 20+ by the big-play algebra (below) |
+| `halftime` | `in.halftime` | from ESPN's end of the half until the second half's kickoff | |
+| `onside-kick` | `in.onside-kick` | never ahead of time | was a kickoff ESPN calls onside, with who recovered it (ESPN's "recovered by", else the receivers) |
 | `final` | `post.result`, `post.paths`, `post.pattern` | the game is final (paths only with a side wanted) | |
 | `watching` | `you.*` | the game is final, a side is wanted, the result is not a tie, and the phone has said whether the owner watched | |
+
+### The big-play algebra (#3048)
+
+A big play in "just happened" carries a `BigPlay` beside its line: its
+`size` (`big` 20+, `huge` 40+, `memorable` 60+), its `kind` (`pass`, `run`,
+`kick-return`, `punt-return`, `interception-return`, `fumble-return`), `by`
+(the side that gained: the returner's on a return, so a pick-six is the
+defense's, never the offense's pass), `yards`, `scored`, and `good` (for the
+side wanted; none without one). Sizes and kinds are `game_scenarios`'
+closed enums, and the catalog dump lists them. A kick return is big from
+`huge`: 20 to 39 yards is the ordinary one, out of the end zone to about
+the 25 (`Kind::least`). `read::gain_by` reads which side gained and how far.
+
+### One ranked list, and what a bite is about (#3049)
+
+`Offer::ranked` holds every scenario of the set once, for the phone's "what
+was that about" list: the cards on offer now, exactly as `scenarios` lists
+them (`now`); then the always plausible, what the game means for the paths
+and whether it fits a pattern (`always`); then the rest in the set's order,
+least plausible last but still pickable (`rest`). Code ranks it, never a
+model.
+
+Each entry carries its default unit (`game_scenarios::Unit`) and whose, the
+team's code (`unit_side`), never ours or theirs (the phone reads that from
+the side wanted, and a game with none still has a defense). Each play in
+`just_happened` carries its own, read off that play, because one scenario
+can be about two teams at once: NE's 4th down just happened while CHI's is
+to come.
+
+- a call (4th down, the try, the two-minute drill) is the deciding team's
+  `coaching`; halftime is the side wanted's, or no one team's;
+- a kick is the kicking team's `special-teams` (the scorer's, on a try); a
+  kick or punt return, the returners';
+- a score is the scorer's `offense`, or its `defense` or `special-teams`
+  when it returned the ball; a lead change is the score that changed it,
+  however many plays on;
+- anything else in the game is, with a side wanted, its `offense` when it
+  had the ball and its `defense` when the other team did; with none, the
+  `offense` of the team with the ball.
+
+On the list, what the moment's rule offers ahead goes by the snap to come.
+What only ever just happened (a turnover, a flag, a sack, an injury, a lead
+change, a big play) is the latest such play's default, and an onside kick
+is the team that kicks off next: the latest onside kick's while nothing has
+scored since, else the last scorer's. None before kickoff (until the log
+holds the opening kickoff, whatever ESPN's state says) or after the final,
+for a pregame, final or owner's scenario, or when the team it would name is
+unknown. A unit with no side is about no one team. Units are catalogue v2's
+(C873): a bite said under catalogue 1 carries none. The owner can change
+it with one tap; home keeps what the phone sends, once, with the bite.
 
 A game ESPN calls over that was not completed (postponed or cancelled), with
 no play in the log, offers nothing, and its strip says "Not played".
@@ -77,7 +130,68 @@ kickoff or a score and the next snap, and then neither does the situation,
 so the down rules wait for the snap after. A replay, which knows the next
 play, passes `Situation::before(next)`. ESPN's timeouts left are carried by
 `nfl_feed` but not read here: the two-minute line still counts them from the
-log's timeout plays.
+log's timeout plays. ESPN's play text spells six teams otherwise than its header
+(`HST` for HOU, `BLT` BAL, `ARZ` ARI, `CLV` CLE, `LA` LAR, `WAS` WSH);
+`read::team` reads each as the header's, so a flag says "Flag on HOU".
+
+## Which play a bite is about (#3040)
+
+The reconciler (GWB7, `file_host`'s `reconcile`) matches each bite to a
+play with three calls here:
+
+```rust
+on_offer(&game_then, &log, t, scenario) -> bool        // which offer the bite took
+offered_said(&game_then, &log, offered, scenario) -> Said
+its_play(&game, &log, now, scenario, said, bite_at, offered, window) -> Option<(Was, gap)>
+```
+
+A bite taken on an offer is said **before** its play when the moment's rule
+offers the snap to come, and **after** it when the rule offers a play already
+in the log. `rules::offered_said` has one arm per `Moment`, so a new moment
+must say which. A bite from "just happened" is said after. One picked from
+the whole set, or said first and mapped later, is `Either`: nothing says
+which side of its play it was said on, so it takes the nearer in time of
+the nearest accepted play before it and the first after it.
+
+| Moment | An offered bite is said | Its play |
+| --- | --- | --- |
+| `third-and-long`, `fourth-down`, `snap`, `kick` on 4th down | before the snap (`BeforeTheSnap`) | the snap to come, if the rule accepts it; else none |
+| `kickoff` | before the kickoff (`BeforeTheKickoff`) | the opening kickoff, however long after: it is offered up to a quarter hour ahead |
+| `opening-drive`, `red-zone` | before the drive (`BeforeTheDrive`) | the first play the rule accepts from the snap to come on, in that possession, however long after |
+| `kick` while a try is to come, `try`, `lead-change` | after (`After`) | the nearest the rule accepts at or before the bite (the try is written into its touchdown's own play) |
+| the rest | never offered ahead of time, or about no one play | |
+
+A possession is the snaps one team has in a row with no kickoff between
+them, within one half (#1077): a kickoff (an onside kick the kickers get
+back included) or the end of a half ends it even when the same team snaps
+next, so a drive bite late in the 2nd quarter is never about the third's
+score, and the drive after a recovered onside kick is not the first. A
+snap in a different half from the last snap with a known period ends it
+too, which matters when the log lacks both the kickoff and the half's end
+(a snap ESPN gave no period keeps the last known half). All of overtime is
+one half here, so regulation's end splits a drive, at the first overtime
+snap with a known period, but an overtime period's break does not:
+possession carries over it, as in the playoffs.
+
+The snap to come is the first play from scrimmage (never a kickoff) that home
+had not seen when the offer was on its screen and that no flag wiped out (a
+false start replays the down). Its time must be within `window` of the
+bite's start either side (a delayed broadcast can put it before); a drive's
+end and the opening kickoff are not bounded by it. The gap is
+the bite's start minus the play's time, so negative for a play after.
+
+**BM5** (the promise #3040 declared): every bite said on an offer of the
+snap to come is matched to that snap when its scenario's rule accepts it,
+to none when the rule does not, and never to a play before it; every bite
+offered on a drive to a play of that possession from the snap on; every
+bite from just happened to the nearest play at or before it, and every bite
+not tied to an offer to the nearer of the plays either side. Family: when a bite is said
+relative to its snap, by the moment's rule. Proof: `tests/its_play.rs`, every
+snap of the recorded game with every scenario offered before it in Full
+mode, and every touchdown with its try to come. Tolerance: in
+`reconcile::LAG` after home sees a snap, a scenario still on offer for the
+next one (a play call, a drive) is read as the newer offer; nothing the bite
+keeps says which the phone showed.
 
 ## Invariants
 

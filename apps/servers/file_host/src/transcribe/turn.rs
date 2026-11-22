@@ -2,8 +2,7 @@
 //!
 //! While a note is heard the transcriber holds `Interactive`, and the lane
 //! pauses a render for it (LA1). A backlog of notes, each heard by its
-//! deadline, would hold the lane for hours, and every render with it: the
-//! two cards essays waited on just that (2026-11-20). So a run of hearing
+//! deadline, would hold the lane for hours, and every render with it. So a run of hearing
 //! is a turn: once the transcriber has heard for [`TURN`] in a row while
 //! batch work waits, it hears nothing for [`GIVE`], or until no batch work
 //! waits, whichever comes first, and then takes a fresh turn. It never stops
@@ -17,9 +16,14 @@
 //! - **A run ends when the queue does.** A pass that finds nothing to hear
 //!   ends the run ([`Turn::rested`]), so notes heard as they arrive never add
 //!   up to a turn.
-//! - **Nothing is given to no one.** With no batch work waiting the
-//!   transcriber hears on, however long its run (docs/home-compute.md
-//!   invariant 2).
+//! - **Nothing is given to no one it can see.** With no batch work waiting
+//!   the transcriber hears on, however long its run (docs/home-compute.md
+//!   invariant 2). A named job the lane holds stopped (for memory, say) still
+//!   counts as waiting, so the transcriber can give way to a render that
+//!   cannot run yet: bounded by [`GIVE`], and paulgsc/server#1088.
+//! - **A give holds every note**, a take recorded during it included: it
+//!   waits at most [`GIVE`] (paulgsc/server#1088 asks the owner whether it
+//!   should).
 
 use crate::call_weeks::lane::Interactive;
 use std::time::{Duration, Instant};
@@ -171,9 +175,9 @@ mod tests {
 	}
 
 	/// A run ends with the queue, so takes heard as they arrive never add up
-	/// to a turn; and a turn that never ends never gives way.
+	/// to a turn.
 	#[test]
-	fn a_rested_run_starts_again_and_an_unbounded_one_never_gives_way() {
+	fn a_rested_run_starts_again() {
 		let interactive = Interactive::default();
 		interactive.set_batch_waits(true);
 		let start = Instant::now();
@@ -184,8 +188,5 @@ mod tests {
 			assert!(turn.may_hear(at + 5 * MIN));
 			turn.rested();
 		}
-		assert!(!turn.giving());
-		let mut unbounded = Turn::unbounded();
-		assert!((0..100).all(|hour| unbounded.may_hear(start + MIN * (60 * hour))));
 	}
 }

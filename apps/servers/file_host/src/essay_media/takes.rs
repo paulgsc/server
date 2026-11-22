@@ -1,4 +1,4 @@
-//! One hand-off of the owner's takes to home's render worker.
+//! Takes, one kind of [`super`]: the owner's takes handed to home's render worker.
 //!
 //! For every essay that plays them (paulgsc/server#1052; recon
 //! paulgsc/some-ui#3317): a Rust Rounds or interview essay's (`rust_essays`)
@@ -19,9 +19,69 @@
 //! deleted; a cards essay refuses both. This module only says which.
 //! Nothing here logs: a take's words never reach a log line.
 
+use super::{Failed, Held, Sources, Why};
 use serde::Serialize;
+use serde_json::Value;
 use sqlx::SqliteConnection;
 use voice_repo::{Of, VoiceError};
+
+/// Every take a cut list's `shot` names, as its spoken card plays them.
+///
+/// In the order named (`@some-ui/video-render`'s `spokenTakesOf`, C817):
+/// each exchange of a shot whose `spoken.role` is `spoken` is
+/// `{ ask, answer }`, two turns, each `{ voice: "kokoro", said }` or
+/// `{ voice: "owner", take }`; every owner turn's `take`, the asking one's
+/// included.
+#[must_use]
+pub fn named(shot: &Value) -> Vec<String> {
+	let Some(spoken) = shot.get("spoken").filter(|spoken| spoken.get("role").and_then(Value::as_str) == Some("spoken")) else {
+		return Vec::new();
+	};
+	let exchanges = spoken.get("exchanges").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+	let turns = exchanges.iter().flat_map(|exchange| [exchange.get("ask"), exchange.get("answer")]).flatten();
+	let owners = turns.filter(|turn| turn.get("voice").and_then(Value::as_str) == Some("owner"));
+	owners.filter_map(|turn| turn.get("take").and_then(Value::as_str)).map(String::from).collect()
+}
+
+/// One take a cards essay plays, the subject's by note id, whatever it was
+/// said for, with its transcript: its files, a wait while home has not heard
+/// it, or a refusal for one home does not hold or did not hear.
+pub(super) async fn hold(conn: &mut SqliteConnection, sources: &Sources, take: &str) -> Result<Held, Failed> {
+	let Some(subject) = sources.subject.as_deref() else {
+		return Ok(Held::Waiting);
+	};
+	// A name the recorder would skip (`.`-led) or that is no note's id is no
+	// take home could hand over.
+	if take.starts_with('.') || !voice_repo::is_note_id(take) {
+		return Ok(Held::Refused(Why::Missing));
+	}
+	let ask = Ask {
+		take,
+		name: take,
+		of: None,
+		transcript: true,
+	};
+	Ok(match hand_off(conn, subject, ask).await {
+		Ok(Take::Files(files)) => Held::Files(files),
+		Ok(Take::Absent { .. }) => Held::Refused(Why::Missing),
+		Ok(Take::NotMadeOut) => Held::Refused(Why::Unheard),
+		Ok(Take::NotHeardYet) => Held::Waiting,
+		Err(VoiceError::Storage(err)) => return Err(Failed::Storage(err)),
+		Err(_) => return Err(Failed::Unreadable),
+	})
+}
+
+/// Whether the subject still holds `take`'s note.
+pub(super) async fn still_held(conn: &mut SqliteConnection, sources: &Sources, take: &str) -> Result<bool, sqlx::Error> {
+	let Some(subject) = sources.subject.as_deref() else {
+		return Ok(false);
+	};
+	match voice_repo::note_head(conn, subject, take).await {
+		Ok(None) => Ok(false),
+		Err(VoiceError::Storage(err)) => Err(err),
+		Ok(Some(_)) | Err(_) => Ok(true),
+	}
+}
 
 /// A word of a take with its times, as `<name>.words.json` holds it.
 ///
@@ -88,6 +148,17 @@ pub async fn hand_off(conn: &mut SqliteConnection, subject: &str, ask: Ask<'_>) 
 	// Whether home heard it before its audio is read, so a take waited for
 	// or refused costs no read of its bytes.
 	let transcript = if ask.transcript {
+		// Being heard again (paulgsc/some-ui#3339): its fresh words are what
+		// the essay hands over, so it waits for them, and the verdict it had
+		// is no refusal until they end.
+		let (plain, verbatim) = crate::transcribe::keys();
+		let keys = voice_repo::transcript::Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		if voice_repo::attention::being_heard_again(conn, subject, ask.take, keys).await? {
+			return Ok(Take::NotHeardYet);
+		}
 		let heard = match voice_repo::transcript::heard(conn, subject, ask.take).await? {
 			voice_repo::transcript::Hearing::Heard(heard) => heard,
 			voice_repo::transcript::Hearing::NotHeld => {

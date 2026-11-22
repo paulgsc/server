@@ -4,27 +4,39 @@
 //!
 //! **A paired phone's only.** Every handler takes [`Paired`], so a request
 //! without a session is `401` and a browser's session `403`. A key that is
-//! not an essay's, or an essay with no video yet, is `404`.
+//! not an essay's, an essay with no video yet, or one withdrawn because a
+//! take it plays was deleted (`cards_essay_repo::gone`, paulgsc/server#1055)
+//! is `404`: a render under way when it was withdrawn may write a video the
+//! next minute's tidy has not removed yet, and that is never served.
 
 use crate::cards_essays::{pass::is_key, RENDERS_FOLDER, VIDEO};
 use crate::subject::Paired;
 use crate::FileHostError;
 use axum::{
 	body::Body,
-	extract::{Path, Request},
+	extract::{Path, Request, State},
 	http::{header::CONTENT_DISPOSITION, HeaderValue},
 	response::{IntoResponse, Response},
 };
+use sqlx::SqlitePool;
 use std::path::PathBuf;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use tracing::{instrument, warn};
 
-/// The essay `key`'s video under `renders`, once the worker has made it: a
-/// plain file, never a link, at `<renders>/<key>/cards.mp4`. A key that is
-/// not an essay's is never joined to a path.
-async fn video_file(renders: &std::path::Path, key: &str) -> Result<PathBuf, FileHostError> {
+/// The essay `key`'s video under `renders`, once the worker has made it and
+/// unless it was withdrawn: a plain file, never a link, at
+/// `<renders>/<key>/cards.mp4`. A key that is not an essay's is never joined
+/// to a path.
+async fn video_file(db: &SqlitePool, renders: &std::path::Path, key: &str) -> Result<PathBuf, FileHostError> {
 	if !is_key(key) {
+		return Err(FileHostError::NotFound);
+	}
+	let gone = {
+		let mut conn = db.acquire().await?;
+		cards_essay_repo::gone(&mut conn).await?
+	};
+	if gone.iter().any(|gone| gone == key) {
 		return Err(FileHostError::NotFound);
 	}
 	let file = renders.join(key).join(VIDEO);
@@ -45,11 +57,12 @@ async fn video_file(renders: &std::path::Path, key: &str) -> Result<PathBuf, Fil
 ///
 /// # Errors
 /// 401 without a session, 403 for a browser's, 404 for a key that is not an
-/// essay's or an essay with no video yet, and 500 when the drive refuses.
+/// essay's, an essay with no video yet or one withdrawn, and 500 when the
+/// drive or the database refuses.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "cards_essays_video", skip_all, fields(otel.kind = "server"))]
-pub async fn get_video(_paired: Paired, Path(key): Path<String>, request: Request) -> Result<Response, FileHostError> {
-	let file = video_file(std::path::Path::new(RENDERS_FOLDER), &key).await?;
+pub async fn get_video(_paired: Paired, State(db): State<SqlitePool>, Path(key): Path<String>, request: Request) -> Result<Response, FileHostError> {
+	let file = video_file(&db, std::path::Path::new(RENDERS_FOLDER), &key).await?;
 	let served = match ServeFile::new(file).oneshot(request).await {
 		Ok(served) => served,
 		Err(never) => match never {},
@@ -152,21 +165,41 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn an_essay_s_video_is_its_plain_file_once_made() {
+	async fn an_essay_s_video_is_its_plain_file_once_made_and_never_once_withdrawn() {
+		let db = state().await.pool;
 		let dir = tempfile::tempdir().unwrap();
 		let renders = dir.path();
 		let not_found = |result: Result<std::path::PathBuf, FileHostError>| matches!(result, Err(FileHostError::NotFound));
-		assert!(not_found(video_file(renders, "nixos-upgrade-2026-11-14").await), "not made yet");
+		assert!(not_found(video_file(&db, renders, "nixos-upgrade-2026-11-14").await), "not made yet");
 		std::fs::create_dir_all(renders.join("nixos-upgrade-2026-11-14")).unwrap();
 		std::fs::write(renders.join("nixos-upgrade-2026-11-14").join("cards.mp4"), b"mp4").unwrap();
 		assert_eq!(
-			video_file(renders, "nixos-upgrade-2026-11-14").await.unwrap(),
+			video_file(&db, renders, "nixos-upgrade-2026-11-14").await.unwrap(),
 			renders.join("nixos-upgrade-2026-11-14").join("cards.mp4")
 		);
 		std::fs::create_dir_all(renders.join("zfs-2026-11-02")).unwrap();
 		std::os::unix::fs::symlink(renders.join("nixos-upgrade-2026-11-14").join("cards.mp4"), renders.join("zfs-2026-11-02").join("cards.mp4")).unwrap();
-		assert!(not_found(video_file(renders, "zfs-2026-11-02").await), "a link is never followed");
+		assert!(not_found(video_file(&db, renders, "zfs-2026-11-02").await), "a link is never followed");
 		std::fs::create_dir_all(renders.join("..").join("x-2026-11-14")).ok();
-		assert!(not_found(video_file(renders, "../x-2026-11-14").await), "not a key, never joined");
+		assert!(not_found(video_file(&db, renders, "../x-2026-11-14").await), "not a key, never joined");
+
+		let mut conn = db.acquire().await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('me', x'6d65')")
+			.execute(&mut *conn)
+			.await
+			.unwrap();
+		let essay = cards_essay_repo::Essay {
+			key: "nixos-upgrade-2026-11-14",
+			day: "2026-11-14",
+			body: b"{}",
+			taken_at: "t",
+		};
+		cards_essay_repo::keep(&mut conn, &essay).await.unwrap();
+		cards_essay_repo::withdraw(&mut conn, "nixos-upgrade-2026-11-14", "me", "take-1", 3, "t").await.unwrap();
+		drop(conn);
+		assert!(
+			not_found(video_file(&db, renders, "nixos-upgrade-2026-11-14").await),
+			"withdrawn: never served, though its video is still on the drive"
+		);
 	}
 }

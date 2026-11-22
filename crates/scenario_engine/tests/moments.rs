@@ -6,14 +6,14 @@ mod common;
 
 use chrono::{SecondsFormat, TimeDelta};
 use common::{at, first_seen, game, is_snap, pacific, plays, recorded_log, status, wall, GAME};
-use game_scenarios::Scenario;
+use game_scenarios::{Kind, Scenario, Size};
 use nfl_feed::{
 	log::{Entry, PlayLog},
 	scoreboard,
 	summary::{self, Play},
 	GameState, Status,
 };
-use scenario_engine::{offer, Game, Mode, Offer, Reading, Situation, Watching};
+use scenario_engine::{offer, BigPlay, Game, Mode, Offer, Reading, Situation, Watching};
 
 const WEEK8: &[u8] = include_bytes!("../../nfl_feed/testdata/scoreboard-2026-week8.json");
 const PRE: &[u8] = include_bytes!("../../nfl_feed/testdata/summary-401873023-pre.json");
@@ -544,4 +544,504 @@ mod reconcile {
 		assert!(!could.contains(&Scenario::from_id("post.result").unwrap()));
 		assert!(!could.contains(&Scenario::from_id("pre.weather").unwrap()));
 	}
+}
+
+/// The play's big-play reading, as "just happened" carries it.
+#[cfg(test)]
+fn big(o: &Offer) -> Option<(&BigPlay, &str)> {
+	o.just_happened
+		.iter()
+		.find(|j| j.scenario == Scenario::BigPlay)
+		.map(|j| (j.big_play.as_ref().unwrap(), j.line.as_str()))
+}
+
+/// #3048: a big play is credited to the side that gained it. A pick-six is
+/// the defense's interception return, never the offense's pass (the text
+/// names the target with "intended for", and the return's yards after it).
+#[test]
+fn a_big_play_is_the_side_that_gained_it() {
+	let plays = plays();
+	let pick = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("INTERCEPTED"))).unwrap();
+	assert_eq!(plays[pick].possession.as_deref(), Some("NE"));
+	let six = Play {
+		play_type: Some("Interception Return Touchdown".to_owned()),
+		text: Some("(Shotgun) D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 0 for 45 yards, TOUCHDOWN.".to_owned()),
+		..plays[pick].clone()
+	};
+	let o = just_after(&plays[..pick], six);
+	let (play, line) = big(&o).unwrap();
+	assert_eq!(
+		(play.kind, play.size, play.by.as_str(), play.yards, play.scored),
+		(Kind::InterceptionReturn, Size::Huge, "CHI", 45, true)
+	);
+	assert_eq!(play.good, Some(false), "read through NE");
+	assert_eq!(line, "CHI 45-yard interception return, touchdown");
+	// Read through NE, a pick-six is about NE's offense, which threw it.
+	let unit = o.ranked.iter().find(|r| r.scenario == Scenario::BigPlay).map(|r| (r.unit, r.unit_side.clone()));
+	assert_eq!(unit, Some((Some(game_scenarios::Unit::Offense), Some("NE".to_owned()))));
+
+	// The same play with the return stopped short of 20 is no big play.
+	let short = Play {
+		text: Some("(Shotgun) D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 33 for 12 yards.".to_owned()),
+		..plays[pick].clone()
+	};
+	assert!(big(&just_after(&plays[..pick], short)).is_none());
+
+	// A punt returned 50 yards is the receivers'.
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let returned = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 40 for 50 yards (D.Muasau).".to_owned()),
+		..plays[punt].clone()
+	};
+	let o = just_after(&plays[..punt], returned);
+	let (play, line) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.good), (Kind::PuntReturn, Size::Huge, "CHI", Some(false)));
+	assert_eq!(line, "CHI 50-yard punt return");
+
+	// A pass for 62 and a touchdown is the offense's, and the kind you remember.
+	let pass = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Pass Reception") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let long = Play {
+		play_type: Some("Passing Touchdown".to_owned()),
+		text: Some("(Shotgun) D.Maye pass deep right to S.Diggs for 62 yards, TOUCHDOWN.".to_owned()),
+		..plays[pass].clone()
+	};
+	let o = just_after(&plays[..pass], long);
+	let (play, line) = big(&o).unwrap();
+	assert_eq!(
+		(play.kind, play.size, play.by.as_str(), play.scored, play.good),
+		(Kind::Pass, Size::Memorable, "NE", true, Some(true))
+	);
+	assert_eq!(line, "NE 62-yard touchdown");
+}
+
+/// #3048: a kick return is big from 40 (C871), however ESPN types it.
+#[test]
+fn a_kick_return_is_big_from_40() {
+	let plays = plays();
+	// The ordinary kick return, out to about the 25, is not big; 47 is.
+	let kickoffs: Vec<usize> = plays
+		.iter()
+		.enumerate()
+		.filter(|(_, p)| p.play_type.as_deref() == Some("Kickoff"))
+		.map(|(i, _)| i)
+		.collect();
+	let ordinary = kickoffs.iter().find(|i| plays[**i].text.as_deref().unwrap().contains("for 26 yards")).unwrap();
+	assert!(big(&just_after(&plays[..*ordinary], plays[*ordinary].clone())).is_none());
+	let long_return = kickoffs.iter().find(|i| plays[**i].text.as_deref().unwrap().contains("for 47 yards")).unwrap();
+	let o = just_after(&plays[..*long_return], plays[*long_return].clone());
+	let (play, _) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str()), (Kind::KickReturn, Size::Huge, "CHI"));
+
+	// ESPN's own type for a kickoff run back all the way.
+	let all_the_way = Play {
+		play_type: Some("Kickoff Return Touchdown".to_owned()),
+		text: Some("C.Santos kicks 65 yards from CHI 35 to NE 0. C.Kiner to CHI 0 for 100 yards, TOUCHDOWN.".to_owned()),
+		..plays[*ordinary].clone()
+	};
+	let o = just_after(&plays[..*ordinary], all_the_way);
+	let (play, line) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.scored), (Kind::KickReturn, Size::Memorable, "NE", true));
+	assert_eq!(line, "NE 100-yard kick return, touchdown");
+}
+
+/// #3048: a gain is read as it stood: a fumble the offense fell on keeps its
+/// run, and a flag on a return, a muff, or a touchdown taken away are not
+/// what the yards say.
+#[test]
+fn a_big_play_is_read_as_it_stood() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let pass = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Pass Reception") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	// A run whose fumble the offense fell on is still its run.
+	let run = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Rush") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let own = Play {
+		play_type: Some("Fumble Recovery (Own)".to_owned()),
+		text: Some("R.Stevenson left end to CHI 30 for 35 yards. FUMBLES, RECOVERED by NE-R.Stevenson at CHI 30.".to_owned()),
+		..plays[run].clone()
+	};
+	let o = just_after(&plays[..run], own);
+	let (play, _) = big(&o).unwrap();
+	assert_eq!((play.kind, play.yards, play.by.as_str()), (Kind::Run, 35, "NE"));
+
+	// A flag on a return, a muffed punt, and a touchdown taken away are not
+	// what the yards say.
+	let flagged = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 20 for 70 yards. PENALTY on CHI-J.Brisker, Illegal Block Above the Waist, 10 yards, enforced at CHI 35.".to_owned()),
+		..plays[punt].clone()
+	};
+	assert!(big(&just_after(&plays[..punt], flagged)).is_none());
+	let muffed = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond MUFFS catch, RECOVERED by NE-D.Muasau at CHI 30. D.Muasau to CHI 5 for 25 yards.".to_owned()),
+		..plays[punt].clone()
+	};
+	assert!(big(&just_after(&plays[..punt], muffed)).is_none());
+	let taken_away = Play {
+		text: Some(
+			"(Shotgun) D.Maye pass deep right to S.Diggs for 62 yards, TOUCHDOWN NULLIFIED by Penalty. PENALTY on NE-M.Onwenu, Offensive Holding, 10 yards, enforced at NE 38."
+				.to_owned(),
+		),
+		..plays[pass].clone()
+	};
+	assert!(big(&just_after(&plays[..pass], taken_away)).is_none(), "a gain the flag took away is none");
+	// Every flag is read, and a declined one is none: an accepted block in
+	// the back on the returners, beside a declined face mask on the kickers.
+	let two_flags = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 40 for 50 yards. PENALTY on NE-D.Muasau, Face Mask, declined. PENALTY on CHI-J.Brisker, Illegal Block Above the Waist, 10 yards, enforced at CHI 35.".to_owned()),
+		..plays[punt].clone()
+	};
+	assert!(big(&just_after(&plays[..punt], two_flags)).is_none());
+	let kickers_flag = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 40 for 50 yards. PENALTY on CHI-J.Brisker, Illegal Block Above the Waist, declined. PENALTY on NE-D.Muasau, Face Mask, 15 yards, enforced at NE 40.".to_owned()),
+		..plays[punt].clone()
+	};
+	let o = just_after(&plays[..punt], kickers_flag);
+	assert_eq!(
+		big(&o).map(|(play, _)| (play.kind, play.yards)),
+		Some((Kind::PuntReturn, 50)),
+		"a flag on the kickers leaves the return"
+	);
+	// A return a review reversed is not what its first yards say.
+	let pick = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("INTERCEPTED"))).unwrap();
+	let reversed = Play {
+		text: Some("D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 20 for 25 yards. The Replay Official reviewed the pass completion ruling, and the play was REVERSED. D.Maye pass short left to H.Henry to NE 50 for 5 yards.".to_owned()),
+		..plays[pick].clone()
+	};
+	assert!(big(&just_after(&plays[..pick], reversed)).is_none_or(|(play, _)| play.kind != Kind::InterceptionReturn));
+}
+
+/// #3048 (#2908): an onside kick is in "just happened", with who got it back:
+/// ESPN's "recovered by" when it was loose, else the receivers, who fielded it.
+#[test]
+fn an_onside_kick_says_who_recovered_it() {
+	let plays = plays();
+	let onside = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("onside"))).unwrap();
+	let line = |o: &Offer| o.just_happened.iter().find(|j| j.scenario == Scenario::OnsideKick).map(|j| j.line.clone());
+	assert_eq!(
+		line(&just_after(&plays[..onside], plays[onside].clone())).as_deref(),
+		Some("NE onside kick, recovered by CHI")
+	);
+	let loose = Play {
+		text: Some("M.Wishnowsky kicks onside 11 yards from NE 35 to NE 46. RECOVERED by NE-B.Bolden.".to_owned()),
+		..plays[onside].clone()
+	};
+	assert_eq!(line(&just_after(&plays[..onside], loose)).as_deref(), Some("NE onside kick, recovered by NE"));
+	assert!(
+		just_after(&plays[..onside], plays[onside].clone())
+			.just_happened
+			.iter()
+			.all(|j| j.scenario != Scenario::BigPlay),
+		"an onside kick is no kick return"
+	);
+}
+
+/// #3048: halftime is on offer from ESPN's end of the half until the second
+/// half's kickoff, with where the half left the side wanted.
+#[test]
+fn halftime_is_on_offer_until_the_second_half_kicks_off() {
+	let plays = plays();
+	let half = plays.iter().position(|p| p.play_type.as_deref() == Some("End of Half")).unwrap();
+	let at_half = |upto: usize, want: Option<&str>| {
+		let seen = wall(&plays[upto]) + TimeDelta::seconds(10);
+		let mut log = PlayLog::default();
+		log.apply(GAME, 1, &seen.to_rfc3339_opts(SecondsFormat::Secs, true), &plays[..=upto]);
+		let entries: Vec<Entry> = log.entries().to_vec();
+		let g = game(want, status(GameState::In, Some(&plays[upto])), None);
+		offer(&g, &entries, pacific(seen + TimeDelta::seconds(60)), Mode::Standard, Watching::Unknown)
+	};
+	let o = at_half(half, Some("NE"));
+	assert_eq!(ids(&o).first(), Some(&"in.halftime"));
+	assert_eq!(line(&o, Scenario::Halftime), "Halftime, NE down 6");
+	assert_eq!(line(&at_half(half, None), Scenario::Halftime), "Halftime, CHI 20, NE 14");
+	let kickoff = plays[half..].iter().position(|p| p.play_type.as_deref() == Some("Kickoff")).unwrap() + half;
+	assert!(!ids(&at_half(kickoff, Some("NE"))).contains(&"in.halftime"), "the second half is under way");
+	assert!(!ids(&at_half(half - 1, Some("NE"))).contains(&"in.halftime"), "not before the half ends");
+}
+
+/// #3049: the ranked list holds every scenario once: the cards exactly, then
+/// the always plausible, then the rest; and each says what a bite of it is
+/// about by default, as a unit and the team's code.
+#[test]
+fn every_scenario_is_ranked_once_with_what_it_is_about() {
+	use game_scenarios::Unit;
+	use scenario_engine::Tier;
+	let plays = plays();
+	let log = recorded_log(&plays);
+	// NE on 4th down.
+	let fourth = plays.iter().position(|p| is_snap(p) && p.down == Some(4) && p.possession.as_deref() == Some("NE")).unwrap();
+	let at = pacific(wall(&plays[fourth]) - TimeDelta::seconds(10));
+	let at_fourth = |want: Option<&str>, mode| {
+		let g = game(want, status(GameState::In, Some(&plays[fourth])), Some(Situation::before(&plays[fourth])));
+		offer(&g, &log, at, mode, Watching::Unknown)
+	};
+	for mode in [Mode::Light, Mode::Standard, Mode::Full] {
+		let o = at_fourth(Some("CHI"), mode);
+		assert_eq!(o.ranked.len(), Scenario::ALL.len());
+		for scenario in Scenario::ALL {
+			assert_eq!(o.ranked.iter().filter(|r| r.scenario == scenario).count(), 1, "{scenario:?} once");
+		}
+		let now: Vec<Scenario> = o.ranked.iter().filter(|r| r.tier == Tier::Now).map(|r| r.scenario).collect();
+		assert_eq!(now, o.scenarios.iter().map(|s| s.scenario).collect::<Vec<_>>(), "now is the cards, in their order");
+		let tiers: Vec<Tier> = o.ranked.iter().map(|r| r.tier).collect();
+		assert!(tiers.windows(2).all(|w| (w[0] as u8) <= (w[1] as u8)), "now, then always, then the rest");
+	}
+	let about = |o: &Offer, scenario: Scenario| o.ranked.iter().find(|r| r.scenario == scenario).map(|r| (r.unit, r.unit_side.clone())).unwrap();
+	let team = |unit, side: &str| (Some(unit), Some(side.to_owned()));
+	let o = at_fourth(Some("CHI"), Mode::Full);
+	assert_eq!(about(&o, Scenario::FourthDown), team(Unit::Coaching, "NE"), "the call is NE's");
+	assert_eq!(
+		about(&o, Scenario::PlayCall),
+		team(Unit::Defense, "CHI"),
+		"NE has the ball: CHI's defense, as the owner says it"
+	);
+	assert_eq!(about(&o, Scenario::Kick), team(Unit::SpecialTeams, "NE"), "the team kicking");
+	assert_eq!(about(&o, Scenario::Weather), (None, None), "pregame is about no unit");
+	assert_eq!(about(&o, Scenario::CaughtIt), (None, None), "nor is the owner's own watching");
+	assert_eq!(o.ranked.iter().find(|r| r.scenario == Scenario::Stakes).unwrap().tier, Tier::Always);
+	// No side wanted: still a defense to talk about, named by the team.
+	let o = at_fourth(None, Mode::Full);
+	assert_eq!(about(&o, Scenario::FourthDown), team(Unit::Coaching, "NE"));
+	assert_eq!(about(&o, Scenario::PlayCall), team(Unit::Offense, "NE"), "the team with the ball's offense");
+	assert_eq!(about(&o, Scenario::Halftime), (Some(Unit::Coaching), None), "halftime is no one team's");
+}
+
+/// #3049: the defaults the moment cannot read off the snap to come: the
+/// try's kick is the scorer's, a lead change is the scorer's even snaps
+/// later (while the latest play is the other team's), an onside kick is the kicking team's, and nothing is about a unit
+/// once the game is final.
+#[test]
+fn a_bites_default_unit_follows_who_did_it() {
+	use game_scenarios::Unit;
+	let plays = plays();
+	let about = |o: &Offer, scenario: Scenario| o.ranked.iter().find(|r| r.scenario == scenario).map(|r| (r.unit, r.unit_side.clone())).unwrap();
+	let team = |unit, side: &str| (Some(unit), Some(side.to_owned()));
+
+	// CHI's touchdown, its try to come, read through NE.
+	let td = plays.iter().position(|p| p.id == "401873010832").unwrap();
+	let mut log = PlayLog::default();
+	let seen = wall(&plays[td]) + TimeDelta::seconds(10);
+	let mut first: Vec<Play> = plays[..=td].to_vec();
+	first[td] = td_before_the_try(&plays[td]);
+	log.apply(GAME, 1, &seen.to_rfc3339_opts(SecondsFormat::Secs, true), &first);
+	let entries: Vec<Entry> = log.entries().to_vec();
+	let g = game(Some("NE"), status(GameState::In, Some(&plays[td])), None);
+	let o = offer(&g, &entries, pacific(seen + TimeDelta::seconds(5)), Mode::Full, Watching::Unknown);
+	assert_eq!(about(&o, Scenario::Kick), team(Unit::SpecialTeams, "CHI"), "the scorer kicks the try");
+	assert_eq!(about(&o, Scenario::TwoPoint), team(Unit::Coaching, "CHI"), "and makes the call");
+
+	// NE's second snap after it, so the latest play is NE's own: the score
+	// was still CHI's offense, which NE's side calls its defense.
+	let later = (td + 1..plays.len())
+		.filter(|&i| is_snap(&plays[i]) && plays[i].possession.as_deref() == Some("NE"))
+		.nth(1)
+		.unwrap();
+	let g = game(Some("NE"), status(GameState::In, Some(&plays[later])), Some(Situation::before(&plays[later])));
+	let o = offer(
+		&g,
+		&recorded_log(&plays),
+		pacific(wall(&plays[later]) - TimeDelta::seconds(10)),
+		Mode::Full,
+		Watching::Unknown,
+	);
+	assert_eq!(about(&o, Scenario::FellBehind), team(Unit::Defense, "NE"), "the scorer's, not the latest play's");
+
+	// The onside kick, NE's.
+	let onside = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("onside"))).unwrap();
+	let o = just_after(&plays[..onside], plays[onside].clone());
+	assert_eq!(about(&o, Scenario::OnsideKick), team(Unit::SpecialTeams, "NE"));
+
+	// After the final: about the game, never a unit.
+	let end = wall(plays.last().unwrap()) + TimeDelta::minutes(5);
+	let g = game(Some("NE"), status(GameState::Post, plays.last()), None);
+	let o = offer(&g, &recorded_log(&plays), pacific(end), Mode::Full, Watching::Watched);
+	assert!(o.ranked.iter().all(|r| r.unit.is_none() && r.unit_side.is_none()));
+}
+
+/// #3049: a play that just happened carries its own default, read off that
+/// play: NE's punt on 4th down is NE's call while the 4th down to come, on
+/// the list, is CHI's.
+#[test]
+fn a_play_just_happened_is_about_who_made_it() {
+	use game_scenarios::Unit;
+	let plays = plays();
+	let punt = (0..plays.len() - 1)
+		.find(|&i| {
+			let p = &plays[i];
+			is_snap(p) && p.down == Some(4) && p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE")
+		})
+		.unwrap();
+	let next = plays[punt + 1..].iter().position(is_snap).unwrap() + punt + 1;
+	assert_eq!(plays[next].possession.as_deref(), Some("CHI"));
+	let g = game(Some("NE"), status(GameState::In, Some(&plays[next])), Some(Situation::before(&plays[next])));
+	let o = offer(
+		&g,
+		&recorded_log(&plays),
+		pacific(wall(&plays[next]) - TimeDelta::seconds(10)),
+		Mode::Full,
+		Watching::Unknown,
+	);
+	let happened = o.just_happened.iter().find(|j| j.scenario == Scenario::FourthDown && j.play_id == plays[punt].id).unwrap();
+	assert_eq!((happened.unit, happened.unit_side.as_deref()), (Some(Unit::Coaching), Some("NE")), "NE punted");
+	let ranked = o.ranked.iter().find(|r| r.scenario == Scenario::FourthDown).unwrap();
+	assert_eq!((ranked.unit, ranked.unit_side.as_deref()), (Some(Unit::Coaching), Some("CHI")), "CHI has the next 4th down");
+}
+
+/// #3049: ESPN says the game is on before the log holds its opening
+/// kickoff; until it does, nothing is about a unit.
+#[test]
+fn nothing_is_about_a_unit_before_the_opening_kickoff() {
+	let plays = plays();
+	let g = game(Some("NE"), status(GameState::In, None), None);
+	let o = offer(&g, &[], pacific(wall(&plays[0]) - TimeDelta::seconds(30)), Mode::Full, Watching::Unknown);
+	assert!(o.ranked.iter().all(|r| r.unit.is_none() && r.unit_side.is_none()), "{:?}", o.ranked);
+}
+
+/// #3049: an onside kick on the list is the team that kicks off next: the
+/// latest onside kick's only while nothing has scored since it.
+#[test]
+fn an_onside_kick_long_ago_is_not_the_next_kick() {
+	use game_scenarios::Unit;
+	let plays = plays();
+	let onside = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("onside"))).unwrap();
+	assert_eq!(plays[onside].possession.as_deref(), Some("NE"));
+	// CHI scores after it: a field goal, shaped from a later CHI snap.
+	let snap = (onside + 1..plays.len())
+		.find(|&i| is_snap(&plays[i]) && plays[i].possession.as_deref() == Some("CHI"))
+		.unwrap();
+	// CHI is the home team.
+	let kick = Play {
+		play_type: Some("Field Goal Good".to_owned()),
+		scoring: Some(true),
+		text: Some("C.Santos 30 yard field goal is GOOD, Center-S.Daniels, Holder-T.Taylor.".to_owned()),
+		home_score: Some(plays[snap - 1].home_score.unwrap_or(0) + 3),
+		away_score: plays[snap - 1].away_score,
+		..plays[snap].clone()
+	};
+	let o = just_after(&plays[..snap], kick);
+	let ranked = o.ranked.iter().find(|r| r.scenario == Scenario::OnsideKick).unwrap();
+	assert_eq!((ranked.unit, ranked.unit_side.as_deref()), (Some(Unit::SpecialTeams), Some("CHI")), "CHI kicks off next");
+}
+
+/// A fake is typed by what the ball did ("Rush", "Pass Reception"), its text
+/// opening "(Field Goal formation)" or "(Punt formation)": the offense's run
+/// or pass, never a kick, and a turnover on downs when it comes up short on
+/// 4th down. The texts are ESPN's own, from 2025's regular season, with the
+/// teams changed to this game's.
+#[test]
+fn a_fake_is_the_offenses_run_or_pass_never_a_kick() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let shaped = |kind: &str, text: &str| Play {
+		play_type: Some(kind.to_owned()),
+		text: Some(text.to_owned()),
+		..plays[punt].clone()
+	};
+	let at_the_punt = |play: Play| just_after(&plays[..punt], play);
+	let happened = |o: &Offer, scenario: Scenario| o.just_happened.iter().any(|j| j.scenario == scenario);
+
+	// MIN at DAL, 2025 (6 yards there): a fake field goal run is a run.
+	let o = at_the_punt(shaped("Rush", "(Field Goal formation) B.Aubrey right end to CHI 23 for 26 yards (I.Pace)."));
+	let (play, _) = big(&o).unwrap();
+	assert_eq!((play.kind, play.size, play.by.as_str(), play.yards), (Kind::Run, Size::Big, "NE", 26));
+	assert!(!happened(&o, Scenario::Kick), "a fake is no field goal");
+	// NYG at NE, 2025: a fake that loses 13 on 4th down turns it over.
+	let short = Play {
+		down: Some(4),
+		distance: Some(5),
+		..shaped("Rush", "(Field Goal formation) J.Gillan right end to CHI 42 for -13 yards (J.Pharms).")
+	};
+	let o = at_the_punt(short);
+	assert!(happened(&o, Scenario::Turnover), "a fake that comes up short is a turnover on downs");
+	assert!(!happened(&o, Scenario::Kick));
+	// KC at LV, 2025: a fake punt run is the offense's run.
+	let o = at_the_punt(shaped("Rush", "(Punt formation) M.Araiza right end to CHI 22 for 32 yards (C.Heyward)."));
+	assert_eq!(big(&o).map(|(p, _)| (p.kind, p.by.as_str())), Some((Kind::Run, "NE")));
+	// CIN at HOU, 2025: a flag before the kick, then the kick, is a field goal.
+	let kicked = shaped(
+		"Field Goal Good",
+		"(Field Goal formation) PENALTY on CHI-D.Risner, Offside, 5 yards. J.Slye 40 yard field goal is GOOD, Center-L.Rhodes, Holder-R.Sanchez.",
+	);
+	assert!(happened(&at_the_punt(kicked), Scenario::Kick));
+}
+
+/// ESPN's play text spells six teams otherwise than its header: HOU is
+/// "HST" in "PENALTY on HST" and "recovered by HST-J.Watson". Each is read
+/// as the header's team, so a flag says "HOU" and a fumble HOU fell on is
+/// no turnover. The texts are ESPN's own, from 2025's regular season.
+#[test]
+fn a_team_the_play_text_spells_otherwise_is_the_headers_team() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let shaped = |kind: &str, text: &str| Play {
+		play_type: Some(kind.to_owned()),
+		text: Some(text.to_owned()),
+		possession: Some("HOU".to_owned()),
+		..plays[punt].clone()
+	};
+	let just = |play: Play| {
+		let seen = wall(&play) + TimeDelta::seconds(10);
+		let mut log = PlayLog::default();
+		log.apply(GAME, 1, &seen.to_rfc3339_opts(SecondsFormat::Secs, true), std::slice::from_ref(&play));
+		let entries: Vec<Entry> = log.entries().to_vec();
+		let g = Game {
+			home: "IND".to_owned(),
+			away: "HOU".to_owned(),
+			..game(Some("IND"), status(GameState::In, Some(&play)), None)
+		};
+		offer(&g, &entries, pacific(seen + TimeDelta::seconds(5)), Mode::Full, Watching::Unknown)
+			.just_happened
+			.into_iter()
+			.map(|j| (j.scenario, j.line))
+			.collect::<Vec<_>>()
+	};
+	// HOU at IND, 2025.
+	let flag = just(shaped("Penalty", "(Punt formation) PENALTY on HST, Delay of Game, 4 yards, enforced at HST 9 - No Play."));
+	assert!(flag.contains(&(Scenario::Penalty, "Flag on HOU, delay of game".to_owned())), "{flag:?}");
+	// A fumble HOU fell on is HOU's ball still.
+	let own = just(Play {
+		down: Some(1),
+		..shaped(
+			"Fumble Recovery (Own)",
+			"C.Stroud sacked at HST 30 for -6 yards (D.Buckner). FUMBLES (D.Buckner), RECOVERED by HST-N.Collins at HST 28.",
+		)
+	});
+	assert!(own.iter().all(|(s, _)| *s != Scenario::Turnover), "{own:?}");
+}
+
+/// A foul after the play, "enforced between downs" (a celebration), does not
+/// undo the return before it, as one during the return does. The flag's
+/// words are ESPN's own (TEN at IND, 2025).
+#[test]
+fn a_flag_between_downs_leaves_the_return() {
+	let plays = plays();
+	let punt = plays
+		.iter()
+		.position(|p| p.play_type.as_deref() == Some("Punt") && p.possession.as_deref() == Some("NE"))
+		.unwrap();
+	let returned = Play {
+		text: Some("M.Wishnowsky punts 50 yards to CHI 10, Center-J.Ashby. K.Raymond to NE 40 for 50 yards (D.Muasau). PENALTY on CHI, Unsportsmanlike Conduct, 15 yards, enforced between downs.".to_owned()),
+		..plays[punt].clone()
+	};
+	let o = just_after(&plays[..punt], returned);
+	assert_eq!(big(&o).map(|(p, _)| (p.kind, p.yards, p.by.as_str())), Some((Kind::PuntReturn, 50, "CHI")));
 }

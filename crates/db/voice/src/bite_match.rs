@@ -38,7 +38,7 @@ impl GameBite {
 pub async fn bites_of_game(conn: &mut SqliteConnection, game: &str) -> Result<Vec<GameBite>, VoiceError> {
 	let rows = sqlx::query!(
 		r#"SELECT b.subject_id AS "subject_id!", b.note_id AS "note_id!", b.scenario_id, b.how, b.offer_seq, b.live_strip,
-		          b.context_line, b.watching, b.started_at, b.clock_offset_ms, b.mode, b.catalog_version,
+		          b.context_line, b.watching, b.started_at, b.clock_offset_ms, b.mode, b.catalog_version, b.unit, b.unit_side,
 		          (SELECT m.scenario_id FROM bite_mapping m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id
 		           ORDER BY m.mapping_id DESC LIMIT 1) AS "mapped?: String"
 		   FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
@@ -65,6 +65,8 @@ pub async fn bites_of_game(conn: &mut SqliteConnection, game: &str) -> Result<Ve
 					offset: row.clock_offset_ms,
 					mode: Mode::named(&row.mode).ok_or(VoiceError::Unreadable)?,
 					catalog: row.catalog_version,
+					unit: row.unit.map(|unit| game_scenarios::Unit::named(&unit).ok_or(VoiceError::Unreadable)).transpose()?,
+					unit_side: row.unit_side,
 				},
 				mapped: row.mapped,
 			})
@@ -95,19 +97,23 @@ pub async fn bite_state(conn: &mut SqliteConnection, game: &str) -> Result<i64, 
 /// The games with a bite no pass has matched since it was said or last mapped.
 ///
 /// Whichever week they were in: a bite that reached home late, a game that
-/// left the newest scoreboard before it was reconciled, or a mapping added
-/// after.
+/// left the newest scoreboard before it was reconciled, a mapping added
+/// after, or a bite whose newest match was made under an engine older than
+/// `engine_version` (so a rule change re-matches every bite once, #3040).
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn games_with_bites_to_match(conn: &mut SqliteConnection) -> Result<Vec<String>, sqlx::Error> {
+pub async fn games_with_bites_to_match(conn: &mut SqliteConnection, engine_version: i64) -> Result<Vec<String>, sqlx::Error> {
 	sqlx::query_scalar!(
 		r#"SELECT DISTINCT n.of_ref AS "game!" FROM voice_note n JOIN game_bite b ON b.subject_id = n.subject_id AND b.note_id = n.note_id
 		   WHERE n.of_kind = 'game'
 		     AND (NOT EXISTS (SELECT 1 FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id)
 		          OR (SELECT MAX(p.mapped_at) FROM bite_mapping p WHERE p.subject_id = b.subject_id AND p.note_id = b.note_id)
-		             >= (SELECT MAX(m.matched_at) FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id))
-		   ORDER BY n.of_ref"#
+		             >= (SELECT MAX(m.matched_at) FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id)
+		          OR (SELECT m.engine_version FROM bite_match m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id
+		              ORDER BY m.match_id DESC LIMIT 1) < ?1)
+		   ORDER BY n.of_ref"#,
+		engine_version
 	)
 	.fetch_all(&mut *conn)
 	.await
@@ -118,8 +124,12 @@ pub async fn games_with_bites_to_match(conn: &mut SqliteConnection) -> Result<Ve
 #[serde(rename_all = "kebab-case")]
 pub enum Method {
 	/// The nearest play the scenario's rule accepts, at or before the bite,
-	/// within the window.
+	/// within the window: a bite said after its play.
 	Nearest,
+	/// A play after the bite: the snap to come (or the drive it opens, or the
+	/// opening kickoff) for a bite on its offer, or the nearer play for one
+	/// tied to no offer (#3040, BM5).
+	Next,
 	/// No such play: kept, and marked (GW15).
 	Unmatched,
 	/// The scenario is about a stretch of the game, not one play.
@@ -129,13 +139,14 @@ pub enum Method {
 }
 
 impl Method {
-	const ALL: [Self; 4] = [Self::Nearest, Self::Unmatched, Self::NotAPlay, Self::NoScenario];
+	const ALL: [Self; 5] = [Self::Nearest, Self::Next, Self::Unmatched, Self::NotAPlay, Self::NoScenario];
 
 	/// The stored name.
 	#[must_use]
 	pub const fn as_str(self) -> &'static str {
 		match self {
 			Self::Nearest => "nearest",
+			Self::Next => "next",
 			Self::Unmatched => "unmatched",
 			Self::NotAPlay => "not-a-play",
 			Self::NoScenario => "no-scenario",
@@ -154,11 +165,15 @@ impl Method {
 pub struct Match {
 	/// The scenario matched under; `None` exactly for [`Method::NoScenario`].
 	pub scenario: Option<String>,
-	/// ESPN's play id; `Some` exactly for [`Method::Nearest`].
+	/// ESPN's play id; `Some` exactly for [`Method::Nearest`] and
+	/// [`Method::Next`].
 	pub play: Option<String>,
 	pub method: Method,
 	/// The bite's start on home's clock minus the play's time; `Some`
-	/// exactly with a play.
+	/// exactly with a play. At or above zero for [`Method::Nearest`]; for
+	/// [`Method::Next`], negative when the play came after the bite (zero or
+	/// positive when it came less than a second after, or before it on a
+	/// delayed broadcast).
 	pub gap_seconds: Option<i64>,
 	/// The scenario engine's rules it was made under.
 	pub engine_version: i64,
@@ -353,8 +368,15 @@ mod tests {
 		);
 		assert!(add_match(&mut conn, "a", "n1", &nearest("p2", 40), NOW).await.unwrap());
 		assert_eq!(newest_match(&mut conn, "a", "n1").await.unwrap(), Some(nearest("p2", 40)));
+		// A bite on the snap to come: its play came 25 s after it started.
+		let next = Match {
+			method: Method::Next,
+			..nearest("p3", -25)
+		};
+		assert!(add_match(&mut conn, "a", "n1", &next, NOW).await.unwrap());
+		assert_eq!(newest_match(&mut conn, "a", "n1").await.unwrap(), Some(next));
 		drop(conn);
-		assert_eq!(rows(&pool, "bite_match").await, 2);
+		assert_eq!(rows(&pool, "bite_match").await, 3);
 		let refused = sqlx::query("UPDATE bite_match SET play_id = 'p3'").execute(&pool).await;
 		assert!(refused.is_err(), "append-only");
 	}
@@ -373,6 +395,12 @@ mod tests {
 			..nearest("p1", 1)
 		};
 		assert!(add_match(&mut conn, "a", "n1", &unmatched_with_play, NOW).await.is_err());
+		assert!(add_match(&mut conn, "a", "n1", &nearest("p1", -5), NOW).await.is_err(), "nearest is at or before the bite");
+		let next_no_play = Match {
+			method: Method::Next,
+			..no_play.clone()
+		};
+		assert!(add_match(&mut conn, "a", "n1", &next_no_play, NOW).await.is_err(), "next names a play");
 		let no_scenario = Match {
 			scenario: Some("in.sack".to_owned()),
 			play: None,

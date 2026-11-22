@@ -16,6 +16,7 @@
 //! library answers ([`with_game`], [`with_rung`]).
 
 use crate::{bite_match::Method, is_interview_ref, is_opening_question, is_point, How, Mode, Of, VoiceError, OPENING};
+use game_scenarios::{Half, Phase, Scenario};
 use rust_round_repo::{
 	interview::{Rung, Sent},
 	week::{is_ticket_key, is_week_id},
@@ -115,6 +116,12 @@ pub struct GameAbout {
 	/// The reconciler's newest match; null until it has matched the bite.
 	#[serde(rename = "match")]
 	pub matched: Option<MatchAbout>,
+	/// The half an in-game bite was in (#3048, D10): `first`, `second` or
+	/// `overtime`, from the quarter of the play it matched, or else of the
+	/// newest play home had seen when it was said. Null for a bite before
+	/// kickoff, after the final, about the owner's own watching, or with no
+	/// bite row.
+	pub half: Option<Half>,
 }
 
 /// What a bite was said about and what the screen showed then.
@@ -136,19 +143,28 @@ pub struct BiteAbout {
 	pub started: String,
 	/// How much the screen offered.
 	pub mode: Mode,
+	/// What part of a team the bite is about (#3049), as the phone said; null
+	/// when it said none.
+	pub unit: Option<game_scenarios::Unit>,
+	/// Whose unit, the team's code (`CHI`); null when about no one team.
+	pub unit_side: Option<String>,
 }
 
 /// The play a bite was matched to, or why none was.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchAbout {
-	/// `nearest` when a play was matched; else why not: `unmatched` (no play
-	/// the scenario's rule accepts), `not-a-play` (the scenario is about a
-	/// stretch of the game) or `no-scenario` (said first and never mapped).
+	/// `nearest` when a play at or before the bite was matched, `next` when a
+	/// play after it was (the snap to come for a bite on its offer, or the
+	/// nearer play for one tied to no offer); else
+	/// why not: `unmatched` (no play the scenario's rule accepts), `not-a-play`
+	/// (the scenario is about a stretch of the game) or `no-scenario` (said
+	/// first and never mapped).
 	pub method: Method,
 	/// The scenario it was matched under.
 	pub scenario: Option<String>,
-	/// The bite's start minus the play's time, in seconds; null without a play.
+	/// The bite's start minus the play's time, in seconds: negative when the
+	/// play came after (`next`); null without a play.
 	pub gap_seconds: Option<i64>,
 	/// The play, as home last saw it; null without one.
 	pub play: Option<Play>,
@@ -200,6 +216,7 @@ pub fn about(of: Of, of_ref: &str, idea: Option<(String, String)>) -> About {
 				label: None,
 				bite: None,
 				matched: None,
+				half: None,
 			})),
 		},
 		Of::Leetype => {
@@ -341,21 +358,56 @@ pub async fn with_game(conn: &mut SqliteConnection, subject: &str, note_id: &str
 		labels.insert(game.game.clone(), label.clone());
 		label
 	};
-	game.bite = bite(conn, subject, note_id).await?;
-	let Some(matched) = crate::bite_match::newest_match(conn, subject, note_id).await? else {
+	let Some((bite, said_at)) = bite(conn, subject, note_id).await? else {
 		return Ok(());
 	};
-	let play = match matched.play.as_deref() {
-		Some(play) => latest_play(conn, &game.game, play).await?,
-		None => None,
+	if let Some(matched) = crate::bite_match::newest_match(conn, subject, note_id).await? {
+		let play = match matched.play.as_deref() {
+			Some(play) => latest_play(conn, &game.game, play).await?,
+			None => None,
+		};
+		game.matched = Some(MatchAbout {
+			method: matched.method,
+			scenario: matched.scenario,
+			gap_seconds: matched.gap_seconds,
+			play,
+		});
+	}
+	let in_game = bite
+		.scenario
+		.as_deref()
+		.and_then(Scenario::from_id)
+		.is_none_or(|scenario| scenario.entry().phase == Phase::In);
+	let matched_period = game.matched.as_ref().and_then(|m| m.play.as_ref()).and_then(|play| play.period);
+	game.half = match (in_game, matched_period) {
+		(false, _) => None,
+		(true, Some(period)) => Half::of_period(period),
+		(true, None) => match said_at {
+			Some(at) => period_seen_by(conn, &game.game, &at).await?.and_then(Half::of_period),
+			None => None,
+		},
 	};
-	game.matched = Some(MatchAbout {
-		method: matched.method,
-		scenario: matched.scenario,
-		gap_seconds: matched.gap_seconds,
-		play,
-	});
+	game.bite = Some(bite);
 	Ok(())
+}
+
+/// The latest quarter of any play home had seen of `game` by `at` (its own
+/// stamp, RFC 3339 to the millisecond, as the feed writes `seen_at`), or
+/// none before the first play and once ESPN's End of Game was in.
+///
+/// The latest quarter, not the newest row's: ESPN revises an older play
+/// later, and its revision is a newer row. It reads the game's rows by
+/// `game_feed_play_by_game`, a few hundred at most.
+async fn period_seen_by(conn: &mut SqliteConnection, game: &str, at: &str) -> Result<Option<i64>, VoiceError> {
+	let row = sqlx::query!(
+		r#"SELECT MAX(period) AS "period: i64", MAX(play_type = 'End of Game') AS "over: i64"
+		   FROM game_feed_play WHERE game_id = ?1 AND seen_at <= ?2"#,
+		game,
+		at
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(row.period.filter(|_| row.over != Some(1)))
 }
 
 /// `game`'s name from the newest summary home fetched of it, an indexed
@@ -376,10 +428,11 @@ async fn label(conn: &mut SqliteConnection, game: &str) -> Result<Option<String>
 }
 
 /// The bite of `subject`'s game note `note_id`, its scenario its own or else
-/// its newest mapping's.
-async fn bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<BiteAbout>, VoiceError> {
+/// its newest mapping's, and when it was said on home's clock (the phone's
+/// time plus the offset the live connection measured), as the feed stamps.
+async fn bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<(BiteAbout, Option<String>)>, VoiceError> {
 	let row = sqlx::query!(
-		r#"SELECT b.scenario_id, b.how, b.live_strip, b.context_line, b.watching, b.started_at, b.mode,
+		r#"SELECT b.scenario_id, b.how, b.live_strip, b.context_line, b.watching, b.started_at, b.mode, b.clock_offset_ms, b.unit, b.unit_side,
 		          (SELECT m.scenario_id FROM bite_mapping m WHERE m.subject_id = b.subject_id AND m.note_id = b.note_id
 		           ORDER BY m.mapping_id DESC LIMIT 1) AS "mapped?: String"
 		   FROM game_bite b WHERE b.subject_id = ?1 AND b.note_id = ?2"#,
@@ -390,7 +443,10 @@ async fn bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Resu
 	.await?;
 	row
 		.map(|row| {
-			Ok(BiteAbout {
+			let said_at = chrono::DateTime::parse_from_rfc3339(&row.started_at)
+				.ok()
+				.map(|at| (at.with_timezone(&chrono::Utc) + chrono::TimeDelta::milliseconds(row.clock_offset_ms.unwrap_or(0))).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+			let about = BiteAbout {
 				scenario: row.scenario_id.or(row.mapped),
 				how: How::named(&row.how).ok_or(VoiceError::Unreadable)?,
 				strip: row.live_strip,
@@ -398,7 +454,10 @@ async fn bite(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Resu
 				watching: row.watching != 0,
 				started: row.started_at,
 				mode: Mode::named(&row.mode).ok_or(VoiceError::Unreadable)?,
-			})
+				unit: row.unit.map(|unit| game_scenarios::Unit::named(&unit).ok_or(VoiceError::Unreadable)).transpose()?,
+				unit_side: row.unit_side,
+			};
+			Ok((about, said_at))
 		})
 		.transpose()
 }
@@ -549,5 +608,86 @@ mod tests {
 				rung: None
 			}
 		);
+	}
+
+	/// #3048 (D10): an in-game bite's half is its matched play's, or else the
+	/// newest play home had seen when it was said, on home's clock; a bite
+	/// before kickoff, after the final, or not about the game has none.
+	#[tokio::test]
+	async fn an_in_game_bite_carries_its_half() {
+		use super::{with_game, Half};
+		use sqlx::sqlite::SqlitePoolOptions;
+		static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		let run = |sql: &'static str| sqlx::query(sql).execute(&pool);
+		run("INSERT INTO game_feed_body (sha256, body) VALUES ('0000000000000000000000000000000000000000000000000000000000000000', CAST('{}' AS BLOB))")
+			.await
+			.unwrap();
+		run("INSERT INTO game_feed_response (kind, game_id, url, fetched_at, status, sha256, size) VALUES ('summary', 'g', 'u', 'then', 200, '0000000000000000000000000000000000000000000000000000000000000000', 2)").await.unwrap();
+		run(
+			"INSERT INTO game_feed_play (game_id, espn_play_id, period, play_type, response_id, supersedes, seen_at) VALUES
+			 ('g', 'q2', 2, 'Rush', 1, NULL, '2026-10-23T01:00:00.000Z'),
+			 ('g', 'q3', 3, 'Rush', 1, NULL, '2026-10-23T02:00:00.000Z'),
+			 ('g', 'q2', 2, 'Rush', 1, 1, '2026-10-23T02:05:00.000Z'),
+			 ('g', 'end', 4, 'End of Game', 1, NULL, '2026-10-23T03:00:00.000Z')",
+		)
+		.await
+		.unwrap();
+		// (note, scenario, how, started on the phone, home's clock ahead by ms)
+		let bites = [
+			("matched", Some("in.third-long"), "offered", "2026-10-23T01:30:00.000Z", 0),
+			("said-at-1-30", Some("in.sack"), "just-happened", "2026-10-23T01:30:00.000Z", 0),
+			// The phone's clock 40 minutes slow: on home's it was 2:10, in the 3rd,
+			// after ESPN revised a 2nd-quarter play (a newer row, an older quarter).
+			("slow-phone", None, "said-first", "2026-10-23T01:30:00.000Z", 2_400_000),
+			("before-kickoff", Some("in.sack"), "just-happened", "2026-10-23T00:30:00.000Z", 0),
+			("pregame", Some("pre.weather"), "offered", "2026-10-23T01:30:00.000Z", 0),
+			("after-the-final", None, "said-first", "2026-10-23T03:30:00.000Z", 0),
+		];
+		for (note, scenario, how, started, offset) in bites {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES ('s', ?1, 'game', 'g', ?1, 'audio/webm', 1, 's', 'now')",
+			)
+			.bind(note)
+			.execute(&pool)
+			.await
+			.unwrap();
+			sqlx::query(
+				"INSERT INTO game_bite (subject_id, note_id, scenario_id, how, live_strip, watching, started_at, clock_offset_ms, mode, catalog_version)
+				 VALUES ('s', ?1, ?2, ?3, '', 1, ?4, ?5, 'standard', 2)",
+			)
+			.bind(note)
+			.bind(scenario)
+			.bind(how)
+			.bind(started)
+			.bind(offset)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		run(
+			"INSERT INTO bite_match (subject_id, note_id, scenario_id, play_id, method, gap_seconds, engine_version, matched_at)
+			 VALUES ('s', 'matched', 'in.third-long', 'q3', 'nearest', 5, 3, 'then')",
+		)
+		.await
+		.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		let mut labels = std::collections::BTreeMap::new();
+		let mut halves = std::collections::BTreeMap::new();
+		for (note, ..) in bites {
+			let mut said = about(Of::Game, "g", None);
+			with_game(&mut conn, "s", note, &mut said, &mut labels).await.unwrap();
+			let Detail::Game(game) = said.detail else { panic!("a game's about") };
+			halves.insert(note, game.half);
+		}
+		let half = |note: &str| halves[note];
+		assert_eq!(half("matched"), Some(Half::Second), "its play's quarter, the 3rd");
+		assert_eq!(half("said-at-1-30"), Some(Half::First), "unmatched: the 2nd, as home had seen it");
+		assert_eq!(half("slow-phone"), Some(Half::Second), "on home's clock");
+		assert_eq!(half("before-kickoff"), None);
+		assert_eq!(half("pregame"), None, "a pregame scenario is not in a half");
+		assert_eq!(half("after-the-final"), None);
 	}
 }

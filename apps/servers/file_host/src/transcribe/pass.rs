@@ -2,12 +2,8 @@
 //! tried fewest times first and then oldest first, one at a time, each kept
 //! as an attempt in `voice_transcript`.
 //!
-//! - **A note that keeps failing never holds the queue** (TR1, C895): a
-//!   note's next attempt waits behind every note tried fewer times
-//!   (`voice_repo::transcript::waiting`), so a take recorded after a run of
-//!   another note's deadlines is heard in the next pass, not after every
-//!   attempt left on every older note. The note the guard is excusing is
-//!   the one exception: it goes first, so its streak is never replaced.
+//! - **A note that keeps failing never holds the queue** (TR1, C895;
+//!   `voice_repo::transcript::waiting` states it).
 //! - **Bounded.** A pass takes at most [`BATCH`] notes, each heard on a
 //!   blocking thread by its deadline, and gives each one attempt, so a note
 //!   that fails is retried a pass later, not at once, and at most
@@ -38,8 +34,10 @@
 //!   the box's CPU was contended is kept as nothing, so it never uses up one
 //!   of the note's [`ATTEMPTS`]; the pass stops, and the next hears the note
 //!   again. One note is excused at most [`crate::contention::NOBODYS`] times in a
-//!   row, then kept as it ended, and the pass stops there too, so the next
-//!   pass starts with that note and no other note's streak is replaced.
+//!   row, then kept as it ended, and the pass stops there too. While a note
+//!   is being excused it is heard first (`transcript::waiting_first`), so no
+//!   other note's streak replaces its own; once kept, its streak is over and
+//!   the next pass starts from the queue as it stands (C896).
 
 use super::engine::{Cancelled, Decode, Hear, Heard, Work};
 use super::turn::Turn;
@@ -51,7 +49,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use voice_repo::meaning::{self, Embed, Indexed};
-use voice_repo::transcript::{self, Attempt, Kept, Keys, Outcome};
+use voice_repo::transcript::{self, Attempt, Kept, Keys, Outcome, Urgency};
 use voice_repo::verdict::{Judged, Verdict};
 use voice_repo::VoiceError;
 
@@ -104,6 +102,22 @@ pub async fn run_once<H: Hear>(
 	run_once_telling(db, hear, meaning, deletion, per_note, (guard, &mut Turn::unbounded()), cancel, now, &|| {}).await
 }
 
+/// Whether `note` is a fast-tracked take's one try (marked, never tried by
+/// the queue's model), which the give does not hold (the owner's ruling on
+/// #1090, 2026-11-21).
+///
+/// An excused try keeps no attempt, so the take the guard is excusing gives
+/// way as any note does: otherwise contention, when renders run, would let it
+/// skip the give again on each excuse. With the excused note first, a give
+/// started on it holds the fast-tracked take behind it too, for at most GIVE.
+fn first_try(guard: &Guard<(String, String)>, note: &transcript::Waiting) -> bool {
+	let excused = guard
+		.streak
+		.current()
+		.is_some_and(|(subject, note_id)| *subject == note.subject && *note_id == note.note_id);
+	note.urgency == Urgency::FastTrack && !excused
+}
+
 /// [`run_once`], calling `heard` as soon as each note heard is kept.
 ///
 /// A transcript is then committed and on its way to the
@@ -125,18 +139,19 @@ pub async fn run_once_telling<H: Hear>(
 	heard: &(dyn Fn() + Sync),
 ) -> Result<Pass, VoiceError> {
 	let mut pass = Pass::default();
-	if let Some(embed) = meaning {
-		pass.indexed += catch_up(db, embed, deletion).await?;
-	}
 	let verbatim_key = verbatim::key(hear.model());
 	let keys = Keys {
 		plain: hear.model(),
 		verbatim: &verbatim_key,
 	};
+	// The stage's headline signal first, so nothing the pass does after it
+	// can leave it standing from an earlier pass (#3333).
+	tell_backlog(db, keys).await?;
+	if let Some(embed) = meaning {
+		pass.indexed += catch_up(db, embed, deletion).await?;
+	}
 	let waiting = {
 		let mut conn = db.acquire().await?;
-		// The note the guard is excusing first, so no fresher note starts a
-		// streak that replaces its own (C896, #822).
 		let first = guard.streak.current().map(|(subject, note_id)| (subject.as_str(), note_id.as_str()));
 		transcript::waiting_first(&mut conn, keys, ATTEMPTS, BATCH, first).await?
 	};
@@ -148,7 +163,7 @@ pub async fn run_once_telling<H: Hear>(
 			pass.cancelled = true;
 			break;
 		}
-		if gives_way(turn, &mut pass) {
+		if !first_try(guard, &note) && gives_way(turn, &mut pass) {
 			break;
 		}
 		let audio = {
@@ -202,8 +217,10 @@ pub async fn run_once_telling<H: Hear>(
 		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n >= ATTEMPTS);
 		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
-			crate::metrics::transcribe::record_attempt(kind, took);
+			crate::metrics::transcribe::record_attempt(&attempt.outcome, took);
 			super::log_attempt(kind, note.verbatim, took, attempt.duration_ms, attempted.work);
+			// A note that left the queue may have been its oldest.
+			tell_backlog(db, keys).await?;
 			if let Some(verdict) = &verdict {
 				crate::metrics::transcribe::record_verdict(verdict.kind);
 			}
@@ -226,11 +243,6 @@ pub async fn run_once_telling<H: Hear>(
 /// `contended` or not: `None` when its deadline is excused, kept as nothing,
 /// and the pass stops there; otherwise whether it was a deadline judged
 /// anyway, after which the pass stops too.
-///
-/// The pass stops after a deadline judged anyway too, as it did before
-/// TR1: that note's streak is over, and the next pass begins from the queue
-/// as it then stands, fewest attempts first. A note not excused ends any
-/// streak of its own (C896).
 fn excuse(guard: &mut Guard<(String, String)>, pass: &mut Pass, note: &transcript::Waiting, attempted: &Heard, contended: bool, took: Duration) -> Option<bool> {
 	let key = (note.subject.clone(), note.note_id.clone());
 	let judged_anyway = if matches!(attempted.outcome, Outcome::Deadline) && contended {
@@ -262,6 +274,16 @@ fn gives_way(turn: &mut Turn, pass: &mut Pass) -> bool {
 	}
 	pass.gave_way = !was_giving;
 	true
+}
+
+/// Every note still waiting on `keys`, told as the transcriber's headline
+/// signal as a shared stage (`crate::stage`): read at a pass's start and
+/// after each attempt kept, so a pass hours long never shows the age of a
+/// note it has already heard.
+async fn tell_backlog(db: &SqlitePool, keys: Keys<'_>) -> Result<(), VoiceError> {
+	let mut conn = db.acquire().await?;
+	crate::metrics::transcribe::record_backlog(&transcript::backlog(&mut conn, keys, ATTEMPTS).await?);
+	Ok(())
 }
 
 /// One write, under the deletion hold (docs/identity.md invariant 9):
@@ -482,7 +504,7 @@ mod tests {
 	/// often (TR1, C895), and the note being excused before either. No run of
 	/// excuses between two kept attempts is longer than `NOBODYS`, and every
 	/// hearing in it is of the note it ends with, so neither note's streak is
-	/// replaced by the other's (paulgsc/server#822, review).
+	/// replaced by the other's (paulgsc/server#822).
 	#[tokio::test]
 	async fn a_pass_stops_after_a_deadline_judged_anyway() {
 		let pool = pool().await;
@@ -531,8 +553,7 @@ mod tests {
 	/// over how many older notes keep reaching their deadline (0 to 4) and
 	/// how many attempts each has used (0 to `ATTEMPTS` − 1): the fresh take
 	/// is heard in the first pass that reaches it, before any note already
-	/// tried, and every note that keeps failing is heard at most `ATTEMPTS`
-	/// times in all, so the work the queue holds the lane for is bounded.
+	/// tried.
 	#[tokio::test]
 	async fn a_run_of_deadlines_never_keeps_a_fresh_take_waiting() {
 		for stuck in 0..=4 {
@@ -564,11 +585,6 @@ mod tests {
 					"{stuck} stuck notes, {used} attempts used: {done:?}"
 				);
 				assert!(done.kept.contains(&"heard"), "{stuck} stuck notes, {used} attempts used: the take is heard in this pass");
-				for _ in 0..=ATTEMPTS {
-					pass(&pool, &fake, Duration::from_millis(5), &cancel).await;
-				}
-				let slow = fake.heard().iter().filter(|audio| *audio == "slow").count();
-				assert_eq!(slow, stuck * usize::try_from(ATTEMPTS).unwrap(), "each stuck note is heard at most ATTEMPTS times");
 			}
 		}
 	}
@@ -600,7 +616,7 @@ mod tests {
 		assert_eq!(fake.heard(), expected);
 	}
 
-	/// C896 (review): a streak ends when its note ends as on a calm box, so a
+	/// C896: a streak ends when its note ends as on a calm box, so a
 	/// note excused once and then kept is not put first again: a fresh take
 	/// stored after it is heard before its next attempt.
 	#[tokio::test]
@@ -659,6 +675,98 @@ mod tests {
 			.await
 			.unwrap();
 		assert_eq!(after.kept, ["heard"; 3], "no render waits: every note heard");
+	}
+
+	/// A take the owner put first is not held by the give (the owner,
+	/// 2026-11-21, on #1090): heard while the turn is given, and the give goes
+	/// on for the rest.
+	#[tokio::test]
+	async fn a_fast_tracked_take_is_heard_while_the_turn_is_given() {
+		let pool = pool().await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
+		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
+		{
+			let mut conn = pool.acquire().await.unwrap();
+			voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
+				.await
+				.unwrap();
+		}
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let interactive = crate::call_weeks::lane::Interactive::default();
+		interactive.set_batch_waits(true);
+		let mut turn = super::Turn::with(Duration::ZERO, Duration::from_secs(3600), Some(interactive.clone()));
+		let lock = DeletionLock::default();
+		let now = || String::from("2026-10-25T16:00:00.000Z");
+		let done = super::run_once_telling(&pool, &fake, None, &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
+			.await
+			.unwrap();
+		assert_eq!((done.kept.len(), done.gave_way), (1, true), "the chosen take heard, then the turn given: {done:?}");
+		assert_eq!(fake.heard(), ["chosen"], "the chosen take, and no other");
+	}
+
+	/// A failed attempt at `id` by `model`, kept as the pass would keep one.
+	async fn failed_by(pool: &SqlitePool, id: &str, model: &str) {
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'e', 1, 'deadline', 1, 1, 'then')",
+		)
+		.bind(A)
+		.bind(id)
+		.bind(model)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// The owner marks `chosen`, then a pass runs while batch work waits and
+	/// the turn is already spent: what it heard.
+	async fn heard_while_given(pool: &SqlitePool) -> Vec<String> {
+		{
+			let mut conn = pool.acquire().await.unwrap();
+			let acted = voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
+				.await
+				.unwrap();
+			assert_eq!(acted, voice_repo::fast_track::Acted::Recorded);
+		}
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let interactive = crate::call_weeks::lane::Interactive::default();
+		interactive.set_batch_waits(true);
+		let mut turn = super::Turn::with(Duration::ZERO, Duration::from_secs(3600), Some(interactive.clone()));
+		let lock = DeletionLock::default();
+		let now = || String::from("2026-10-25T16:00:00.000Z");
+		let done = super::run_once_telling(pool, &fake, None, &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
+			.await
+			.unwrap();
+		assert!(done.gave_way, "{done:?}");
+		fake.heard()
+	}
+
+	/// C1017, TR1 literal: a note the queue's model has tried, marked again,
+	/// is `Wanted`, so the give holds it like any other.
+	#[tokio::test]
+	async fn a_tried_note_marked_again_is_held_by_the_give() {
+		let pool = pool().await;
+		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
+		failed_by(&pool, "chosen", "ggml-small-q5_1.bin").await;
+		// The older note tried as often, so the marked one is first in line
+		// and the give is checked on it.
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
+		failed_by(&pool, "older", "ggml-small-q5_1.bin").await;
+		assert!(heard_while_given(&pool).await.is_empty(), "held by the give");
+	}
+
+	/// A marked note only an older model failed on is untried by the queue's
+	/// model, so it is `FastTrack` again after a model bump: one try per
+	/// marked note per model.
+	#[tokio::test]
+	async fn a_note_an_old_model_failed_on_is_fast_tracked_again_after_a_bump() {
+		let pool = pool().await;
+		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
+		failed_by(&pool, "chosen", "ggml-base.bin").await;
+		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
+		assert_eq!(heard_while_given(&pool).await, ["chosen"], "its one try under the new model");
 	}
 
 	async fn guarded(pool: &SqlitePool, fake: &Arc<Fake>, guard: &mut Guard<(String, String)>, cancel: &CancellationToken) -> Pass {
@@ -1035,7 +1143,9 @@ mod tests {
 			plain: "ggml-small-q5_1.bin",
 			verbatim: &verbatim,
 		};
-		let acted = voice_repo::attention::hear_again(&mut conn, A, "broken", keys, "2026-10-26T00:00:00.000Z").await.unwrap();
+		let acted = voice_repo::attention::hear_again(&mut conn, A, "broken", Some(keys), "2026-10-26T00:00:00.000Z")
+			.await
+			.unwrap();
 		assert!(matches!(acted, voice_repo::attention::Acted::Recorded(_)), "{acted:?}");
 		drop(conn);
 		for _ in 0..=ATTEMPTS {

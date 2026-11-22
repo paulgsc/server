@@ -19,6 +19,7 @@ pub mod contract;
 pub mod db;
 pub mod deploy;
 pub mod error;
+pub mod essay_media;
 pub mod feeds;
 pub mod game_feed;
 pub mod handlers;
@@ -46,9 +47,10 @@ pub mod rust_essays;
 pub mod rust_rounds;
 pub mod schema;
 pub mod settings;
+pub mod snips;
+pub mod stage;
 pub mod storage;
 pub mod subject;
-pub mod take_files;
 pub mod trace;
 pub mod transcribe;
 pub mod utils;
@@ -281,7 +283,10 @@ impl AppState {
 
 		Ok(Some(NudgeContext {
 			clock,
-			sender: Arc::new(push_kit::Sender::new(identity.clone(), push_kit::ReqwestTransport::default())),
+			sender: Arc::new(push_kit::Sender::new(
+				identity.clone(),
+				push_kit::ReqwestTransport::new(outbound::client(outbound::Caller::Nudge).build()?),
+			)),
 			vapid: identity,
 			enabled: config.nudge_enabled,
 			quiet_hours_start: config.nudge_quiet_hours_start,
@@ -361,6 +366,12 @@ impl FromRef<AppState> for Arc<Config> {
 impl FromRef<AppState> for SqlitePool {
 	fn from_ref(state: &AppState) -> Self {
 		state.core.shared_db.clone()
+	}
+}
+
+impl FromRef<AppState> for transcribe::Hears {
+	fn from_ref(state: &AppState) -> Self {
+		Self(state.transcribe.is_some())
 	}
 }
 

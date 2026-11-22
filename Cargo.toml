@@ -25,6 +25,7 @@ members = [
   "crates/db/game_feed",
   "crates/db/call_week",
   "crates/db/cards_essay",
+  "crates/db/stage",
   "crates/db/clip_frame",
   "crates/db/pd_fill",
   "crates/db/korean",
@@ -57,6 +58,7 @@ members = [
   "crates/fcm_kit",
   "crates/game_scenarios",
   "crates/nfl_feed",
+  "crates/outbound",
   "crates/scenario_engine",
   "crates/playoff_delta",
   "crates/push_kit",
@@ -171,6 +173,7 @@ curriculum_repo = { path = "crates/db/curriculum" }
 game_feed_repo = { path = "crates/db/game_feed" }
 call_week_repo = { path = "crates/db/call_week" }
 cards_essay_repo = { path = "crates/db/cards_essay" }
+stage_repo = { path = "crates/db/stage" }
 clip_frame_repo = { path = "crates/db/clip_frame" }
 lane = { path = "crates/lane" }
 pd_fill_repo = { path = "crates/db/pd_fill" }
@@ -201,6 +204,7 @@ outcome_repo = { path = "crates/db/outcome" }
 publication_repo = { path = "crates/db/publication" }
 presence_repo = { path = "crates/db/presence" }
 push_kit = { path = "crates/push_kit" }
+outbound = { path = "crates/outbound" }
 intervention = { path = "crates/intervention" }
 game_scenarios = { path = "crates/game_scenarios" }
 scenario_engine = { path = "crates/scenario_engine" }

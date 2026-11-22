@@ -69,7 +69,7 @@ async fn held(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<
 		          EXISTS (SELECT 1 FROM voice_transcript AS heard
 		                  WHERE heard.subject_id = note.subject_id AND heard.note_id = note.note_id
 		                    AND heard.outcome IN ('heard', 'silent')
-		                    AND NOT EXISTS (SELECT 1 FROM voice_note_superseding sup WHERE sup.subject_id = heard.subject_id AND sup.note_id = heard.note_id AND sup.hears_under <> heard.model)) AS "ended!: bool"
+		                    AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = heard.subject_id AND sup.note_id = heard.note_id AND sup.model = heard.model)) AS "ended!: bool"
 		   FROM voice_note AS note
 		   WHERE note.of_kind = ?1 AND note.of_ref >= ?2 AND note.of_ref < ?3 AND note.subject_id = ?4"#,
 		of,

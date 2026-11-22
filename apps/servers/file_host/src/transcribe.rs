@@ -41,13 +41,11 @@
 //! transcript carries it, so no reader judges a transcript for itself.
 //!
 //! **What it costs.** A multilingual `small` model at `q5_1` holds about
-//! 500 MB while loaded, for as long as the server runs. Measured on one
-//! thread (a 2.1 GHz Xeon core; `file_host`'s `cpus: 2.0` gives it one, as
-//! [`default_threads`] counts), a language detection costs about 16 s
-//! whatever the cut, and the decode about 1.3 s a second of speech; two
-//! threads take a little over half that. A hearing's detections are bounded
-//! by its speech (`engine`, TR2), so a take is heard in time proportional to
-//! its speech, not to its pauses. Off unless `TRANSCRIBE_ENABLED`; on, the
+//! 500 MB while loaded, for as long as the server runs. It hears on
+//! [`default_threads`] (two, under file-host's compose cap). Measured on one
+//! 2.1 GHz Xeon core, the decode takes about 1.3 s a second of speech, two
+//! threads a little over half that, and each language detection
+//! an encoder pass, bounded by the speech (`engine`, TR2, has the figures). Off unless `TRANSCRIBE_ENABLED`; on, the
 //! server refuses to start without a model, the VAD model and ffmpeg.
 //!
 //! **What it says while it works** (TR3, C898): a line per attempt as it
@@ -99,6 +97,18 @@ pub const DEADLINE: Duration = Duration::from_secs(600);
 
 const _: () = assert!(INTERVAL.as_secs() >= MIN_INTERVAL.as_secs() && DEADLINE.as_secs() >= MIN_DEADLINE.as_secs());
 
+/// The transcriber's promise as a shared stage (`crate::stage`, VH7).
+///
+/// A note is heard within this long of reaching home, or the stage is
+/// degraded. Policy, moved by a call (C900, moved by C904,
+/// paulgsc/some-ui#3333): the worst a working transcriber does by design
+/// fits, with room to spare: a turn given to the renders ([`turn::GIVE`],
+/// TR4) holding every note, an interval to be picked up, and one
+/// deadline-long note ahead of it.
+pub const HEARD_WITHIN: Duration = Duration::from_secs(25 * 60);
+
+const _: () = assert!(HEARD_WITHIN.as_secs() > turn::GIVE.as_secs() + INTERVAL.as_secs() + DEADLINE.as_secs());
+
 /// The keys home hears and keeps transcriptions under.
 ///
 /// [`MODEL`]'s file name, as the engine names it (`engine::Whisper::load`),
@@ -110,6 +120,14 @@ pub fn keys() -> (String, String) {
 	let verbatim = verbatim::key(&plain);
 	(plain, verbatim)
 }
+
+/// Whether this home runs the transcriber.
+///
+/// What a request to hear a take again needs (paulgsc/some-ui#3339). Off, a
+/// request is refused and no take reads "being heard again", since nothing
+/// would ever hear it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hears(pub bool);
 
 /// The whisper model, where compose mounts `TRANSCRIBE_MODELS_DIR`
 /// (`infra/compose/file_host.yml`) and `nix/whisper-manager` downloads it
@@ -197,7 +215,7 @@ impl<H: Hear> Hear for Held<H> {
 	}
 
 	fn hear(&self, audio: &[u8], decode: Decode, language: Option<&str>, deadline: Instant, cancel: &CancellationToken) -> Result<Heard, Cancelled> {
-		let _hold = self.interactive.hold();
+		let _hold = self.interactive.hold(crate::call_weeks::lane::Kind::Voice);
 		self.inner.hear(audio, decode, language, deadline, cancel)
 	}
 }
@@ -294,11 +312,7 @@ pub(crate) fn log_pass(result: &Result<pass::Pass, voice_repo::VoiceError>) {
 	}
 }
 
-/// One attempt's log line, as it ends (TR3, C898): its kind, whether it was
-/// heard verbatim, how long it took, how long its audio and speech are, and
-/// how many detections and runs it took. A pass hears up to `pass::BATCH`
-/// notes, each by its deadline, so a pass's own line can be hours away; this
-/// one says what the worker is doing while it works. Never a note's text,
+/// One attempt's log line, as it ends (TR3, C898). Never a note's text,
 /// audio, id or subject (docs/identity.md invariant 23).
 pub(crate) fn log_attempt(kind: &'static str, verbatim: bool, took: Duration, audio_ms: Option<i64>, work: engine::Work) {
 	info!(

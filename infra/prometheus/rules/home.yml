@@ -728,3 +728,103 @@ groups:
         labels:
           objective: LN3
           says: "Home's batch lane has not been able to read its {{ $labels.signal }} signal for 5 minutes, so no render may start: docs/home-compute.md (The lane) says where each signal comes from."
+
+  # What home asks of the outside (paulgsc/some-ui#3330): every HTTP request
+  # file_host and its crates send is counted once by crates/outbound, by
+  # caller, host and outcome (outbound_requests_total). Each caller's counters
+  # are at 0 from the moment its client is built, so the first failure after a
+  # restart is an increase. The OUTBOUND dashboard draws them.
+  - name: home-outbound
+    rules:
+      - alert: OutboundNoAnswer
+        # A host that has gone dark for one of home's workers: at least three
+        # requests in 30 minutes, and not one got an answer (every one timed
+        # out or found no connection, a reset or a TLS failure). The watchers'
+        # own alerts do not see this, since a pass that gets no answer still
+        # completes and stamps. An answer of any status, a refusal included,
+        # clears it: a host that refuses is reached, and a refusal is the
+        # worker's own to judge (the game feed backs off on a 429, GA2; a push
+        # service's 410 is a browser that left). A caller that sends fewer
+        # than three requests in 30 minutes (the game feed between games, a
+        # rare push) is not judged by it. The health probe exits before any
+        # scrape, so it never has a series here. Labels, not a URL: host is a
+        # fixed name per caller (crates/outbound, Caller::host).
+        expr: |
+          sum by (caller, host) (increase(outbound_requests_total{outcome=~"timeout|no_answer"}[30m])) >= 3
+          unless on (caller, host)
+          sum by (caller, host) (increase(outbound_requests_total{outcome!~"timeout|no_answer"}[30m])) > 0
+        labels:
+          objective: OB2
+          says: "Home's {{ $labels.caller }} has had no answer from {{ $labels.host }} for 30 minutes: every request it sent timed out or could not connect. The OUTBOUND dashboard's Not OK panel shows since when."
+
+      - alert: OutboundRefused
+        # The game feed only (the owner, 2026-11-21): ESPN answers, but
+        # refuses every request (a 429 rate limit, another 4xx, a 5xx) for 30
+        # minutes, at least three of them, and not one is ok. The feed backs
+        # off on each refusal (GA2), so a refusal that lasts is one nobody
+        # would otherwise hear. A timeout among the refusals does not clear it
+        # (OutboundNoAnswer is cleared by a refusal, so a mix of the two would
+        # otherwise fire neither); one ok answer does. Other callers are left
+        # out: a push service's 410 is a browser that left, which the nudge
+        # handles, and the pollers' own failing alerts read their refusals.
+        expr: |
+          sum by (caller, host) (increase(outbound_requests_total{caller="game_feed",outcome=~"refused_4xx|refused_5xx"}[30m])) >= 3
+          unless on (caller, host)
+          sum by (caller, host) (increase(outbound_requests_total{caller="game_feed",outcome="ok"}[30m])) > 0
+        labels:
+          objective: OB3
+          says: "Home's game feed has been refused by {{ $labels.host }} for 30 minutes: every request it sent got a 4xx or 5xx (a 429 is a rate limit), and none was answered. The GAME FEED dashboard says what came back."
+
+  # Shared stages (paulgsc/some-ui#3333): a node other pipelines wait on
+  # (`crate::stage::Stage` in file_host). The same two alerts for every
+  # stage, told apart by the `stage` label; each takes its `objective` from
+  # the stage's own promise series, whose value is the promise's bound in
+  # seconds (a policy constant in the source, moved by a call), so no stage
+  # and no bound is written here. A stage the server has switched off never
+  # reports what waits, so neither fires for it.
+  - name: home-stages
+    rules:
+      # How long the oldest item still waiting has waited, aged on every
+      # evaluation. The server exports when it arrived (0: nothing waiting),
+      # not its age, because a stage reads its queue once a pass and a broken
+      # stage's pass is long (the transcriber's: 20 notes of 600 s each).
+      - record: stage:oldest_waiting:seconds
+        expr: |
+          clamp_min(time() - stage_oldest_waiting_since_timestamp_seconds, 0)
+          * (stage_oldest_waiting_since_timestamp_seconds > bool 0)
+
+      - alert: StageDegraded
+        # Slow, stopped, looping, stuck on one item or backlogged: whichever,
+        # the oldest item waiting is older than the stage promises. Held 5
+        # minutes, so an item picked up just past its bound is not paged.
+        expr: |
+          max by (stage) (stage:oldest_waiting:seconds)
+          > on (stage) group_left (objective)
+          max by (stage, objective) (stage_promise_seconds)
+        for: 5m
+        labels:
+          says: "Home's {{ $labels.stage }} is slow: something has waited on it longer than it promises. The file_host dashboard's SHARED STAGES row says how long, and what waits on it."
+
+      - alert: StageBroken
+        # Attempted, and almost nothing ends: more than one item's worth of
+        # attempts in the last hour (stage_attempts_per_item, the transcriber's
+        # ATTEMPTS, 3: one bad note failing all its attempts is that note's,
+        # not the stage's), and under a tenth of them done or refused (a
+        # refusal is the stage working: the item itself can't be done). For
+        # the transcriber, every note running to its deadline is this. The
+        # half is increase()'s extrapolation to the window's edges, which
+        # reads one note's 3 failures as a little over 3; real attempts are
+        # whole, so a whole one more still passes it.
+        expr: |
+          (
+            sum by (stage) (increase(stage_attempts_total[1h]))
+            > on (stage) (max by (stage) (stage_attempts_per_item) + 0.5)
+            and on (stage)
+            sum by (stage) (increase(stage_attempts_total{result=~"done|refused"}[1h]))
+            < 0.1 * sum by (stage) (increase(stage_attempts_total[1h]))
+          )
+          * on (stage) group_left (objective)
+          max by (stage, objective) (stage_promise_seconds > bool 0)
+        for: 5m
+        labels:
+          says: "Home's {{ $labels.stage }} is broken: it made more attempts in the last hour than one item gets, and almost none ended. The file_host dashboard's SHARED STAGES row shows it; its own dashboard says how each attempt ended."

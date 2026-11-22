@@ -1,11 +1,11 @@
 {
-  "serial": 108,
-  "server_commit": "ce9c75d739d1ef7082885461412da3cc6a64685d",
+  "serial": 117,
+  "server_commit": "83b33e89733376c9c30139ff4e2a2c52d77638a0",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:v0@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"},
     "dashboard-builder": {"image": "pgathondu/dashboard-builder:9f7548d5441d839bd0134d7db527e75748867bae@sha256:11ad799995080d7c038760bf5a490bd06d9248453cfeeb39d6fac5ae75647384"},
-    "file-host": {"image": "pgathondu/server:60dcb562de84fe725e5fee7c254f42b773fc314f@sha256:5cda22f54db21e3443f556602554a31eb4b2cf4087f8df78c4e9dbcf53b35a5f"},
+    "file-host": {"image": "pgathondu/server:bbf2178ccb8171c3a675806c1c12000a21c82889@sha256:51abcac8d68ae20970a4a7e1907ad988390975d3ebbc2463fe5cf7129e13a87e"},
     "grafana": {"image": "grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2"},
     "kokoro": {"image": "pgathondu/kokoro:9f7548d5441d839bd0134d7db527e75748867bae@sha256:4090a4009b94da98e8ead3518dee8bcb2a40b5828db7db86b67a235f3a51845d"},
     "metabase": {"image": "metabase/metabase:v0.65.x@sha256:06b66bf50d5b46ad632a836aeb62149eaab768033f9d3dae72ad4b10e6427590"},
@@ -18,9 +18,9 @@
     "redis": {"image": "redis:8.10@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53"},
     "redis-exporter": {"image": "oliver006/redis_exporter:v1.97.0@sha256:f5f903fbe77571d455ede0453b084d6840bc62fc105efac001034421cab83b99"},
     "redisinsight": {"image": "redislabs/redisinsight:3.8@sha256:b5e19ee240abef6edb435871b90ff8a210995422e8e018ab61c0339d318a1f84"},
-    "render": {"image": "pgathondu/render:598b150b96953af75aa28e4dbd489fffa59128e1@sha256:fba86b5955750b69353b5c6476f228873c56dbe02c08f9358c599aaef8b1ee60"},
-    "resume-render": {"image": "pgathondu/resume-render:58bff40adb5f36f1d05534e161d392f9a88cdaba@sha256:24d153c2798b674b33e23c060b57d1a61884c64c07838814f2d712d581a4463e"},
+    "render": {"image": "pgathondu/render:71e32e0b545dcc7dcabc9d184520946a0a57cd10@sha256:3501b98cd86494dc4e4ff126b7fadb22cb9441bd9558adc4076f3aaaa6e8995d"},
+    "resume-render": {"image": "pgathondu/resume-render:11476468271838c7b7c9e31f96f6fa14aaa37a0d@sha256:bc7609abdebd091aa22dfa18be3705cf2281319f7edfa6aa5bb2a5cba29f1be2"},
     "rust-runner": {"image": "pgathondu/rust-runner:40c6b36773ffdf9e6e617ac00c8a4d05e0ab7722@sha256:ab776b58789259003b8a0a0dfd445b5c2e135427da32ae345e9e36443edebfb4"},
-    "www": {"image": "pgathondu/www:0.1.72@sha256:eb64dc6abe6a466f20ef5c27f9cfa778b3b607795604744e11375fef3637da9f"}
+    "www": {"image": "pgathondu/www:0.1.73@sha256:f770d7b132cedee5ec0c9c8759ab3535d2c4549bc8eae0bcda81418fd61e2357"}
   }
 }

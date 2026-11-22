@@ -13,6 +13,7 @@ edition.workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+game_scenarios = { workspace = true }
 hex = "0.4.3"
 nfl_feed = { workspace = true }
 rust_round_repo = { workspace = true }
