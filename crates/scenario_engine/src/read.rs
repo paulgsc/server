@@ -487,14 +487,17 @@ fn before_the_try(play: &Play) -> std::borrow::Cow<'_, Play> {
 pub(crate) fn as_it_stood(play: &Play) -> std::borrow::Cow<'_, Play> {
 	let cut = before_the_try(play);
 	let original = cut.text.as_deref().unwrap_or_default();
-	match original.to_ascii_lowercase().rfind("reversed.") {
-		None => cut,
-		Some(at) => std::borrow::Cow::Owned(Play {
-			text: Some(original[at + "reversed.".len()..].trim().to_owned()),
+	let ruling = original
+		.to_ascii_lowercase()
+		.rfind("reversed.")
+		.map(|at| original[at + "reversed.".len()..].trim().to_owned());
+	ruling.map_or(cut, |text| {
+		std::borrow::Cow::Owned(Play {
+			text: Some(text),
 			play_type: None,
 			..play.clone()
-		}),
-	}
+		})
+	})
 }
 
 /// Whether an accepted flag on the play is on the side ESPN did not give the
