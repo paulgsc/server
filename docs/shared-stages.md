@@ -52,7 +52,12 @@ does not read each of its waiters.
    enums; no label names an item or a person.
 6. **Who waits orders, it never adds work.** What waits on an item decides only when the
    stage takes it, after the stage's own fairness rules (TR1's fewest attempts first); how much
-   runs at once stays with the lane.
+   runs at once stays with the lane. One bounded exception, by the owner's ruling on
+   paulgsc/server#1090 (2026-11-21, "a fast-tracked take skips the give"; C1017 bounds it): a note the
+   owner fast-tracks is heard through the lane's give on its one try, while the queue's model has
+   never tried it, so within one run of `file_host` at most one deadline per marked note per
+   model (the guard's streak is in memory); a note excused by the
+   contention guard gives way as before, and the note's retries are held like the rest (`docs/home-compute.md`, invariant 2).
 7. **The bound is policy.** It is a constant in the source, moved by a call, and reaches the
    alerts as `stage_promise_seconds`; it is never written into a rule.
 
@@ -74,15 +79,25 @@ marking them.
   checks hold the same closed sets as `Stage` and `Waiter` (`stage::tests`).
 - **The cards essays name their takes.** An essay held back for a take not heard yet
   (`essay_media::Given::Waiting`, takes listed by id) wants each of them.
-- **The transcriber reads it.** `waiting_first` orders the excused note first, then fewest
-  attempts, then notes something waits on, the most waited-on first, then oldest. Urgency sits
-  after `tried` on purpose: a wanted note that keeps failing would otherwise hold the queue,
-  which TR1 forbids.
-- **Not yet built:** the next source is the owner's fast-track (#1090), a take marked by hand,
-  one more term of the same order; the owner ruled that a fast-tracked take also skips the
-  lane's give (TR4). With two sources the order gets its closed type (`None`, `Wanted`,
-  `FastTrack`). Urgency passing through more than one edge arrives with the first stage whose
-  waiter is itself waited on.
+- **The owner's hand is a source too.** `POST /voice-notes/:id/fast-track` puts one of the
+  owner's notes first (`voice_note_fast_track`, append-only, the newest act decides; #1090). A
+  mark is one try, kept with no clock: a marked note the queue's model has never tried is
+  `FastTrack`; once tried, or marked again after a try, it is `Wanted`; once any model hears
+  it, the mark is spent for good. A `fast` act on a note home won't hear as it stands (set
+  aside, out of attempts, no audio) is refused with 409, so no mark is recorded that orders
+  nothing; a model bump can change that answer.
+- **Urgency is the one term.** Each note carries its `transcript::Urgency` (`None < Wanted <
+  FastTrack`, a closed set), computed in SQL by one `CASE` a test holds to the enum's order.
+  `waiting_first` orders the excused note first, then fewest attempts, then urgency, then how
+  many wait on it, then oldest. Being untried, a `FastTrack` note is first among the least
+  tried, the front of the line. The pass reads the urgency too: a `FastTrack` note's try is not
+  held by the lane's give, unless it is the excused note (the owner's ruling on #1090,
+  2026-11-21).
+- **TR1 holds literally.** Urgency sorts after `tried` (C1015, C1017), so a tried note always
+  waits behind every note tried fewer times, however it is marked. Letting a mark hold the head
+  across retries would loosen TR1, which is the owner's to decide and the ledger's to amend.
+- **Not yet built:** urgency passing through more than one edge, which arrives with the first
+  stage whose waiter is itself waited on.
 
 ## The cases to come
 

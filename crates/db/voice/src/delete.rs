@@ -29,8 +29,10 @@
 //!   paulgsc/some-ui#2265 and in that repo's `docs/discard-sites.md`.
 //! - **What goes:** the note, its audio, what home heard in it (every
 //!   transcript, its words and the take's vectors in the meaning index,
-//!   which are made from them), its set-aside mark and its moves along the
-//!   conveyor ([`crate::conveyor`]), in one transaction.
+//!   which are made from them), its set-aside mark, its moves along the
+//!   conveyor ([`crate::conveyor`]), the owner's fast-track acts on it
+//!   ([`crate::fast_track`]) and what waits on it (`stage_want`), in one
+//!   transaction.
 //!   **What stays:** a copy of its words already filed for the Jobs mailbox
 //!   (the mailbox keeps a name's body for good), the record that Drive
 //!   holds it, the idea an answer belongs to (`idea_answer` still names the
@@ -292,6 +294,11 @@ async fn remove(conn: &mut SqliteConnection, subject: &str, note_id: &str, answe
 		.execute(&mut *conn)
 		.await?
 		.rows_affected();
+	// The owner's marks putting it first are about the take, so they go
+	// with it (paulgsc/server#1090).
+	sqlx::query!("DELETE FROM voice_note_fast_track WHERE subject_id = ?1 AND note_id = ?2", subject, note_id)
+		.execute(&mut *conn)
+		.await?;
 	// What waits on it (`stage_want`, paulgsc/server#1091) names it, so it
 	// goes with it; the waiting essay is withdrawn by its own next pass.
 	sqlx::query!("DELETE FROM stage_want WHERE subject_id = ?1 AND item_key = ?2 AND stage = 'transcriber'", subject, note_id)
@@ -876,6 +883,13 @@ mod tests {
 			"take",
 		)
 		.await;
+		run(
+			&pool,
+			"INSERT INTO voice_note_fast_track (subject_id, note_id, n, act, acted_at) VALUES (?1, ?2, 1, 'fast', 'now')",
+			A,
+			"take",
+		)
+		.await;
 
 		assert_eq!(gone(&pool, B, "nope", ON).await, Deleted::NotHeld);
 		let Deleted::Gone(first) = gone(&pool, A, "take", ON).await else {
@@ -893,6 +907,7 @@ mod tests {
 			"voice_note_set_aside",
 			"voice_note_meaning",
 			"studio_take_move",
+			"voice_note_fast_track",
 		] {
 			assert_eq!(rows(&pool, table, A, "take").await, 0, "{table}");
 		}
