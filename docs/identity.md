@@ -2540,7 +2540,9 @@ nowhere is marked as such and belongs to review.
     affordance by the registry's ids, the surface (`apk` or `web`), when, and
     only its kind's own extras, each a name from the code or an earlier
     instant (when a passed-over offer was made and how the visit ended, when
-    a left one was taken and where it stopped, a said one's answer id).
+    a left one was taken, where it stopped and, when the phone knows it, the
+    id of the screen it went to (paulgsc/some-ui#3367, the owner's answer),
+    a said one's answer id).
     Neither family holds audio, words or anything of what was recorded or read
     (the owner's C3, paulgsc/some-ui#2369), nor a field outside its family's
     own: an unknown field or family is refused whole. A further family is a
@@ -2557,6 +2559,7 @@ nowhere is marked as such and belongs to review.
     `an_event_is_stored_once_and_never_replaced` (an `UPDATE` is refused),
     `an_unknown_field_or_family_is_off_shape`, `every_rule_names_its_field`,
     `an_engagement_carries_its_kinds_fields_and_no_others`,
+    `a_left_may_name_the_screen_it_went_to`,
     `the_migration_round_trips_and_refuses_to_drop_a_record` and
     `the_record_leaves_with_the_account`, and `handlers::app_events`'s
     `a_paired_phone_sends_its_outcomes_and_the_summary_counts_them` and
