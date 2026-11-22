@@ -145,7 +145,7 @@ the shortest life that works, and nothing recreated leaves its old copy behind.
     SHA tags. That is Docker Hub's storage, not this repo's.
   - `.github/docker-changesets/<sha>.json`: one per image-affecting merge, consumed by
     `publish-image-changesets.yml` and never deleted afterwards, so they accumulate on
-    `main` (54 files, 220 KB when this was written). Small, but a tail; removing
+    `main` (54 files in October; 256 files and 80 KB on 2026-11-21). Small, but a tail; removing
     consumed ones would add a writer to `main`, so it is left as it is until that is
     decided.
   - Bot branches (`bot/server-route-snapshot` in some-ui,
@@ -172,11 +172,14 @@ class sets who is killed first. For which images home runs and how they move
 is `docs/release.md`, "Invariants": one source, reconciled rather than carried, by digest. For any
 environment variable a binary or compose reads (a new one, or a class change) it is README.md,
 "Configuration", ENV-CLASS: env holds deployment constants only, and a switch is policy, not env
-(`infra/env-classes.json` only shrinks). For a shared stage (`crate::stage`, a node other
-pipelines wait on) it is `docs/shared-stages.md`, "Invariants": read over the whole queue,
-never the batch, a time not an age, the bound is policy. For Studio takes on the conveyor
-(`studio_take_move`, `voice_repo::conveyor`) it is `docs/conveyor.md`, "Invariants": moves are
-ordered by their number, never by a clock. Those sections are the source of truth;
+(`infra/env-classes.json` only shrinks). For a new table, a table rebuild, or SQL that rewrites
+or deletes rows, it is `docs/schema.md`, "Invariants": every table has a lifecycle, an
+append-only table keeps its trigger, and nothing rewrites one outside a listed discard site. For
+a shared stage (`crate::stage`, a node other pipelines wait on) it is `docs/shared-stages.md`,
+"Invariants": read over the whole queue, never the batch, a time not an age, the bound is
+policy. For Studio takes on the conveyor (`studio_take_move`, `voice_repo::conveyor`) it is
+`docs/conveyor.md`, "Invariants": moves are ordered by their number, never by a clock. Those
+sections are the source of truth;
 this list is only a pointer to them. If the change
 would break one, **stop and raise it** on the issue or PR. Name the invariant and the shape that
 breaks it, and wait for a decision instead of building it or patching around it. Two things

@@ -1,7 +1,7 @@
 [package]
 name = "curriculum_repo"
 description = "Server-owned lesson content — storage layer"
-readme = "README.md"
+readme.workspace = true
 categories = ["database"]
 keywords = ["curriculum", "lessons", "sqlite", "repository"]
 version.workspace = true

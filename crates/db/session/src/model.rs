@@ -71,7 +71,7 @@ impl SessionStatus {
 }
 
 /// Whether a session was composed by a person or proposed by the waker
-/// (`nudge::waker::materialize_provisioned_session`, `#279`/`#282`).
+/// (`nudge::propose::materialize_provisioned_session`, `#279`/`#282`).
 ///
 /// `Momentum` reads this to decide whether a `paused` transition is a real
 /// abandonment (see [`session_abandonment_is_real`]): a proposal nobody

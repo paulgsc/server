@@ -14,7 +14,7 @@
 //!
 //! 1. writes the `activity_outcome` row — durable, and what #289 reads;
 //! 2. derives a signal from it, if the policy says there is one, and folds it
-//!    in through `waker::observe`.
+//!    in through `observe::observe`.
 //!
 //! **Idempotent in both halves.** `(session_id, block_index)` is the key
 //! (`OutcomeRepository::record`): of any number of replays, exactly one inserts
@@ -37,7 +37,6 @@
 //! outcome for another subject's session is a 404 — the same answer as a
 //! session that does not exist, which is the answer that leaks nothing.
 
-use crate::nudge::waker;
 use crate::subject::SubjectId;
 use crate::{AppState, FileHostError};
 use axum::{extract::State, Json};
@@ -132,7 +131,7 @@ pub(crate) async fn record_outcome(db: &SqlitePool, subject_id: &str, request: O
 					eligible_at: None,
 				});
 			};
-			let eligible_at = waker::observe(db, subject_id, &signal).await?;
+			let eligible_at = crate::nudge::observe::observe(db, subject_id, &signal).await?;
 			Ok(OutcomeAccepted {
 				replayed: false,
 				signal: Some(signal.kind()),

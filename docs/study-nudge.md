@@ -86,6 +86,15 @@ not a fifth fix but the epoch and watermark in "New material is one epoch, not
 a fan-out" below. Changing an invariant is allowed — by deciding to, in this
 section, not by accretion.
 
+**Where each stage lives** (S9, #489). `nudge/waker.rs` is the pass: `spawn`,
+`run_pass` and `consider`, and the only module that reads `BATCH`.
+`nudge/deadline.rs` is the pass deadline (invariant 4's other bound).
+`nudge/sweep.rs` holds catch-up and the retention sweep, `nudge/propose.rs` the
+proposed session, `nudge/actuate.rs` the claim and its deliveries, and
+`nudge/observe.rs` the fold a signal makes (invariant 1's write). The waker's
+tests are `nudge/waker/tests.rs`. The split moved code and changed none of the
+four invariants: the passes run the same queries under the same two bounds.
+
 ---
 
 ## The battery, and why it is not a rate limiter
@@ -442,7 +451,7 @@ column instead: `"user"` for every session a person composed themselves
 (`POST /sessions`, and `POST /sessions/:id/duplicate` — duplicating is an
 action only a person takes, see `duplicate_session`'s own doc comment for
 why that overrides the plain `..source` spread every other field uses),
-`"system"` for exactly what `nudge::waker::materialize_provisioned_session`
+`"system"` for exactly what `nudge::propose::materialize_provisioned_session`
 writes.
 
 **Why a column, not an inference.** Argued in full in `#283`'s own issue
@@ -693,7 +702,7 @@ from under someone looking at it, for a notification that was never going
 to send, is exactly the write race #284's own "refresh in place" choice
 was supposed to avoid causing, not invite.
 
-**`nudge::waker::refresh_stale_proposal`'s call site is the resolution to
+**`nudge::propose::refresh_stale_proposal`'s call site is the resolution to
 both**: inside the `Verdict::Intervene(action)` arm of `engine.evaluate`,
 not before it and not only inside `NothingToSay`. `evaluate` already calls
 `Admissibility::admit` internally before ever returning `Intervene` (see
@@ -931,7 +940,7 @@ admissible one. RCM8 only makes the `Presence` path behave like the other
 three.
 
 Selection and admission are then re-run against the session that now exists
-(`nudge::waker::decide_with_a_proposal`) rather than the whole verdict being
+(`nudge::propose::decide_with_a_proposal`) rather than the whole verdict being
 recomputed. Warrant was settled before anything was written and nothing the
 pass does afterwards can change it: `StudySignal::SessionProvisioned` carries
 a delta of `0.0` precisely so that composing a proposal is not itself evidence
@@ -989,14 +998,14 @@ starting with the first.
 
 Until `#278`, nothing did. The waker's entire query is `WHERE eligible_at <=
 now`, and `engagement_gate` rows were created in exactly one place —
-`waker::observe`, called from `POST /signals` — whose only caller is the
+`observe::observe`, called from `POST /signals` — whose only caller is the
 client's session-mutation layer, fired when a session is *created*. The chain
 was: no session ⇒ no signal ⇒ no gate row ⇒ never in `due` ⇒ never nudged.
 Not late. Never. This is silence #1 in `#257`'s cold-start argument, and it
 was silent for exactly the person who most needed the nudge: someone who had
 just installed the app and done nothing else yet.
 
-`POST /push/subscriptions` closes it. `waker::first_contact` runs on every
+`POST /push/subscriptions` closes it. `observe::first_contact` runs on every
 call, after the subscription itself is stored: it is a person explicitly
 saying "you may interrupt me" — the strongest statement of intent this
 deployment has — and, unlike a page load (too broad to count as consent) or a
