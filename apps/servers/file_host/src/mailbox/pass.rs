@@ -4049,11 +4049,17 @@ mod tests {
 		assert_eq!(held, ["2026-10-23", "2026-10-16"]);
 	}
 
-	/// The index is a view, never archived or asked for (owner, #509), and
-	/// pickups and their answers are not archived yet (CONVEYOR3).
+	/// The index is a view, never archived or asked for (owner, #509),
+	/// pickups and their answers are not archived yet (CONVEYOR3), and the
+	/// site's pictures are a view home never keeps (some-ui C1071).
 	#[test]
 	fn archiving_walks_every_folder_but_the_index_and_the_pickups() {
-		let unwalked = [mailbox_kit::Folder::Index, mailbox_kit::Folder::Pickup, mailbox_kit::Folder::Picked];
+		let unwalked = [
+			mailbox_kit::Folder::Index,
+			mailbox_kit::Folder::Pickup,
+			mailbox_kit::Folder::Picked,
+			mailbox_kit::Folder::SiteAssets,
+		];
 		assert!(unwalked.iter().all(|folder| !ARCHIVES.contains(folder)));
 		let mut walked: Vec<&str> = ARCHIVES.iter().chain(&unwalked).map(|folder| folder.as_str()).collect();
 		walked.sort_unstable();

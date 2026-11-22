@@ -2805,6 +2805,31 @@ nowhere is marked as such and belongs to review.
     a note's `take` names a voice note home holds, which is not checked, since
     the phone's drain may send the note before the take's audio.
 
+39. **The public site's pictures of home's dashboards hold aggregates only,
+    and home keeps none of them.** Once a week home's render worker walks
+    seven panels of its own Grafana (`site_shots`; paulgsc/some-ui#3415, the
+    owner's yes; C1071, C1073): six of file_host's dashboard (AVAILABILITY,
+    UP FOR, SERVICES, RATE LIMITED, Refusals/sec by Reason, Limiter: Tokens
+    Available & Tracked Clients) and WHO DUNNIT's "CPU — busy vs waiting".
+    Each panel's query is a share, a rate, a count or a duration summed over
+    every client and subject: none groups by a `ClientId`, `PeerKey`,
+    subject, address or anything a person typed, so no picture can name or
+    tell apart a person. Which panels is named in one place, some-ui's
+    `packages/video-motion/src/walk/home-dashboards.ts`, by dashboard uid
+    and panel id. Home puts the clip and the still in the mailbox's
+    `site-assets` folder, public by design, and then deletes the week's
+    request, render and work (no picture library, as docs/snips.md's
+    invariant 1). Nothing of a picture reaches a log line: the pass logs
+    whether it asked, sent or refused, and why.
+    *Enforced by* `site_shots`' tests
+    (`a_week_is_asked_once_then_sent_and_home_keeps_nothing_of_it`,
+    `a_picture_too_big_or_not_its_type_is_refused_and_never_sent`) for
+    what home keeps and sends. *Not enforced:* that a panel's query stays an
+    aggregate, which a change to `infra/grafana/dashboards` can break with
+    no check here (a review reading a hunk to one of those seven panels
+    checks it against this invariant); and that the walk shows only those
+    panels, which lives in some-ui.
+
 Whether separately harmless fields combine into a fingerprint, and whether
 timing correlates requests, cannot be linted. They belong to review. Raise them
 the way `CLAUDE.md`'s "Drift is loud" asks.

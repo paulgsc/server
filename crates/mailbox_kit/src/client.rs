@@ -1,4 +1,4 @@
-use crate::transport::{MailboxTransport, Method, Request, Response, Token};
+use crate::transport::{BodyType, MailboxTransport, Method, Request, Response, Token};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -49,6 +49,11 @@ pub enum Folder {
 	/// The routine's answer to a pickup, `picked-<note>-<seq>.json`: the
 	/// issue it filed the take as.
 	Picked,
+	/// The public site's pictures of home's own dashboards,
+	/// `server-<stamp>.mp4` and `cores-<stamp>.png`: home puts them, the
+	/// Pages build reads them, and the mailbox keeps the newest of each kind
+	/// only, never archived (paulgsc/some-ui C1071).
+	SiteAssets,
 }
 
 impl Folder {
@@ -56,7 +61,7 @@ impl Folder {
 	/// home's index, a view the mailbox keeps only the latest of, and
 	/// [`Self::Pickup`] and [`Self::Picked`], which it does not archive yet
 	/// (`file_host`'s `mailbox::pass::ARCHIVES`).
-	pub const ALL: [Self; 16] = [
+	pub const ALL: [Self; 17] = [
 		Self::Brief,
 		Self::Decisions,
 		Self::Scout,
@@ -73,6 +78,7 @@ impl Folder {
 		Self::Feedback,
 		Self::Pickup,
 		Self::Picked,
+		Self::SiteAssets,
 	];
 
 	/// The name in the mailbox's URLs, and in `mailbox_repo`'s rows.
@@ -95,6 +101,7 @@ impl Folder {
 			Self::Feedback => "feedback",
 			Self::Pickup => "pickup",
 			Self::Picked => "picked",
+			Self::SiteAssets => "site-assets",
 		}
 	}
 }
@@ -276,11 +283,16 @@ impl<T: MailboxTransport> Mailbox<T> {
 	}
 
 	async fn send_matching(&self, method: Method, url: String, body: Option<Vec<u8>>, if_match: Option<String>) -> Result<Response, MailboxError> {
+		self.send_typed(method, url, body, BodyType::Json, if_match).await
+	}
+
+	async fn send_typed(&self, method: Method, url: String, body: Option<Vec<u8>>, body_type: BodyType, if_match: Option<String>) -> Result<Response, MailboxError> {
 		let request = Request {
 			method,
 			url,
 			token: self.token.clone(),
 			body,
+			body_type,
 			if_match,
 		};
 		self.transport.send(request).await.map_err(|err| MailboxError::Transport(err.to_string()))
@@ -334,13 +346,25 @@ impl<T: MailboxTransport> Mailbox<T> {
 	/// [`MailboxError::BadName`], the status's [`MailboxError`] (a `422` is
 	/// [`MailboxError::Refused`], naming why), or [`MailboxError::Transport`].
 	pub async fn put(&self, folder: Folder, name: &str, body: Vec<u8>) -> Result<Put, MailboxError> {
+		self.put_as(folder, name, body, BodyType::Json).await
+	}
+
+	/// Put `body`, of `body_type`, under `name` in `folder`: [`Self::put`]
+	/// for a body that is not JSON (a site picture).
+	///
+	/// # Errors
+	/// As [`Self::put`]; a picture over the mailbox's cap is the `413`'s
+	/// [`MailboxError`].
+	pub async fn put_as(&self, folder: Folder, name: &str, body: Vec<u8>, body_type: BodyType) -> Result<Put, MailboxError> {
 		#[derive(Deserialize)]
 		struct Answer {
 			change: String,
 			seq: i64,
 		}
 		let name = plain_name(name)?;
-		let response = self.send(Method::Put, self.url(&[folder.as_str(), "items", name]), Some(body)).await?;
+		let response = self
+			.send_typed(Method::Put, self.url(&[folder.as_str(), "items", name]), Some(body), body_type, None)
+			.await?;
 		match response.status {
 			200 | 201 => {
 				let answer: Answer = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode("a put's answer is not { change, seq }"))?;
@@ -474,7 +498,7 @@ fn failure(response: &Response) -> MailboxError {
 #[cfg(test)]
 mod tests {
 	use super::{Archive, Folder, ItemMeta, Mailbox, MailboxError, Put, Restore, Wanted};
-	use crate::transport::{MailboxTransport, Method, Request, Response, Token};
+	use crate::transport::{BodyType, MailboxTransport, Method, Request, Response, Token};
 	use sha2::{Digest, Sha256};
 	use std::sync::Mutex;
 
@@ -631,6 +655,31 @@ mod tests {
 			(Method::Put, "https://mailbox.example.test/v1/decisions/items/decisions-2026-10-22.json")
 		);
 		assert_eq!(request.body.as_deref(), Some(body().as_slice()));
+	}
+
+	/// A site picture goes as what it is; every other put stays JSON.
+	#[tokio::test]
+	async fn a_picture_goes_with_its_own_type_and_json_stays_json() {
+		let mailbox = mailbox(vec![
+			(201, r#"{"change":"added","seq":1}"#),
+			(201, r#"{"change":"added","seq":2}"#),
+			(201, r#"{"change":"added","seq":3}"#),
+		]);
+		let png = b"\x89PNG".to_vec();
+		mailbox
+			.put_as(Folder::SiteAssets, "cores-20261123T000000000Z.png", png.clone(), BodyType::Png)
+			.await
+			.unwrap();
+		mailbox
+			.put_as(Folder::SiteAssets, "server-20261123T000000000Z.mp4", b"....ftyp".to_vec(), BodyType::Mp4)
+			.await
+			.unwrap();
+		mailbox.put(Folder::Decisions, "decisions-2026-10-22.json", b"{}".to_vec()).await.unwrap();
+		let sent = mailbox.transport.sent.lock().unwrap().clone();
+		let types: Vec<&str> = sent.iter().map(|request| request.body_type.as_str()).collect();
+		assert_eq!(types, ["image/png", "video/mp4", "application/json"]);
+		assert_eq!(sent[0].url, String::from(BASE) + "/v1/site-assets/items/cores-20261123T000000000Z.png");
+		assert_eq!(sent[0].body.as_deref(), Some(png.as_slice()));
 	}
 
 	#[tokio::test]
