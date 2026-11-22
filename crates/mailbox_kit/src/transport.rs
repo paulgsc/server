@@ -36,14 +36,37 @@ pub enum Method {
 	Delete,
 }
 
-/// One request, ready for the wire. A `PUT` carries a JSON body; a `DELETE`
-/// names the bytes it archives in `If-Match`.
+/// What a `PUT`'s body is: JSON for every folder but `site-assets`, whose
+/// pictures are a PNG still or an MP4 clip (paulgsc/some-ui C1071).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyType {
+	Json,
+	Png,
+	Mp4,
+}
+
+impl BodyType {
+	/// The `Content-Type` the mailbox checks the body against.
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Json => "application/json",
+			Self::Png => "image/png",
+			Self::Mp4 => "video/mp4",
+		}
+	}
+}
+
+/// One request, ready for the wire. A `PUT` carries a body of `body_type`;
+/// a `DELETE` names the bytes it archives in `If-Match`.
 #[derive(Debug, Clone)]
 pub struct Request {
 	pub method: Method,
 	pub url: String,
 	pub token: Token,
 	pub body: Option<Vec<u8>>,
+	/// What `body` is, sent as `Content-Type` on a `PUT`.
+	pub body_type: BodyType,
 	/// An `If-Match` value, already quoted.
 	pub if_match: Option<String>,
 }
@@ -91,7 +114,7 @@ pub mod reqwest_transport {
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
 			let outgoing = match request.method {
 				Method::Get => self.client.get(&request.url),
-				Method::Put => self.client.put(&request.url).header(reqwest::header::CONTENT_TYPE, "application/json"),
+				Method::Put => self.client.put(&request.url).header(reqwest::header::CONTENT_TYPE, request.body_type.as_str()),
 				Method::Delete => self.client.delete(&request.url),
 			};
 			let outgoing = outgoing.bearer_auth(request.token.expose());
