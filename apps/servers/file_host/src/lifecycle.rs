@@ -357,7 +357,7 @@ const APPEND_ONLY_REWRITES: &[(&str, &str, &str, usize, &str)] = &[
 		"DELETE",
 		"voice_note_fast_track",
 		1,
-		"My data's delete of a take (MD3) takes its fast-track marks with it, as its migration says (#1090): the site paulgsc/some-ui's docs/discard-sites.md lists for the take, whose row does not yet name this table",
+		"My data's delete of a take (MD3) takes its fast-track marks with it, as its migration says (#1090): the site paulgsc/some-ui's docs/discard-sites.md lists for the take, whose row names this table (some-ui#3407)",
 	),
 	(
 		"crates/db/voice/src/delete.rs",

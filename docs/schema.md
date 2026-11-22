@@ -64,7 +64,7 @@ the seed). They are classified by today's code, and the call may move them.
    audio, transcripts, words, set-aside mark, conveyor moves and fast-track marks, and `let_go_audio` drops an
    interview retake's audio (IW8). Each is a site in some-ui's `docs/discard-sites.md` with the
    owner's ruling, and each leaves a receipt in `voice_note_deletion`; that list's row for the
-   take does not yet name `voice_note_fast_track` (#1090), which landed after it. Test code is read out
+   take names `voice_note_fast_track` too (#1090, some-ui#3407). Test code is read out
    lexically: `#[cfg(test)]`, `#[test]`, `#[tokio::test]` and `#[sqlx::test]` items, out-of-line
    test modules, `#![cfg(test)]` files, and `tests/`, `benches/` and `examples/` directories.
    *It does not see* SQL built at run time. Account deletion's sweep over
