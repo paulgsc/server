@@ -12,10 +12,23 @@ is **waste** (Kokoro's one thread, language detection that costs more than the h
 beam search nobody chose). So a 4-core box that looks "full" from the transcriber's side
 is probably half idle. The measurements below confirm or refute that.
 
-What this review could not read: paulgsc/some-ui #3348, #3309 and some-ui's CLAUDE.md
-C789 ("Spend last on hardware, behind a measured judgment"). Attaching some-ui was
-refused in this session. Part 3 follows the coordinator's brief for those, and its
-hardware section stops at the judgment gate C789 names, without a recommendation.
+This session could not attach paulgsc/some-ui. What it says of #3348, #3309 and
+some-ui's CLAUDE.md C789 comes from the coordinator's relay (2026-11-22):
+- **#3348** asks what limits real-time transcription, measured (compute, memory, the
+  queue, or the turn-taking policy). It asks which model and hardware class would give
+  real time for one take *while a render runs*, keeping word timestamps (captions need
+  them), at the owner's accuracy in English and Korean. And it asks what gets closer
+  without hardware. **A third party may not hold the owner's voice.** The owner has ruled
+  out real-time hearing on home today ("no CPU for it") and manual transcription
+  ("subtitles need word timestamps"). They chose a queue they can see and steer: the
+  fast-track (#1090).
+- **C789:** anything that costs money comes last, behind a judgment gate the story defines
+  and measures. The owner's predictions, made before the results, must hold against real
+  measurements. A free tier isn't spending.
+- **#3309 HWSIM:** a calculator for capacity, bandwidth, compute and batching against
+  latency, calibrated on home's CPU and published benchmarks. Sizing tickets have the owner
+  predict the minimal hardware and the bottleneck first. Part 3's hardware classes feed
+  those tickets.
 
 ---
 
@@ -386,7 +399,14 @@ change how invariant 2 is held, so they are raised, not built.
 ### If it's the hardware (part 2 shows full cores)
 
 These are the classes that would remove the limit, for HWSIM's judgment gate (C789).
-**No purchase is recommended here.** The figures are published, on other machines, and
+**No purchase is recommended here.** The model class #3348 needs is fixed first, since the
+hardware follows it. It must be multilingual, keep word timestamps (whisper.cpp's token
+timestamps, as `engine.rs` uses today) and match the owner's accuracy in Korean. That
+rules out English-only and distil models (distil-whisper is English-only). It leaves
+Whisper `small` (today's), `medium`, and `large-v3-turbo`, all in whisper.cpp with the same
+word timing. The target is **RTF ≤ 1 for one take while a render runs**, so each class
+below is judged with the render's ~2–4 cores already taken. **For HWSIM's sizing ticket,
+the owner predicts the minimal class and its bottleneck before C's numbers come back.** The figures are published, on other machines, and
 part 2's numbers are what turn them into a judgment for home.
 
 - **More CPU cores.** whisper.cpp scales with threads until memory bandwidth stops it, and
@@ -418,12 +438,12 @@ part 2's numbers are what turn them into a judgment for home.
 
 ### The no-hardware options from #3348
 
-These come from the brief, since #3348 itself could not be read here.
+These are #3348's options, as relayed. None sends audio to a third party.
 
 | Option | What it gains | Where the audio and words live |
 |---|---|---|
 | A smaller model for short takes (`base`/`tiny`, or `small` greedy) | 2–4× faster on short takes, at an accuracy cost on Korean and mixed speech | Unchanged: on home, in `voice_note_audio` and `voice_transcript` |
-| On-device on the phone (whisper.cpp/`tiny`–`base` on Android, or the OS recogniser) | home does no hearing for those takes; the words come back in real time | The audio is heard on the phone. The words go to home as text. The audio still goes home if kept (Studio), or never leaves the phone if not. An OS recogniser may send audio to the vendor's cloud, a privacy change for `docs/identity.md` |
+| On-device on the phone (whisper.cpp `tiny`–`base`, or `small` on a recent phone; word timestamps kept) | home does no hearing for those takes; the words come back during or right after the take | The audio is heard on the phone. The words go to home as text, with their times. The audio still goes home if kept (Studio). **The OS recogniser is ruled out:** Android's may send audio to the vendor, and a third party may not hold the owner's voice (#3348). Korean accuracy at `tiny`/`base` is the open question. |
 | Streaming while recording (chunks sent and heard as they arrive) | the words are ready when the take ends; same total CPU, spread out | Audio reaches home in chunks during the take, not after. A partial take exists on home before it is complete. The "audio touches disk once" promise needs rewording |
 
 ---
