@@ -141,6 +141,32 @@ pub struct Keys<'a> {
 	pub verbatim: &'a str,
 }
 
+/// What a key is suffixed with, and then a number, once the owner asks home
+/// to hear a note again: `<key>+again<k>`.
+pub const AGAIN: &str = "+again";
+
+/// The key a note heard under `base` is heard under once asked again.
+///
+/// After the owner has asked home to hear it again `asked` times under
+/// `base`; `base` itself for none.
+/// `crate::attention::hear_again` names it; [`waiting_first`] reads it back.
+#[must_use]
+pub fn again(base: &str, asked: i64) -> String {
+	if asked == 0 {
+		base.to_owned()
+	} else {
+		String::from(base) + AGAIN + &asked.to_string()
+	}
+}
+
+/// The key a note waits on, as SQL over a note `b` and its base key `b.base`.
+///
+/// [`waiting_first`], [`backlog`] and `crate::fast_track::act` each hold it
+/// word for word (a test holds them to it): the note's newest request to hear it again asked under
+/// `b.base`, the key it is heard under now, names it; with none, `b.base`
+/// itself.
+pub const STANDING_KEY: &str = "COALESCE((SELECT r.hears_under FROM voice_note_attention r WHERE r.subject_id = b.subject_id AND r.note_id = b.note_id AND r.act = 'hear_again' AND r.asked_under = b.base ORDER BY r.n DESC LIMIT 1), b.base) AS key";
+
 /// A note waiting to be heard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
@@ -154,6 +180,12 @@ pub struct Waiting {
 	pub expected_language: Option<&'static str>,
 	/// What puts it ahead of other notes ([`Urgency`]).
 	pub urgency: Urgency,
+	/// The key it is heard and kept under: [`Keys::plain`] or
+	/// [`Keys::verbatim`], or the key the owner's standing request to hear it
+	/// again named ([`crate::attention::hear_again`]), that key with [`AGAIN`]
+	/// and a number (`ggml-small-q5_1.bin+again1`): each request a fresh
+	/// transcription beside the old rows, as a changed prompt is.
+	pub key: String,
 }
 
 /// Why a note is heard ahead of others: a closed set, in ascending order.
@@ -233,6 +265,25 @@ impl Urgency {
 /// first hearing. Each note is still tried at most `attempts` times, so the
 /// order only decides who goes first, never how much work there is.
 ///
+/// **A request to hear a note again is a fresh transcription**
+/// (paulgsc/some-ui#3339): a note waits on the key its newest request asked
+/// under the key it is heard under now names, `hears_under` ([`Waiting::key`],
+/// [`again`], [`STANDING_KEY`]), with a fresh set of `attempts`, whatever the
+/// old key made of it; a request asked under another model's key (made
+/// before a change of model) is moot, and the note waits on its base key as
+/// every note does. [`backlog`] reads the same key by the same fragment. A
+/// model ends a note once under a key (`voice_transcript_one_ending`), so the
+/// old ending, words and verdict stay as they are beside the new, and once
+/// the fresh key ends the note a reader skips what the request superseded
+/// (`voice_note_superseded`, [`superseded`]). No row is rewritten and no
+/// clock is read.
+///
+/// A fresh key is a new key to a mark too, as a new model's is: a marked note
+/// no model has heard is [`Urgency::FastTrack`] again under it, its one try at
+/// the head of the line under that key, since it has never been tried under
+/// it (TR1 holds: it is among the notes tried fewest times). The owner asking
+/// again is capped by the snooze, so this is at most one try per request.
+///
 /// A [`VERBATIM`] note waits on [`Keys::verbatim`] alone, and any other note
 /// on [`Keys::plain`] alone; [`Waiting::verbatim`] says which.
 ///
@@ -270,26 +321,29 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 	// `(subject_id, note_id, model)` index reads as it reads a bound one.
 	let rows = sqlx::query!(
 		r#"WITH candidate AS MATERIALIZED (
-		   SELECT n.subject_id, n.note_id, n.of_kind = ?5 AS verbatim, n.of_kind, n.stored_at,
+		   SELECT k.subject_id, k.note_id, k.verbatim, k.of_kind, k.of_ref, k.stored_at, k.key,
 		          (SELECT COUNT(*) FROM voice_transcript t
-		           WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		             AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END) AS tried,
+		           WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id AND t.model = k.key) AS tried,
 		          (SELECT COUNT(*) FROM stage_want w
-		           WHERE w.stage = 'transcriber' AND w.subject_id = n.subject_id AND w.item_key = n.note_id) AS wanted,
+		           WHERE w.stage = 'transcriber' AND w.subject_id = k.subject_id AND w.item_key = k.note_id) AS wanted,
 		          COALESCE((SELECT f.act = 'fast' FROM voice_note_fast_track f
-		                    WHERE f.subject_id = n.subject_id AND f.note_id = n.note_id ORDER BY f.n DESC LIMIT 1), 0)
+		                    WHERE f.subject_id = k.subject_id AND f.note_id = k.note_id ORDER BY f.n DESC LIMIT 1), 0)
 		            AND NOT EXISTS (SELECT 1 FROM voice_transcript t
-		                            WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')) AS marked
-		   FROM voice_note n
+		                            WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id AND t.outcome IN ('heard', 'silent')) AS marked
+		   FROM (SELECT b.subject_id, b.note_id, b.of_kind, b.of_ref, b.stored_at, b.verbatim,
+		                COALESCE((SELECT r.hears_under FROM voice_note_attention r WHERE r.subject_id = b.subject_id AND r.note_id = b.note_id AND r.act = 'hear_again' AND r.asked_under = b.base ORDER BY r.n DESC LIMIT 1), b.base) AS key
+		         FROM (SELECT n.subject_id, n.note_id, n.of_kind, n.of_ref, n.stored_at, n.of_kind = ?5 AS verbatim,
+		                      CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END AS base
+		               FROM voice_note n) b) k
 		   WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
-		                     WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		                       AND t.model = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?1 END
+		                     WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id
+		                       AND t.model = k.key
 		                       AND t.outcome IN ('heard', 'silent'))
-		     AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
-		                                            WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
-		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id))
+		     AND (k.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                            WHERE s.subject_id = k.subject_id AND s.note_id = k.note_id))
+		     AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = k.subject_id AND a.note_id = k.note_id))
 		 SELECT subject_id AS "subject_id!", note_id AS "note_id!", verbatim AS "verbatim!: bool", of_kind AS "of_kind!",
-		        urgency AS "urgency!: i64" FROM (
+		        of_ref AS "of_ref!", key AS "key!: String", urgency AS "urgency!: i64" FROM (
 		   SELECT *, CASE WHEN marked AND tried = 0 THEN 2 WHEN marked OR wanted > 0 THEN 1 ELSE 0 END AS urgency FROM candidate)
 		 WHERE tried < ?2
 		 ORDER BY COALESCE(subject_id = ?6 AND note_id = ?7, 0) DESC, tried, urgency DESC, wanted DESC, stored_at, subject_id, note_id
@@ -311,8 +365,9 @@ pub async fn waiting_first(conn: &mut SqliteConnection, keys: Keys<'_>, attempts
 				subject: row.subject_id,
 				note_id: row.note_id,
 				verbatim: row.verbatim,
-				expected_language: crate::verdict::expected_language(&row.of_kind),
+				expected_language: crate::verdict::expected_language(&row.of_kind, &row.of_ref),
 				urgency: Urgency::of_rank(row.urgency),
+				key: row.key,
 			})
 			.collect(),
 	)
@@ -345,17 +400,20 @@ pub struct Backlog {
 /// Any `sqlx` failure.
 pub async fn backlog(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64) -> Result<Backlog, VoiceError> {
 	let row = sqlx::query!(
-		r#"SELECT MIN(n.stored_at) AS "oldest?: String", COUNT(*) AS "count!: i64" FROM voice_note n
+		r#"SELECT MIN(k.stored_at) AS "oldest?: String", COUNT(*) AS "count!: i64"
+		 FROM (SELECT b.subject_id, b.note_id, b.of_kind, b.stored_at,
+		              COALESCE((SELECT r.hears_under FROM voice_note_attention r WHERE r.subject_id = b.subject_id AND r.note_id = b.note_id AND r.act = 'hear_again' AND r.asked_under = b.base ORDER BY r.n DESC LIMIT 1), b.base) AS key
+		       FROM (SELECT n.subject_id, n.note_id, n.of_kind, n.stored_at,
+		                    CASE WHEN n.of_kind = ?4 THEN ?3 ELSE ?1 END AS base
+		             FROM voice_note n) b) k
 		 WHERE NOT EXISTS (SELECT 1 FROM voice_transcript t
-		                   WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		                     AND t.model = CASE WHEN n.of_kind = ?4 THEN ?3 ELSE ?1 END
+		                   WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id AND t.model = k.key
 		                     AND t.outcome IN ('heard', 'silent'))
 		   AND (SELECT COUNT(*) FROM voice_transcript t
-		        WHERE t.subject_id = n.subject_id AND t.note_id = n.note_id
-		          AND t.model = CASE WHEN n.of_kind = ?4 THEN ?3 ELSE ?1 END) < ?2
-		   AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
-		                                          WHERE s.subject_id = n.subject_id AND s.note_id = n.note_id))
-		   AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = n.subject_id AND a.note_id = n.note_id)"#,
+		        WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id AND t.model = k.key) < ?2
+		   AND (k.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside s
+		                                          WHERE s.subject_id = k.subject_id AND s.note_id = k.note_id))
+		   AND EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = k.subject_id AND a.note_id = k.note_id)"#,
 		keys.plain,
 		attempts,
 		keys.verbatim,
@@ -367,6 +425,26 @@ pub async fn backlog(conn: &mut SqliteConnection, keys: Keys<'_>, attempts: i64)
 		oldest: row.oldest,
 		count: row.count,
 	})
+}
+
+/// Whether what `model` made of `subject`'s note `note_id` is superseded.
+///
+/// It is once a request to hear the note again that listed `model` among the
+/// keys it may supersede has had its fresh key end the note
+/// (`voice_note_superseded`), so no reader chooses it. A filer that read the
+/// row before then asks this again in the transaction that files it.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn superseded(conn: &mut SqliteConnection, subject: &str, note_id: &str, model: &str) -> Result<bool, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"SELECT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = ?1 AND sup.note_id = ?2 AND sup.model = ?3) AS "superseded!: bool""#,
+		subject,
+		note_id,
+		model
+	)
+	.fetch_one(&mut *conn)
+	.await
 }
 
 /// The audio `subject` holds under `note_id`, if any.
@@ -511,6 +589,7 @@ pub async fn words(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 			 WHERE w.subject_id = ?1 AND w.note_id = ?2
 			   AND w.model = (SELECT t.model FROM voice_transcript t
 			                  WHERE t.subject_id = ?1 AND t.note_id = ?2 AND t.outcome = 'heard'
+			                    AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.model = t.model)
 			                  ORDER BY t.heard_at DESC, t.model DESC LIMIT 1)
 			 ORDER BY w.word_index"#,
 			subject,
@@ -571,6 +650,7 @@ pub async fn heard(conn: &mut SqliteConnection, subject: &str, note_id: &str) ->
 		   FROM voice_note n
 		   LEFT JOIN voice_transcript t
 		     ON t.subject_id = n.subject_id AND t.note_id = n.note_id AND t.outcome IN ('heard', 'silent')
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = t.subject_id AND sup.note_id = t.note_id AND sup.model = t.model)
 		   WHERE n.subject_id = ?1 AND n.note_id = ?2
 		   ORDER BY t.outcome = 'heard' DESC, t.heard_at DESC, t.model DESC
 		   LIMIT 1"#,
@@ -627,6 +707,11 @@ mod tests {
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 	const SMALL: &str = "ggml-small-q5_1.bin";
+	/// [`SMALL`]'s keys, as a pass hears with them.
+	const SMALL_KEYS: Keys<'static> = Keys {
+		plain: SMALL,
+		verbatim: "ggml-small-q5_1.bin+verbatim-1",
+	};
 	const MEDIUM: &str = "ggml-medium-q5_0.bin";
 
 	async fn pool() -> SqlitePool {
@@ -883,7 +968,8 @@ mod tests {
 	}
 
 	/// The key is decided per note, and both lookups still search the
-	/// `(subject_id, note_id, model)` index rather than scan transcripts.
+	/// `(subject_id, note_id, model)` index rather than scan transcripts, as
+	/// the request lookup searches the attention table's key.
 	/// The plan is of `waiting`'s own SQL, read from this file.
 	#[tokio::test]
 	async fn the_queue_searches_transcripts_by_their_index() {
@@ -910,6 +996,10 @@ mod tests {
 		let searched = details.iter().filter(|detail| detail.starts_with("SEARCH t USING")).count();
 		assert_eq!(searched, 3, "{details:?}");
 		assert!(!details.iter().any(|detail| detail.starts_with("SCAN t")), "{details:?}");
+		// The owner's newest request to hear a note again is read by the
+		// attention table's own key, never a scan (paulgsc/some-ui#3339).
+		assert!(details.iter().any(|detail| detail.starts_with("SEARCH r USING")), "{details:?}");
+		assert!(!details.iter().any(|detail| detail.starts_with("SCAN r")), "{details:?}");
 	}
 
 	/// A Studio take is heard as any note is: it waits until heard, by each
@@ -1075,7 +1165,9 @@ mod tests {
 				.unwrap();
 		}
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, 3, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, SMALL_KEYS, 3, "now")
+			.await
+			.unwrap();
 		drop(conn);
 		let order = |rows: Vec<Waiting>| rows.into_iter().map(|row| (row.note_id, row.urgency)).collect::<Vec<_>>();
 		let read = || async {
@@ -1110,7 +1202,9 @@ mod tests {
 			"failed once: Wanted, behind every note tried fewer times (TR1)"
 		);
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, 3, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, SMALL_KEYS, 3, "now")
+			.await
+			.unwrap();
 		drop(conn);
 		assert_eq!(
 			read().await,
@@ -1125,7 +1219,9 @@ mod tests {
 		// Marked again after a try: Wanted, never FastTrack, so no mark lets a
 		// tried note past a fresher one.
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, 3, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, SMALL_KEYS, 3, "now")
+			.await
+			.unwrap();
 		drop(conn);
 		assert_eq!(
 			read().await,
@@ -1427,6 +1523,62 @@ mod tests {
 		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 		let left: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject_id FROM voice_transcript_word").fetch_all(&pool).await.unwrap();
 		assert_eq!(left, [B], "A's words went with A's account, B's stayed");
+	}
+
+	/// The queue, its backlog and the fast-track's check read the key a note
+	/// waits on by one fragment (W21 and W12 on #1091's seam): each holds
+	/// [`super::STANDING_KEY`] word for word, so they never disagree on which
+	/// key a take heard again waits on.
+	#[test]
+	fn the_queue_and_its_backlog_read_one_standing_key() {
+		const SOURCE: &str = include_str!("transcript.rs");
+		for (source, signature) in [
+			(SOURCE, "pub async fn waiting_first("),
+			(SOURCE, "pub async fn backlog("),
+			(include_str!("fast_track.rs"), "pub async fn act("),
+		] {
+			let from = source.find(signature).unwrap();
+			let to = from + source[from..].find("\n}\n").unwrap();
+			assert!(source[from..to].contains(super::STANDING_KEY), "{signature}");
+		}
+	}
+
+	/// paulgsc/some-ui#3339: every read that chooses a take's ending or its
+	/// final verdict skips what a standing request to hear the take again
+	/// superseded (`voice_note_superseded`), by one predicate written the
+	/// same way in each. Asserted per function, by its name, so a chooser
+	/// that leaves it out fails here though another in its file has it, and
+	/// a new chooser must be listed.
+	#[test]
+	fn every_reader_skips_what_a_request_to_hear_again_superseded() {
+		const PREDICATE: &str = "FROM voice_note_superseded sup WHERE sup.subject_id = ";
+		/// The body of the function `signature` opens in `source`.
+		fn body<'a>(source: &'a str, signature: &str) -> &'a str {
+			let from = source.find(signature).unwrap_or_else(|| panic!("no {signature}"));
+			let to = from + source[from..].find("\n}\n").unwrap_or(source.len() - from);
+			&source[from..to]
+		}
+		let transcript = include_str!("transcript.rs");
+		let verdict = include_str!("verdict.rs");
+		let mailbox = include_str!("../../mailbox/src/lib.rs");
+		let readers = [
+			(transcript, "pub async fn words(", 1),
+			(transcript, "pub async fn heard(", 1),
+			(transcript, "pub async fn superseded(", 1),
+			(verdict, "pub async fn newest(", 2),
+			(verdict, "pub async fn of_ending(", 1),
+			(include_str!("kept.rs"), "pub async fn newest(", 4),
+			(include_str!("takes.rs"), "async fn chosen(", 1),
+			(include_str!("meaning.rs"), "pub async fn index(", 1),
+			(include_str!("meaning.rs"), "pub async fn unindexed(", 1),
+			(include_str!("interview.rs"), "async fn held(", 1),
+			(include_str!("attention.rs"), "pub async fn needing(", 4),
+			(mailbox, "pub async fn unfiled_transcripts(", 3),
+			(mailbox, "pub async fn unfiled_pickups(", 1),
+		];
+		for (source, signature, readers) in readers {
+			assert_eq!(body(source, signature).matches(PREDICATE).count(), readers, "{signature}");
+		}
 	}
 
 	/// HE1 (paulgsc/server#923): every reader chooses a note's ending by

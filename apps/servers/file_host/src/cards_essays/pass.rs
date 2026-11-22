@@ -1661,4 +1661,102 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		assert!(cards_essay_repo::gone(&mut conn).await.unwrap().is_empty());
 	}
+
+	/// paulgsc/some-ui#3339, the Rust Rounds case: an essay refused
+	/// (`take-unheard`) for two takes every attempt failed on stays refused
+	/// while one of them is not asked again; once the owner asks home to hear
+	/// both again, it waits instead, its takes are wanted (`stage_want`, so
+	/// the transcriber hears them first, #1098), and a fast-track on one is
+	/// taken and puts it at the head of the line (#1100).
+	#[tokio::test]
+	async fn an_essay_refused_for_takes_home_hears_again_waits_and_wants_them_first() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let fake = Fake::default();
+		let key = "rust-rounds-how-it-works-2026-11-20";
+		let takes = ["37c56646-e792-4323-896b-453592377aef", "4499b000-e757-48f8-87d7-50eeda07029e"];
+		fake.ok("index.json", &index(&[key]));
+		fake.ok(&(String::from(key) + ".json"), &spoken_essay("2026-11-20", &takes));
+		let (plain, verbatim) = crate::transcribe::keys();
+		let keys = voice_repo::transcript::Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		for take in takes {
+			hold_take(&pool, take).await;
+			for n in 1..=3 {
+				sqlx::query(
+					"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+					 VALUES (?1, ?2, ?3, 'e', ?4, 'deadline', 1, 'then')",
+				)
+				.bind(ME)
+				.bind(take)
+				.bind(&plain)
+				.bind(n)
+				.execute(&pool)
+				.await
+				.unwrap();
+			}
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+				 VALUES (?1, ?2, ?3, 3, 'heard-1', 'failed', '[\"deadline\"]', 'now')",
+			)
+			.bind(ME)
+			.bind(take)
+			.bind(&plain)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+		let mut mine = given(dir.path());
+		mine.subject = Some(String::from(ME));
+		let wants = || async {
+			let mut rows: Vec<String> = sqlx::query_scalar("SELECT item_key FROM stage_want WHERE stage = 'transcriber'")
+				.fetch_all(&pool)
+				.await
+				.unwrap();
+			rows.sort();
+			rows
+		};
+		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((done.refused, done.waiting), (1, 0), "every attempt failed: refused");
+		assert!(wants().await.is_empty(), "a refused essay wants nothing");
+
+		let ask = |take: &'static str| {
+			let pool = pool.clone();
+			async move {
+				let mut conn = pool.acquire().await.unwrap();
+				voice_repo::attention::hear_again(&mut conn, ME, take, Some(keys), "2026-11-22T09:00:00.000Z")
+					.await
+					.unwrap()
+			}
+		};
+		assert!(matches!(ask(takes[0]).await, voice_repo::attention::Acted::Recorded(_)));
+		let one = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((one.refused, one.waiting), (1, 0), "the other take is still never to be heard");
+		assert!(matches!(ask(takes[1]).await, voice_repo::attention::Acted::Recorded(_)));
+		let later = run_once(&pool, &fake, &mine, &clock).await.unwrap();
+		assert_eq!((later.refused, later.waiting, later.waiting_on_takes), (0, 1, 1), "both heard again: it waits on them");
+		assert!(!dir.path().join("status").join(String::from(key) + ".refused").exists(), "no longer said refused");
+		assert_eq!(wants().await, takes, "its takes are wanted, so heard first");
+
+		let mut conn = pool.acquire().await.unwrap();
+		let fast = voice_repo::fast_track::act(&mut conn, ME, takes[1], voice_repo::fast_track::Act::Fast, keys, crate::transcribe::pass::ATTEMPTS, "now")
+			.await
+			.unwrap();
+		assert_eq!(fast, voice_repo::fast_track::Acted::Recorded, "a take heard again may be put first");
+		let order: Vec<_> = voice_repo::transcript::waiting(&mut conn, keys, crate::transcribe::pass::ATTEMPTS, 10)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|waiting| (waiting.note_id, waiting.urgency))
+			.collect();
+		assert_eq!(
+			order,
+			[
+				(String::from(takes[1]), voice_repo::transcript::Urgency::FastTrack),
+				(String::from(takes[0]), voice_repo::transcript::Urgency::Wanted),
+			],
+			"under their fresh keys: the fast-tracked take first, then the wanted one"
+		);
+	}
 }

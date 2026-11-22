@@ -370,6 +370,12 @@ impl FromRef<AppState> for SqlitePool {
 	}
 }
 
+impl FromRef<AppState> for transcribe::Hears {
+	fn from_ref(state: &AppState) -> Self {
+		Self(state.transcribe.is_some())
+	}
+}
+
 impl FromRef<AppState> for Option<meaning::MeaningContext> {
 	fn from_ref(state: &AppState) -> Self {
 		state.meaning.clone()

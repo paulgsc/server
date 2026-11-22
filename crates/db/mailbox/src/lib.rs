@@ -683,7 +683,10 @@ pub struct Heard {
 /// of the routine, and a mark does not unname it, so the Jobs index would
 /// otherwise wait on a transcript that never comes. The filer checks the
 /// mark again in the transaction that files ([`set_aside_from_routines`]),
-/// since one can land after this read.
+/// since one can land after this read. Nor is an attempt a request to hear
+/// the note again superseded (paulgsc/some-ui#3339): home reads it as
+/// skipped, and its fresh key's ending is filed under that key in its turn
+/// (re-filing beyond that is paulgsc/server#1073).
 ///
 /// # Errors
 /// Any `sqlx` failure.
@@ -709,7 +712,8 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		              AND NOT EXISTS (
 		                SELECT 1 FROM voice_transcript AS spoken
 		                WHERE spoken.subject_id = heard.subject_id AND spoken.note_id = heard.note_id
-		                  AND spoken.outcome = 'heard' AND trim(spoken.text, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) <> ''))
+		                  AND spoken.outcome = 'heard' AND trim(spoken.text, char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) <> ''
+		                  AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = spoken.subject_id AND sup.note_id = spoken.note_id AND sup.model = spoken.model)))
 		          OR (note.of_kind IN ('rust-round', 'interview')
 		              AND EXISTS (
 		                SELECT 1 FROM voice_transcript_verdict AS judged
@@ -718,11 +722,13 @@ pub async fn unfiled_transcripts(conn: &mut SqliteConnection, subject: &str, lim
 		              AND NOT EXISTS (
 		                SELECT 1 FROM voice_transcript AS ended
 		                WHERE ended.subject_id = heard.subject_id AND ended.note_id = heard.note_id
-		                  AND ended.outcome IN ('heard', 'silent'))))
+		                  AND ended.outcome IN ('heard', 'silent')
+		                  AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = ended.subject_id AND sup.note_id = ended.note_id AND sup.model = ended.model))))
 		     AND (note.of_kind = 'jobs' OR NOT EXISTS (
 		       SELECT 1 FROM voice_note_set_aside AS aside
 		       WHERE aside.subject_id = heard.subject_id AND aside.note_id = heard.note_id
 		     ))
+		     AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = heard.subject_id AND sup.note_id = heard.note_id AND sup.model = heard.model)
 		     AND NOT EXISTS (
 		       SELECT 1 FROM mailbox_transcript AS filed
 		       WHERE filed.subject_id = heard.subject_id AND filed.note_id = heard.note_id AND filed.model = heard.model
@@ -870,6 +876,7 @@ pub async fn unfiled_pickups(conn: &mut SqliteConnection, subject: &str, limit: 
 		     AND NOT EXISTS (SELECT 1 FROM voice_note_set_aside aside WHERE aside.subject_id = note.subject_id AND aside.note_id = note.note_id)
 		     AND trim((SELECT heard.text FROM voice_transcript heard
 		               WHERE heard.subject_id = newest.subject_id AND heard.note_id = newest.note_id AND heard.outcome = 'heard'
+		                 AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = heard.subject_id AND sup.note_id = heard.note_id AND sup.model = heard.model)
 		               ORDER BY heard.heard_at DESC, heard.model DESC LIMIT 1),
 		              char(9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288)) <> ''
 		     AND NOT EXISTS (
@@ -2161,6 +2168,50 @@ mod tests {
 			.into_iter()
 			.map(|heard| (heard.note_id, heard.model))
 			.collect()
+	}
+
+	/// paulgsc/some-ui#3339: once the owner asks home to hear a Rust Rounds
+	/// take again, its old words stand while home hears it (the owner's
+	/// answer (b), 2026-11-22); once the fresh key ends it, the attempt the
+	/// request superseded is never filed, and the fresh key's silence is.
+	#[tokio::test]
+	async fn a_take_heard_again_files_its_fresh_key_and_never_what_it_superseded() {
+		let pool = pool().await;
+		for statement in [
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'q', 'rust-round', '2026-w47:QM-311', '2026-11-20T08:00:00.000Z', 'audio/webm', 1, 's', 'now')",
+			"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES (?1, 'q', x'00')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 'q', 'm', 'e', 1, 'heard', 'de', 0.9, 1000, 'und seien dis', 10, '2026-11-20T09:00:00.000Z')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, 'q', 'm', 1, 'heard-1', 'garbled', 'off_language', 1000, '2026-11-20T09:00:00.000Z')",
+		] {
+			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
+		}
+		assert_eq!(unfiled(&pool, A).await, [(String::from("q"), String::from("m"))]);
+		sqlx::query(
+			"INSERT INTO voice_note_attention (subject_id, note_id, n, act, model, attempt, rule, acted_at, asked_under, hears_under)
+			 VALUES (?1, 'q', 1, 'hear_again', 'm', 1, 'heard-1', '2026-11-21T00:00:00.000Z', 'm', 'm+again1')",
+		)
+		.bind(A)
+		.execute(&pool)
+		.await
+		.unwrap();
+		sqlx::query("INSERT INTO voice_note_hear_again_supersedes (subject_id, note_id, model, n) VALUES (?1, 'q', 'm', 1)")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(unfiled(&pool, A).await, [(String::from("q"), String::from("m"))], "being heard again: the old words stand");
+		for statement in [
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, duration_ms, took_ms, heard_at)
+			 VALUES (?1, 'q', 'm+again1', 'e', 1, 'silent', 1000, 10, '2026-11-21T01:00:00.000Z')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES (?1, 'q', 'm+again1', 1, 'heard-1', 'nothing_said', '', '2026-11-21T01:00:00.000Z')",
+		] {
+			sqlx::query(statement).bind(A).execute(&pool).await.unwrap();
+		}
+		assert_eq!(unfiled(&pool, A).await, [(String::from("q"), String::from("m+again1"))], "the fresh silence is filed");
 	}
 
 	async fn file_next(pool: &SqlitePool, subject: &str, note: &str, model: &str) -> Result<(i64, Change), MailboxError> {

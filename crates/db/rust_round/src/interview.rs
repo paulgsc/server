@@ -338,6 +338,9 @@ mod tests {
 	use serde_json::{json, Value};
 	use sqlx::sqlite::SqlitePoolOptions;
 
+	/// The schema, built once: an inline `migrate!` is a local array that grows with every migration.
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
 	const OPEN: &str = "2026-11-17T09:00:00.000Z";
 	const DUE: &str = "2026-11-22T23:59:00-08:00";
 	const AFTER: &str = "2026-11-23T09:00:00.000Z";
@@ -494,7 +497,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_send_is_a_draft_until_the_deadline_then_final() {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
-		sqlx::migrate!("../../../migrations").run(&pool).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 		let week = read(week_body().to_string().as_bytes()).unwrap();
 		let first = read_sent(sent_body(OPEN).to_string().as_bytes(), &week, OPEN).unwrap();

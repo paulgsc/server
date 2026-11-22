@@ -148,6 +148,18 @@ pub async fn hand_off(conn: &mut SqliteConnection, subject: &str, ask: Ask<'_>) 
 	// Whether home heard it before its audio is read, so a take waited for
 	// or refused costs no read of its bytes.
 	let transcript = if ask.transcript {
+		// Being heard again (paulgsc/some-ui#3339): its fresh words are what
+		// the essay hands over, so it waits for them, and the verdict it had
+		// is no refusal until they end. A home that runs no transcriber hears
+		// nothing again, so there the take is read as it stands.
+		let (plain, verbatim) = crate::transcribe::keys();
+		let keys = voice_repo::transcript::Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		if crate::transcribe::runs() && voice_repo::attention::being_heard_again(conn, subject, ask.take, keys).await? {
+			return Ok(Take::NotHeardYet);
+		}
 		let heard = match voice_repo::transcript::heard(conn, subject, ask.take).await? {
 			voice_repo::transcript::Hearing::Heard(heard) => heard,
 			voice_repo::transcript::Hearing::NotHeld => {

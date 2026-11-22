@@ -214,7 +214,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want`, `voice_note_fast_track` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_hear_again_supersedes`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want`, `voice_note_fast_track` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent, card-era log and work spans | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log`, `rust_work_span_event` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -1789,15 +1789,81 @@ nowhere is marked as such and belongs to review.
     paulgsc/server#911), and its receipt says `verdict` stayed. **The owner's
     reconciliation of each note home could not hear is
     `voice_note_attention`, append-only too** (paulgsc/server#912, HEARD3):
-    one row per act (`kept`, `record_again`, `deleted`) on a note whose
-    newest verdict is `garbled`, `failed` or `nothing_said`, naming that
-    verdict by its key, numbered per note, and when home recorded it; never
-    anything said. Written only by `POST /voice-notes/:id/attention` and
-    `DELETE /voice-notes/:id` (`voice_repo::attention::act`), never updated
-    (its trigger aborts an `UPDATE`), it outlives its note as the verdicts do
-    and leaves with the account alone (sweep and trigger). `GET
-    /voice-notes/attention` lists the notes held whose newest verdict no act
-    answers. Every read that gives
+    one row per act (`kept`, `record_again`, `deleted`, `hear_again`) on a
+    note whose newest verdict is `garbled`, `failed` or `nothing_said` (a
+    `hear_again` on any verdict, a heard one included),
+    naming that verdict by its key, numbered per note, and when home
+    recorded it; never anything said. Written only by
+    `POST /voice-notes/:id/attention` and `DELETE /voice-notes/:id`
+    (`voice_repo::attention::act`), never updated (its trigger aborts an
+    `UPDATE`), it outlives its note as the verdicts do and leaves with the
+    account alone (sweep and trigger). `GET /voice-notes/attention` lists the
+    notes held whose newest verdict no act answers. **The owner may ask home
+    to hear a take again** (paulgsc/some-ui#3339; the owner, 2026-11-21:
+    "it's what we have, except the retry"): `hear-again` is a fourth act in
+    the same closed set, not a table of its own (C923). It is taken for any
+    take home has judged, a heard one included (a take heard as the wrong
+    language is heard as right, now that a Studio script or spoken-card take
+    is heard as English), and only one home would hear (its recording held,
+    not set aside) (C924). Each request is a fresh transcription under a new
+    key, named on the act as `hears_under`: the take's key under the model
+    home hears with, with `+again<k>` for the `k`th request under it
+    (`voice_repo::attention::hear_again`, `voice_repo::transcript::again`),
+    the way the interview's verbatim prompt is a key of its own. A model ends
+    a note once under a key (`voice_transcript_one_ending`), so the old
+    ending, words and verdict stay as they are beside the new, the
+    transcriber hears the take under `hears_under` with its own set of
+    `ATTEMPTS`, and nothing is rewritten and no clock read (C925, the
+    coordinator's calls on run paulgsc/some-ui#3311). The act names the key
+    it was asked under too, `asked_under`, so no key is ever parsed apart:
+    the queue and its backlog read the note's newest request asked under the
+    key home hears it under now (`voice_repo::transcript::STANDING_KEY`, one
+    fragment in both). **A request supersedes the keys it found, once it is
+    answered** (the agreed root shape, paulgsc/some-ui#3339, 2026-11-22):
+    with each request, in its transaction, go the keys that had made
+    something of the take (`voice_note_hear_again_supersedes`, model names
+    only, append-only, leaving with the account alone), and a row is skipped
+    by every read that chooses the take's ending, words or final verdict only
+    once a request that listed its key has had its fresh key end the take
+    (heard, or found silent), through the one view `voice_note_superseded`
+    and one predicate written the same way in each, the mailbox's filers
+    included (`transcript`'s
+    `every_reader_skips_what_a_request_to_hear_again_superseded`, asserted per
+    query). So while home hears a take again its old words and verdict stay
+    what every reader chooses, marked `hearAgain.hearing` (the owner's answer
+    (b), 2026-11-22); when the fresh key ends it, its ending is what is read,
+    a silence over older words included; if every fresh attempt fails,
+    nothing is superseded and the old words stay (answer (a)). A key that
+    comes after a request (a new model) is never superseded by it, and
+    nothing lapses: a mark set aside or a recording let go afterwards leaves
+    what was heard as it was. A request asked under a model home no longer
+    hears with is moot, and may be asked again; on a home that runs no
+    transcriber a request is refused (`409`) and no take reads as being
+    heard again. An essay that plays a take being heard again waits for its
+    fresh words rather than refuse it for its old verdict.
+    The meaning index follows the ending read, its vector removed when that
+    ending has no words, and a search by meaning finds only a take whose
+    chosen ending heard words. A take is asked again
+    at most once per `voice_repo::attention::HEAR_AGAIN_SNOOZE`, six hours,
+    a policy constant and not a setting; inside it the answer is a `409`
+    whose `details.nextAt` says when (C926). While home hears a take again,
+    the verdict the request answered is what an act answers (a delete's
+    included, so its `deleted` act is kept) and what the delete rule
+    (`voice_repo::delete::allows`) and My data's `deletable` read, so a
+    request never makes a take undeletable. Every take on the takes read
+    and on Needs your attention carries `hearAgain` (`open`, `hearing`,
+    `askedAt`, `nextAt`), `hearing` told by what is on home (a request whose
+    key has not ended or judged the take, under the model home hears with,
+    the take still heard, the transcriber running) and never by the acts
+    alone;
+    its `of` and `ref` are its source, as the take library keeps them, and
+    no new link is made (C927). The mailbox files the old words while home
+    hears a take again, as every reader reads them, and never a superseded
+    attempt once the fresh key has ended it;
+    a filer that read one before the fresh key ended it checks again in the
+    transaction that files, and a fresh key's transcript is filed as another
+    model's; what the routines make of a take heard again beyond that is
+    paulgsc/server#1073. Every read that gives
     a transcript (`GET /voice-notes/:id/heard`, `/ideas`, the take library,
     the mailbox's transcript and pickup files) gives its verdict beside it,
     so no reader judges a transcript for itself. A reader

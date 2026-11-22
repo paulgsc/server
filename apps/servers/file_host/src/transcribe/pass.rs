@@ -7,7 +7,9 @@
 //! - **Bounded.** A pass takes at most [`BATCH`] notes, each heard on a
 //!   blocking thread by its deadline, and gives each one attempt, so a note
 //!   that fails is retried a pass later, not at once, and at most
-//!   [`ATTEMPTS`] times by one model (`voice_repo::transcript::waiting`).
+//!   [`ATTEMPTS`] times by one model (`voice_repo::transcript::waiting`),
+//!   until the owner asks home to hear it again, which opens a fresh set of
+//!   [`ATTEMPTS`] under a fresh key, `<key>+again<k>` (paulgsc/some-ui#3339).
 //! - **An interview take is heard verbatim** ([`super::verbatim`], IW2):
 //!   decoded with the prompt that keeps fillers, and kept under the model's
 //!   verbatim key, which is the only key it waits on. Every other note is
@@ -170,11 +172,8 @@ pub async fn run_once_telling<H: Hear>(
 		};
 		// Gone since the list was read: it went with its account.
 		let Some(audio) = audio else { continue };
-		let (decode, model) = if note.verbatim {
-			(Decode::Verbatim, keys.verbatim)
-		} else {
-			(Decode::Plain, keys.plain)
-		};
+		// Under the note's own key: its model's, or a fresh one the owner asked for.
+		let (decode, model) = (if note.verbatim { Decode::Verbatim } else { Decode::Plain }, note.key.as_str());
 		let started = Instant::now();
 		let window = Window::open(guard.gauge.as_ref());
 		let attempt = {
@@ -320,7 +319,7 @@ async fn keep(
 		voice_repo::verdict::keep(&mut tx, judged, verdict, now).await?;
 	}
 	let indexed = match (&kept, &attempt.outcome, meaning) {
-		(Kept::Added(_), Outcome::Heard { .. }, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
+		(Kept::Added(_), Outcome::Heard { .. } | Outcome::Silent, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
 		_ => Indexed::NoWords,
 	};
 	tx.commit().await?;
@@ -687,10 +686,19 @@ mod tests {
 		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
 		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
 		{
+			let (plain, verbatim) = crate::transcribe::keys();
 			let mut conn = pool.acquire().await.unwrap();
-			voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
-				.await
-				.unwrap();
+			voice_repo::fast_track::act(
+				&mut conn,
+				A,
+				"chosen",
+				voice_repo::fast_track::Act::Fast,
+				home_keys(&plain, &verbatim),
+				super::ATTEMPTS,
+				"now",
+			)
+			.await
+			.unwrap();
 		}
 		let cancel = CancellationToken::new();
 		let fake = Fake::new(&cancel);
@@ -704,6 +712,11 @@ mod tests {
 			.unwrap();
 		assert_eq!((done.kept.len(), done.gave_way), (1, true), "the chosen take heard, then the turn given: {done:?}");
 		assert_eq!(fake.heard(), ["chosen"], "the chosen take, and no other");
+	}
+
+	/// The keys home hears with, as `crate::transcribe::keys` names them.
+	const fn home_keys<'a>(plain: &'a str, verbatim: &'a str) -> voice_repo::transcript::Keys<'a> {
+		voice_repo::transcript::Keys { plain, verbatim }
 	}
 
 	/// A failed attempt at `id` by `model`, kept as the pass would keep one.
@@ -724,10 +737,19 @@ mod tests {
 	/// the turn is already spent: what it heard.
 	async fn heard_while_given(pool: &SqlitePool) -> Vec<String> {
 		{
+			let (plain, verbatim) = crate::transcribe::keys();
 			let mut conn = pool.acquire().await.unwrap();
-			let acted = voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
-				.await
-				.unwrap();
+			let acted = voice_repo::fast_track::act(
+				&mut conn,
+				A,
+				"chosen",
+				voice_repo::fast_track::Act::Fast,
+				home_keys(&plain, &verbatim),
+				super::ATTEMPTS,
+				"now",
+			)
+			.await
+			.unwrap();
 			assert_eq!(acted, voice_repo::fast_track::Acted::Recorded);
 		}
 		let cancel = CancellationToken::new();
@@ -1121,5 +1143,54 @@ mod tests {
 				assert!(!line.contains(heard), "what a note said, its audio, id or subject reached a log line");
 			}
 		}
+	}
+
+	/// paulgsc/some-ui#3339: once the owner asks home to hear a failed note
+	/// again, the transcriber hears it under a fresh key with its own set of
+	/// `ATTEMPTS`, numbered from 1 beside its old ones, and judges the last of
+	/// that set final; nothing it kept before is rewritten.
+	#[tokio::test]
+	async fn a_note_the_owner_asks_to_hear_again_gets_a_fresh_set_of_attempts() {
+		let pool = pool().await;
+		note(&pool, A, "broken", "2026-10-25T01:00:00.000Z", b"noise").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		for _ in 0..=ATTEMPTS {
+			pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		}
+		assert_eq!(fake.heard().len(), 3, "its first set spent");
+
+		let mut conn = pool.acquire().await.unwrap();
+		let verbatim = crate::transcribe::verbatim::key("ggml-small-q5_1.bin");
+		let keys = voice_repo::transcript::Keys {
+			plain: "ggml-small-q5_1.bin",
+			verbatim: &verbatim,
+		};
+		let acted = voice_repo::attention::hear_again(&mut conn, A, "broken", Some(keys), "2026-10-26T00:00:00.000Z")
+			.await
+			.unwrap();
+		assert!(matches!(acted, voice_repo::attention::Acted::Recorded(_)), "{acted:?}");
+		drop(conn);
+		for _ in 0..=ATTEMPTS {
+			pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		}
+		assert_eq!(fake.heard().len(), 6, "three more tries and no more");
+		let attempts: Vec<(String, i64)> = sqlx::query_as("SELECT model, attempt FROM voice_transcript ORDER BY model, attempt")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		let model = String::from("ggml-small-q5_1.bin");
+		let fresh = model.clone() + "+again1";
+		let expected: Vec<(String, i64)> = (1..=ATTEMPTS).map(|n| (model.clone(), n)).chain((1..=ATTEMPTS).map(|n| (fresh.clone(), n))).collect();
+		assert_eq!(attempts, expected, "a fresh key beside the old, none rewritten");
+		let judged: Vec<(String, i64, String)> = sqlx::query_as("SELECT model, attempt, verdict FROM voice_transcript_verdict ORDER BY model")
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			judged,
+			[(model, ATTEMPTS, String::from("failed")), (fresh, ATTEMPTS, String::from("failed"))],
+			"each key's last is final"
+		);
 	}
 }

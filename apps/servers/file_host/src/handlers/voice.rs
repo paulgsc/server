@@ -56,6 +56,7 @@
 use crate::handlers::db::activities::{etag_value, if_none_match_hits, not_modified};
 use crate::meaning::MeaningContext;
 use crate::subject::{Paired, SubjectId};
+use crate::transcribe::Hears;
 use crate::FileHostError;
 use axum::{
 	body::Bytes,
@@ -460,6 +461,7 @@ pub async fn get_takes(
 	paired: Paired,
 	State(db): State<SqlitePool>,
 	State(meaning): State<Option<MeaningContext>>,
+	State(Hears(hears)): State<Hears>,
 	Query(query): Query<Vec<(String, String)>>,
 ) -> Result<Json<Library>, FileHostError> {
 	let ask = Ask::parse(&query).map_err(FileHostError::unprocessable_entity)?;
@@ -469,7 +471,12 @@ pub async fn get_takes(
 	};
 	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
 	let mut conn = db.begin().await?;
-	voice_repo::takes::library(&mut conn, paired.subject.as_str(), &ask)
+	let (plain, verbatim) = crate::transcribe::keys();
+	let keys = voice_repo::transcript::Keys {
+		plain: &plain,
+		verbatim: &verbatim,
+	};
+	voice_repo::takes::library(&mut conn, paired.subject.as_str(), hears.then_some(keys), &now(), &ask)
 		.await
 		.map_err(refusal)?
 		.map(Json)
@@ -783,8 +790,14 @@ pub struct Attention {
 /// Every note home holds, of any kind, whose newest verdict (HEARD1) is
 /// `garbled`, `failed` or `nothing_said` and that no act answers yet
 /// (`voice_repo::attention::needing`): its id, kind, `ref`, when it was
-/// recorded, what home heard in it (null when no attempt ended it) and that
-/// verdict, codes and signals. Not paged: the newest
+/// recorded, what home heard in it (null when no attempt ended it), that
+/// verdict, codes and signals, and `hearAgain` (paulgsc/some-ui#3339):
+/// `open` when `hear-again` would be taken now, `hearing` while home hears
+/// it again, `askedAt`, and `nextAt` while the snooze lasts. Its `of` and
+/// `ref` are the take's source, as the take library keeps them (a Studio
+/// take's `<project>:<shot>:<take>`). A take home hears again leaves the
+/// list, and the verdict it answered is skipped, until its fresh key's
+/// verdict comes (`GET /voice-notes/takes` says it is being heard). Not paged: the newest
 /// `voice_repo::attention::LISTED` and how many in all, read in one
 /// transaction so the two agree. Reads only, and no audio; the span skips
 /// every argument, so no word reaches a log line.
@@ -794,9 +807,16 @@ pub struct Attention {
 /// it), and 500 for a storage failure or a verdict that does not read back.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_attention_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_attention(paired: Paired, State(db): State<SqlitePool>) -> Result<Json<Attention>, FileHostError> {
+pub async fn get_attention(paired: Paired, State(db): State<SqlitePool>, State(Hears(hears)): State<Hears>) -> Result<Json<Attention>, FileHostError> {
 	let mut tx = db.begin().await?;
-	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str()).await.map_err(refusal)?;
+	let (plain, verbatim) = crate::transcribe::keys();
+	let keys = voice_repo::transcript::Keys {
+		plain: &plain,
+		verbatim: &verbatim,
+	};
+	let (takes, total) = voice_repo::attention::needing(&mut tx, paired.subject.as_str(), hears.then_some(keys), &now())
+		.await
+		.map_err(refusal)?;
 	tx.commit().await?;
 	Ok(Json(Attention { takes, total }))
 }
@@ -822,12 +842,35 @@ pub struct Reconciled {
 /// What an act on a take that asks for none answers with.
 const NOTHING_ASKED: &str = "home heard this take, or has not judged it yet: there is nothing to reconcile";
 
+/// What a request to hear again a take home has not judged yet answers with.
+const NOT_JUDGED: &str = "home has not judged this take yet: it is still hearing it the first time";
+
+/// What a request to hear again a take home would not hear answers with.
+const NOT_HEARABLE: &str = "home would not hear this take again: its recording was let go, or it was set aside";
+
+/// What a request to hear a take again answers with on a home that runs no
+/// transcriber.
+const NOT_HEARING: &str = "home isn't hearing takes right now: its transcriber is off";
+
+/// What a request to hear a take again inside the snooze answers with; its
+/// `details.nextAt` says when it may be asked.
+const SNOOZED: &str = "home was asked to hear this take again a short while ago: ask again from nextAt";
+
 /// `POST /voice-notes/:id/attention`: the owner's act on their take `id`
 /// that home could not hear (paulgsc/server#912, HEARD3).
 ///
-/// The body is `{"act": "keep" | "again"}`: the owner keeps the take as it
-/// is, or will record it again. The act answers the take's newest verdict
-/// and is appended to `voice_note_attention` with that verdict's key and
+/// The body is `{"act": "keep" | "again" | "hear-again"}`: the owner keeps
+/// the take as it is, will record it again, or asks home to hear it again
+/// (paulgsc/some-ui#3339): any take home has judged, a heard one included,
+/// gets a fresh transcription, a new key with a fresh set of the
+/// transcriber's attempts. Asked at most once per
+/// `voice_repo::attention::HEAR_AGAIN_SNOOZE` on a take: inside it, a `409`
+/// whose `details.nextAt` says when; on a take home would not hear (its
+/// recording let go, or set aside), or while home runs no transcriber, a
+/// `409`. While home hears it again its old words stay as they were, marked
+/// `hearAgain.hearing`; the fresh words replace them once heard, and if every
+/// fresh attempt fails the old words stay (the owner, 2026-11-22). The act answers the take's
+/// newest verdict and is appended to `voice_note_attention` with that verdict's key and
 /// when home recorded it (`voice_repo::attention::act`): `201` with
 /// `change: "recorded"`. Nothing is edited: a different act later is a new
 /// row. A retry, the same act on the same verdict, writes nothing and is a
@@ -840,23 +883,51 @@ const NOTHING_ASKED: &str = "home heard this take, or has not judged it yet: the
 /// 401 without a session, 403 for a browser's or an untrusted origin, 422
 /// naming `act` when the body is not one, 404 for a note the caller's
 /// subject does not hold, 409 for one whose newest verdict asks for nothing
-/// (heard, or not judged yet), and 500 for a storage failure.
+/// (heard, or not judged yet; for `hear-again`, not judged yet), or, for
+/// `hear-again`, one home would not hear or asked within the snooze, and 500
+/// for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_attention_post", skip_all, fields(otel.kind = "server"))]
-pub async fn post_attention(paired: Paired, State(db): State<SqlitePool>, Path(id): Path<String>, body: Bytes) -> Result<Response, FileHostError> {
+pub async fn post_attention(
+	paired: Paired,
+	State(db): State<SqlitePool>,
+	State(Hears(hears)): State<Hears>,
+	Path(id): Path<String>,
+	body: Bytes,
+) -> Result<Response, FileHostError> {
 	let said = serde_json::from_slice::<AttentionBody>(&body).ok();
 	let (act, name) = match said.as_ref().map(|body| body.act.as_str()) {
 		Some("keep") => (Act::Kept, "keep"),
 		Some("again") => (Act::RecordAgain, "again"),
-		_ => return Err(FileHostError::unprocessable_entity([("act", "keep or again")])),
+		Some("hear-again") => (Act::HearAgain, "hear-again"),
+		_ => return Err(FileHostError::unprocessable_entity([("act", "keep, again or hear-again")])),
 	};
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let acted = voice_repo::attention::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await.map_err(refusal)?;
+	let acted = if act == Act::HearAgain {
+		let (plain, verbatim) = crate::transcribe::keys();
+		let keys = voice_repo::transcript::Keys {
+			plain: &plain,
+			verbatim: &verbatim,
+		};
+		voice_repo::attention::hear_again(&mut tx, paired.subject.as_str(), &id, hears.then_some(keys), &now()).await
+	} else {
+		voice_repo::attention::act(&mut tx, paired.subject.as_str(), &id, act, &now()).await
+	}
+	.map_err(refusal)?;
 	tx.commit().await?;
 	let (status, change, verdict) = match acted {
 		Acted::Recorded(verdict) => (StatusCode::CREATED, "recorded", verdict),
 		Acted::Unchanged(verdict) => (StatusCode::OK, "unchanged", verdict),
+		Acted::NothingAsked if act == Act::HearAgain => return Err(FileHostError::Conflict(NOT_JUDGED)),
 		Acted::NothingAsked => return Err(FileHostError::Conflict(NOTHING_ASKED)),
+		Acted::NotHearable(_) => return Err(FileHostError::Conflict(NOT_HEARABLE)),
+		Acted::NotHearing(_) => return Err(FileHostError::Conflict(NOT_HEARING)),
+		Acted::Snoozed { next_at, .. } => {
+			return Err(FileHostError::ConflictNaming {
+				reason: SNOOZED,
+				details: std::collections::HashMap::from([(std::borrow::Cow::Borrowed("nextAt"), vec![std::borrow::Cow::Owned(next_at)])]),
+			})
+		}
 		Acted::NotHeld => return Err(FileHostError::NotFound),
 	};
 	Ok((status, Json(Reconciled { change, act: name, verdict })).into_response())
@@ -917,7 +988,12 @@ pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(
 	};
 	let act = if fast { FastAct::Fast } else { FastAct::Cancel };
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, crate::transcribe::pass::ATTEMPTS, &now())
+	let (plain, verbatim) = crate::transcribe::keys();
+	let keys = voice_repo::transcript::Keys {
+		plain: &plain,
+		verbatim: &verbatim,
+	};
+	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, keys, crate::transcribe::pass::ATTEMPTS, &now())
 		.await
 		.map_err(refusal)?;
 	tx.commit().await?;
@@ -969,6 +1045,14 @@ mod tests {
 		auth: AuthContext,
 		meaning: Option<MeaningContext>,
 		outbox: crate::mailbox::Outbox,
+		/// Whether its home runs the transcriber.
+		hears: bool,
+	}
+
+	impl FromRef<TestState> for crate::transcribe::Hears {
+		fn from_ref(state: &TestState) -> Self {
+			Self(state.hears)
+		}
 	}
 
 	impl FromRef<TestState> for Option<MeaningContext> {
@@ -1007,6 +1091,7 @@ mod tests {
 			pool,
 			meaning: None,
 			outbox: crate::mailbox::Outbox::default(),
+			hears: true,
 		}
 	}
 
@@ -1387,6 +1472,132 @@ mod tests {
 
 		hear(&pool, A, "t1", "m", voice_repo::transcript::Outcome::Silent, "2026-11-14T00:00:00Z").await;
 		assert_eq!(post(&app, FAST, Some(&phone), &fast).await.0, StatusCode::CONFLICT, "heard: nothing to put first");
+	}
+
+	/// `model`'s failed attempt `n` on `id`, judged `failed` when `last`.
+	async fn failed(pool: &SqlitePool, id: &str, model: &str, n: i64, last: bool, at: &str) {
+		sqlx::query(
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, took_ms, heard_at)
+			 VALUES (?1, ?2, ?3, 'e', ?4, 'deadline', 1, ?5)",
+		)
+		.bind(A)
+		.bind(id)
+		.bind(model)
+		.bind(n)
+		.bind(at)
+		.execute(pool)
+		.await
+		.unwrap();
+		if last {
+			sqlx::query(
+				"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+				 VALUES (?1, ?2, ?3, ?4, 'heard-1', 'failed', 'deadline', ?5)",
+			)
+			.bind(A)
+			.bind(id)
+			.bind(model)
+			.bind(n)
+			.bind(at)
+			.execute(pool)
+			.await
+			.unwrap();
+		}
+	}
+
+	/// paulgsc/some-ui#3339: the owner asks home to hear a failed take again.
+	/// It is a 201 that takes it off the list while home hears it again (the
+	/// takes read says so), a resend a 200, a garbled take a 201 too,
+	/// and, once the fresh set has failed too and the take is back, a second
+	/// ask inside the snooze a 409 naming `nextAt`.
+	#[tokio::test]
+	async fn the_owner_asks_home_to_hear_a_failed_take_again_once_per_snooze() {
+		const ATTENTION: &str = "/voice-notes/attention";
+		let state = state().await;
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		for path in [NOTE, "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z"] {
+			assert_eq!(put(&app, path, Some(&phone), "audio/webm", TAKE).await.0, StatusCode::OK);
+		}
+		for n in 1..=3 {
+			failed(&pool, "t1", "m", n, n == 3, "2026-11-14T00:00:00Z").await;
+		}
+		judged(&pool, "n1", "m", "garbled", "low_confidence", "2026-11-14T00:00:00Z").await;
+		let again = json!({ "act": "hear-again" });
+
+		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
+		let t1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
+		assert_eq!(t1["hearAgain"], json!({ "open": true, "hearing": false, "askedAt": null, "nextAt": null }));
+		assert_eq!((&t1["of"], &t1["ref"]), (&json!("studio"), &json!("ep05:s1:1")), "its source, as the take carries it");
+		let n1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "n1").unwrap().clone();
+		assert_eq!(n1["hearAgain"]["open"], json!(true), "a garbled take may be heard again too (C924)");
+
+		let (status, answer) = post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await;
+		assert_eq!((status, &answer["change"], &answer["act"]), (StatusCode::CREATED, &json!("recorded"), &json!("hear-again")));
+		assert_eq!(post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await.0, StatusCode::OK, "a resend");
+		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
+		assert!(
+			listed["takes"].as_array().unwrap().iter().all(|take| take["id"] != "t1"),
+			"answered, and being heard again: off the list"
+		);
+		let library = get(&app, "/voice-notes/takes", Some(&phone)).await.1;
+		let t1 = library["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
+		assert_eq!(
+			(&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"], &t1["verdict"]["kind"]),
+			(&json!(true), &json!(false), &json!("failed")),
+			"the takes read says home is hearing it again, the verdict it had still shown (answer (b))"
+		);
+		assert!(t1["hearAgain"]["nextAt"].is_string());
+		assert_eq!(
+			post(&app, "/voice-notes/n1/attention", Some(&phone), &again).await.0,
+			StatusCode::CREATED,
+			"garbled: heard again under a fresh key"
+		);
+
+		// Its fresh set fails too: back on the list, asked again inside the
+		// snooze.
+		// Heard again under the key home hears with, `+again1`.
+		let fresh = crate::transcribe::keys().0 + "+again1";
+		for n in 1..=3 {
+			failed(&pool, "t1", &fresh, n, n == 3, "2026-11-14T01:00:00Z").await;
+		}
+		let listed = get(&app, ATTENTION, Some(&phone)).await.1;
+		let t1 = listed["takes"].as_array().unwrap().iter().find(|take| take["id"] == "t1").unwrap().clone();
+		assert_eq!((&t1["hearAgain"]["hearing"], &t1["hearAgain"]["open"]), (&json!(false), &json!(false)), "snoozed");
+		let (status, refused) = post(&app, "/voice-notes/t1/attention", Some(&phone), &again).await;
+		assert_eq!((status, &refused["error"]["code"]), (StatusCode::CONFLICT, &json!("conflict")));
+		assert!(refused["error"]["details"]["nextAt"][0].is_string(), "{refused}");
+		let acts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_attention WHERE act = 'hear_again' AND note_id = 't1'")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(acts, 1, "a refusal writes nothing");
+	}
+
+	/// Round 4 of paulgsc/some-ui#3339: on a home that runs no transcriber, a
+	/// request to hear a take again is refused and the take is never offered
+	/// one, nor read as "being heard again", since nothing would hear it.
+	#[tokio::test]
+	async fn a_home_that_runs_no_transcriber_is_never_asked_to_hear_a_take_again() {
+		let state = TestState { hears: false, ..state().await };
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let app = app(state);
+		assert_eq!(
+			put(&app, "/voice-notes/t1?of=studio&ref=ep05:s1:1&at=2026-11-12T18:20:00Z", Some(&phone), "audio/webm", TAKE)
+				.await
+				.0,
+			StatusCode::OK
+		);
+		for n in 1..=3 {
+			failed(&pool, "t1", "m", n, n == 3, "2026-11-14T00:00:00Z").await;
+		}
+		let listed = get(&app, "/voice-notes/attention", Some(&phone)).await.1;
+		assert_eq!(listed["takes"][0]["hearAgain"]["open"], json!(false), "{listed}");
+		let (status, refused) = post(&app, "/voice-notes/t1/attention", Some(&phone), &json!({ "act": "hear-again" })).await;
+		assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+		let acts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM voice_note_attention").fetch_one(&pool).await.unwrap();
+		assert_eq!(acts, 0, "nothing written");
 	}
 
 	/// CONVEYOR1 (paulgsc/some-ui epic #2872): a take lands in the oven, moves
@@ -1852,13 +2063,15 @@ mod tests {
 						"size": TAKE.len(), "durationMs": null, "setAsideAt": null, "heard": null, "verdict": null,
 						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
 						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
-						"about": { "key": "studio:library:t2", "form": "loose", "ref": "library:t2" } },
+						"about": { "key": "studio:library:t2", "form": "loose", "ref": "library:t2" },
+						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null } },
 					{ "id": "t1", "kind": "studio", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
 						"size": TAKE.len(), "durationMs": 1000, "setAsideAt": null,
 						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" }, "verdict": null,
 						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
 						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
-						"about": { "key": "studio:ep04", "form": "scene", "project": "ep04", "shot": "s1", "take": "1" } }
+						"about": { "key": "studio:ep04", "form": "scene", "project": "ep04", "shot": "s1", "take": "1" },
+						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null } }
 				],
 				"total": 2, "matched": null, "by": "newest", "next": null
 			}),
@@ -1961,6 +2174,7 @@ mod tests {
 			[
 				"about",
 				"durationMs",
+				"hearAgain",
 				"heard",
 				"id",
 				"kept",

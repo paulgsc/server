@@ -232,6 +232,26 @@ pub fn about(of: Of, of_ref: &str, idea: Option<(String, String)>) -> About {
 	}
 }
 
+/// What a spoken card's part's take is named for: `spoken:<card>.<part>`
+/// (paulgsc/some-ui `studio-spoken/model.ts`'s `lineOf`).
+const SPOKEN: &str = "spoken:";
+
+/// Whether a Studio take is of a script's scene or of a spoken card's part.
+///
+/// A scene's take is `<project>:<shot>:<take>`, and a spoken card's part's
+/// `spoken:<card>.<part>`, which [`studio`] lists as a take with no scene.
+/// Read from its `ref` alone: never one an `idea:` ref names. An idea's answer only the `idea_answer` table names
+/// (never sent with an `idea:` ref) and whose `ref` has three parts reads as
+/// a scene's here; the language is the transcriber's, which sees the `ref`
+/// alone.
+#[must_use]
+pub fn studio_script_or_spoken(of_ref: &str) -> bool {
+	if of_ref.starts_with(IDEA) {
+		return false;
+	}
+	of_ref.starts_with(SPOKEN) || of_ref.split(':').count() == 3
+}
+
 /// A Studio note: an idea's answer, a scene's take, or a take with no scene.
 fn studio(of_ref: &str, idea: Option<(String, String)>) -> About {
 	let named = of_ref

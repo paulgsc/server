@@ -113,6 +113,7 @@ where
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
+	crate::transcribe::Hears: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	vec![
@@ -183,6 +184,7 @@ where
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
+	crate::transcribe::Hears: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	split(|module| {
@@ -203,6 +205,7 @@ where
 	SqlitePool: FromRef<S>,
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
+	crate::transcribe::Hears: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {

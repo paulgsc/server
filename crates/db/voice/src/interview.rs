@@ -68,7 +68,8 @@ async fn held(conn: &mut SqliteConnection, subject: &str, week: &str) -> Result<
 		r#"SELECT note.note_id AS "note_id!", note.of_ref AS "of_ref!", note.recorded_at AS "recorded_at!",
 		          EXISTS (SELECT 1 FROM voice_transcript AS heard
 		                  WHERE heard.subject_id = note.subject_id AND heard.note_id = note.note_id
-		                    AND heard.outcome IN ('heard', 'silent')) AS "ended!: bool"
+		                    AND heard.outcome IN ('heard', 'silent')
+		                    AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = heard.subject_id AND sup.note_id = heard.note_id AND sup.model = heard.model)) AS "ended!: bool"
 		   FROM voice_note AS note
 		   WHERE note.of_kind = ?1 AND note.of_ref >= ?2 AND note.of_ref < ?3 AND note.subject_id = ?4"#,
 		of,
@@ -193,6 +194,9 @@ mod tests {
 	use sqlx::sqlite::SqlitePoolOptions;
 	use sqlx::SqliteConnection;
 
+	/// The schema, built once: an inline `migrate!` is a local array that grows with every migration.
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 
@@ -262,7 +266,7 @@ mod tests {
 	#[tokio::test]
 	async fn each_questions_first_is_its_earliest_note() {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
-		sqlx::migrate!("../../../migrations").run(&pool).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 		assert!(firsts(&mut conn, A, "2026-w47").await.unwrap().is_empty(), "none held");
 		note(&mut conn, A, "late", "2026-w47:about-you", "2026-11-18T09:00:00.000Z").await;
@@ -291,7 +295,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_closing_week_keeps_first_newest_and_sent_and_lets_go_the_rest() {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
-		sqlx::migrate!("../../../migrations").run(&pool).await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
 		let mut conn = pool.acquire().await.unwrap();
 		// about-you: six takes, hourly; the final names the third.
 		for (id, at) in [

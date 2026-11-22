@@ -230,6 +230,7 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 	("voice_note", AppendOnly, "each voice note sent home, described"),
 	("voice_note_attention", AppendOnly, "each act the owner took on a take home could not hear (HEARD3)"),
 	("voice_note_audio", AppendOnly, "each voice note's audio bytes"),
+	("voice_note_hear_again_supersedes", AppendOnly, "per request to hear a take again, each key it found and may supersede once answered (some-ui#3339)"),
 	("voice_note_deletion", AppendOnly, "a receipt for each voice note deleted for good from My data (MD3)"),
 	("voice_note_fast_track", AppendOnly, "each fast-track or cancel the owner took on a take (#1090); the newest act decides"),
 	("voice_note_meaning", Corpus, "a take's meaning vector, derived from its chosen words and replaced when they change; deleted with its take (ST32)"),

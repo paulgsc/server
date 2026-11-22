@@ -403,6 +403,10 @@ pub struct Take {
 	/// What it is about, by its kind ([`crate::about`]); null for a take
 	/// deleted for good.
 	pub about: Option<About>,
+	/// Where it stands with asking home to hear it again
+	/// ([`crate::attention::HearAgain`], paulgsc/some-ui#3339); null for a
+	/// take deleted for good.
+	pub hear_again: Option<crate::attention::HearAgain>,
 }
 
 /// The library's answer.
@@ -434,12 +438,13 @@ pub struct Library {
 /// [`VoiceError::Unreadable`] for a heard transcript with no text, a stored
 /// vector of the wrong size or another stored row this crate never writes,
 /// and [`VoiceError::Storage`] for any `sqlx` failure.
-pub async fn library(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result<Option<Library>, VoiceError> {
+pub async fn library(conn: &mut SqliteConnection, subject: &str, keys: Option<crate::transcript::Keys<'_>>, now: &str, ask: &Ask) -> Result<Option<Library>, VoiceError> {
 	let Some(mut library) = chosen(conn, subject, ask).await? else {
 		return Ok(None);
 	};
-	// Each take answered carries its verdict (HEARD1) and what only another
-	// table says of it: a few reads by key each, of at most [`NEWEST`].
+	// Each take answered carries its verdict (HEARD1), where it stands with
+	// hearing it again, and what only another table says of it: a few reads
+	// by key each, of at most [`NEWEST`].
 	let mut labels = std::collections::BTreeMap::new();
 	let mut sends = about::Sends::new();
 	for take in &mut library.takes {
@@ -447,6 +452,7 @@ pub async fn library(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> R
 			continue;
 		}
 		take.verdict = crate::verdict::of_note(conn, subject, &take.id).await?;
+		take.hear_again = Some(crate::attention::hear_again_of(conn, subject, &take.id, keys, now).await?);
 		if let Some(about) = take.about.as_mut() {
 			about::with_game(conn, subject, &take.id, about, &mut labels).await?;
 			about::with_rung(conn, subject, &take.id, about, &mut sends).await?;
@@ -491,6 +497,7 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 		     SELECT hearing.rowid FROM voice_transcript AS hearing
 		     WHERE hearing.subject_id = note.subject_id AND hearing.note_id = note.note_id
 		       AND hearing.outcome IN ('heard', 'silent')
+		       AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = hearing.subject_id AND sup.note_id = hearing.note_id AND sup.model = hearing.model)
 		     ORDER BY hearing.outcome = 'heard' DESC, hearing.heard_at DESC, hearing.model DESC
 		     LIMIT 1
 		   )
@@ -555,6 +562,7 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 				set_aside_at: row.set_aside_at,
 				heard,
 				verdict: None,
+				hear_again: None,
 				kept: Kept {
 					home: receipt.is_none(),
 					drive: row.on_drive,
@@ -603,6 +611,7 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 					set_aside_at: None,
 					heard: None,
 					verdict: None,
+					hear_again: None,
 					status: Status::Deleted,
 					receipt: Some(Gone {
 						deleted_at: row.deleted_at,
@@ -705,6 +714,10 @@ async fn by_meaning(conn: &mut SqliteConnection, subject: &str, search: &Search,
 	let mut found: Vec<(usize, f32)> = all
 		.iter()
 		.enumerate()
+		// Only a take its chosen words are heard in: a vector kept from words
+		// since superseded (a take heard again that ended in a silence) is no
+		// meaning the take has now.
+		.filter(|(_, (words, _))| *words)
 		.filter_map(|(at, (_, take))| vectors.get(&take.id).map(|vector| (at, meaning::cosine(&asked.vector, vector))))
 		.filter(|(_, cosine)| *cosine > 0.0)
 		.collect();
@@ -723,6 +736,13 @@ mod tests {
 	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
+	/// When a test reads the library.
+	const NOW: &str = "2026-11-21T00:00:00.000Z";
+	/// The keys a test's home hears with.
+	const KEYS: crate::transcript::Keys<'static> = crate::transcript::Keys {
+		plain: "m",
+		verbatim: "m+verbatim-1",
+	};
 
 	async fn pool() -> SqlitePool {
 		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
@@ -811,7 +831,7 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		set_aside(&mut conn, A, "answer", "2026-11-02T11:00:00.000Z", "2026-11-02T11:00:01.000Z").await.unwrap();
 
-		let all = library(&mut conn, A, &Ask::default()).await.unwrap().unwrap();
+		let all = library(&mut conn, A, Some(KEYS), NOW, &Ask::default()).await.unwrap().unwrap();
 		let listed: Vec<(&str, &str)> = all.takes.iter().map(|take| (take.id.as_str(), take.of_ref.as_deref().unwrap())).collect();
 		assert_eq!(
 			listed,
@@ -837,7 +857,7 @@ mod tests {
 		.execute(&mut *conn)
 		.await
 		.unwrap();
-		let scene = library(&mut conn, A, &Ask::default()).await.unwrap().unwrap().takes.remove(2);
+		let scene = library(&mut conn, A, Some(KEYS), NOW, &Ask::default()).await.unwrap().unwrap().takes.remove(2);
 		assert_eq!(
 			(scene.station, scene.station_at.as_deref(), scene.station_seq),
 			(Some(Station::Canned), Some("2026-11-04T00:00:00.000Z"), Some(2)),
@@ -868,7 +888,7 @@ mod tests {
 		.await
 		.unwrap();
 		set_aside(&mut conn, A, "loose", "2026-11-05T00:00:00.000Z", "2026-11-05T00:00:01.000Z").await.unwrap();
-		let off: Vec<_> = library(&mut conn, A, &Ask::default())
+		let off: Vec<_> = library(&mut conn, A, Some(KEYS), NOW, &Ask::default())
 			.await
 			.unwrap()
 			.unwrap()
@@ -890,7 +910,7 @@ mod tests {
 				heard_at: "2026-11-01T10:05:00Z".to_owned(),
 			})
 		);
-		assert!(library(&mut conn, "subject-c", &Ask::default()).await.unwrap().unwrap().takes.is_empty());
+		assert!(library(&mut conn, "subject-c", Some(KEYS), NOW, &Ask::default()).await.unwrap().unwrap().takes.is_empty());
 	}
 
 	#[tokio::test]
@@ -902,7 +922,10 @@ mod tests {
 		hearing(&pool, A, "t", "large", None, "2026-11-01T12:00:00Z").await;
 		let mut conn = pool.acquire().await.unwrap();
 
-		let words = library(&mut conn, A, &Ask::default()).await.unwrap().unwrap().takes[0].heard.clone().unwrap();
+		let words = library(&mut conn, A, Some(KEYS), NOW, &Ask::default()).await.unwrap().unwrap().takes[0]
+			.heard
+			.clone()
+			.unwrap();
 		let crate::transcript::Hearing::Heard(own) = crate::transcript::heard(&mut conn, A, "t").await.unwrap() else {
 			panic!("heard");
 		};
@@ -924,7 +947,10 @@ mod tests {
 		note(&pool, A, "waiting", "studio", "ep:s:3", "2026-12-03T10:00:00Z").await;
 		let mut conn = pool.acquire().await.unwrap();
 
-		let found = library(&mut conn, A, &Ask::default().searching(Search::parse("brand TALK"))).await.unwrap().unwrap();
+		let found = library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Search::parse("brand TALK")))
+			.await
+			.unwrap()
+			.unwrap();
 		assert_eq!(found.by, By::Words);
 		assert_eq!(found.total, NEWEST + 3, "every take home holds");
 		assert_eq!(found.matched, Some(NEWEST + 1), "every take found, past the ones listed");
@@ -935,7 +961,10 @@ mod tests {
 			"neither the take without the terms nor the one not yet heard"
 		);
 
-		let none = library(&mut conn, A, &Ask::default().searching(Search::parse("nowhere"))).await.unwrap().unwrap();
+		let none = library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Search::parse("nowhere")))
+			.await
+			.unwrap()
+			.unwrap();
 		assert_eq!((none.takes.len(), none.matched), (0, Some(0)));
 	}
 
@@ -966,10 +995,16 @@ mod tests {
 		}
 
 		let asked = |words: &str| Search::parse(words).unwrap().with_meaning(Words.model(), Words.embed(words));
-		let found = library(&mut conn, A, &Ask::default().searching(Some(asked("branding")))).await.unwrap().unwrap();
+		let found = library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Some(asked("branding"))))
+			.await
+			.unwrap()
+			.unwrap();
 		assert_eq!(found.by, By::Words, "the model knows no asked word: words answer");
 
-		let found = library(&mut conn, A, &Ask::default().searching(Some(asked("brand")))).await.unwrap().unwrap();
+		let found = library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Some(asked("brand"))))
+			.await
+			.unwrap()
+			.unwrap();
 		let ids: Vec<&str> = found.takes.iter().map(|take| take.id.as_str()).collect();
 		assert_eq!(ids, ["brand", "logo", "both"], "best first, the nearest newest first, and never the Korean take");
 		assert_eq!((found.total, found.matched, found.by), (6, Some(3), By::Meaning));
@@ -981,17 +1016,29 @@ mod tests {
 
 		let other_model = Search::parse("brand").unwrap().with_meaning("another-model", Words.embed("brand"));
 		assert_eq!(
-			library(&mut conn, A, &Ask::default().searching(Some(other_model))).await.unwrap().unwrap().by,
+			library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Some(other_model)))
+				.await
+				.unwrap()
+				.unwrap()
+				.by,
 			By::Words,
 			"no index under that model"
 		);
 		assert_eq!(
-			library(&mut conn, A, &Ask::default().searching(Search::parse("brand"))).await.unwrap().unwrap().by,
+			library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Search::parse("brand")))
+				.await
+				.unwrap()
+				.unwrap()
+				.by,
 			By::Words,
 			"meaning off"
 		);
 		assert_eq!(
-			library(&mut conn, B, &Ask::default().searching(Some(asked("korean")))).await.unwrap().unwrap().matched,
+			library(&mut conn, B, Some(KEYS), NOW, &Ask::default().searching(Some(asked("korean"))))
+				.await
+				.unwrap()
+				.unwrap()
+				.matched,
 			Some(0),
 			"B's own takes only"
 		);
@@ -1011,18 +1058,21 @@ mod tests {
 		index(&mut conn, A, "indexed", &Words).await.unwrap();
 
 		let asked = Search::parse("brand").unwrap().with_meaning(Words.model(), Words.embed("brand"));
-		let found = library(&mut conn, A, &Ask::default().searching(Some(asked.clone()))).await.unwrap().unwrap();
+		let found = library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Some(asked.clone())))
+			.await
+			.unwrap()
+			.unwrap();
 		assert_eq!((found.by, found.matched, found.takes[0].id.as_str()), (By::Words, Some(1), "later"));
 
 		index(&mut conn, A, "later", &Words).await.unwrap();
-		let found = library(&mut conn, A, &Ask::default().searching(Some(asked))).await.unwrap().unwrap();
+		let found = library(&mut conn, A, Some(KEYS), NOW, &Ask::default().searching(Some(asked))).await.unwrap().unwrap();
 		assert_eq!((found.by, found.matched), (By::Meaning, Some(2)));
 	}
 
 	/// What a read with `pairs` answers for A.
 	async fn read(conn: &mut sqlx::SqliteConnection, pairs: &[(&str, &str)]) -> Option<super::Library> {
 		let pairs: Vec<(String, String)> = pairs.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect();
-		library(conn, A, &Ask::parse(&pairs).unwrap()).await.unwrap()
+		library(conn, A, Some(KEYS), NOW, &Ask::parse(&pairs).unwrap()).await.unwrap()
 	}
 
 	/// TAKES20: every kind of take in one list, each saying what it is about,

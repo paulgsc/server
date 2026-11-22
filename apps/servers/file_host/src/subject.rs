@@ -248,6 +248,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each act of the owner's reconciling a voice note home could not hear (paulgsc/server#912, HEARD3): the note's id, whether the owner kept it, will record it again or deleted it, which verdict that answered, and when; never what was said; see docs/identity.md invariant 23",
 	),
 	(
+		"voice_note_hear_again_supersedes",
+		"per request to hear a take again (paulgsc/some-ui#3339), the transcription keys (model names) that had made something of the note when the owner asked: what that request may supersede; the note's id and the request's number, never what was said; see docs/identity.md invariant 23",
+	),
+	(
 		"voice_note_fast_track",
 		"each time the owner put one of their takes at the front of home's transcriber's line, or took that back (paulgsc/server#1090): the take's id, the act and when; never what was said; see docs/identity.md invariant 23",
 	),
