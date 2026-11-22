@@ -459,17 +459,24 @@ pub(crate) fn always_big(play: &Play) -> Option<(Kind, bool)> {
 	}
 }
 
-/// `play` up to its try, as `wiped_out` reads it: what follows the try's
-/// words (a flag on the try, a foul on the kickoff after) is not the play.
+/// A touchdown `play` up to its try, as `wiped_out` reads it: what follows
+/// the try's words (a flag on the try, a foul on the kickoff after) is not
+/// the play. Only a touchdown has a try, so any other play is itself: a try
+/// word elsewhere ("kick is" on a kickoff) cuts nothing.
 fn before_the_try(play: &Play) -> std::borrow::Cow<'_, Play> {
 	let original = play.text.as_deref().unwrap_or_default();
 	let lower = original.to_ascii_lowercase();
-	TRY_WORDS.iter().filter_map(|word| lower.find(word)).min().map_or(std::borrow::Cow::Borrowed(play), |end| {
-		std::borrow::Cow::Owned(Play {
-			text: Some(original[..end].to_owned()),
-			..play.clone()
+	TRY_WORDS
+		.iter()
+		.filter_map(|word| lower.find(word))
+		.min()
+		.filter(|end| kind(play).contains("touchdown") || lower[..*end].contains("touchdown"))
+		.map_or(std::borrow::Cow::Borrowed(play), |end| {
+			std::borrow::Cow::Owned(Play {
+				text: Some(original[..end].to_owned()),
+				..play.clone()
+			})
 		})
-	})
 }
 
 /// `play` as it stood: up to its try (`before_the_try`), and after a review
@@ -524,7 +531,9 @@ pub(crate) fn is_onside(play: &Play) -> bool {
 
 /// The team that recovered an onside kick, from "recovered by NE-B.Bolden":
 /// ESPN's team, or none when the text names none ("recovered by B.Bolden").
+/// A recovery on a touchdown's try is the try's (`before_the_try`).
 pub(crate) fn recovered_by(play: &Play) -> Option<String> {
+	let play = &*before_the_try(play);
 	let original = play.text.as_deref()?;
 	let at = original.to_ascii_lowercase().find("recovered by ")? + "recovered by ".len();
 	let (team, _) = original[at..].split_once('-')?;

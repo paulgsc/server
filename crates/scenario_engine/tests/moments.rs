@@ -1228,11 +1228,11 @@ fn a_big_play_is_the_play_as_it_stood() {
 /// #1103: the try's text never changes its touchdown's reading. Family:
 /// every try outcome (made or missed, either kind; a No-Play flag on either
 /// side; a fumble either side recovers; an interception; a sack; a review
-/// that reversed it) after every kind of touchdown (run, pass, kick, punt,
-/// blocked-punt, blocked-field-goal, interception and fumble returns, big
-/// and not). Each is read as the same touchdown with its try still to come,
-/// by every scenario but the four that read the try itself (`in.two-point`,
-/// `in.kick`, `in.penalty`, `in.injury`).
+/// that reversed it) after every kind of touchdown (run, pass, kick, onside
+/// kick, punt, blocked-punt, blocked-field-goal, interception and fumble
+/// returns, big and not). Each is read as the same touchdown with its try
+/// still to come, by every scenario but the four that read the try itself
+/// (`in.two-point`, `in.kick`, `in.penalty`, `in.injury`).
 #[test]
 fn the_try_never_changes_its_touchdowns_reading() {
 	let plays = plays();
@@ -1254,6 +1254,13 @@ fn the_try_never_changes_its_touchdowns_reading() {
 		(pass, "Passing Touchdown", "(Shotgun) D.Maye pass deep right to S.Diggs for 62 yards, TOUCHDOWN.", "NE", true),
 		(pass, "Passing Touchdown", "D.Maye pass short left to H.Henry for 8 yards, TOUCHDOWN.", "NE", false),
 		(kickoff, "Kickoff Return Touchdown", "C.Santos kicks 65 yards from CHI 35 to NE 0. C.Kiner to CHI 0 for 100 yards, TOUCHDOWN.", "NE", true),
+		(
+			kickoff,
+			"Kickoff Return Touchdown",
+			"C.Santos kicks onside 12 yards from CHI 35 to CHI 47. C.Kiner to CHI 0 for 47 yards, TOUCHDOWN.",
+			"NE",
+			true,
+		),
 		(punt, "Punt Return Touchdown", "R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond to NE 0 for 90 yards, TOUCHDOWN.", "CHI", true),
 		(
 			punt,
@@ -1335,5 +1342,5 @@ fn the_try_never_changes_its_touchdowns_reading() {
 			cases += 1;
 		}
 	}
-	assert_eq!(cases, 130);
+	assert_eq!(cases, 143);
 }

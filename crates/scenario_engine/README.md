@@ -267,10 +267,12 @@ keeps says which the phone showed.
   changes with what its try's text says. Family: each try outcome (made or
   missed, either kind; a No-Play flag on either side; a fumble either side
   recovers; an interception; a sack; a review that reversed it) after each
-  touchdown (run, pass, kick, punt, blocked-punt, blocked-field-goal,
-  interception and fumble returns, big or not). Proof:
+  touchdown (run, pass, kick, onside kick, punt, blocked-punt,
+  blocked-field-goal, interception and fumble returns, big or not). Proof:
   `tests/moments.rs`' `the_try_never_changes_its_touchdowns_reading`, which
-  reads each pair against the same touchdown with its try to come.
+  reads each pair against the same touchdown with its try to come. The
+  score is ESPN's, not the text's: a lead change reads the score after the
+  play, which counts the try, and SE6 does not cover it.
 
 ## Tests replay a recorded game
 
