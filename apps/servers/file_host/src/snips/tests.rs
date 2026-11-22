@@ -169,7 +169,11 @@ async fn a_waiting_essays_bundle_is_fetched_checked_and_handed_then_dropped_once
 	let (name, id, record) = record(b"settings-png", "/settings");
 	let wanted = [(commit(0), id.clone())];
 	hold_essay(&pool, "shown-2026-11-20", &wanted).await;
-	assert_eq!(handed(&pool, &dirs, &wanted).await, essay_media::Handed::Waiting, "not fetched yet: it waits");
+	assert_eq!(
+		handed(&pool, &dirs, &wanted).await,
+		essay_media::Handed::Waiting(vec![commit(0) + " " + &id]),
+		"not fetched yet: it waits"
+	);
 
 	fake.run(
 		run(10, 0),

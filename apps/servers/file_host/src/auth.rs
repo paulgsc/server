@@ -94,7 +94,7 @@ struct Inner {
 /// Every hold is short, and the lock is fair, so nothing waits behind more
 /// than one deletion, and a deletion never waits for more than the writes in
 /// flight.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct DeletionLock(Arc<RwLock<()>>);
 
 impl DeletionLock {

@@ -214,7 +214,7 @@ above the button that deletes (invariant 22):
 | Written reflections | `written_reflection` |
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
-| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion` |
+| Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want`, `voice_note_fast_track` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent, card-era log and work spans | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log`, `rust_work_span_event` |
 | The interview week: what the owner sent of each week, a draft until its deadline and final at it | `interview_week_draft`, `interview_week_final` |
@@ -546,7 +546,7 @@ nowhere is marked as such and belongs to review.
    In-flight writes are covered by one rule: **every writer of subject-scoped
    rows holds `auth::DeletionLock` across its check that the subject still
    exists and its write.** A deletion, or a sign-out everywhere, holds it
-   exclusively for its one transaction. There are six such writers today:
+   exclusively for its one transaction. There are seven such writers today:
    - requests, through `SubjectId`, which takes the lock before looking up
      the session and holds it for the whole request
      (`a_write_already_in_flight_does_not_outlive_the_account_it_was_for`);
@@ -574,6 +574,11 @@ nowhere is marked as such and belongs to review.
      then a connection, around keeping each week, in one statement that
      checks the subject's `account` row (`app_event_repo::report::keep`;
      `no_owner_writes_nothing_and_a_week_no_longer_the_owners_leaves_the_drive`).
+   - the cards essays' pass, which takes the lock around writing which of the
+     subject's notes its held-back essays wait on (`cards_essays::pass::want`,
+     `stage_want`), in one statement per note that checks the subject still
+     holds it (`stage_repo::replace`;
+     `an_unknown_waiter_is_refused_and_an_unknown_item_is_not_wanted`).
 
    A new writer of subject-scoped rows outside a request must do the same,
    or its rows can outlive a deleted account. Every hold is short, so a
@@ -1481,9 +1486,10 @@ nowhere is marked as such and belongs to review.
     essay video only if the essay plays it ((c) of the essay videos, above).
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
-    vectors in the meaning index (invariant 35), its set-aside mark and its
-    moves along the conveyor (`studio_take_move`, below) in one
-    transaction, and keeps a copy of its words
+    vectors in the meaning index (invariant 35), its set-aside mark, its
+    moves along the conveyor (`studio_take_move`, below), the owner's
+    fast-track acts on it (`voice_note_fast_track`) and what waits on it
+    (`stage_want`) in one transaction, and keeps a copy of its words
     already filed for the mailbox, the record that Drive holds it, and the
     idea an answer belongs to (`idea_answer` still names it, invariant 32); the
     mailbox filer checks the note is still held in the transaction that
@@ -1711,8 +1717,13 @@ nowhere is marked as such and belongs to review.
     was said is `voice_transcript_word`, append-only too**
     (paulgsc/server#462; words since paulgsc/some-ui#2085). `file_host`'s `transcribe` worker, on only when
     `TRANSCRIBE_ENABLED`, reads each note's audio and hears it on home's CPU
-    with whisper.cpp: oldest first, one at a time, on a blocking thread by a
-    deadline, never on a request's path. Each attempt is a row: the model
+    with whisper.cpp: the note the contention guard is excusing first, then
+    those tried fewest times, then among those the most urgent
+    (`transcript::Urgency`: a note the owner fast-tracked and not yet tried,
+    then one wanted, by a waiter or by a mark already tried), then the most
+    waited on, then oldest first (paulgsc/server#1091), one
+    at a time, on a blocking thread by a deadline, never on a request's path
+    (so a note that keeps failing never keeps a newer one waiting: TR1). Each attempt is a row: the model
     file and engine, the attempt's number, its outcome (`heard`, with the
     text, the language and its probability; `silent`, when the VAD found no
     speech; or why not: `unreadable`, `too_long`, `deadline`, `failed`), the
@@ -1787,8 +1798,10 @@ nowhere is marked as such and belongs to review.
     the attempt ends; that file is the one place audio is held outside these
     tables, for the length of one decode. Neither the text, its words nor
     the audio reaches a log line: whisper.cpp's log is dropped, ffmpeg's
-    output is discarded, and a pass logs only how many attempts of each kind
-    it kept. The text leaves home in five ways only. One is a transcript
+    output is discarded, and the worker logs only each attempt's kind, whether
+    it was heard verbatim (so of an interview take), how long it took, how
+    long its audio and speech are, and how many detections and runs it made,
+    as it ends, and how many attempts of each kind a pass kept (TR3). The text leaves home in five ways only. One is a transcript
     filed for the Jobs mailbox (invariant 19), for the routines to read, and since
     paulgsc/server#577 that file carries that model's words too, each with
     its time, how sure the model was and its language (`words`). Another,

@@ -130,7 +130,9 @@ kickoff or a score and the next snap, and then neither does the situation,
 so the down rules wait for the snap after. A replay, which knows the next
 play, passes `Situation::before(next)`. ESPN's timeouts left are carried by
 `nfl_feed` but not read here: the two-minute line still counts them from the
-log's timeout plays.
+log's timeout plays. ESPN's play text spells six teams otherwise than its header
+(`HST` for HOU, `BLT` BAL, `ARZ` ARI, `CLV` CLE, `LA` LAR, `WAS` WSH);
+`read::team` reads each as the header's, so a flag says "Flag on HOU".
 
 ## Which play a bite is about (#3040)
 
@@ -158,6 +160,18 @@ the nearest accepted play before it and the first after it.
 | `opening-drive`, `red-zone` | before the drive (`BeforeTheDrive`) | the first play the rule accepts from the snap to come on, in that possession, however long after |
 | `kick` while a try is to come, `try`, `lead-change` | after (`After`) | the nearest the rule accepts at or before the bite (the try is written into its touchdown's own play) |
 | the rest | never offered ahead of time, or about no one play | |
+
+A possession is the snaps one team has in a row with no kickoff between
+them, within one half (#1077): a kickoff (an onside kick the kickers get
+back included) or the end of a half ends it even when the same team snaps
+next, so a drive bite late in the 2nd quarter is never about the third's
+score, and the drive after a recovered onside kick is not the first. A
+snap in a different half from the last snap with a known period ends it
+too, which matters when the log lacks both the kickoff and the half's end
+(a snap ESPN gave no period keeps the last known half). All of overtime is
+one half here, so regulation's end splits a drive, at the first overtime
+snap with a known period, but an overtime period's break does not:
+possession carries over it, as in the playoffs.
 
 The snap to come is the first play from scrimmage (never a kickoff) that home
 had not seen when the offer was on its screen and that no flag wiped out (a

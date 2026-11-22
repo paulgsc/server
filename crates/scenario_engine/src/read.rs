@@ -24,10 +24,14 @@ pub(crate) struct SoFar<'a> {
 	pub(crate) plays: Vec<Seen<'a>>,
 	/// The score (away, home) after each play, a missing one carried forward.
 	scores: Vec<(i64, i64)>,
-	/// Each snap's possession run: a run is the snaps one team has in a row.
+	/// Each snap's possession run: a run is the snaps one team has in a row,
+	/// within one half (all of overtime being one) and with no kick-off
+	/// between them.
 	runs: Vec<Option<usize>>,
 	/// The first run of each team.
 	first_run: HashMap<&'a str, usize>,
+	/// Whether a kick-off or the end of a half has closed the latest run.
+	run_closed: bool,
 }
 
 impl<'a> SoFar<'a> {
@@ -53,19 +57,34 @@ impl<'a> SoFar<'a> {
 		}
 		let mut runs = Vec::with_capacity(plays.len());
 		let mut first_run = HashMap::new();
+		// The run going: its index and the team snapping. A kick-off (an onside
+		// kick the kickers recover included) or the end of a half closes it, so
+		// the next snap starts a new one even by the same team; so does a snap
+		// in a different half from the last snap whose half is known, which
+		// matters when the log lacks both. All of overtime counts as one half
+		// here: regulation's end splits a run, but an overtime period's break
+		// carries possession over (the playoffs). `half` itself keeps each
+		// overtime period apart, for timeouts.
 		let mut run: Option<(usize, &str)> = None;
+		let mut last_half: Option<i64> = None;
+		let mut closed = false;
 		for seen in &plays {
 			let team = seen.play.possession.as_deref().filter(|_| is_snap(seen.play));
+			let its_half = seen.play.period.map(|period| half(period.min(5)));
 			runs.push(team.map(|team| {
+				let new_half = matches!((last_half, its_half), (Some(last), Some(now)) if last != now);
 				let index = match run {
-					Some((index, held)) if held == team => index,
+					Some((index, held)) if held == team && !closed && !new_half => index,
 					Some((index, _)) => index + 1,
 					None => 0,
 				};
 				run = Some((index, team));
+				last_half = its_half.or(last_half);
+				closed = false;
 				first_run.entry(team).or_insert(index);
 				index
 			}));
+			closed |= kind(seen.play).contains("kickoff") || ends_the_half(seen.play);
 		}
 		Self {
 			game,
@@ -73,6 +92,7 @@ impl<'a> SoFar<'a> {
 			scores,
 			runs,
 			first_run,
+			run_closed: closed,
 		}
 	}
 
@@ -153,29 +173,51 @@ impl<'a> SoFar<'a> {
 		}
 	}
 
-	/// Whether `team`'s first possession is still to come or still going.
+	/// Whether `team`'s first possession is still to come or still going: no
+	/// kick-off or end of a half has closed it.
 	pub(crate) fn first_run_open(&self, team: &str) -> bool {
 		self.first_run.get(team).is_none_or(|first| {
-			self
-				.last_snap()
-				.is_some_and(|last| self.runs[last] == Some(*first) && self.plays[last].play.possession.as_deref() == Some(team))
+			!self.run_closed
+				&& self
+					.last_snap()
+					.is_some_and(|last| self.runs[last] == Some(*first) && self.plays[last].play.possession.as_deref() == Some(team))
 		})
 	}
 
 	/// Timeouts `team` has left in the half of `period`: three a half, two in
 	/// overtime, less each "Timeout ... by TEAM" play in that half.
 	pub(crate) fn timeouts_left(&self, team: &str, period: i64) -> i64 {
-		let half = |p: i64| if p >= 5 { p } else { (p + 1) / 2 };
-		let needle = [" by ", team, " at "].concat().to_ascii_lowercase();
+		let by_team = |text: &str| text.split(" by ").skip(1).any(|rest| rest.split_once(" at ").is_some_and(|(by, _)| self::team(by) == team));
 		let used = self
 			.plays
 			.iter()
 			.filter(|seen| seen.play.period.is_some_and(|p| half(p) == half(period)))
-			.filter(|seen| kind(seen.play) == "timeout" && text(seen.play).contains(&needle))
+			.filter(|seen| kind(seen.play) == "timeout" && by_team(&text(seen.play)))
 			.count();
 		let allowed = if period >= 5 { 2 } else { 3 };
 		(allowed - i64::try_from(used).unwrap_or(allowed)).max(0)
 	}
+}
+
+/// The half of `period`: 1 for the 1st and 2nd quarters, 2 for the 3rd and
+/// 4th, and each overtime period its own.
+pub(crate) const fn half(period: i64) -> i64 {
+	if period >= 5 {
+		period
+	} else {
+		(period + 1) / 2
+	}
+}
+
+/// The teams ESPN's play text spells otherwise than its header (and so
+/// `possession`, and the game's teams), as (text, header).
+const SPELLED: [(&str, &str); 6] = [("ARZ", "ARI"), ("BLT", "BAL"), ("CLV", "CLE"), ("HST", "HOU"), ("LA", "LAR"), ("WAS", "WSH")];
+
+/// A team named in ESPN's play text ("PENALTY on HST", "recovered by
+/// BLT-S.Kane"), as the header names it ("HOU", "BAL"), in upper case.
+pub(crate) fn team(code: &str) -> String {
+	let code = code.to_ascii_uppercase();
+	SPELLED.iter().find(|(text, _)| *text == code).map_or(code, |(_, header)| (*header).to_owned())
 }
 
 /// An ISO-8601 time as ESPN and the log write it.
@@ -352,7 +394,9 @@ fn flagged_against_the_returners(play: &Play) -> bool {
 		let end = starts.get(n + 1).copied().unwrap_or(lower.len());
 		let clause = &lower[*start..end];
 		let team = original[start + "penalty on ".len()..end].split(['-', ',', ' ']).next().unwrap_or_default();
-		!clause.contains("declined") && !team.is_empty() && play.possession.as_deref() != Some(team)
+		// A foul after the play ("enforced between downs", a celebration) does
+		// not undo the return before it.
+		!clause.contains("declined") && !clause.contains("between downs") && !team.is_empty() && play.possession.as_deref() != Some(self::team(team).as_str())
 	})
 }
 
@@ -377,7 +421,7 @@ pub(crate) fn recovered_by(play: &Play) -> Option<String> {
 	let original = play.text.as_deref()?;
 	let at = original.to_ascii_lowercase().find("recovered by ")? + "recovered by ".len();
 	let (team, _) = original[at..].split_once('-')?;
-	(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase())).then(|| team.to_owned())
+	(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase())).then(|| self::team(team))
 }
 
 /// Whether ESPN's text says a touchdown on the play was taken away.
@@ -404,7 +448,7 @@ pub(crate) fn penalty(play: &Play) -> Option<(String, Option<String>)> {
 		.nth(1)
 		.map(|foul| foul.trim().to_ascii_lowercase())
 		.filter(|foul| !foul.is_empty() && !foul.ends_with("yards"));
-	Some((team.to_owned(), foul))
+	Some((self::team(team), foul))
 }
 
 /// How a field goal went, and from how far.
@@ -413,7 +457,13 @@ pub(crate) fn field_goal(play: &Play) -> Option<(Kick, Option<i64>)> {
 		return None;
 	}
 	let text = text(play);
-	let at = text.find("yard field goal").or_else(|| text.find("field goal"))?;
+	// "(Field Goal formation)" opens a fake, or a flag before the kick: the
+	// kick is a later "field goal", if there is one.
+	let kick = text
+		.match_indices("field goal")
+		.map(|(at, _)| at)
+		.find(|at| !text[*at..].starts_with("field goal formation"))?;
+	let at = text[..kick].strip_suffix("yard ").map_or(kick, str::len);
 	let distance = text[..at].trim_end().rsplit(' ').next().and_then(|word| word.parse().ok());
 	Some((kick_result(&text[at..]), distance))
 }
@@ -471,7 +521,7 @@ fn lost_fumble(play: &Play, text: &str) -> bool {
 		return false;
 	};
 	let by = text[at + "recovered by ".len()..].split(['-', ' ']).next();
-	text.contains("fumble") && by.is_some_and(|by| !by.eq_ignore_ascii_case(offense))
+	text.contains("fumble") && by.is_some_and(|by| team(by) != offense)
 }
 
 /// A fourth-down try from scrimmage that came up short: no kick, no score,
@@ -501,7 +551,7 @@ pub(crate) fn injured_team(play: &Play) -> Option<String> {
 			.split(|c: char| c.is_whitespace() || c == '(' || c == ';')
 			.filter_map(|word| {
 				let (team, player) = word.split_once('-')?;
-				(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase()) && player.starts_with(|c: char| c.is_ascii_uppercase())).then(|| team.to_owned())
+				(matches!(team.len(), 2 | 3) && team.bytes().all(|b| b.is_ascii_uppercase()) && player.starts_with(|c: char| c.is_ascii_uppercase())).then(|| self::team(team))
 			})
 			.collect()
 	};

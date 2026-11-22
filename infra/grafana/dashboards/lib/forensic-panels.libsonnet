@@ -414,7 +414,7 @@
       },
     ],
     title: '🐳 CONTAINER CPU USAGE (Cores)',
-    description: 'CPU cores used — file-host limit: 2.0',
+    description: 'CPU cores used — file-host limit: 3.0',
     type: 'timeseries',
   },
 
