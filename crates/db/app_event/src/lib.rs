@@ -780,7 +780,9 @@ mod tests {
 		events.push(step("x1", "2026-11-03T09:02:00.000Z", "left", Some(("2026-11-03T09:00:10.000Z", "decide"))));
 		// A take of another affordance at the same instant is not a move.
 		events.push(step("x2", "2026-11-08T09:01:00.000Z", "left", Some(("2026-11-08T09:00:00.000Z", "decide"))));
-		events.push(engaged("x3", "2026-11-08T09:01:00.000Z", "routine-lens", "taken"));
+		let mut other = engaged("x3", "2026-11-08T09:01:00.000Z", "routine-lens", "taken");
+		other["pipeline"] = json!("jobs");
+		events.push(other);
 		for event in &events {
 			put(&pool, A, event).await.unwrap();
 		}
@@ -810,8 +812,8 @@ mod tests {
 			json!({
 				"from": "2026-10-19T07:00:00.000Z", "to": "2026-11-16T08:00:00.000Z", "measuredDays": 28,
 				"opened": [
-					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "days": 6 },
-					{ "pipeline": "topik", "affordance": "routine-lens", "surface": "apk", "days": 1 }
+					{ "pipeline": "jobs", "affordance": "routine-lens", "surface": "apk", "days": 1 },
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "days": 6 }
 				],
 				"places": [
 					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "decide", "left": 2, "movedOn": 0, "medianMs": null },

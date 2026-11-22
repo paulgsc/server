@@ -16,7 +16,8 @@
 //!   before the affordance's own `seen` `firstDay` is not measured for it,
 //!   though `measuredDays` (the subject's first event of any affordance)
 //!   counts it: the writer bounds an affordance's days by its `firstDay`, so
-//!   a root that began sending late is never read as silent before then. A day is the owner's ([`ZONE`](crate::ZONE)).
+//!   a root that began sending late is never read as silent before then.
+//!   A day is the owner's ([`ZONE`](crate::ZONE)).
 //! - **Places** are, per affordance and place, how many `left`s named it,
 //!   how many of them were followed by a `taken` of the same affordance at
 //!   the same instant (`movedOn`, as `stepPlace` writes a move), and the
@@ -77,7 +78,8 @@ pub struct PlaceTime {
 	pub place: String,
 	/// `left`s naming it.
 	pub left: i64,
-	/// Of those, how many moved on to another of its places.
+	/// Of those, how many had a `taken` of the same affordance at the same
+	/// instant: a move, of whatever kind the module doc lists.
 	pub moved_on: i64,
 	/// The median time in it, in milliseconds; `null` under [`UNDER`].
 	pub median_ms: Option<i64>,
@@ -199,8 +201,8 @@ async fn places(conn: &mut SqliteConnection, subject: &str, from: &str, to: &str
 	let limit = crate::WINDOW_READ + 1;
 	let rows = sqlx::query!(
 		r#"SELECT pipeline AS "pipeline!: String", affordance AS "affordance!: String", surface AS "surface!: String",
-			place AS "place!: String", ms AS "ms!: i64", moved AS "moved!: bool"
-		FROM (SELECT json_extract(l.body, '$.pipeline') AS pipeline, json_extract(l.body, '$.affordance') AS affordance,
+			place AS "place!: String", ms AS "ms!: i64", moved AS "moved!: bool", at AS "at!: String"
+		FROM (SELECT l.at AS at, json_extract(l.body, '$.pipeline') AS pipeline, json_extract(l.body, '$.affordance') AS affordance,
 				json_extract(l.body, '$.surface') AS surface, json_extract(l.body, '$.place') AS place,
 				CAST(ROUND((julianday(l.at) - julianday(json_extract(l.body, '$.startedAt'))) * 86400000) AS INTEGER) AS ms,
 				EXISTS (SELECT 1 FROM app_event AS t
@@ -223,11 +225,19 @@ async fn places(conn: &mut SqliteConnection, subject: &str, from: &str, to: &str
 	)
 	.fetch_all(&mut *conn)
 	.await?;
+	let mut rows = rows;
 	let partial = i64::try_from(rows.len()).unwrap_or(i64::MAX) > crate::WINDOW_READ;
+	if partial {
+		// The one row past the read is the oldest `left`, wherever the
+		// place order put it, so what is read is exactly the newest.
+		if let Some(oldest) = rows.iter().enumerate().min_by(|(_, a), (_, b)| a.at.cmp(&b.at)).map(|(index, _)| index) {
+			rows.remove(oldest);
+		}
+	}
 
 	let mut places: Vec<PlaceTime> = Vec::new();
 	let mut times: Vec<Vec<i64>> = Vec::new();
-	for row in rows.into_iter().take(usize::try_from(crate::WINDOW_READ).unwrap_or(usize::MAX)) {
+	for row in rows {
 		let same = places
 			.last()
 			.is_some_and(|last| last.pipeline == row.pipeline && last.affordance == row.affordance && last.surface == row.surface && last.place == row.place);

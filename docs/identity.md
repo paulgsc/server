@@ -733,8 +733,10 @@ nowhere is marked as such and belongs to review.
     The one figure that leaves it in aggregate is Applying's debrief friction
     (`jobs_repo::debrief_frictions`, 1 to 5 only): its count and median over
     28 days, the median unsaid below 5, in the subject's own weekly read and
-    `report_week` (the owner's C861, paulgsc/some-ui WALK5). No pick,
-    company, chip or word goes with it.
+    `report_week`, and so in its drive file, the report's video and the
+    published walkthrough made from it (the owner's C861, paulgsc/some-ui
+    WALK5; `report_week`'s own paragraph, below). No pick, company, chip
+    or word goes with it.
     *Enforced by* `jobs_repo`'s `the_table_holds_exactly_its_described_columns`,
     `an_event_is_stored_once_and_never_replaced` and
     `the_record_leaves_with_the_account`, and `handlers::jobs`'s
@@ -2495,9 +2497,11 @@ nowhere is marked as such and belongs to review.
     `report_weeks` gave it to the render worker: counts per pipeline,
     affordance and surface, and days, and the walkthrough's friction
     measures over the 28 days ending with the week (paulgsc/some-ui WALK5,
-    the owner's C861: days opened per affordance, lefts per place with their
-    median time, Applying's median debrief friction from `jobs_event`; a
-    median of fewer than 5 is not said), nothing more than that read holds. It
+    the owner's C861: days opened per affordance, the days measured, lefts
+    per place with how many moved on and their median time, whether that
+    read was partial, Applying's debrief count and median friction from
+    `jobs_event`; a median of fewer than 5 is not said), nothing more than
+    that read holds. It
     is written once a week has ended, never updated (a trigger aborts an
     `UPDATE`), and deleted only with the account; its file on the drive,
     `report-weeks/<week>.json`, and the video and work made from it, leave

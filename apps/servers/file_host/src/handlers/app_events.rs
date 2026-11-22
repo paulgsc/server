@@ -122,7 +122,8 @@ pub async fn get_summary(subject: SubjectId, State(db): State<SqlitePool>, Query
 /// public-safety rule (#2701) is its writer's, applied after this.
 ///
 /// No window cap: each week is one range read of the index, whatever its
-/// age; the friction's places read at most `WINDOW_READ` `left`s. A week that has not started yet is refused, since it holds nothing.
+/// age; the friction's places read at most `WINDOW_READ` `left`s. A week
+/// that has not started yet is refused, since it holds nothing.
 ///
 /// # Errors
 /// 401 without a session, 422 for a `:week` that is not an ISO week from
