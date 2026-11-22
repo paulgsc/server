@@ -1131,7 +1131,10 @@ impl Host for RealHost {
 		let text = self.git(&["show", &path])?;
 		let release = release::parse(&text).map_err(|err| format!("{path}: {err:#}"))?;
 		let role_dir = format!("{commit}:{}", Path::new(crate::sops::DEPLOY).join(&self.role).display());
-		let trees = self.git(&["rev-parse", &format!("{commit}:infra"), &role_dir, &format!("{commit}:docker-compose.yml")])?;
+		// The trees `envctl check` keeps every `${REPO_ROOT}` mount inside
+		// (`mounts::KEYED`), so a change to a mounted file is another key.
+		let [infra, compose_file] = crate::mounts::KEYED;
+		let trees = self.git(&["rev-parse", &format!("{commit}:{infra}"), &role_dir, &format!("{commit}:{compose_file}")])?;
 		let key = format!("{}:{}", release.serial, trees.split_whitespace().collect::<Vec<_>>().join(":"));
 		Ok(Target {
 			commit: commit.to_owned(),
