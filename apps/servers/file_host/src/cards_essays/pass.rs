@@ -1725,7 +1725,9 @@ mod tests {
 			let pool = pool.clone();
 			async move {
 				let mut conn = pool.acquire().await.unwrap();
-				voice_repo::attention::hear_again(&mut conn, ME, take, Some(keys), "2026-11-22T09:00:00.000Z").await.unwrap()
+				voice_repo::attention::hear_again(&mut conn, ME, take, Some(keys), "2026-11-22T09:00:00.000Z")
+					.await
+					.unwrap()
 			}
 		};
 		assert!(matches!(ask(takes[0]).await, voice_repo::attention::Acted::Recorded(_)));
@@ -1738,7 +1740,7 @@ mod tests {
 		assert_eq!(wants().await, takes, "its takes are wanted, so heard first");
 
 		let mut conn = pool.acquire().await.unwrap();
-		let fast = voice_repo::fast_track::act(&mut conn, ME, takes[1], voice_repo::fast_track::Act::Fast, crate::transcribe::pass::ATTEMPTS, "now")
+		let fast = voice_repo::fast_track::act(&mut conn, ME, takes[1], voice_repo::fast_track::Act::Fast, keys, crate::transcribe::pass::ATTEMPTS, "now")
 			.await
 			.unwrap();
 		assert_eq!(fast, voice_repo::fast_track::Acted::Recorded, "a take heard again may be put first");

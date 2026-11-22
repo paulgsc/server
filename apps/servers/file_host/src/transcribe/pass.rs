@@ -686,10 +686,19 @@ mod tests {
 		note(&pool, A, "older", "2026-10-25T01:00:00.000Z", b"older").await;
 		note(&pool, A, "chosen", "2026-10-25T02:00:00.000Z", b"chosen").await;
 		{
+			let (plain, verbatim) = crate::transcribe::keys();
 			let mut conn = pool.acquire().await.unwrap();
-			voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
-				.await
-				.unwrap();
+			voice_repo::fast_track::act(
+				&mut conn,
+				A,
+				"chosen",
+				voice_repo::fast_track::Act::Fast,
+				home_keys(&plain, &verbatim),
+				super::ATTEMPTS,
+				"now",
+			)
+			.await
+			.unwrap();
 		}
 		let cancel = CancellationToken::new();
 		let fake = Fake::new(&cancel);
@@ -703,6 +712,11 @@ mod tests {
 			.unwrap();
 		assert_eq!((done.kept.len(), done.gave_way), (1, true), "the chosen take heard, then the turn given: {done:?}");
 		assert_eq!(fake.heard(), ["chosen"], "the chosen take, and no other");
+	}
+
+	/// The keys home hears with, as `crate::transcribe::keys` names them.
+	const fn home_keys<'a>(plain: &'a str, verbatim: &'a str) -> voice_repo::transcript::Keys<'a> {
+		voice_repo::transcript::Keys { plain, verbatim }
 	}
 
 	/// A failed attempt at `id` by `model`, kept as the pass would keep one.
@@ -723,10 +737,19 @@ mod tests {
 	/// the turn is already spent: what it heard.
 	async fn heard_while_given(pool: &SqlitePool) -> Vec<String> {
 		{
+			let (plain, verbatim) = crate::transcribe::keys();
 			let mut conn = pool.acquire().await.unwrap();
-			let acted = voice_repo::fast_track::act(&mut conn, A, "chosen", voice_repo::fast_track::Act::Fast, super::ATTEMPTS, "now")
-				.await
-				.unwrap();
+			let acted = voice_repo::fast_track::act(
+				&mut conn,
+				A,
+				"chosen",
+				voice_repo::fast_track::Act::Fast,
+				home_keys(&plain, &verbatim),
+				super::ATTEMPTS,
+				"now",
+			)
+			.await
+			.unwrap();
 			assert_eq!(acted, voice_repo::fast_track::Acted::Recorded);
 		}
 		let cancel = CancellationToken::new();

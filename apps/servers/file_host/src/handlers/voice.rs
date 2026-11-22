@@ -988,7 +988,12 @@ pub async fn post_fast_track(paired: Paired, State(db): State<SqlitePool>, Path(
 	};
 	let act = if fast { FastAct::Fast } else { FastAct::Cancel };
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
-	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, crate::transcribe::pass::ATTEMPTS, &now())
+	let (plain, verbatim) = crate::transcribe::keys();
+	let keys = voice_repo::transcript::Keys {
+		plain: &plain,
+		verbatim: &verbatim,
+	};
+	let acted = voice_repo::fast_track::act(&mut tx, paired.subject.as_str(), &id, act, keys, crate::transcribe::pass::ATTEMPTS, &now())
 		.await
 		.map_err(refusal)?;
 	tx.commit().await?;

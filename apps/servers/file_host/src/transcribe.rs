@@ -129,6 +129,17 @@ pub fn keys() -> (String, String) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hears(pub bool);
 
+/// Whether this process runs the transcriber, as [`start`] found it.
+static RUNS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Whether this process runs the transcriber, for a reader that holds no
+/// [`Hears`] (the essays' passes): as [`start`] said it, and, before it has
+/// (a test), on.
+#[must_use]
+pub fn runs() -> bool {
+	RUNS.get().copied().unwrap_or(true)
+}
+
 /// The whisper model, where compose mounts `TRANSCRIBE_MODELS_DIR`
 /// (`infra/compose/file_host.yml`) and `nix/whisper-manager` downloads it
 /// (`TRANSCRIBE_MODEL`).
@@ -197,6 +208,8 @@ fn default_threads() -> usize {
 /// `transcribe_enabled` either way.
 pub fn start(state: &AppState) {
 	crate::metrics::transcribe::record_enabled(state.transcribe.is_some());
+	// Said once, at startup, for the essays' passes, which hold no state.
+	let _ = RUNS.set(state.transcribe.is_some());
 	if let Some(context) = state.transcribe.clone() {
 		spawn(state, context);
 	}

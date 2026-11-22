@@ -445,11 +445,29 @@ async fn answer_of(conn: &mut SqliteConnection, subject: &str, note_id: &str, ne
 /// Any `sqlx` failure, or a stored verdict this build does not know.
 pub async fn needing(conn: &mut SqliteConnection, subject: &str, keys: Option<Keys<'_>>, now: &str) -> Result<(Vec<Take>, i64), VoiceError> {
 	let limit = i64::try_from(LISTED).unwrap_or(i64::MAX);
+	// A request to hear a take again answers its verdict only while home is
+	// hearing it, as [`hearing`] reads that: under the key it hears the take
+	// under now, its fresh key neither ended nor judged final, the take still
+	// heard, and the transcriber running. Once the fresh set has failed, the
+	// request is moot, the recording is let go or the transcriber is off,
+	// the take is back here with the verdict that is read (answer (a)), and
+	// never off the list for good.
+	let (plain, verbatim) = keys.map_or((None, None), |keys| (Some(keys.plain), Some(keys.verbatim)));
+	let verbatim_kind = transcript::VERBATIM;
 	// The chosen verdict is `verdict::newest`'s: the verdict of the ending
 	// `transcript::heard` chooses, else, with no ending, the newest failure;
 	// the newest judged, then the newest rule. Keep the two in step.
 	let rows = sqlx::query!(
-		r#"WITH chosen AS (
+		r#"WITH answering AS (
+		     SELECT a.* FROM voice_note_attention a JOIN voice_note n ON n.subject_id = a.subject_id AND n.note_id = a.note_id
+		     WHERE a.subject_id = ?1
+		       AND (a.act <> 'hear_again'
+		            OR (?3 IS NOT NULL AND a.asked_under = CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?3 END
+		                AND NOT EXISTS (SELECT 1 FROM voice_transcript t WHERE t.subject_id = a.subject_id AND t.note_id = a.note_id AND t.model = a.hears_under AND t.outcome IN ('heard', 'silent'))
+		                AND NOT EXISTS (SELECT 1 FROM voice_transcript_verdict x WHERE x.subject_id = a.subject_id AND x.note_id = a.note_id AND x.model = a.hears_under)
+		                AND EXISTS (SELECT 1 FROM voice_note_audio au WHERE au.subject_id = a.subject_id AND au.note_id = a.note_id)
+		                AND (n.of_kind = 'jobs' OR NOT EXISTS (SELECT 1 FROM voice_note_set_aside sa WHERE sa.subject_id = a.subject_id AND sa.note_id = a.note_id))))),
+		   chosen AS (
 		     SELECT n.note_id, n.of_kind, n.of_ref, n.recorded_at,
 		            (SELECT v.rowid FROM voice_transcript_verdict v
 		             WHERE v.subject_id = n.subject_id AND v.note_id = n.note_id
@@ -473,7 +491,7 @@ pub async fn needing(conn: &mut SqliteConnection, subject: &str, keys: Option<Ke
 		         WHERE w.subject_id = n.subject_id AND w.note_id = n.note_id AND w.verdict <> 'heard'
 		           AND NOT EXISTS (SELECT 1 FROM voice_note_superseded sup WHERE sup.subject_id = w.subject_id AND sup.note_id = w.note_id AND sup.model = w.model)
 		           AND NOT EXISTS (
-		             SELECT 1 FROM voice_note_attention a
+		             SELECT 1 FROM answering a
 		             WHERE a.subject_id = w.subject_id AND a.note_id = w.note_id
 		               AND a.model = w.model AND a.attempt = w.attempt AND a.rule = w.rule)))
 		   SELECT c.note_id AS "note_id!", c.of_kind AS "of_kind!", c.of_ref AS "of_ref!", c.recorded_at AS "recorded_at!",
@@ -485,13 +503,16 @@ pub async fn needing(conn: &mut SqliteConnection, subject: &str, keys: Option<Ke
 		   JOIN voice_transcript_verdict v ON v.rowid = c.chosen_row
 		   WHERE v.verdict <> 'heard'
 		     AND NOT EXISTS (
-		       SELECT 1 FROM voice_note_attention a
+		       SELECT 1 FROM answering a
 		       WHERE a.subject_id = ?1 AND a.note_id = c.note_id
 		         AND a.model = v.model AND a.attempt = v.attempt AND a.rule = v.rule)
 		   ORDER BY c.recorded_at DESC, c.note_id DESC
 		   LIMIT ?2"#,
 		subject,
-		limit
+		limit,
+		plain,
+		verbatim,
+		verbatim_kind
 	)
 	.fetch_all(&mut *conn)
 	.await?;
@@ -1185,6 +1206,56 @@ pub(crate) mod tests {
 		assert_eq!(waiting_keys(&pool).await, keyed(&[("t", "m+again1")]));
 	}
 
+	/// The review of the merged shape: a request hides its take from Needs
+	/// your attention only while home hears it. A garbled take whose fresh
+	/// set fails is back with its old verdict (answer (a)); one asked again
+	/// and then let go of, or on a home whose transcriber is off, is back
+	/// too, never off the list for good.
+	#[tokio::test]
+	async fn a_request_hides_its_take_only_while_home_hears_it() {
+		let pool = pool().await;
+		for id in ["g", "let-go"] {
+			note(&pool, A, id, "studio", "2026-11-01").await;
+			audio(&pool, id).await;
+			heard(&pool, A, id, "m", Kind::Garbled, "2026-11-10").await;
+		}
+		let listed_ids = |takes: Vec<String>| {
+			let mut takes = takes;
+			takes.sort();
+			takes
+		};
+		assert_eq!(listed_ids(listed(&pool, A).await.0), ["g", "let-go"]);
+		for id in ["g", "let-go"] {
+			assert!(matches!(hear_again_at(&pool, id, "2026-11-21T00:00:00.000Z").await, Acted::Recorded(_)));
+		}
+		assert!(listed(&pool, A).await.0.is_empty(), "both being heard again");
+		let mut conn = pool.acquire().await.unwrap();
+		let (off, _) = super::needing(&mut conn, A, None, "2026-11-21T00:10:00.000Z").await.unwrap();
+		drop(conn);
+		assert_eq!(
+			listed_ids(off.into_iter().map(|take| take.id).collect()),
+			["g", "let-go"],
+			"no transcriber: nothing is being heard, so both are listed"
+		);
+
+		for n in 1..=3 {
+			failed(&pool, "g", "m+again1", n, n == 3, "2026-11-21T01:00:00.000Z").await;
+		}
+		sqlx::query("DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = 'let-go'")
+			.bind(A)
+			.execute(&pool)
+			.await
+			.unwrap();
+		let mut conn = pool.acquire().await.unwrap();
+		let (takes, total) = super::needing(&mut conn, A, Some(KEYS), "2026-11-21T02:00:00.000Z").await.unwrap();
+		drop(conn);
+		assert_eq!(total, 2);
+		let g = takes.iter().find(|take| take.id == "g").unwrap();
+		assert_eq!(g.verdict.kind, Kind::Garbled, "the fresh set failed: back with the verdict still read");
+		assert!(!g.hear_again.hearing);
+		assert!(takes.iter().any(|take| take.id == "let-go"), "let go of: back, not hidden for good");
+	}
+
 	/// The agreed root shape (paulgsc/some-ui#3339, 2026-11-22): a request
 	/// supersedes only the keys it found. A key that comes after it (a new
 	/// model's) is never superseded by it, though the request's fresh key
@@ -1203,7 +1274,7 @@ pub(crate) mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		let fast = crate::fast_track::Act::Fast;
 		assert_eq!(
-			crate::fast_track::act(&mut conn, A, "t", fast, 3, "2026-11-20T02:00:00.000Z").await.unwrap(),
+			crate::fast_track::act(&mut conn, A, "t", fast, KEYS, 3, "2026-11-20T02:00:00.000Z").await.unwrap(),
 			crate::fast_track::Acted::NotWaiting,
 			"every attempt spent: nothing to put first"
 		);
@@ -1213,7 +1284,7 @@ pub(crate) mod tests {
 		assert!(matches!(hear_again_at(&pool, "t", "2026-11-21T00:00:00.000Z").await, Acted::Recorded(_)));
 		let mut conn = pool.acquire().await.unwrap();
 		assert_eq!(
-			crate::fast_track::act(&mut conn, A, "t", fast, 3, "2026-11-21T00:01:00.000Z").await.unwrap(),
+			crate::fast_track::act(&mut conn, A, "t", fast, KEYS, 3, "2026-11-21T00:01:00.000Z").await.unwrap(),
 			crate::fast_track::Acted::Recorded,
 			"being heard again under a fresh key: it may be put first"
 		);

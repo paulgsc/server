@@ -62,50 +62,49 @@ pub enum Acted {
 /// Records `act` on `subject`'s note `note_id`, at `now`.
 ///
 /// `attempts` is the most attempts one model makes on a note (the
-/// transcriber's `ATTEMPTS`). Run it in the transaction that holds the
-/// request's subject.
+/// transcriber's `ATTEMPTS`), and `keys` the keys home hears with: whether a
+/// note still waits is read under the key the queue waits on it under
+/// (`transcript::STANDING_KEY`: its model's, or the fresh key a standing
+/// request to hear it again names, paulgsc/some-ui#3339). Run it in the
+/// transaction that holds the request's subject.
 ///
 /// A `fast` act is one try at the head of the line (the migration's doc):
 /// the queue reads it as [`transcript::Urgency::FastTrack`] while the
-/// queue's model has never tried the note, and as `Wanted` once it has.
+/// queue's key has never tried the note, and as `Wanted` once it has.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn act(conn: &mut SqliteConnection, subject: &str, note_id: &str, act: Act, attempts: i64, now: &str) -> Result<Acted, VoiceError> {
+pub async fn act(conn: &mut SqliteConnection, subject: &str, note_id: &str, act: Act, keys: transcript::Keys<'_>, attempts: i64, now: &str) -> Result<Acted, VoiceError> {
 	match transcript::heard(conn, subject, note_id).await? {
 		Hearing::NotHeld => return Ok(Acted::NotHeld),
 		Hearing::Heard(_) => return Ok(Acted::Ended),
 		Hearing::Waiting => {}
 	}
+	let verbatim_kind = transcript::VERBATIM;
 	let state = sqlx::query!(
 		r#"SELECT
 		     COALESCE((SELECT f.act = 'fast' FROM voice_note_fast_track f
-		               WHERE f.subject_id = ?1 AND f.note_id = ?2 ORDER BY f.n DESC LIMIT 1), 0) AS "marked!: bool",
-		     CASE WHEN EXISTS (SELECT 1 FROM voice_note_attention r WHERE r.subject_id = ?1 AND r.note_id = ?2 AND r.act = 'hear_again')
-		          THEN (SELECT COUNT(*) FROM voice_transcript t
-		                WHERE t.subject_id = ?1 AND t.note_id = ?2
-		                  AND t.model = (SELECT r.hears_under FROM voice_note_attention r
-		                                 WHERE r.subject_id = ?1 AND r.note_id = ?2 AND r.act = 'hear_again' ORDER BY r.n DESC LIMIT 1))
-		          ELSE COALESCE((SELECT MAX(per) FROM (SELECT COUNT(*) AS per FROM voice_transcript t
-		                                               WHERE t.subject_id = ?1 AND t.note_id = ?2 GROUP BY t.model)), 0)
-		     END AS "most!: i64",
-		     (n.of_kind <> 'jobs' AND EXISTS (SELECT 1 FROM voice_note_set_aside s WHERE s.subject_id = ?1 AND s.note_id = ?2))
-		       OR NOT EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = ?1 AND a.note_id = ?2) AS "out!: bool"
-		   FROM voice_note n WHERE n.subject_id = ?1 AND n.note_id = ?2"#,
+		               WHERE f.subject_id = k.subject_id AND f.note_id = k.note_id ORDER BY f.n DESC LIMIT 1), 0) AS "marked!: bool",
+		     (SELECT COUNT(*) FROM voice_transcript t
+		      WHERE t.subject_id = k.subject_id AND t.note_id = k.note_id AND t.model = k.key) AS "tried!: i64",
+		     (k.of_kind <> 'jobs' AND EXISTS (SELECT 1 FROM voice_note_set_aside s WHERE s.subject_id = k.subject_id AND s.note_id = k.note_id))
+		       OR NOT EXISTS (SELECT 1 FROM voice_note_audio a WHERE a.subject_id = k.subject_id AND a.note_id = k.note_id) AS "out!: bool"
+		   FROM (SELECT b.subject_id, b.note_id, b.of_kind,
+		                COALESCE((SELECT r.hears_under FROM voice_note_attention r WHERE r.subject_id = b.subject_id AND r.note_id = b.note_id AND r.act = 'hear_again' AND r.asked_under = b.base ORDER BY r.n DESC LIMIT 1), b.base) AS key
+		         FROM (SELECT n.subject_id, n.note_id, n.of_kind, CASE WHEN n.of_kind = ?5 THEN ?4 ELSE ?3 END AS base
+		               FROM voice_note n WHERE n.subject_id = ?1 AND n.note_id = ?2) b) k"#,
 		subject,
-		note_id
+		note_id,
+		keys.plain,
+		keys.verbatim,
+		verbatim_kind
 	)
 	.fetch_one(&mut *conn)
 	.await?;
-	// As it stands, and for a `fast` act only. Home keeps no model key here:
-	// a model that has spent every attempt on the note is taken as the
-	// queue's, so right after a model bump this may refuse a mark the new
-	// model would have heard. A note the owner asked home to hear again is
-	// read by its newest request's fresh key, the key the queue waits on
-	// (`transcript::STANDING_KEY`), so a take being heard again may be put
-	// first (paulgsc/some-ui#3339). (A note any model has heard is `Ended`,
-	// above.)
-	if act == Act::Fast && (state.out || state.most >= attempts) {
+	// As it stands, and for a `fast` act only: every attempt the queue's key
+	// gets on the note spent, it would order nothing. (A note any model has
+	// heard is `Ended`, above.)
+	if act == Act::Fast && (state.out || state.tried >= attempts) {
 		return Ok(Acted::NotWaiting);
 	}
 	// The same act again changes nothing the queue reads, so writes nothing.
@@ -177,7 +176,11 @@ mod tests {
 
 	async fn acted(pool: &SqlitePool, subject: &str, id: &str, what: Act) -> Acted {
 		let mut conn = pool.acquire().await.unwrap();
-		act(&mut conn, subject, id, what, 3, "now").await.unwrap()
+		let keys = crate::transcript::Keys {
+			plain: "m",
+			verbatim: "m+verbatim-1",
+		};
+		act(&mut conn, subject, id, what, keys, 3, "now").await.unwrap()
 	}
 
 	async fn acts(pool: &SqlitePool) -> i64 {

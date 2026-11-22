@@ -161,8 +161,8 @@ pub fn again(base: &str, asked: i64) -> String {
 
 /// The key a note waits on, as SQL over a note `b` and its base key `b.base`.
 ///
-/// [`waiting_first`] and [`backlog`] each hold it word for word (a test holds
-/// them to it): the note's newest request to hear it again asked under
+/// [`waiting_first`], [`backlog`] and `crate::fast_track::act` each hold it
+/// word for word (a test holds them to it): the note's newest request to hear it again asked under
 /// `b.base`, the key it is heard under now, names it; with none, `b.base`
 /// itself.
 pub const STANDING_KEY: &str = "COALESCE((SELECT r.hears_under FROM voice_note_attention r WHERE r.subject_id = b.subject_id AND r.note_id = b.note_id AND r.act = 'hear_again' AND r.asked_under = b.base ORDER BY r.n DESC LIMIT 1), b.base) AS key";
@@ -704,6 +704,11 @@ mod tests {
 	const A: &str = "subject-a";
 	const B: &str = "subject-b";
 	const SMALL: &str = "ggml-small-q5_1.bin";
+	/// [`SMALL`]'s keys, as a pass hears with them.
+	const SMALL_KEYS: Keys<'static> = Keys {
+		plain: SMALL,
+		verbatim: "ggml-small-q5_1.bin+verbatim-1",
+	};
 	const MEDIUM: &str = "ggml-medium-q5_0.bin";
 
 	async fn pool() -> SqlitePool {
@@ -1157,7 +1162,9 @@ mod tests {
 				.unwrap();
 		}
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, 3, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, SMALL_KEYS, 3, "now")
+			.await
+			.unwrap();
 		drop(conn);
 		let order = |rows: Vec<Waiting>| rows.into_iter().map(|row| (row.note_id, row.urgency)).collect::<Vec<_>>();
 		let read = || async {
@@ -1192,7 +1199,9 @@ mod tests {
 			"failed once: Wanted, behind every note tried fewer times (TR1)"
 		);
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, 3, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Cancel, SMALL_KEYS, 3, "now")
+			.await
+			.unwrap();
 		drop(conn);
 		assert_eq!(
 			read().await,
@@ -1207,7 +1216,9 @@ mod tests {
 		// Marked again after a try: Wanted, never FastTrack, so no mark lets a
 		// tried note past a fresher one.
 		let mut conn = pool.acquire().await.unwrap();
-		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, 3, "now").await.unwrap();
+		crate::fast_track::act(&mut conn, A, "chosen", crate::fast_track::Act::Fast, SMALL_KEYS, 3, "now")
+			.await
+			.unwrap();
 		drop(conn);
 		assert_eq!(
 			read().await,
@@ -1511,17 +1522,21 @@ mod tests {
 		assert_eq!(left, [B], "A's words went with A's account, B's stayed");
 	}
 
-	/// The queue and its backlog read the key a note waits on by one
-	/// fragment (W21 and W12 on #1091's seam): each holds
+	/// The queue, its backlog and the fast-track's check read the key a note
+	/// waits on by one fragment (W21 and W12 on #1091's seam): each holds
 	/// [`super::STANDING_KEY`] word for word, so they never disagree on which
 	/// key a take heard again waits on.
 	#[test]
 	fn the_queue_and_its_backlog_read_one_standing_key() {
 		const SOURCE: &str = include_str!("transcript.rs");
-		for signature in ["pub async fn waiting_first(", "pub async fn backlog("] {
-			let from = SOURCE.find(signature).unwrap();
-			let to = from + SOURCE[from..].find("\n}\n").unwrap();
-			assert!(SOURCE[from..to].contains(super::STANDING_KEY), "{signature}");
+		for (source, signature) in [
+			(SOURCE, "pub async fn waiting_first("),
+			(SOURCE, "pub async fn backlog("),
+			(include_str!("fast_track.rs"), "pub async fn act("),
+		] {
+			let from = source.find(signature).unwrap();
+			let to = from + source[from..].find("\n}\n").unwrap();
+			assert!(source[from..to].contains(super::STANDING_KEY), "{signature}");
 		}
 	}
 
