@@ -1,26 +1,26 @@
 {
-  "serial": 126,
-  "server_commit": "6224e087340e7785153a8071a0f8b638ca966f2c",
+  "serial": 130,
+  "server_commit": "4ce7603c3f1ff1f166f2212b87a204094e5695ae",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:v0@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"},
     "dashboard-builder": {"image": "pgathondu/dashboard-builder:9f7548d5441d839bd0134d7db527e75748867bae@sha256:11ad799995080d7c038760bf5a490bd06d9248453cfeeb39d6fac5ae75647384"},
-    "file-host": {"image": "pgathondu/server:bbf2178ccb8171c3a675806c1c12000a21c82889@sha256:51abcac8d68ae20970a4a7e1907ad988390975d3ebbc2463fe5cf7129e13a87e"},
+    "file-host": {"image": "pgathondu/server:6224e087340e7785153a8071a0f8b638ca966f2c@sha256:07ee740068b3347fbcca7696b7166d78149aec3fdaa0e62756d7a77c28c9935c"},
     "grafana": {"image": "grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2"},
     "kokoro": {"image": "pgathondu/kokoro:9f7548d5441d839bd0134d7db527e75748867bae@sha256:4090a4009b94da98e8ead3518dee8bcb2a40b5828db7db86b67a235f3a51845d"},
     "metabase": {"image": "metabase/metabase:v0.65.x@sha256:06b66bf50d5b46ad632a836aeb62149eaab768033f9d3dae72ad4b10e6427590"},
     "nats": {"image": "nats:2.15@sha256:9d85d87039bfba33baf48de4da32a2ee572bcd6c94f6365d05733a672de49253"},
     "nats-exporter": {"image": "natsio/prometheus-nats-exporter:0.20.3@sha256:4b8ddc1c86fec360b5cd3d5e1fbc6fb52bdafd5805bba3901cc52926538af255"},
     "node_exporter": {"image": "prom/node-exporter:v1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0"},
-    "orchestrator": {"image": "pgathondu/orchestrator:9f7548d5441d839bd0134d7db527e75748867bae@sha256:88b653a0dcbabe1c84209e90f9a6c885094f8b29c4baf5563e29122a4d1485f4"},
+    "orchestrator": {"image": "pgathondu/orchestrator:9750c1e0d653cb947a3b0893b30d3fecd67faacb@sha256:3d506272fec77f4e369cc7449e7a0704de563e9d251768eaf0fba88141179101"},
     "process-exporter": {"image": "ncabatoff/process-exporter:0.8.7@sha256:bc2363ff7e05ada1b2a694f06c43dc824dc26cd6e487b5d36b66b1a40df4e842"},
     "prometheus": {"image": "prom/prometheus:v3@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06"},
     "redis": {"image": "redis:8.10@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53"},
     "redis-exporter": {"image": "oliver006/redis_exporter:v1.97.0@sha256:f5f903fbe77571d455ede0453b084d6840bc62fc105efac001034421cab83b99"},
     "redisinsight": {"image": "redislabs/redisinsight:3.8@sha256:b5e19ee240abef6edb435871b90ff8a210995422e8e018ab61c0339d318a1f84"},
-    "render": {"image": "pgathondu/render:81dd275f0944e380e2c55876df5e3520176be597@sha256:d6aa537f1657248b87a01615bc7cba6b3ee26d3fb43690178d75b2f153aa4f54"},
+    "render": {"image": "pgathondu/render:5747ec996bf437336b4b86c5cec5e3b650e0ec16@sha256:d1158b81cb7d632c8ee3453dc3d9ca2d92aa04ef99f3c361a921962db1bbdf30"},
     "resume-render": {"image": "pgathondu/resume-render:11476468271838c7b7c9e31f96f6fa14aaa37a0d@sha256:bc7609abdebd091aa22dfa18be3705cf2281319f7edfa6aa5bb2a5cba29f1be2"},
-    "rust-runner": {"image": "pgathondu/rust-runner:40c6b36773ffdf9e6e617ac00c8a4d05e0ab7722@sha256:ab776b58789259003b8a0a0dfd445b5c2e135427da32ae345e9e36443edebfb4"},
+    "rust-runner": {"image": "pgathondu/rust-runner:9750c1e0d653cb947a3b0893b30d3fecd67faacb@sha256:652ddd68ca1df0601e371389781adfde229692b626a65cf07b7155865584e0bf"},
     "www": {"image": "pgathondu/www:0.1.73@sha256:f770d7b132cedee5ec0c9c8759ab3535d2c4549bc8eae0bcda81418fd61e2357"}
   }
 }
