@@ -1,7 +1,7 @@
 # The schema: how each table lives
 
 S13 (#511), under `[EPIC][DRIFT]` (#481). The schema's rules used to live in migration
-comments and per-crate tests: hand-written append-only triggers (15 at the recon, 74 now), each
+comments and per-crate tests: hand-written append-only triggers (15 at the recon, 75 now), each
 held only by its own crate's test where one exists, and a "No REFERENCES, matching every other
 table in this schema" repeated in four migrations. This doc writes them down once, and
 `apps/servers/file_host/src/lifecycle.rs` holds them against the migrated schema and the
@@ -25,10 +25,10 @@ mutable here, and that overlap is exactly what `docs/discard-sites.md` lists.
 Every table the migrations leave standing has exactly one. Each describes the code as it is,
 not as it might become, and none is a ruling on whether it should stay that way.
 
-| Lifecycle | Means | Tables (at `14eb6c2`) |
+| Lifecycle | Means | Tables (at `3d3739d`) |
 |---|---|---|
-| `AppendOnly` | Written once, never updated: a trigger aborts every `UPDATE`. A row leaves only as its triggers allow: with its account (`<t>_leaves_with_account`, docs/identity.md invariant 12), never (`<t>_is_kept`, `<t>_no_delete`), or at a discard site `APPEND_ONLY_REWRITES` names. #511 calls these "records"; the name here says the mechanism, so it does not collide with the ledger's `record`. | 74 |
-| `State` | Current state: a row is rewritten or deleted in place, and the value before is not kept. A week's draft (`rust_week_draft`, `interview_week_draft`) is state; its final is append-only. | 11 (with sqlx's `_sqlx_migrations`) |
+| `AppendOnly` | Written once, never updated: a trigger aborts every `UPDATE`. A row leaves only as its triggers allow: with its account (`<t>_leaves_with_account`, docs/identity.md invariant 12), never (`<t>_is_kept`, `<t>_no_delete`), or at a discard site `APPEND_ONLY_REWRITES` names. #511 calls these "records"; the name here says the mechanism, so it does not collide with the ledger's `record`. | 75 |
+| `State` | Current state: a row is rewritten or deleted in place, and the value before is not kept. A week's draft (`rust_week_draft`, `interview_week_draft`) is state; its final is append-only. So is `stage_want`, replaced whole by each waiter's pass. | 12 (with sqlx's `_sqlx_migrations`) |
 | `Corpus` | Content whose source lives outside this database (a seed migration, git, some-ui's corpus), and what is derived from it (`voice_note_meaning`, made from a take's words). | 7 |
 | `Ephemeral` | Rows that leave by design after a horizon or beyond a cap, not by anyone's act. | 4 |
 | `Legacy` | Kept from an earlier era of the server. Whether it stays is S12's call 2 (#492), not this doc's. | 2 (`mood_events`, `tabs`) |
@@ -59,11 +59,12 @@ the seed). They are classified by today's code, and the call may move them.
    an `UPDATE`, a `DELETE FROM`, a `REPLACE INTO` (or `INSERT OR REPLACE`), or an upsert's
    `DO UPDATE` against an append-only table. The only way through is an entry in
    `APPEND_ONLY_REWRITES` that says why that row may change, the way a `Lifetime:` line does in
-   paulgsc/some-ui, and an entry that matches nothing fails too. Six entries stand, all in
+   paulgsc/some-ui, and an entry that matches nothing fails too. Seven entries stand, all in
    `crates/db/voice/src/delete.rs`: My data's delete of a take (MD3) removes its `voice_note`,
-   audio, transcripts, words, set-aside mark and conveyor moves, and `let_go_audio` drops an
+   audio, transcripts, words, set-aside mark, conveyor moves and fast-track marks, and `let_go_audio` drops an
    interview retake's audio (IW8). Each is a site in some-ui's `docs/discard-sites.md` with the
-   owner's ruling, and each leaves a receipt in `voice_note_deletion`. Test code is read out
+   owner's ruling, and each leaves a receipt in `voice_note_deletion`; that list's row for the
+   take does not yet name `voice_note_fast_track` (#1090), which landed after it. Test code is read out
    lexically: `#[cfg(test)]`, `#[test]`, `#[tokio::test]` and `#[sqlx::test]` items, out-of-line
    test modules, `#![cfg(test)]` files, and `tests/`, `benches/` and `examples/` directories.
    *It does not see* SQL built at run time. Account deletion's sweep over
@@ -144,13 +145,13 @@ A new table needs all of these in the PR that creates it. Each fails a check unt
 A rebuild of an existing table (to widen a `CHECK`, say) recreates every trigger it dropped,
 both `<t>_is_append_only` and `<t>_leaves_with_account`. Each rule above fails one it forgets.
 
-## Baselines (re-measured at `14eb6c2`, 2026-11-21)
+## Baselines (re-measured at `3d3739d`, 2026-11-22)
 
 | Measure | At the recon (`4acfe90`, 10-26) | Now |
 |---|---|---|
-| Tables | 35 | 98, with `_sqlx_migrations` |
-| Append-only tables, held by a trigger | 15 | 74 (58 `<t>_is_append_only`, 16 `<t>_no_update`) |
-| `AFTER DELETE ON account` triggers | 15 | 49 |
+| Tables | 35 | 100, with `_sqlx_migrations` |
+| Append-only tables, held by a trigger | 15 | 75 (59 `<t>_is_append_only`, 16 `<t>_no_update`) |
+| `AFTER DELETE ON account` triggers | 15 | 51 |
 | Tables declaring `REFERENCES` | 2 | 15 (18 references) |
 | Discard sites on home | 6 (named in #511) | 32 rows in some-ui's `docs/discard-sites.md`, "On home" |
-| Production rewrites of an append-only table | not measured | 6 tables, all at My data's delete and the interview retake let-go, each listed |
+| Production rewrites of an append-only table | not measured | 7 tables, all at My data's delete and the interview retake let-go, each listed |

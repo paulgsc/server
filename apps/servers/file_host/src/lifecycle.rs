@@ -210,6 +210,11 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 		State,
 		"a study session: rewritten in place (upsert, status, refresh of an unstarted proposal) and deleted by its owner",
 	),
+	(
+		"stage_want",
+		State,
+		"what each waiter waits on in a shared stage right now (#1091): derived from the waiter's own record and replaced whole by its next pass",
+	),
 	("storage_sample", AppendOnly, "one row set per UTC day; never replaced or deleted"),
 	("studio_friction", AppendOnly, "how each Studio sitting went"),
 	("studio_sitting_event", AppendOnly, "every Studio sitting event sent home"),
@@ -226,6 +231,7 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 	("voice_note_attention", AppendOnly, "each act the owner took on a take home could not hear (HEARD3)"),
 	("voice_note_audio", AppendOnly, "each voice note's audio bytes"),
 	("voice_note_deletion", AppendOnly, "a receipt for each voice note deleted for good from My data (MD3)"),
+	("voice_note_fast_track", AppendOnly, "each fast-track or cancel the owner took on a take (#1090); the newest act decides"),
 	("voice_note_meaning", Corpus, "a take's meaning vector, derived from its chosen words and replaced when they change; deleted with its take (ST32)"),
 	("voice_note_set_aside", AppendOnly, "each take set aside by Let go; the take is kept (MIC2)"),
 	("voice_transcript", AppendOnly, "each transcription attempt's ending"),
@@ -345,6 +351,13 @@ const APPEND_ONLY_REWRITES: &[(&str, &str, &str, usize, &str)] = &[
 		"voice_note_audio",
 		2,
 		"My data's delete of a take (MD3): a discard site paulgsc/some-ui's docs/discard-sites.md lists with the owner's ruling (some-ui#2474, #2473, #3076); a receipt stays in voice_note_deletion; and let_go_audio's retakes (IW8, some-ui#3175, C560), the same list",
+	),
+	(
+		"crates/db/voice/src/delete.rs",
+		"DELETE",
+		"voice_note_fast_track",
+		1,
+		"My data's delete of a take (MD3) takes its fast-track marks with it, as its migration says (#1090): the site paulgsc/some-ui's docs/discard-sites.md lists for the take, whose row does not yet name this table",
 	),
 	(
 		"crates/db/voice/src/delete.rs",
