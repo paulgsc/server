@@ -342,7 +342,6 @@ pub(crate) fn flag(team: &str, foul: Option<&str>) -> String {
 /// `CHI gained 58`, `NE 48-yard touchdown`, `CHI 30-yard interception
 /// return, touchdown`, `NE 45-yard kick return`.
 pub(crate) fn big_play(play: &BigPlay) -> String {
-	let yards = play.yards.to_string();
 	let returned = match play.kind {
 		Kind::Pass | Kind::Run => None,
 		Kind::KickReturn => Some("kick return"),
@@ -350,6 +349,14 @@ pub(crate) fn big_play(play: &BigPlay) -> String {
 		Kind::InterceptionReturn => Some("interception return"),
 		Kind::FumbleReturn => Some("fumble return"),
 	};
+	// A turnover with no return of its own is big without its yards (C967):
+	// "CHI interception return", not "CHI 0-yard interception return".
+	if play.yards < 1 {
+		if let Some(what) = returned {
+			return [play.by.as_str(), " ", what, if play.scored { ", touchdown" } else { "" }].concat();
+		}
+	}
+	let yards = play.yards.to_string();
 	match (returned, play.scored) {
 		(None, true) => [&play.by, " ", &yards, "-yard touchdown"].concat(),
 		(None, false) => [&play.by, " gained ", &yards].concat(),
