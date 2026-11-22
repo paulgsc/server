@@ -28,8 +28,17 @@
 //!   leaving. The app going to the back writes a `left` with no `taken`, and
 //!   coming back a new `taken`, so a step spent across that is two stretches:
 //!   `left` counts stretches on screen, and the median is a stretch's.
-//!   Finer reads need the event to say more (a place on `taken`), which is
-//!   the owner's call, as taps per step are.
+//!   Since paulgsc/some-ui#3367 (the owner's answer: yes) a `left` may say
+//!   the screen it went to (`next`), so `nexts` counts, per place, the
+//!   `left`s that went to each screen; the report writer, holding the
+//!   registry, reads finishing and leaving part-way off them. A `left` with
+//!   no `next` (the app put away, or an older build's) is counted in `left`
+//!   and never guessed into one. `nextsBefore` names the surfaces on which a
+//!   `left` with a `next` was made by the window's start: there, a `left`
+//!   with none is the app put away (the phone says `elsewhere` for a screen
+//!   closing to anywhere it can't name), unless a device still runs an older
+//!   build.
+//!   Taps per step stay the owner's for later.
 //! - **Debrief** is Applying's friction, 1 to 5, as the Jobs record holds
 //!   it (`jobs_repo::debrief_frictions`): how many said it and their median.
 //! - **"Fewer than 5" (ask #2701).** Counts leave raw: banding them is the
@@ -43,12 +52,16 @@
 //! - **Bounded.** Opened is one read joined against the 28 day edges on
 //!   `app_event_by_family`; places one range read of the window, at most
 //!   [`WINDOW_READ`](crate::WINDOW_READ) `left`s (`partial` past it);
+//!   `nextsBefore` one indexed read per surface back from the window's start
+//!   to the newest `left` with a `next` there (the whole earlier record until
+//!   a build sends one, then a few rows);
 //!   debrief one range read of `jobs_event_order`.
 
 use crate::{EventError, IsoWeek};
 use chrono::Duration;
 use serde::Serialize;
 use sqlx::SqliteConnection;
+use std::collections::BTreeMap;
 
 /// The days the measures run over, ending with the asked week: C861's
 /// 28-day window.
@@ -83,6 +96,21 @@ pub struct PlaceTime {
 	pub moved_on: i64,
 	/// The median time in it, in milliseconds; `null` under [`UNDER`].
 	pub median_ms: Option<i64>,
+	/// Of those `left`s, the ones that said the screen they went to, counted
+	/// per screen, in id order. A `left` with no `next` (the app went to the
+	/// back, or a build before the field) is in none of them.
+	pub nexts: Vec<NextCount>,
+}
+
+/// How many `left`s of one place went to one screen (paulgsc/some-ui#3367).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextCount {
+	/// The screen, by the app's id: one of the affordance's places,
+	/// `<affordance>.<place>` of its pipeline, or `elsewhere`. Which is the
+	/// affordance's own is the registry's, and so the report writer's to tell.
+	pub next: String,
+	pub left: i64,
 }
 
 /// Applying's debrief friction over the window.
@@ -113,6 +141,13 @@ pub struct Friction {
 	pub opened: Vec<Opened>,
 	/// Every place left in the window, in the same order, then by place.
 	pub places: Vec<PlaceTime>,
+	/// The surfaces (`apk`, `web`) on which the subject made a `left` that
+	/// said where it went at or before the window's first instant, in that
+	/// order: on them every build that ran in the window could say it, so the
+	/// writer may read their `nexts` as whole (a device kept on an older build
+	/// after another of the same surface moved on is the tolerance it
+	/// accepts). Per surface, since the web build ships before the phone's.
+	pub nexts_before: Vec<String>,
 	/// More `left`s than [`WINDOW_READ`](crate::WINDOW_READ) fell in the
 	/// window, and only the newest were read.
 	pub partial: bool,
@@ -176,6 +211,26 @@ pub async fn friction(conn: &mut SqliteConnection, subject: &str, week: IsoWeek,
 	.await?;
 
 	let (places, partial) = places(conn, subject, &from, &to).await?;
+	// Per surface, newest first from the window's start: once builds send
+	// `next`, the first few rows back hold one, and the read stops there.
+	let mut nexts_before = Vec::new();
+	for surface in ["apk", "web"] {
+		let held = sqlx::query_scalar!(
+			r#"SELECT at AS "at!: String" FROM app_event
+			WHERE subject_id = ?1 AND family = 'engagement' AND at <= ?2
+				AND json_extract(body, '$.kind') = 'left' AND json_extract(body, '$.surface') = ?3
+				AND json_extract(body, '$.next') IS NOT NULL
+			ORDER BY at DESC LIMIT 1"#,
+			subject,
+			from,
+			surface
+		)
+		.fetch_optional(&mut *conn)
+		.await?;
+		if held.is_some() {
+			nexts_before.push(surface.to_owned());
+		}
+	}
 
 	let frictions = jobs_repo::debrief_frictions(conn, subject, &from, &to).await?;
 	#[allow(clippy::cast_precision_loss)] // 1 to 5
@@ -191,6 +246,7 @@ pub async fn friction(conn: &mut SqliteConnection, subject: &str, week: IsoWeek,
 		measured_days: i64::try_from(measured_days).unwrap_or(i64::MAX),
 		opened,
 		places,
+		nexts_before,
 		partial,
 		debrief,
 	})
@@ -201,9 +257,10 @@ async fn places(conn: &mut SqliteConnection, subject: &str, from: &str, to: &str
 	let limit = crate::WINDOW_READ + 1;
 	let rows = sqlx::query!(
 		r#"SELECT pipeline AS "pipeline!: String", affordance AS "affordance!: String", surface AS "surface!: String",
-			place AS "place!: String", ms AS "ms!: i64", moved AS "moved!: bool", at AS "at!: String"
+			place AS "place!: String", ms AS "ms!: i64", moved AS "moved!: bool", at AS "at!: String", next AS "next: String"
 		FROM (SELECT l.at AS at, json_extract(l.body, '$.pipeline') AS pipeline, json_extract(l.body, '$.affordance') AS affordance,
 				json_extract(l.body, '$.surface') AS surface, json_extract(l.body, '$.place') AS place,
+				json_extract(l.body, '$.next') AS next,
 				CAST(ROUND((julianday(l.at) - julianday(json_extract(l.body, '$.startedAt'))) * 86400000) AS INTEGER) AS ms,
 				EXISTS (SELECT 1 FROM app_event AS t
 					WHERE t.subject_id = l.subject_id AND t.family = 'engagement' AND t.at = l.at
@@ -237,6 +294,7 @@ async fn places(conn: &mut SqliteConnection, subject: &str, from: &str, to: &str
 
 	let mut places: Vec<PlaceTime> = Vec::new();
 	let mut times: Vec<Vec<i64>> = Vec::new();
+	let mut onward: Vec<BTreeMap<String, i64>> = Vec::new();
 	for row in rows {
 		let same = places
 			.last()
@@ -250,17 +308,23 @@ async fn places(conn: &mut SqliteConnection, subject: &str, from: &str, to: &str
 				left: 0,
 				moved_on: 0,
 				median_ms: None,
+				nexts: Vec::new(),
 			});
 			times.push(Vec::new());
+			onward.push(BTreeMap::new());
 		}
-		if let (Some(place), Some(time)) = (places.last_mut(), times.last_mut()) {
+		if let (Some(place), Some(time), Some(went)) = (places.last_mut(), times.last_mut(), onward.last_mut()) {
 			place.left += 1;
 			place.moved_on += i64::from(row.moved);
 			time.push(row.ms);
+			if let Some(next) = row.next {
+				*went.entry(next).or_insert(0) += 1;
+			}
 		}
 	}
-	for (place, time) in places.iter_mut().zip(&times) {
+	for ((place, time), went) in places.iter_mut().zip(&times).zip(onward) {
 		place.median_ms = median(time, i64::midpoint);
+		place.nexts = went.into_iter().map(|(next, left)| NextCount { next, left }).collect();
 	}
 	Ok((places, partial))
 }

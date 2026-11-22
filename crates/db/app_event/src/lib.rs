@@ -724,8 +724,9 @@ mod tests {
 						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "days": 1 }
 					],
 					"places": [
-						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "place": "quiz", "left": 1, "movedOn": 0, "medianMs": null }
+						{ "pipeline": "topik", "affordance": "routine-read-aloud", "surface": "apk", "place": "quiz", "left": 1, "movedOn": 0, "medianMs": null, "nexts": [] }
 					],
+					"nextsBefore": [],
 					"partial": false, "debrief": { "said": 0, "median": null }
 				}
 			}),
@@ -774,10 +775,17 @@ mod tests {
 			("4", "2026-11-07T09:00:00.000Z", "2026-11-07T09:00:50.000Z"),
 		] {
 			events.push(step(&(String::from("t") + n), start, "taken", None));
-			events.push(step(&(String::from("r") + n), at, "left", Some((start, "read"))));
+			let mut left = step(&(String::from("r") + n), at, "left", Some((start, "read")));
+			// Four say where they went (#3367); the fifth is an older build's.
+			if n != "4" {
+				left["next"] = json!("decide");
+			}
+			events.push(left);
 			events.push(step(&(String::from("d") + n), at, "taken", None));
 		}
-		events.push(step("x1", "2026-11-03T09:02:00.000Z", "left", Some(("2026-11-03T09:00:10.000Z", "decide"))));
+		let mut out = step("x1", "2026-11-03T09:02:00.000Z", "left", Some(("2026-11-03T09:00:10.000Z", "decide")));
+		out["next"] = json!("today.today");
+		events.push(out);
 		// A take of another affordance at the same instant is not a move.
 		events.push(step("x2", "2026-11-08T09:01:00.000Z", "left", Some(("2026-11-08T09:00:00.000Z", "decide"))));
 		let mut other = engaged("x3", "2026-11-08T09:01:00.000Z", "routine-lens", "taken");
@@ -816,13 +824,27 @@ mod tests {
 					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "days": 6 }
 				],
 				"places": [
-					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "decide", "left": 2, "movedOn": 0, "medianMs": null },
-					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "read", "left": 5, "movedOn": 5, "medianMs": 30_000 }
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "decide", "left": 2, "movedOn": 0, "medianMs": null,
+						"nexts": [{ "next": "today.today", "left": 1 }] },
+					{ "pipeline": "jobs", "affordance": "todays-pick", "surface": "apk", "place": "read", "left": 5, "movedOn": 5, "medianMs": 30_000,
+						"nexts": [{ "next": "decide", "left": 4 }] }
 				],
+				"nextsBefore": [],
 				"partial": false,
 				"debrief": { "said": 5, "median": 4.0 }
 			}),
-			"five taken days and one Sunday of two offers; B's and next week's are not counted; another affordance's take is no move; the unsaid and the earlier debrief are not said"
+			"five taken days and one Sunday of two offers; B's and next week's are not counted; another affordance's take is no move; a left with no next is in no next's count; the unsaid and the earlier debrief are not said"
+		);
+
+		// A left that said where it went, before the window: the window's nexts are whole.
+		let mut early = step("n0", "2026-10-18T09:00:00.000Z", "left", Some(("2026-10-18T08:59:00.000Z", "read")));
+		early["next"] = json!("decide");
+		put(&pool, A, &early).await.unwrap();
+		let read = super::weekly(&mut pool.acquire().await.unwrap(), A, week, "2026-12-01T00:00:00.000Z").await.unwrap();
+		assert_eq!(
+			read.friction.nexts_before,
+			["apk"],
+			"a next on the phone on the 18th is before the window of the 19th on; none on the web"
 		);
 
 		let fresh = pool_with(&[step("f1", "2026-11-14T09:00:00.000Z", "taken", None)]).await;
