@@ -1745,3 +1745,143 @@ tests:
       - eval_time: 45m
         alertname: OutboundNoAnswer
         exp_alerts: []
+
+  - name: a shared stage whose oldest item outlives its promise is degraded (VH7, some-ui#3333)
+    interval: 1m
+    input_series:
+      - series: 'stage_promise_seconds{job="file_host",stage="transcriber",objective="VH7"}'
+        values: '900x40'
+      # The oldest note reached home at 60 s and is still waiting, every
+      # pass: 900 s past it is 16 minutes in, and held 5 minutes it fires.
+      - series: 'stage_oldest_waiting_since_timestamp_seconds{job="file_host",stage="transcriber"}'
+        values: '60x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: StageDegraded
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: StageDegraded
+        exp_alerts:
+          - exp_labels:
+              stage: transcriber
+              objective: VH7
+              says: "Home's transcriber is slow: something has waited on it longer than it promises. The file_host dashboard's SHARED STAGES row says how long, and what waits on it."
+    promql_expr_test:
+      - expr: stage:oldest_waiting:seconds
+        eval_time: 10m
+        exp_samples:
+          - labels: 'stage:oldest_waiting:seconds{job="file_host",stage="transcriber"}'
+            value: 540
+
+  - name: a shared stage that keeps up, or has nothing waiting, is not degraded
+    interval: 1m
+    input_series:
+      - series: 'stage_promise_seconds{job="file_host",stage="transcriber",objective="VH7"}'
+        values: '900x60'
+      # Each pass finds its oldest a minute or two old; then nothing waits.
+      - series: 'stage_oldest_waiting_since_timestamp_seconds{job="file_host",stage="transcriber"}'
+        values: '0 0+60x30 0x29'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: StageDegraded
+        exp_alerts: []
+      - eval_time: 55m
+        alertname: StageDegraded
+        exp_alerts: []
+    promql_expr_test:
+      - expr: stage:oldest_waiting:seconds
+        eval_time: 50m
+        exp_samples:
+          - labels: 'stage:oldest_waiting:seconds{job="file_host",stage="transcriber"}'
+            value: 0
+
+  - name: a shared stage that tries and almost never ends is broken (VH7, some-ui#3333)
+    interval: 1m
+    input_series:
+      - series: 'stage_promise_seconds{job="file_host",stage="transcriber",objective="VH7"}'
+        values: '900x60'
+      - series: 'stage_attempts_per_item{job="file_host",stage="transcriber"}'
+        values: '3x60'
+      # Every note runs to its 600 s deadline: one failed attempt each 10
+      # minutes, nothing heard. The fourth, more than one note's 3, is at
+      # 43 minutes; held 5, it fires.
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="failed"}'
+        values: '0x9 1x10 2x10 3x10 4x10 5x10'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="done"}'
+        values: '0x60'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="refused"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 46m
+        alertname: StageBroken
+        exp_alerts: []
+      - eval_time: 49m
+        alertname: StageBroken
+        exp_alerts:
+          - exp_labels:
+              stage: transcriber
+              objective: VH7
+              says: "Home's transcriber is broken: it made more attempts in the last hour than one item gets, and almost none ended. The file_host dashboard's SHARED STAGES row shows it; its own dashboard says how each attempt ended."
+
+  - name: a shared stage whose attempts mostly end, or that tries too few to say, is not broken
+    interval: 1m
+    input_series:
+      - series: 'stage_promise_seconds{job="file_host",stage="transcriber",objective="VH7"}'
+        values: '900x60'
+      - series: 'stage_attempts_per_item{job="file_host",stage="transcriber"}'
+        values: '3x60'
+      # Two deadlines and a refusal among twenty heard: working.
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="failed"}'
+        values: '0x10 1x10 2x40'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="done"}'
+        values: '0+1x20 20x40'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="refused"}'
+        values: '0x5 1x55'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: StageBroken
+        exp_alerts: []
+
+  - name: one bad note failing all its attempts is that note's, not a broken shared stage
+    interval: 1m
+    input_series:
+      - series: 'stage_promise_seconds{job="file_host",stage="transcriber",objective="VH7"}'
+        values: '900x160'
+      - series: 'stage_attempts_per_item{job="file_host",stage="transcriber"}'
+        values: '3x160'
+      # Counters already past 0 from earlier hours, so increase() extrapolates
+      # the hour's 3 failures to a little over 3, as it does on home: a
+      # counter starting at 0 is not extrapolated back past it, which would
+      # hide that.
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="failed"}'
+        values: '5x99 6x10 7x10 8x40'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="done"}'
+        values: '50x160'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="refused"}'
+        values: '0x160'
+    alert_rule_test:
+      - eval_time: 125m
+        alertname: StageBroken
+        exp_alerts: []
+      - eval_time: 150m
+        alertname: StageBroken
+        exp_alerts: []
+
+  - name: a shared stage that refuses what it cannot do is working, not broken
+    interval: 1m
+    input_series:
+      - series: 'stage_promise_seconds{job="file_host",stage="transcriber",objective="VH7"}'
+        values: '900x60'
+      - series: 'stage_attempts_per_item{job="file_host",stage="transcriber"}'
+        values: '3x60'
+      # Ten notes that don't decode, each refused: the stage said so.
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="refused"}'
+        values: '0+1x10 10x50'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="failed"}'
+        values: '0x60'
+      - series: 'stage_attempts_total{job="file_host",stage="transcriber",result="done"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: StageBroken
+        exp_alerts: []

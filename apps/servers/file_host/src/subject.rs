@@ -248,6 +248,14 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each act of the owner's reconciling a voice note home could not hear (paulgsc/server#912, HEARD3): the note's id, whether the owner kept it, will record it again or deleted it, which verdict that answered, and when; never what was said; see docs/identity.md invariant 23",
 	),
 	(
+		"voice_note_fast_track",
+		"each time the owner put one of their takes at the front of home's transcriber's line, or took that back (paulgsc/server#1090): the take's id, the act and when; never what was said; see docs/identity.md invariant 23",
+	),
+	(
+		"stage_want",
+		"which of the owner's voice notes a cards essay home holds back is waiting to have heard (paulgsc/server#1091): the essay's key and the note's id, so the transcriber hears those first; rewritten each pass, never what was said; see docs/shared-stages.md",
+	),
+	(
 		"studio_take_on_drive",
 		"each of the owner's Studio takes home holds that the build-journal session found in Drive's takes folder too (paulgsc/some-ui#2401): the take's id, when the session looked and the mailbox list that said so; no audio and nothing of Drive's; see docs/identity.md invariant 23",
 	),
