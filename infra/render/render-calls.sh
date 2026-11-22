@@ -26,6 +26,7 @@
 # | cards-essay   | /cards-essays/<key>.json (cards_essays) | /renders/cards-essay/<key>/ | cards.mp4   |
 # | interview-essay | /interview-essays/<week>/essay.json (essays) | /renders/interview-essay/<week>/ | essay.mp4 |
 # | report        | /report-weeks/<week>.json (report_weeks) | /renders/report/<week>/   | report.mp4  |
+# | site-shots    | /site-shots/<day>.json (site_shots)    | /renders/site-shots/<day>/  | server.mp4  |
 #
 # A week of the call is one video or a series of parts (template version 5,
 # paulgsc/some-ui#2918): each part a video of at most ten minutes, cut at a
@@ -95,6 +96,22 @@
 # report's stage with each scene said by home's speaker and renders it. It
 # refuses, before anything is drawn, a week still under way or edges other
 # than the owner's week. The same file gives the same video.
+# The site's pictures (paulgsc/some-ui#3415, C1071, C1073, C1074) are keyed by the
+# day their week ended (2026-11-23): file_host gives the worker the walk's
+# sample once a week has ended (`site_shots`), and the motion walks home's
+# own Grafana over it (`motion walk home-server` and `home-cores`, the
+# grafana stage), makes the server clip from the first walk's screens
+# (`motion walkthrough`, silent) and keeps the second's one screen as the
+# cores still. The clip is encoded silent to fit the mailbox's 768 KiB for a
+# picture (SITE_CLIP_*): at full size, then at half size if it does not fit.
+# The walk reaches Grafana with a Viewer token, SITE_SHOTS_GRAFANA_TOKEN,
+# taken out of this script's environment at start and given to the walks'
+# commands alone, so no other job's command has it in its environment (it
+# stays in this process's own, as PID 1). file_host puts both pictures in
+# the mailbox and lets go of the week's folder; it also reads the week's
+# failed.log, says a failure once, and takes back a week whose picture is
+# over the cap, which would come out the same again (home-compute
+# invariant 7).
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -286,7 +303,7 @@ max_minutes() {
   esac
 }
 
-JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay report)
+JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay report site-shots)
 
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
@@ -310,6 +327,24 @@ CARDS_MEDIA=(takes snips clips)
 
 # A week's engagement report: its ISO week (file_host's `IsoWeek`).
 REPORT_KEY='^[0-9]{4}-W[0-9]{2}$'
+
+# A week of the site's pictures: the day it ended (file_host's `site_shots`).
+SHOTS_KEY='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+
+# The words of the server clip, in the published render image at the
+# motion's commit (some-ui packages/video-motion/walks).
+SITE_CLIP_WORDS=$MOTION_DIR/walks/home-server.json
+# The most bytes a site picture may hold: the mailbox's PICTURE_MAX_BYTES
+# (some-ui apps/mailbox, C1072). A clip over it at full size is made again
+# at half size; one over it then fails the week.
+SITE_PICTURE_MAX_BYTES=786432
+# The encoder the server clip is made with; render-calls.test.sh moves it.
+FFMPEG=ffmpeg
+
+# Grafana's token, for the site's walks alone: taken out of the environment
+# here, so no other job's command is given it.
+SITE_SHOTS_GRAFANA_TOKEN_HELD=${SITE_SHOTS_GRAFANA_TOKEN-}
+unset SITE_SHOTS_GRAFANA_TOKEN
 
 # The job's folders and video's name, as globals: INPUT, RENDERS, STATUS,
 # WORK, VIDEO. The work folder is on the same drive as the videos, not the
@@ -342,6 +377,9 @@ use_job() {
     report)
       INPUT=$ROOT/report-weeks RENDERS=$ROOT/renders/report STATUS=$ROOT/renders/report-worker
       WORK=$ROOT/renders/report-work VIDEO=report.mp4 ;;
+    site-shots)
+      INPUT=$ROOT/site-shots RENDERS=$ROOT/renders/site-shots STATUS=$ROOT/renders/site-shots-worker
+      WORK=$ROOT/renders/site-shots-work VIDEO=server.mp4 ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -411,6 +449,12 @@ episodes() {
         [ -e "$entry" ] || continue
         key=$(basename "$entry" .json)
         [[ "$key" =~ $REPORT_KEY ]] && echo "$key"
+      done | LC_ALL=C sort ;;
+    site-shots)
+      for entry in "$INPUT"/*.json; do
+        [ -e "$entry" ] || continue
+        key=$(basename "$entry" .json)
+        [[ "$key" =~ $SHOTS_KEY ]] && echo "$key"
       done | LC_ALL=C sort ;;
   esac
 }
@@ -548,7 +592,7 @@ holds() {
     preview) [ -e "$INPUT/$2.json" ] ;;
     rust-essay | interview-essay) [ -e "$INPUT/$2/essay.json" ] ;;
     clip-walk) [ -e "$INPUT/$2/sample.json" ] ;;
-    cards-essay | report) [ -e "$INPUT/$2.json" ] ;;
+    cards-essay | report | site-shots) [ -e "$INPUT/$2.json" ] ;;
   esac
 }
 
@@ -638,7 +682,51 @@ record() {
       # chapters) beside the video (`record:report`, paulgsc/some-ui#2915).
       (cd "$APP_DIR" && "$TSX" tests/record/report.ts "${COMMON[@]}" \
         --report-file "$INPUT/$key.json" --out "$WORK") ;;
+    site-shots)
+      site_shots "$key" ;;
   esac
+}
+
+# The site's pictures of the week `key` into $WORK/<key>: both walks of
+# home's Grafana, the server clip from the first, the cores still from the
+# second. Only the walks' commands are given Grafana's token.
+site_shots() {
+  local key=$1 out=$WORK/$1 crf scale size
+  if [ -z "$SITE_SHOTS_GRAFANA_TOKEN_HELD" ]; then
+    echo "SITE_SHOTS_GRAFANA_TOKEN is not set: the site's walks cannot reach Grafana"
+    return 2
+  fi
+  mkdir -p "$out" || return 1
+  local app
+  for app in home-server home-cores; do
+    (cd "$MOTION_DIR" && GRAFANA_TOKEN=$SITE_SHOTS_GRAFANA_TOKEN_HELD "$MOTION_TSX" src/cli.ts walk "$app" \
+      --sample "$INPUT/$key.json" --out "$out/walk-$app") || return 1
+  done
+  (cd "$MOTION_DIR" && "$MOTION_TSX" src/cli.ts walkthrough "$SITE_CLIP_WORDS" \
+    --walk "$out/walk-home-server" --out "$out/walkthrough" --brand "$BRAND_DIR") || return 1
+  # Silent, one thread and bit-exact, so the same walkthrough gives the
+  # same clip: full size first, half size if that is over the cap.
+  for crf in "26 1080:1920" "28 540:960"; do
+    scale=${crf#* } crf=${crf% *}
+    "$FFMPEG" -loglevel error -y -i "$out/walkthrough/video.mp4" -an \
+      -vf "scale=$scale:flags=lanczos" -c:v libx264 -preset slow -crf "$crf" \
+      -pix_fmt yuv420p -threads 1 -movflags +faststart -map_metadata -1 \
+      -fflags +bitexact -flags:v +bitexact "$out/server.mp4" || return 1
+    size=$(stat -c %s "$out/server.mp4")
+    [ "$size" -le "$SITE_PICTURE_MAX_BYTES" ] && break
+  done
+  if [ "$size" -gt "$SITE_PICTURE_MAX_BYTES" ]; then
+    echo "the server clip is $size bytes even at half size, over the mailbox's $SITE_PICTURE_MAX_BYTES"
+    return 2
+  fi
+  cp "$out/walk-home-cores/snips/01.png" "$out/cores.png" || return 1
+  size=$(stat -c %s "$out/cores.png")
+  if [ "$size" -gt "$SITE_PICTURE_MAX_BYTES" ]; then
+    echo "the cores still is $size bytes, over the mailbox's $SITE_PICTURE_MAX_BYTES"
+    return 2
+  fi
+  # Only the two pictures stay in the finished folder.
+  rm -rf "$out/walk-home-server" "$out/walk-home-cores" "$out/walkthrough"
 }
 
 # Which revision of `key` the job was given: an essay's `revision` file
@@ -667,6 +755,7 @@ finished() {
     cards-essay) echo "$WORK/$2" ;;
     interview-essay) echo "$WORK/$2" ;;
     report) echo "$WORK/$2" ;;
+    site-shots) echo "$WORK/$2" ;;
   esac
 }
 
@@ -778,7 +867,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] && [[ "$LEFT_RESTARTS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay | report) return 0 ;;
+    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay | report | site-shots) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1260,7 +1349,7 @@ inputs_of() {
       # one given for a frozen week changes nothing it is made from.
       week_made "$from" || echo "$INPUT/$from.next" ;;
     playoff-delta | rust-essay | interview-essay | clip-walk) echo "$INPUT/$2" ;;
-    preview | report) echo "$INPUT/$2.json" ;;
+    preview | report | site-shots) echo "$INPUT/$2.json" ;;
     # What file_host hands beside it is made from too (#1052), whether given
     # or not.
     cards-essay)

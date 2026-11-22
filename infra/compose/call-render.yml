@@ -1,10 +1,11 @@
 # Home makes the weekly call's video (paulgsc/some-ui#2635, ST36): every
 # deterministic step after the written week runs here, the same bytes for the
-# same week. Two services on one network that reaches nothing else:
+# same week. Two services on one network that reaches nothing else, and the
+# worker on one more, to Grafana alone, for the site's pictures:
 #
 # - `kokoro`, the speaker: Kokoro v1.0, seeded per line
 #   (infra/kokoro/say.py; infra/docker/Dockerfile.kokoro pins what).
-# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with eight jobs
+# - `render`, the worker (GWB10, paulgsc/some-ui#2084), with nine jobs
 #   (infra/render/render-calls.sh): for each week `file_host` writes to
 #   ${STORAGE}/call-weeks (`call_weeks::RENDER_FOLDER`), and each Playoff
 #   Delta fill it writes to ${STORAGE}/playoff-delta-episodes
@@ -42,7 +43,14 @@
 #   file_host writes to ${STORAGE}/report-weeks/<week>.json
 #   (`report_weeks::REPORTS_FOLDER`), home's own engagement counts once the
 #   week has ended, is written into a report by code and made into
-#   ${STORAGE}/renders/report/<week>/. Every job
+#   ${STORAGE}/renders/report/<week>/. Its ninth is the public site's
+#   pictures of home's own dashboards (paulgsc/some-ui#3415, C1071, C1073, C1074):
+#   each week file_host writes to ${STORAGE}/site-shots/<day>.json
+#   (`site_shots::SHOTS_FOLDER`), once the week has ended, is walked on home's
+#   Grafana into ${STORAGE}/renders/site-shots/<day>/, a silent clip and a
+#   still, which file_host puts in the mailbox and then lets go of. It alone
+#   reaches past this stack's own network: to Grafana, on
+#   `site-shots-network`, with a Viewer token. Every job
 #   waits on the speaker alike: `render` starts only after `kokoro` has.
 #
 #   Its image is published by paulgsc/some-ui's CI, not built here (#718,
@@ -120,6 +128,13 @@ services:
       RENDER_IMAGE: ${IMAGE_RENDER:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
       # The speaker's pin, for the same reason: a take's length is its.
       KOKORO_IMAGE: ${IMAGE_KOKORO:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
+      # A Grafana Viewer service account's token, for the site's walks:
+      # render-calls takes it out of its own environment at start, so no
+      # other job's command has it in its environment (C1074). It stays in
+      # the worker's first process's, which any code the worker runs could
+      # read, as a file would be. Unset, the site's weeks fail, saying so,
+      # and nothing else changes.
+      SITE_SHOTS_GRAFANA_TOKEN: ${SITE_SHOTS_GRAFANA_TOKEN:-}
     # Who the kernel kills first when home runs out of memory: batch
     # (docs/home-compute.md, "Who is killed first").
     oom_score_adj: 800
@@ -130,15 +145,19 @@ services:
       # file_host makes ${STORAGE}/call-weeks,
       # ${STORAGE}/playoff-delta-episodes, ${STORAGE}/preview-requests,
       # ${STORAGE}/rust-essays, ${STORAGE}/interview-essays,
-      # ${STORAGE}/clip-walks, ${STORAGE}/cards-essays and
-      # ${STORAGE}/report-weeks before it answers
+      # ${STORAGE}/clip-walks, ${STORAGE}/cards-essays,
+      # ${STORAGE}/report-weeks and ${STORAGE}/site-shots before it answers
       # its health check (call_weeks::start, pd_fills::start,
       # previews::start, rust_essays::start, clips::start, cards_essays::start,
-      # report_weeks::start), so each is its own, never Docker's.
+      # report_weeks::start, site_shots::start), so each is its own, never
+      # Docker's.
       file-host:
         condition: service_healthy
     networks:
       - call-render-network
+      # Grafana's, for the site's pictures alone (`site_shots`): the one
+      # place the worker reaches outside its own network.
+      - site-shots-network
     volumes:
       - ../render/render-calls.sh:/usr/local/bin/render-calls:ro
       # Written by file_host (`call_weeks::RENDER_FOLDER`), read here only,
@@ -210,6 +229,15 @@ services:
       - type: volume
         source: report_week_files
         target: /report-weeks
+        read_only: true
+        volume:
+          nocopy: true
+      # Written by file_host (`site_shots::SHOTS_FOLDER`), read here only,
+      # through `site_shot_files` (below): one walk's sample per ended week,
+      # Grafana's address and the window, never a picture.
+      - type: volume
+        source: site_shot_files
+        target: /site-shots
         read_only: true
         volume:
           nocopy: true
@@ -337,12 +365,28 @@ volumes:
       type: none
       o: bind
       device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/report-weeks
+  # ${STORAGE}/site-shots, where file_host writes each ended week's walk
+  # sample for the site's pictures; bound as call_week_files is, for the
+  # same reason (site_shots::start makes it).
+  site_shot_files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}/site-shots
 
 networks:
-  # Internal: neither reaches the internet or the rest of the stack. The
+  # Internal: neither reaches the internet or the rest of the stack (the
+  # worker reaches Grafana alone, on site-shots-network, below). The
   # stage's reads of paulgsc/testing are answered by the recorder from the
   # week file or the season file, and the speaker needs nothing.
   call-render-network:
     internal: true
   kokoro-network:
     internal: false
+  # Internal too: Grafana and the render worker, and nothing else, so the
+  # site's walks reach Grafana and no other service directly, nor the
+  # internet (paulgsc/some-ui C1074). Grafana answers a Viewer's queries
+  # from Prometheus, so what the token can read is whatever a Viewer can.
+  site-shots-network:
+    internal: true
