@@ -81,9 +81,17 @@ fn the_set_matches_its_released_file() {
 		files[&CATALOG_VERSION], current,
 		"the set differs from testdata/catalog.v{CATALOG_VERSION}.json. A released version never changes: bump CATALOG_VERSION and add the next file (see the README)"
 	);
+	// The whole set but its number: a version may change only a dimension
+	// (v3 adds the claim algebra and leaves the scenarios as they were).
+	let unnumbered = |set: &serde_json::Value| {
+		let mut set = set.clone();
+		set.as_object_mut().unwrap().remove("version");
+		set
+	};
 	for (version, old) in files.range(..CATALOG_VERSION) {
 		assert_ne!(
-			old["scenarios"], current["scenarios"],
+			unnumbered(old),
+			unnumbered(&current),
 			"v{version} and v{CATALOG_VERSION} are the same set: a version is only bumped for a change"
 		);
 	}
@@ -122,4 +130,69 @@ fn a_half_and_a_size_come_from_their_numbers() {
 		"an ordinary kick return is not big"
 	);
 	assert_eq!(Kind::PuntReturn.size(25), Some(Size::Big));
+}
+
+#[test]
+fn the_claim_algebra_is_closed_and_each_side_is_one_shapes() {
+	use super::{Better, Deadline, Measure, Shape, Side, Unit, Verdict};
+	// Each `ALL` lists every variant once, in declaration order. A match with
+	// no wildcard fails to compile on a new variant until it is placed here;
+	// the assert then fails until `ALL` lists it at that place.
+	let place = |measure: Measure| match measure {
+		Measure::PassRush => 0,
+		Measure::ThirdDown => 1,
+		Measure::RedZone => 2,
+		Measure::FourthDownGo => 3,
+		Measure::TwoMinute => 4,
+		Measure::TimeoutsAtHalf => 5,
+		Measure::Takeaways => 6,
+		Measure::ExplosivesAllowed => 7,
+	};
+	assert_eq!(Measure::ALL.map(place), [0, 1, 2, 3, 4, 5, 6, 7]);
+	let shape = |shape: Shape| match shape {
+		Shape::Rank => 0,
+		Shape::VsLeague => 1,
+		Shape::VsTeam => 2,
+		Shape::Trend => 3,
+	};
+	assert_eq!(Shape::ALL.map(shape), [0, 1, 2, 3]);
+	let deadline = |deadline: Deadline| match deadline {
+		Deadline::AfterGames => 0,
+		Deadline::ByWeek => 1,
+		Deadline::SeasonEnd => 2,
+	};
+	assert_eq!(Deadline::ALL.map(deadline), [0, 1, 2]);
+	let verdict = |verdict: Verdict| match verdict {
+		Verdict::Holding => 0,
+		Verdict::AgainstSoFar => 1,
+		Verdict::TooEarly => 2,
+		Verdict::SettledRight => 3,
+		Verdict::SettledWrong => 4,
+		Verdict::Withdrawn => 5,
+	};
+	assert_eq!(Verdict::ALL.map(verdict), [0, 1, 2, 3, 4, 5]);
+	// A shape's two sides differ, the higher value first, and every side is
+	// some shape's. vs-league and vs-team share theirs, so a claim stores its
+	// shape beside its side.
+	let side = |side: Side| match side {
+		Side::Highest | Side::Lowest => Shape::Rank,
+		Side::Above | Side::Below => Shape::VsLeague,
+		Side::Rising | Side::Falling => Shape::Trend,
+	};
+	for shape in Shape::ALL {
+		let [higher, lower] = shape.sides();
+		assert_ne!(higher, lower, "{shape:?}'s sides are one side");
+		assert_eq!(side(higher).sides(), shape.sides(), "{shape:?}'s sides are another shape's");
+	}
+	assert_eq!(
+		[Side::Highest, Side::Lowest, Side::Above, Side::Below, Side::Rising, Side::Falling].map(|each| Shape::ALL.iter().any(|shape| shape.sides().contains(&each))),
+		[true; 6],
+		"a side no shape has"
+	);
+	assert_eq!(Shape::VsTeam.sides(), Shape::VsLeague.sides(), "a named team is compared as the league is");
+	// The prototype's reading: a style has no good direction, and allowing
+	// big plays is good when fewer.
+	assert_eq!(Measure::FourthDownGo.better(), None);
+	assert_eq!(Measure::ExplosivesAllowed.better(), Some(Better::Lower));
+	assert!(Measure::ALL.iter().all(|m| m.unit() != Unit::SpecialTeams));
 }

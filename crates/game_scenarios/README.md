@@ -20,6 +20,29 @@ it counts from), and `units` (#3049: `offense`, `defense`, `special-teams`,
 beside it). Each is an enum here (`Half`, `Size`, `Kind`, `Unit`), so the
 engine and the phone's words agree on every value.
 
+Version 3 (#3041, D24–D26) adds `claims`, the claim algebra a bite's claim
+is folded into and home's numbers test week after week:
+
+- `measures`: what home computes per team from the plays it keeps (`Measure`),
+  each with the `unit` it is of and which way it is `better` (`higher`,
+  `lower`, or null for a style: going for it on fourth down). Each is one
+  home can compute from the plays it keeps (the verdict pass that does is
+  #3041's server half, still to come). Eight of the prototype's nine:
+  challenges won needs a reader of ESPN's challenge text, and the recorded
+  replay holds one challenge to prove it on, so it waits for a later version.
+- `shapes`: where a team's measure stands (`Shape`): `rank` among the 32
+  (`highest` or `lowest` N), `vs-league` and `vs-team` (`above` or `below`),
+  `trend` (`rising` or `falling`). A side is the direction of the value, never
+  good or bad; `better` says which is good, so "worst at pass rush" is
+  `lowest` on a `higher` measure, and a claim on a style reads the same way.
+- `deadlines` (`Deadline`): `after-games`, `by-week`, `season-end`.
+- `verdicts` (`Verdict`): `holding`, `against-so-far`, `too-early`,
+  `settled-right`, `settled-wrong`, and `withdrawn` for a claim whose bite was
+  deleted (never lost).
+
+A claim's own values (whose, N, the named team or week, the owner's reason)
+belong to the ledger, not the catalog.
+
 ## One set, two readers
 
 - **The engine** compiles against `Scenario`.
@@ -35,10 +58,12 @@ engine and the phone's words agree on every value.
 
 A bite records the `CATALOG_VERSION` it was said under, and its scenario is
 read against that version, so a released version never changes. To add,
-remove or reword a scenario:
+remove or reword a scenario, or to change a dimension (v3 changed only one,
+adding `claims`):
 
 1. Change `Scenario` and its `entry`, appending a new scenario at the end of
-   both the enum and `Scenario::ALL`.
+   both the enum and `Scenario::ALL`; or change the dimension's enum and its
+   `ALL`.
 2. Bump `CATALOG_VERSION` and write the new version's file beside the old ones:
 
    ```sh

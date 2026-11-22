@@ -11,7 +11,7 @@
 use serde::Serialize;
 
 /// The version of the set. Every bite and every weekly bundle records it.
-pub const CATALOG_VERSION: u32 = 2;
+pub const CATALOG_VERSION: u32 = 3;
 
 /// When in a game week a scenario belongs. Also the first segment of its id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -526,6 +526,192 @@ impl Unit {
 	}
 }
 
+/// What a claim measures (#3041, D26).
+///
+/// Each is a figure per team, over the season's games, that home can compute
+/// from the plays it keeps: the down, distance, spot, type and score of each,
+/// and what the scenario engine already reads of them (timeouts, turnovers,
+/// big plays). The weekly verdict pass that computes them is #3041's server
+/// half, still to come. Version 3 holds eight of the nine the owner's
+/// prototype lists (section 2c): challenges won needs a reader of ESPN's
+/// challenge text, and home's recorded replay holds one challenge to prove
+/// one on, so it waits for a later version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Measure {
+	/// Sacks per opponent dropback (a pass play or a sack).
+	PassRush,
+	/// The share of third downs converted: a first down or a score.
+	ThirdDown,
+	/// Touchdowns per red-zone trip: a possession that snaps 20 yards or
+	/// fewer from the end zone.
+	RedZone,
+	/// The share of fourth downs outside the opponent's 40 the offense goes
+	/// for rather than punts or kicks.
+	FourthDownGo,
+	/// Points per two-minute drive: a possession that starts in a half's last
+	/// two minutes.
+	TwoMinute,
+	/// Timeouts left at the end of the first half.
+	TimeoutsAtHalf,
+	/// Turnovers forced: interceptions and fumbles recovered.
+	Takeaways,
+	/// Big plays allowed, at the big-play algebra's smallest size.
+	ExplosivesAllowed,
+}
+
+/// Which way a measure is good (#3041). `None` for a style, neither good nor
+/// bad: going for it on fourth down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Better {
+	Higher,
+	Lower,
+}
+
+impl Measure {
+	pub const ALL: [Self; 8] = [
+		Self::PassRush,
+		Self::ThirdDown,
+		Self::RedZone,
+		Self::FourthDownGo,
+		Self::TwoMinute,
+		Self::TimeoutsAtHalf,
+		Self::Takeaways,
+		Self::ExplosivesAllowed,
+	];
+
+	/// The unit of the team the measure is of.
+	#[must_use]
+	pub const fn unit(self) -> Unit {
+		match self {
+			Self::PassRush | Self::Takeaways | Self::ExplosivesAllowed => Unit::Defense,
+			Self::ThirdDown | Self::RedZone | Self::TwoMinute => Unit::Offense,
+			Self::FourthDownGo | Self::TimeoutsAtHalf => Unit::Coaching,
+		}
+	}
+
+	/// Which way the measure is good, if either.
+	#[must_use]
+	pub const fn better(self) -> Option<Better> {
+		match self {
+			Self::FourthDownGo => None,
+			Self::ExplosivesAllowed => Some(Better::Lower),
+			Self::PassRush | Self::ThirdDown | Self::RedZone | Self::TwoMinute | Self::TimeoutsAtHalf | Self::Takeaways => Some(Better::Higher),
+		}
+	}
+}
+
+/// The form of a claim (#3041): where a team's measure stands.
+///
+/// Each shape's sides are the direction of the measure's value, never good
+/// or bad: [`Measure::better`] says which direction is good, so a claim on a
+/// style (fourth-down go rate) reads the same way as any other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Shape {
+	/// Among the highest or lowest N of the 32 teams.
+	Rank,
+	/// Above or below the league's figure.
+	VsLeague,
+	/// Above or below a named team's.
+	VsTeam,
+	/// Rising or falling over the games to come.
+	Trend,
+}
+
+/// A side of a claim's [`Shape`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Side {
+	Highest,
+	Lowest,
+	Above,
+	Below,
+	Rising,
+	Falling,
+}
+
+impl Shape {
+	pub const ALL: [Self; 4] = [Self::Rank, Self::VsLeague, Self::VsTeam, Self::Trend];
+
+	/// Its two sides, the higher value first.
+	#[must_use]
+	pub const fn sides(self) -> [Side; 2] {
+		match self {
+			Self::Rank => [Side::Highest, Side::Lowest],
+			Self::VsLeague | Self::VsTeam => [Side::Above, Side::Below],
+			Self::Trend => [Side::Rising, Side::Falling],
+		}
+	}
+}
+
+/// When a claim is settled (#3041).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Deadline {
+	/// After N more of the team's games.
+	AfterGames,
+	/// By a named week of the season.
+	ByWeek,
+	/// At the regular season's end.
+	SeasonEnd,
+}
+
+impl Deadline {
+	pub const ALL: [Self; 3] = [Self::AfterGames, Self::ByWeek, Self::SeasonEnd];
+}
+
+/// What home's numbers say of a claim, each week a new verdict (#3041).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Verdict {
+	/// Not settled, and the numbers so far agree.
+	Holding,
+	/// Not settled, and the numbers so far disagree.
+	AgainstSoFar,
+	/// Not settled, and too few games are in to say.
+	TooEarly,
+	/// Settled, and the owner was right.
+	SettledRight,
+	/// Settled, and the owner was wrong.
+	SettledWrong,
+	/// Its bite was deleted: the claim is withdrawn, never lost (the owner,
+	/// Nov 18).
+	Withdrawn,
+}
+
+impl Verdict {
+	pub const ALL: [Self; 6] = [Self::Holding, Self::AgainstSoFar, Self::TooEarly, Self::SettledRight, Self::SettledWrong, Self::Withdrawn];
+}
+
+/// A measure, as the dump writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct MeasureEntry {
+	pub id: Measure,
+	pub unit: Unit,
+	pub better: Option<Better>,
+}
+
+/// A shape, as the dump writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ShapeEntry {
+	pub id: Shape,
+	pub sides: [Side; 2],
+}
+
+/// The claim algebra's closed parts, as the dump lists them.
+///
+/// Version 3, #3041, D24–D26. A claim's own values (whose, N, the named team
+/// or week, and the owner's reason) are the ledger's, not the catalog's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Claims {
+	pub measures: Vec<MeasureEntry>,
+	pub shapes: Vec<ShapeEntry>,
+	pub deadlines: Vec<Deadline>,
+	pub verdicts: Vec<Verdict>,
+}
+
 /// The whole set, as `dump-game-scenarios` writes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Catalog {
@@ -535,6 +721,8 @@ pub struct Catalog {
 	pub big_play: BigPlays,
 	/// What a bite can be about (#3049).
 	pub units: Vec<Unit>,
+	/// The claim algebra (version 3, #3041).
+	pub claims: Claims,
 }
 
 /// The set at [`CATALOG_VERSION`].
@@ -549,6 +737,19 @@ pub fn catalog() -> Catalog {
 			kinds: Kind::ALL.into_iter().map(|id| KindEntry { id, least: id.least() }).collect(),
 		},
 		units: Unit::ALL.to_vec(),
+		claims: Claims {
+			measures: Measure::ALL
+				.into_iter()
+				.map(|id| MeasureEntry {
+					id,
+					unit: id.unit(),
+					better: id.better(),
+				})
+				.collect(),
+			shapes: Shape::ALL.into_iter().map(|id| ShapeEntry { id, sides: id.sides() }).collect(),
+			deadlines: Deadline::ALL.to_vec(),
+			verdicts: Verdict::ALL.to_vec(),
+		},
 	}
 }
 
