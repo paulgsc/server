@@ -372,7 +372,7 @@ jobs:
   # and on a fork's head, whose token cannot dispatch (the sweep judges those).
   tell_gate:
     name: Tell PR gate
-    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, home_guard, release_set, contract_epoch, rust_lint]
+    needs: [determine_jobs, artifact_retention, env_schema, nixos_modules, deploy_script, home_guard, release_set, contract_epoch, manifests, rust_lint]
     if: always() && github.event_name == 'pull_request' && github.actor == 'github-actions[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
