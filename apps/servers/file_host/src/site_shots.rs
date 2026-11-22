@@ -23,8 +23,9 @@
 //! is asked only within [`ASK_WITHIN`] of its end, and a render drawn more
 //! than [`DRAWN_WITHIN`] after it is refused: its first hours would be gone,
 //! and the panels would draw a part of the week as if it were all of it. A
-//! week home was down for, or first deployed in, is missed; the next one is
-//! asked.
+//! week home was down for, or first deployed in, is missed (said once); the
+//! next one is asked. A week still not made [`DRAWN_WITHIN`] after its end is
+//! taken back, so the worker stops trying a render that could not be sent.
 //!
 //! **A render that fails is said.** The render worker leaves an attempt's
 //! output in its `<day>.failed.log` ([`STATUS_FOLDER`]). Each new one is an
@@ -98,6 +99,10 @@ pub const DRAWN_WITHIN: Duration = Duration::hours(32);
 /// What the worker says when a picture is over the mailbox's cap
 /// (`infra/render/render-calls.sh`, `site_shots`): the same bytes come again.
 const OVER_THE_CAP: &str = "over the mailbox's";
+
+/// The line the worker ends every failed attempt's log with
+/// (`render_episode`): what it ran, never why it failed.
+const EXITED: &str = "the recorder exited";
 
 /// The folders it reads and writes; the tests move them.
 #[derive(Debug, Clone)]
@@ -178,7 +183,8 @@ pub struct Done {
 	pub refused: Option<String>,
 	/// A failed render's last line, the first pass that sees that failure.
 	pub render_failed: Option<String>,
-	/// The week ended too long ago to be asked: it is missed.
+	/// The week ended too long ago to be asked: it is missed. Set the first
+	/// pass that finds it so (a `<day>.missed` mark), so it is said once.
 	pub missed: bool,
 }
 
@@ -310,7 +316,11 @@ pub async fn run_once<T: MailboxTransport>(mailbox: &Mailbox<T>, folders: &Folde
 	let ended = end.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc();
 	if !tokio::fs::try_exists(&request).await? {
 		if now - ended > ASK_WITHIN {
-			done.missed = true;
+			let mark = file(&day, ".missed");
+			if !tokio::fs::try_exists(folders.shots.join(&mark)).await? {
+				write_whole(&folders.shots, &mark, b"").await?;
+				done.missed = true;
+			}
 			return Ok(done);
 		}
 		write_whole(&folders.shots, &file(&day, ".json"), &sample(end, version)).await?;
@@ -327,10 +337,13 @@ pub async fn run_once<T: MailboxTransport>(mailbox: &Mailbox<T>, folders: &Folde
 				None => put_one(mailbox, &name("server", end, "mp4"), BodyType::Mp4, tokio::fs::read(&clip).await?).await?,
 			}
 		}
+	} else if now - ended > DRAWN_WITHIN {
+		// Whatever the worker makes now is drawn too late: it stops here.
+		Some(String::from("not made before Prometheus let the week's first hours go"))
 	} else {
 		match failed(folders, &day).await? {
 			Failure::None | Failure::Said => return Ok(done),
-			Failure::New(line) if line.contains(OVER_THE_CAP) => Some(line),
+			Failure::Final(line) => Some(line),
 			Failure::New(line) => {
 				done.render_failed = Some(line);
 				return Ok(done);
@@ -361,8 +374,10 @@ enum Failure {
 	None,
 	/// One already said.
 	Said,
-	/// One not said before: its last line that says something.
+	/// One not said before: its last line that says why.
 	New(String),
+	/// One that says a picture is over the cap: the same bytes come again.
+	Final(String),
 }
 
 /// The week's `failed.log`, if one is newer than the last that was said
@@ -381,9 +396,14 @@ async fn failed(folders: &Folders, day: &str) -> std::io::Result<Failure> {
 		}
 	}
 	let text = tokio::fs::read_to_string(&log).await?;
-	let line = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("it failed").trim().to_owned();
 	write_whole(&folders.shots, &file(day, ".said"), b"").await?;
-	Ok(Failure::New(line))
+	// The log is the last episode's, from its start: a cap anywhere in it
+	// is this attempt's.
+	if let Some(line) = text.lines().find(|line| line.contains(OVER_THE_CAP)) {
+		return Ok(Failure::Final(line.trim().to_owned()));
+	}
+	let why = text.lines().rev().map(str::trim).find(|line| !line.is_empty() && !line.starts_with(EXITED));
+	Ok(Failure::New(why.unwrap_or("it failed").to_owned()))
 }
 
 #[cfg(test)]

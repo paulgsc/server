@@ -494,6 +494,7 @@ async fn send_site_shots(mailbox: &Mailbox<ReqwestTransport>) {
 		Ok(crate::site_shots::Done { refused: Some(why), .. }) => error!(why = %why, "Site pictures: this week's were not sent"),
 		Ok(crate::site_shots::Done { render_failed: Some(line), .. }) => error!(line = %line, "Site pictures: the render worker could not make this week's"),
 		Ok(done) if done.asked => info!("Site pictures: this week's were asked of the render worker"),
+		Ok(done) if done.missed => warn!("Site pictures: last week ended over a day ago with none asked; the site keeps the week before's until next week's"),
 		Ok(_) => {}
 		Err(err) if err.lasting() => error!(error = %err, "Site pictures: the mailbox will not take them; asked again next pass"),
 		Err(err) => warn!(error = %err, "Site pictures pass did not finish; asked again next pass"),

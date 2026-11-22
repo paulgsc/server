@@ -228,6 +228,8 @@ async fn a_week_ended_more_than_a_day_ago_is_missed_and_never_asked() {
 	let thursday: DateTime<Utc> = "2026-11-26T10:00:00Z".parse().unwrap();
 	assert_eq!(run_once(&mailbox, &folders, "1.2.3", thursday).await.unwrap(), Done { missed: true, ..Done::default() });
 	assert!(!folders.shots.join("2026-11-23.json").exists());
+	// Said once.
+	assert_eq!(run_once(&mailbox, &folders, "1.2.3", thursday).await.unwrap(), Done::default());
 }
 
 #[tokio::test]
@@ -256,7 +258,13 @@ async fn a_failed_render_is_said_once_and_a_picture_over_the_cap_ends_the_week()
 	let (mailbox, _fake) = mailbox(vec![]);
 	run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
 	let log = folders.status.join("2026-11-23.failed.log");
-	std::fs::write(&log, "walking\nGrafana's health answered 503\n\n").unwrap();
+	// As the worker writes it (render-calls.sh `render_episode`): its own
+	// line last.
+	std::fs::write(
+		&log,
+		"the site-shots of 2026-11-23 waits for room on home (the lane: run, test)\nGrafana's health answered 503\nthe recorder exited 1\n",
+	)
+	.unwrap();
 	let said = run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
 	assert_eq!(said.render_failed.as_deref(), Some("Grafana's health answered 503"));
 	// Said once: the same log is not said again, and the week is still asked.
@@ -265,10 +273,22 @@ async fn a_failed_render_is_said_once_and_a_picture_over_the_cap_ends_the_week()
 
 	// A later attempt's picture is over the cap: the same bytes would come again.
 	std::thread::sleep(std::time::Duration::from_millis(20));
-	std::fs::write(&log, "the server clip is 900000 bytes even at half size, over the mailbox's 786432\n").unwrap();
+	std::fs::write(&log, "the site-shots of 2026-11-23 waits for room on home (the lane: run, test)\nthe server clip is 900000 bytes even at half size, over the mailbox's 786432\nthe recorder exited 2\n").unwrap();
 	let done = run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
 	assert!(done.refused.unwrap().contains("over the mailbox's"));
 	assert!(!folders.shots.join("2026-11-23.json").exists(), "the request is taken back, so the worker stops");
 	assert!(folders.shots.join("2026-11-23.refused").exists());
 	assert_eq!(run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap(), Done::default());
+}
+
+#[tokio::test]
+async fn a_week_not_made_within_a_day_and_a_half_is_taken_back() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let (mailbox, _fake) = mailbox(vec![]);
+	run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	let late: DateTime<Utc> = "2026-11-24T09:00:00Z".parse().unwrap();
+	let done = run_once(&mailbox, &folders, "1.2.3", late).await.unwrap();
+	assert!(done.refused.unwrap().contains("Prometheus"));
+	assert!(!folders.shots.join("2026-11-23.json").exists(), "the worker stops making it");
 }
