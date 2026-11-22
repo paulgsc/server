@@ -1361,6 +1361,10 @@ check "with no Grafana token the week fails, saying so, and nothing is walked" \
   grep -q "SITE_SHOTS_GRAFANA_TOKEN is not set" "$ROOT/renders/site-shots-worker/2026-11-23.failed.log"
 check "nothing is walked" test ! -e "$FAKE/walk-runs"
 FFMPEG=ffmpeg
+check "the worker takes Grafana's token out of its environment at start, holding it for the walks" \
+  env SITE_SHOTS_GRAFANA_TOKEN=a-viewer-token bash -c \
+    'source "$1" && [ -z "${SITE_SHOTS_GRAFANA_TOKEN+set}" ] && [ "$SITE_SHOTS_GRAFANA_TOKEN_HELD" = a-viewer-token ] &&
+      [ -z "$(env | grep -c a-viewer-token | grep -v "^0$")" ]' _ "$HERE/render-calls.sh"
 
 # A preview a restart left runs first, as any job does.
 fresh preview-left

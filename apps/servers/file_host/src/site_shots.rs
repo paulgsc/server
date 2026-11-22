@@ -18,6 +18,21 @@
 //! and moves the finished folder into [`RENDERS_FOLDER`]. A week's request
 //! is a time that has passed, never a clock that starts work: the lane does.
 //!
+//! **Only while Prometheus holds the week.** Prometheus keeps 200 hours
+//! (`infra/compose/monitoring.yml`), 32 past a 168-hour window's end. A week
+//! is asked only within [`ASK_WITHIN`] of its end, and a render drawn more
+//! than [`DRAWN_WITHIN`] after it is refused: its first hours would be gone,
+//! and the panels would draw a part of the week as if it were all of it. A
+//! week home was down for, or first deployed in, is missed; the next one is
+//! asked.
+//!
+//! **A render that fails is said.** The render worker leaves an attempt's
+//! output in its `<day>.failed.log` ([`STATUS_FOLDER`]). Each new one is an
+//! ERROR line, once; one that says a picture is over the mailbox's cap is
+//! final (the walk and the encode give the same bytes again), so the week is
+//! refused and its request taken back, and the worker never makes it again
+//! (home-compute invariant 7).
+//!
 //! **What it puts.** Each mailbox pass, a finished week's two files are
 //! checked (each at most [`PICTURE_MAX_BYTES`], the mailbox's own cap, and
 //! the type its name says), put as `cores-<stamp>.png` and
@@ -72,12 +87,25 @@ pub const CLIP: &str = "server.mp4";
 /// The cores card's still, in a week's finished folder.
 pub const STILL: &str = "cores.png";
 
+/// How long after its end a week is still asked: well inside the 32 hours
+/// Prometheus keeps past a week's end, so the worker has a day of room.
+pub const ASK_WITHIN: Duration = Duration::hours(24);
+
+/// The latest after its end a week's render may be drawn: Prometheus keeps
+/// 200 hours, the window is 168.
+pub const DRAWN_WITHIN: Duration = Duration::hours(32);
+
+/// What the worker says when a picture is over the mailbox's cap
+/// (`infra/render/render-calls.sh`, `site_shots`): the same bytes come again.
+const OVER_THE_CAP: &str = "over the mailbox's";
+
 /// The folders it reads and writes; the tests move them.
 #[derive(Debug, Clone)]
 pub struct Folders {
 	pub shots: PathBuf,
 	pub renders: PathBuf,
 	pub work: PathBuf,
+	pub status: PathBuf,
 }
 
 impl Folders {
@@ -87,6 +115,7 @@ impl Folders {
 			shots: PathBuf::from(SHOTS_FOLDER),
 			renders: PathBuf::from(RENDERS_FOLDER),
 			work: PathBuf::from(WORK_FOLDER),
+			status: PathBuf::from(STATUS_FOLDER),
 		}
 	}
 }
@@ -147,6 +176,10 @@ pub struct Done {
 	pub sent: bool,
 	/// Why the week's pictures were not sent and will not be asked again.
 	pub refused: Option<String>,
+	/// A failed render's last line, the first pass that sees that failure.
+	pub render_failed: Option<String>,
+	/// The week ended too long ago to be asked: it is missed.
+	pub missed: bool,
 }
 
 /// Why a pass stopped; it is asked again next pass.
@@ -218,7 +251,7 @@ async fn remove_file(path: &Path) -> std::io::Result<()> {
 /// Lets go of every week but `keep`: requests, marks, renders and work. A
 /// week before the last one is never asked or sent, so nothing of it stays.
 async fn tidy(folders: &Folders, keep: &str) -> std::io::Result<()> {
-	for folder in [&folders.shots, &folders.renders, &folders.work] {
+	for folder in [&folders.shots, &folders.renders, &folders.work, &folders.status] {
 		let mut entries = match tokio::fs::read_dir(folder).await {
 			Ok(entries) => entries,
 			Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
@@ -274,18 +307,35 @@ pub async fn run_once<T: MailboxTransport>(mailbox: &Mailbox<T>, folders: &Folde
 	}
 	let request = folders.shots.join(file(&day, ".json"));
 	let mut done = Done::default();
+	let ended = end.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc();
 	if !tokio::fs::try_exists(&request).await? {
+		if now - ended > ASK_WITHIN {
+			done.missed = true;
+			return Ok(done);
+		}
 		write_whole(&folders.shots, &file(&day, ".json"), &sample(end, version)).await?;
 		done.asked = true;
 	}
 	let finished = folders.renders.join(&day);
 	let (clip, still) = (finished.join(CLIP), finished.join(STILL));
-	if !(tokio::fs::try_exists(&clip).await? && tokio::fs::try_exists(&still).await?) {
-		return Ok(done);
-	}
-	let why = match put_one(mailbox, &name("cores", end, "png"), BodyType::Png, tokio::fs::read(&still).await?).await? {
-		Some(why) => Some(why),
-		None => put_one(mailbox, &name("server", end, "mp4"), BodyType::Mp4, tokio::fs::read(&clip).await?).await?,
+	let why = if tokio::fs::try_exists(&clip).await? && tokio::fs::try_exists(&still).await? {
+		if drawn_at(&clip).await? - ended > DRAWN_WITHIN {
+			Some(String::from("drawn after Prometheus had let the week's first hours go"))
+		} else {
+			match put_one(mailbox, &name("cores", end, "png"), BodyType::Png, tokio::fs::read(&still).await?).await? {
+				Some(why) => Some(why),
+				None => put_one(mailbox, &name("server", end, "mp4"), BodyType::Mp4, tokio::fs::read(&clip).await?).await?,
+			}
+		}
+	} else {
+		match failed(folders, &day).await? {
+			Failure::None | Failure::Said => return Ok(done),
+			Failure::New(line) if line.contains(OVER_THE_CAP) => Some(line),
+			Failure::New(line) => {
+				done.render_failed = Some(line);
+				return Ok(done);
+			}
+		}
 	};
 	// The request goes first, so the worker never makes the week again.
 	remove_file(&request).await?;
@@ -298,6 +348,42 @@ pub async fn run_once<T: MailboxTransport>(mailbox: &Mailbox<T>, folders: &Folde
 	done.sent = why.is_none();
 	done.refused = why;
 	Ok(done)
+}
+
+/// When a finished picture was moved into place.
+async fn drawn_at(path: &Path) -> std::io::Result<DateTime<Utc>> {
+	Ok(DateTime::<Utc>::from(tokio::fs::metadata(path).await?.modified()?))
+}
+
+/// What the worker's `failed.log` for the week says, once.
+enum Failure {
+	/// None, or one the worker has cleared since.
+	None,
+	/// One already said.
+	Said,
+	/// One not said before: its last line that says something.
+	New(String),
+}
+
+/// The week's `failed.log`, if one is newer than the last that was said
+/// (`<day>.said` in the shots folder, touched as it is said).
+async fn failed(folders: &Folders, day: &str) -> std::io::Result<Failure> {
+	let log = folders.status.join(file(day, ".failed.log"));
+	let at = match tokio::fs::metadata(&log).await {
+		Ok(meta) => meta.modified()?,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Failure::None),
+		Err(err) => return Err(err),
+	};
+	let said = folders.shots.join(file(day, ".said"));
+	if let Ok(meta) = tokio::fs::metadata(&said).await {
+		if meta.modified()? >= at {
+			return Ok(Failure::Said);
+		}
+	}
+	let text = tokio::fs::read_to_string(&log).await?;
+	let line = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("it failed").trim().to_owned();
+	write_whole(&folders.shots, &file(day, ".said"), b"").await?;
+	Ok(Failure::New(line))
 }
 
 #[cfg(test)]

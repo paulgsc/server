@@ -2819,11 +2819,15 @@ nowhere is marked as such and belongs to review.
     and panel id. Home puts the clip and the still in the mailbox's
     `site-assets` folder, public by design, and then deletes the week's
     request, render and work (no picture library, as docs/snips.md's
-    invariant 1). Nothing of a picture reaches a log line: the pass logs
-    whether it asked, sent or refused, and why.
+    invariant 1). A walk that fails leaves its `failed.png` in the week's
+    work folder until the week leaves the drive, at the next week's pass at
+    the latest. Nothing of a picture reaches a log line: the pass logs
+    whether it asked, sent or refused, and why, and a failed render's last
+    line.
     *Enforced by* `site_shots`' tests
     (`a_week_is_asked_once_then_sent_and_home_keeps_nothing_of_it`,
-    `a_picture_too_big_or_not_its_type_is_refused_and_never_sent`) for
+    `a_picture_too_big_or_not_its_type_is_refused_and_never_sent`,
+    `a_week_before_the_last_leaves_the_drive_and_only_the_last_is_asked`) for
     what home keeps and sends. *Not enforced:* that a panel's query stays an
     aggregate, which a change to `infra/grafana/dashboards` can break with
     no check here (a review reading a hunk to one of those seven panels

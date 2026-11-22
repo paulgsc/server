@@ -492,6 +492,7 @@ async fn send_site_shots(mailbox: &Mailbox<ReqwestTransport>) {
 	match done {
 		Ok(done) if done.sent => info!("Site pictures: this week's went to the mailbox"),
 		Ok(crate::site_shots::Done { refused: Some(why), .. }) => error!(why = %why, "Site pictures: this week's were not sent"),
+		Ok(crate::site_shots::Done { render_failed: Some(line), .. }) => error!(line = %line, "Site pictures: the render worker could not make this week's"),
 		Ok(done) if done.asked => info!("Site pictures: this week's were asked of the render worker"),
 		Ok(_) => {}
 		Err(err) if err.lasting() => error!(error = %err, "Site pictures: the mailbox will not take them; asked again next pass"),
@@ -500,8 +501,10 @@ async fn send_site_shots(mailbox: &Mailbox<ReqwestTransport>) {
 }
 
 /// The longest the site's pictures hold up the mailbox pass: two puts of at
-/// most 768 KiB each.
-const SITE_SHOTS_DEADLINE: Duration = Duration::from_secs(120);
+/// most 768 KiB each, at `REQUEST_TIMEOUT` apiece, and a few small files.
+/// Short, since `MailboxPollerStale` reads the loop's stamp, written between
+/// passes.
+const SITE_SHOTS_DEADLINE: Duration = Duration::from_secs(65);
 
 /// One pass of the poller: find whose copy to keep, run a pass for it, then
 /// stamp the routine watch and tell the phones. True when it settled: no

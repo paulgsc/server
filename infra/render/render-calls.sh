@@ -105,8 +105,13 @@
 # cores still. The clip is encoded silent to fit the mailbox's 768 KiB for a
 # picture (SITE_CLIP_*): at full size, then at half size if it does not fit.
 # The walk reaches Grafana with a Viewer token, SITE_SHOTS_GRAFANA_TOKEN,
-# which only that walk's command is given; it reaches nothing else. file_host
-# puts both pictures in the mailbox and lets go of the week's folder.
+# taken out of this script's environment at start and given to the walks'
+# commands alone, so no other job's command has it in its environment (it
+# stays in this process's own, as PID 1). file_host puts both pictures in
+# the mailbox and lets go of the week's folder; it also reads the week's
+# failed.log, says a failure once, and takes back a week whose picture is
+# over the cap, which would come out the same again (home-compute
+# invariant 7).
 #
 # One episode at a time, the call's first, each job's oldest first. An
 # episode that fails is left as it was and tried again an hour later; a
@@ -698,7 +703,7 @@ site_shots() {
       --sample "$INPUT/$key.json" --out "$out/walk-$app") || return 1
   done
   (cd "$MOTION_DIR" && "$MOTION_TSX" src/cli.ts walkthrough "$SITE_CLIP_WORDS" \
-    --walk "$out/walk-home-server" --out "$out/walkthrough" --brand /brand) || return 1
+    --walk "$out/walk-home-server" --out "$out/walkthrough" --brand "$BRAND_DIR") || return 1
   # Silent, one thread and bit-exact, so the same walkthrough gives the
   # same clip: full size first, half size if that is over the cap.
   for crf in "26 1080:1920" "28 540:960"; do

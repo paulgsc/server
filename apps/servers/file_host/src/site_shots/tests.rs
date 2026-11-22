@@ -47,16 +47,17 @@ fn folders(root: &Path) -> Folders {
 		shots: root.join("shots"),
 		renders: root.join("renders"),
 		work: root.join("work"),
+		status: root.join("status"),
 	};
-	for folder in [&folders.shots, &folders.renders, &folders.work] {
+	for folder in [&folders.shots, &folders.renders, &folders.work, &folders.status] {
 		std::fs::create_dir_all(folder).unwrap();
 	}
 	folders
 }
 
-/// Wednesday 2026-11-25: the last whole week ended Monday 2026-11-23.
+/// Monday 2026-11-23, ten hours after the last whole week ended.
 fn wednesday() -> DateTime<Utc> {
-	"2026-11-25T10:00:00Z".parse().unwrap()
+	"2026-11-23T10:00:00Z".parse().unwrap()
 }
 
 fn png() -> Vec<u8> {
@@ -204,7 +205,7 @@ async fn a_week_before_the_last_leaves_the_drive_and_only_the_last_is_asked() {
 	let dir = tempfile::tempdir().unwrap();
 	let folders = folders(dir.path());
 	let (mailbox, _fake) = mailbox(vec![]);
-	let last_week: DateTime<Utc> = "2026-11-18T10:00:00Z".parse().unwrap();
+	let last_week: DateTime<Utc> = "2026-11-16T10:00:00Z".parse().unwrap();
 	run_once(&mailbox, &folders, "1.2.3", last_week).await.unwrap();
 	std::fs::create_dir_all(folders.renders.join("2026-11-16")).unwrap();
 	std::fs::write(folders.shots.join("2026-11-09.sent"), b"").unwrap();
@@ -217,4 +218,57 @@ async fn a_week_before_the_last_leaves_the_drive_and_only_the_last_is_asked() {
 	left.sort();
 	assert_eq!(left, ["2026-11-23.json", "notes.txt"]);
 	assert!(!folders.renders.join("2026-11-16").exists());
+}
+
+#[tokio::test]
+async fn a_week_ended_more_than_a_day_ago_is_missed_and_never_asked() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let (mailbox, _fake) = mailbox(vec![]);
+	let thursday: DateTime<Utc> = "2026-11-26T10:00:00Z".parse().unwrap();
+	assert_eq!(run_once(&mailbox, &folders, "1.2.3", thursday).await.unwrap(), Done { missed: true, ..Done::default() });
+	assert!(!folders.shots.join("2026-11-23.json").exists());
+}
+
+#[tokio::test]
+async fn a_render_drawn_after_prometheus_let_the_week_go_is_refused() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let (mailbox, fake) = mailbox(vec![ADDED, ADDED]);
+	run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	finish(&folders, &mp4(), &png());
+	let late = std::time::SystemTime::from("2026-11-24T09:00:00Z".parse::<DateTime<Utc>>().unwrap());
+	std::fs::File::options()
+		.write(true)
+		.open(folders.renders.join("2026-11-23").join(CLIP))
+		.unwrap()
+		.set_modified(late)
+		.unwrap();
+	let done = run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	assert!(done.refused.unwrap().contains("Prometheus"));
+	assert!(mailbox_requests(&fake).is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_render_is_said_once_and_a_picture_over_the_cap_ends_the_week() {
+	let dir = tempfile::tempdir().unwrap();
+	let folders = folders(dir.path());
+	let (mailbox, _fake) = mailbox(vec![]);
+	run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	let log = folders.status.join("2026-11-23.failed.log");
+	std::fs::write(&log, "walking\nGrafana's health answered 503\n\n").unwrap();
+	let said = run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	assert_eq!(said.render_failed.as_deref(), Some("Grafana's health answered 503"));
+	// Said once: the same log is not said again, and the week is still asked.
+	assert_eq!(run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap(), Done::default());
+	assert!(folders.shots.join("2026-11-23.json").exists());
+
+	// A later attempt's picture is over the cap: the same bytes would come again.
+	std::thread::sleep(std::time::Duration::from_millis(20));
+	std::fs::write(&log, "the server clip is 900000 bytes even at half size, over the mailbox's 786432\n").unwrap();
+	let done = run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap();
+	assert!(done.refused.unwrap().contains("over the mailbox's"));
+	assert!(!folders.shots.join("2026-11-23.json").exists(), "the request is taken back, so the worker stops");
+	assert!(folders.shots.join("2026-11-23.refused").exists());
+	assert_eq!(run_once(&mailbox, &folders, "1.2.3", wednesday()).await.unwrap(), Done::default());
 }
