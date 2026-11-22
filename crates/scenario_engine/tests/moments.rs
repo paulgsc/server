@@ -1224,3 +1224,132 @@ fn a_big_play_is_the_play_as_it_stood() {
 		None
 	);
 }
+
+/// #1103's touchdowns: (base play, ESPN's type, the touchdown's text, who
+/// scored, whether it is big), each on a recorded play of its kind.
+#[cfg(test)]
+fn touchdowns_of_every_kind(plays: &[Play]) -> Vec<(usize, &'static str, &'static str, &'static str, bool)> {
+	let find = |kind: &str, team: &str| {
+		plays
+			.iter()
+			.position(|p| p.play_type.as_deref() == Some(kind) && p.possession.as_deref() == Some(team))
+			.unwrap()
+	};
+	let pass = find("Pass Reception", "NE");
+	let punt = find("Punt", "NE");
+	let kickoff = find("Kickoff", "CHI");
+	let pick = plays.iter().position(|p| p.text.as_deref().is_some_and(|t| t.contains("INTERCEPTED"))).unwrap();
+	assert_eq!(plays[pick].possession.as_deref(), Some("NE"));
+	vec![
+		(pass, "Rushing Touchdown", "R.Stevenson left end for 60 yards, TOUCHDOWN.", "NE", true),
+		(pass, "Rushing Touchdown", "R.Stevenson up the middle for 2 yards, TOUCHDOWN.", "NE", false),
+		(pass, "Passing Touchdown", "(Shotgun) D.Maye pass deep right to S.Diggs for 62 yards, TOUCHDOWN.", "NE", true),
+		(pass, "Passing Touchdown", "D.Maye pass short left to H.Henry for 8 yards, TOUCHDOWN.", "NE", false),
+		(kickoff, "Kickoff Return Touchdown", "C.Santos kicks 65 yards from CHI 35 to NE 0. C.Kiner to CHI 0 for 100 yards, TOUCHDOWN.", "NE", true),
+		(kickoff, "Kickoff Return Touchdown", "C.Santos kicks onside 12 yards from CHI 35 to CHI 47. C.Kiner to CHI 0 for 47 yards, TOUCHDOWN.", "NE", true),
+		(punt, "Punt Return Touchdown", "R.Dixon punts 45 yards to CHI 10, Center-E.Deckers. K.Raymond to NE 0 for 90 yards, TOUCHDOWN.", "CHI", true),
+		(
+			punt,
+			"Blocked Punt Touchdown",
+			"R.Dixon punt is BLOCKED by C.Latu, Center-E.Deckers, RECOVERED by CHI-S.Brown at NE 35. S.Brown for 35 yards, TOUCHDOWN.",
+			"CHI",
+			true,
+		),
+		(
+			punt,
+			"Blocked Field Goal Touchdown",
+			"J.Bates 45 yard field goal is BLOCKED (L.Rodriguez), Center-H.Hatten, Holder-J.Fox, RECOVERED by CHI-I.Rodgers at CHI 33. I.Rodgers to NE 0 for 67 yards, TOUCHDOWN.",
+			"CHI",
+			true,
+		),
+		(
+			pick,
+			"Interception Return Touchdown",
+			"(Shotgun) D.Maye pass short left intended for H.Henry INTERCEPTED by K.Byard at NE 45. K.Byard to NE 0 for 45 yards, TOUCHDOWN.",
+			"CHI",
+			true,
+		),
+		(
+			pass,
+			"Fumble Return Touchdown",
+			"D.Maye pass short right to H.Henry to NE 40 for 5 yards (T.Edmunds). H.Henry FUMBLES (T.Edmunds), RECOVERED by CHI-K.Byard at NE 40. K.Byard to NE 0 for 40 yards, TOUCHDOWN.",
+			"CHI",
+			true,
+		),
+	]
+}
+
+/// #1103's tries, by the scorer `<s>` against `<d>`: every way a try's text can
+/// end, each in ESPN's words.
+const TRIES: [&str; 13] = [
+	"A.Kicker extra point is GOOD, Center-A.Snapper, Holder-A.Holder.",
+	"A.Kicker extra point is No Good, Wide Right, Center-A.Snapper, Holder-A.Holder.",
+	"A.Kicker kick is No Good, Wide Left, Center-A.Snapper, Holder-A.Holder.",
+	"A.Kicker extra point is BLOCKED (B.Rusher), Center-A.Snapper, Holder-A.Holder, RECOVERED by <d>-B.Rusher at <s> 40. B.Rusher to <s> 0 for 60 yards.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Passer pass to A.Catcher is complete. ATTEMPT SUCCEEDS.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Passer pass to A.Catcher is incomplete. ATTEMPT FAILS.",
+	"A.Kicker extra point is GOOD, Center-A.Snapper, Holder-A.Holder. PENALTY on <d>-B.Lineman, Defensive Offside, 1 yard, enforced at <d> 15 - No Play.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Passer pass to A.Catcher is complete. ATTEMPT SUCCEEDS. PENALTY on <s>-A.Lineman, False Start, 5 yards, enforced at <d> 2 - No Play.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Runner rush up the middle. A.Runner FUMBLES (B.Tackler), RECOVERED by <d>-B.Tackler at <d> 3. B.Tackler to <s> 0 for 97 yards. ATTEMPT FAILS.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Runner rush up the middle. A.Runner FUMBLES (B.Tackler), recovered by <s>-A.Runner at <d> 4. ATTEMPT FAILS.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Passer pass short left intended for A.Catcher INTERCEPTED by B.Safety at <d> 0. B.Safety to <s> 0 for 100 yards. ATTEMPT FAILS.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Passer sacked at <d> 10 for -8 yards (B.Rusher). ATTEMPT FAILS.",
+	"TWO-POINT CONVERSION ATTEMPT. A.Passer pass to A.Catcher is complete. ATTEMPT SUCCEEDS. The Replay Official reviewed the pass completion ruling, and the play was REVERSED. A.Passer pass to A.Catcher is incomplete. ATTEMPT FAILS.",
+];
+
+/// The moment log's entries for `shown`, home having seen it after the
+/// recorded plays before `k`, but the four that read the try itself.
+#[cfg(test)]
+fn read_but_the_try(plays: &[Play], k: usize, kind: &str, text: &str) -> Vec<scenario_engine::Happened> {
+	let reads_the_try = ["in.two-point", "in.kick", "in.penalty", "in.injury"];
+	let shown = Play {
+		play_type: Some(kind.to_owned()),
+		text: Some(text.to_owned()),
+		..plays[k].clone()
+	};
+	let seen = wall(&shown) + TimeDelta::seconds(10);
+	let mut held = plays[..k].to_vec();
+	held.push(shown.clone());
+	let mut log = PlayLog::default();
+	log.apply(GAME, 1, &seen.to_rfc3339_opts(SecondsFormat::Secs, true), &held);
+	let g = game(Some("NE"), status(GameState::In, Some(&shown)), None);
+	scenario_engine::moment_log(&g, log.entries(), seen + TimeDelta::seconds(5))
+		.into_iter()
+		.map(|logged| logged.happened)
+		.filter(|h| h.play_id == shown.id && !reads_the_try.contains(&h.scenario.id()))
+		.collect()
+}
+
+/// #1103: the try's text never changes its touchdown's reading. Family:
+/// every try outcome (made or missed, either kind; a No-Play flag on either
+/// side; a fumble either side recovers; an interception; a sack; a review
+/// that reversed it) after every kind of touchdown (run, pass, kick, onside
+/// kick, punt, blocked-punt, blocked-field-goal, interception and fumble
+/// returns, big and not). Each is read as the same touchdown with its try
+/// still to come, by every scenario but the four that read the try itself
+/// (`in.two-point`, `in.kick`, `in.penalty`, `in.injury`).
+#[test]
+fn the_try_never_changes_its_touchdowns_reading() {
+	let plays = plays();
+	let mut cases = 0;
+	for (k, kind, touchdown, s, is_big) in touchdowns_of_every_kind(&plays) {
+		let d = if s == "NE" { "CHI" } else { "NE" };
+		let alone = read_but_the_try(&plays, k, kind, touchdown);
+		let big_play = alone.iter().find(|h| h.scenario == Scenario::BigPlay).and_then(|h| h.big_play.clone());
+		assert_eq!(big_play.is_some(), is_big, "{touchdown}: {alone:?}");
+		assert!(big_play.is_none_or(|b| b.scored && b.by == s), "{touchdown}: {alone:?}");
+		// The onside kick is read too, so its case is not vacuous.
+		assert_eq!(
+			alone.iter().any(|h| h.scenario.id() == "in.onside-kick"),
+			touchdown.contains("onside"),
+			"{touchdown}: {alone:?}"
+		);
+		for template in TRIES {
+			let try_text = template.replace("<d>", d).replace("<s>", s);
+			let text = [touchdown, " ", &try_text].concat();
+			assert_eq!(read_but_the_try(&plays, k, kind, &text), alone, "{text}");
+			cases += 1;
+		}
+	}
+	assert_eq!(cases, 143);
+}
