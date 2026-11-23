@@ -1190,6 +1190,8 @@ fn a_home_refusal_reads_as_its_class() {
 	assert_eq!(super::home_refusal("reason=snip-missing\n"), Some("snip-missing"));
 	assert_eq!(super::home_refusal("reason=clip-missing\n"), Some("clip-missing"));
 	assert_eq!(super::home_refusal("reason=snip-gone\n"), Some("snip-gone"));
+	assert_eq!(super::home_refusal("reason=page-missing\n"), Some("page-missing"));
+	assert_eq!(super::home_refusal("reason=page-gone\n"), Some("page-gone"));
 	assert_eq!(super::home_refusal("reason=too-long\n"), None);
 	assert_eq!(super::home_refusal("take-missing\n"), None);
 	assert_eq!(Over::parse("reason=take-missing\n"), None, "never the policy's");
@@ -1394,4 +1396,15 @@ async fn a_name_of_bytes_that_are_no_utf8_loses_only_the_names() {
 		}
 		other => panic!("{other:?}"),
 	}
+}
+
+#[test]
+fn the_longest_page_id_is_an_item_and_a_refusal_naming_twelve_reads_whole() {
+	let longest = String::from("9").repeat(20) + " " + &"a".repeat(96) + "-0123456789ab.png";
+	assert_eq!(longest.len(), super::MOST_ITEM_BYTES);
+	assert!(super::item_id(&longest) && !super::item_id(&(longest.clone() + "x")));
+	let items = vec![longest; super::MOST_ITEMS];
+	let text = String::from("reason=page-gone\nitems=") + &items.join(",") + "\ncount=99\n";
+	assert!(text.len() as u64 <= super::REFUSED_CEILING, "{} bytes", text.len());
+	assert_eq!(super::Blocking::parse(&text).map(|blocking| blocking.items.len()), Some(super::MOST_ITEMS));
 }

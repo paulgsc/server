@@ -9,12 +9,15 @@
 //! - [`Kind::Snips`]: screens of the app from the snip library, by snip id
 //!   ([`snips`], SNIPS4, paulgsc/some-ui#3114);
 //! - [`Kind::ClipFrames`]: a clip's frames, by clip, side and file
-//!   ([`clip_frames`], the Clips Library's `clip_frame`).
+//!   ([`clip_frames`], the Clips Library's `clip_frame`);
+//! - [`Kind::Pages`]: public pages, by the capture run that took each and
+//!   its file ([`pages`], paulgsc/some-ui#3395).
 //!
-//! A snip and a clip frame are both a cut list's `screen` picture
-//! (`{"kind": "screen", "of": {"from": "snips" | "clips", …}}`, some-ui's
-//! SNIPS4), drawn the same way; they are two kinds here because home holds
-//! them in two places and hands them in two folders.
+//! A snip, a clip frame and a page are each a cut list's `screen` picture
+//! (`{"kind": "screen", "of": {"from": "snips" | "clips" | "pages", …}}`,
+//! some-ui's SNIPS4), drawn the same way; they are kinds of their own here
+//! because home holds them in different places and hands them in different
+//! folders.
 //!
 //! What a kind is, is named here once: which of an essay's parts name it
 //! ([`named`]), the folder it goes in, its refusal's reason, and how home
@@ -37,7 +40,7 @@
 //!   video is made, and an essay given with a take or clip frame home no
 //!   longer holds is withdrawn ([`still_held`]; the caller's tidy,
 //!   `cards_essays::pass::tidy`). A snip is never a reason to take one back:
-//!   it is no one's record, and its copy goes with the video.
+//!   it is no one's record, and its copy goes with the video. Nor is a page.
 //! - **Nothing is ever written to home's own record here.** Each kind only
 //!   reads: `clip_frame` rows stay as they were kept, and the owner's takes
 //!   stay where `voice_repo` keeps them.
@@ -49,6 +52,7 @@
 //! files, and writes them to its own `<week>/takes/` as before.
 
 pub mod clip_frames;
+pub mod pages;
 pub mod snips;
 pub mod takes;
 
@@ -62,11 +66,12 @@ pub enum Kind {
 	Takes,
 	Snips,
 	ClipFrames,
+	Pages,
 }
 
 impl Kind {
 	/// Every kind, in the order an essay is checked and a refusal is said.
-	pub const ALL: [Self; 3] = [Self::Takes, Self::Snips, Self::ClipFrames];
+	pub const ALL: [Self; 4] = [Self::Takes, Self::Snips, Self::ClipFrames, Self::Pages];
 
 	/// Its folder's suffix beside a cards essay: `<key>.<folder>/`, the
 	/// recorder's `--<folder>` (`infra/render/render-calls.sh`).
@@ -76,6 +81,18 @@ impl Kind {
 			Self::Takes => "takes",
 			Self::Snips => "snips",
 			Self::ClipFrames => "clips",
+			Self::Pages => "pages",
+		}
+	}
+
+	/// How a refusal or a wait names `item`: by its id. A page's item also
+	/// carries the scene's address and moment, which only its check reads;
+	/// it is named by its run and file alone.
+	#[must_use]
+	pub fn id_of(self, item: &str) -> String {
+		match self {
+			Self::Pages => pages::id_of(item),
+			Self::Takes | Self::Snips | Self::ClipFrames => String::from(item),
 		}
 	}
 }
@@ -88,8 +105,10 @@ pub enum Why {
 	Missing,
 	/// A take home couldn't make out, or heard nothing said in.
 	Unheard,
-	/// A snip whose bundle home cannot fetch: no run of its commit, its
-	/// artifact expired, or its bundle refused (`snips`, C875).
+	/// A snip or page whose bundle home cannot fetch: no run of its commit
+	/// or no such capture run, its artifact expired, or its bundle refused
+	/// (`snips`, C875); or a page its run's bundle doesn't hold as the scene
+	/// names it (C1441).
 	Gone,
 }
 
@@ -102,9 +121,10 @@ pub type File = (String, Vec<u8>);
 pub enum Held {
 	/// Its files.
 	Files(Vec<File>),
-	/// A snip: its commit, its record as its bundle's manifest has it, and
-	/// its picture. Its kind's `snips.json` names it ([`snips::given`]).
-	Snip { commit: String, record: Value, picture: File },
+	/// A snip or a page: the key of the bundle it came from (a commit, or a
+	/// run), its record as that bundle has it, and its picture. Its kind's
+	/// record names it ([`snips::given`], [`pages::given`]).
+	Record { bundle: String, record: Value, picture: File },
 	/// Not ready yet: asked again next pass.
 	Waiting,
 	/// Never to be given as home holds it now.
@@ -130,6 +150,8 @@ impl Refusal {
 			(Kind::Snips, Why::Gone) => "snip-gone",
 			(Kind::Snips, _) => "snip-missing",
 			(Kind::ClipFrames, _) => "clip-missing",
+			(Kind::Pages, Why::Gone) => "page-gone",
+			(Kind::Pages, _) => "page-missing",
 		}
 	}
 
@@ -142,6 +164,8 @@ impl Refusal {
 			(Kind::Snips, Why::Gone) => "a scene shows a snip whose bundle GitHub no longer has (no run of its commit, its artifact expired, or its bundle didn't check out): run Snips Capture again at that commit",
 			(Kind::Snips, _) => "a scene shows a snip its commit's bundle doesn't hold, or home fetches no snips (no SNIPS_GITHUB_TOKEN), and a scene is never a blank frame",
 			(Kind::ClipFrames, _) => "a scene shows a clip frame home doesn't hold, and a scene is never a blank frame",
+			(Kind::Pages, Why::Gone) => "a scene shows a page its capture run's bundle doesn't give (no such Public Pages Capture run, one that didn't succeed, its artifact expired, its bundle didn't check out, or it holds that file of another address or moment): a page can't be taken again the same, so dispatch Public Pages Capture again and name the new run's pictures",
+			(Kind::Pages, _) => "a scene shows a page home fetches no pages for (no SNIPS_GITHUB_TOKEN), or names it by no run or file a capture makes, and a scene is never a blank frame",
 		}
 	}
 }
@@ -182,6 +206,9 @@ pub struct Sources {
 	/// The bundles home fetches for waiting essays ([`crate::snips::FOLDER`]),
 	/// or `None` when it fetches none (no `SNIPS_GITHUB_TOKEN`).
 	pub snips: Option<PathBuf>,
+	/// The public pages bundles home fetches for waiting essays
+	/// ([`crate::snips::PAGES_FOLDER`]), or `None`, as [`Self::snips`].
+	pub pages: Option<PathBuf>,
 }
 
 /// The `of` of `shot`'s `screen` picture, when it is one `from` `source`.
@@ -200,6 +227,7 @@ pub fn named(kind: Kind, essay: &Value) -> Vec<String> {
 		Kind::Takes => takes::named(shot),
 		Kind::Snips => snips::named(shot),
 		Kind::ClipFrames => clip_frames::named(shot),
+		Kind::Pages => pages::named(shot),
 	}) {
 		if !items.contains(&item) {
 			items.push(item);
@@ -213,26 +241,37 @@ pub fn named(kind: Kind, essay: &Value) -> Vec<String> {
 /// # Errors
 /// [`Failed`].
 pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, items: &[String]) -> Result<Handed, Failed> {
-	let (mut files, mut snipped) = (Vec::new(), Vec::new());
+	let (mut files, mut recorded) = (Vec::new(), Vec::new());
 	let (mut missing, mut unheard, mut gone, mut waiting) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+	// Each by its id, once: two of a page's items may share one.
+	let push = |items: &mut Vec<String>, item: &str| {
+		let id = kind.id_of(item);
+		if !items.contains(&id) {
+			items.push(id);
+		}
+	};
 	for item in items {
 		let held = match kind {
 			Kind::Takes => takes::hold(conn, sources, item).await?,
 			Kind::Snips => snips::hold(conn, sources, item).await?,
 			Kind::ClipFrames => clip_frames::hold(conn, sources, item).await?,
+			Kind::Pages => pages::hold(conn, sources, item).await?,
 		};
 		match held {
 			Held::Files(handed) => files.extend(handed),
-			Held::Snip { commit, record, picture } => {
-				files.push(picture);
-				snipped.push((commit, record));
-			}
-			Held::Waiting => waiting.push(item.clone()),
-			Held::Refused(Why::Missing) => missing.push(item.clone()),
-			Held::Refused(Why::Unheard) => unheard.push(item.clone()),
-			Held::Refused(Why::Gone) => gone.push(item.clone()),
+			Held::Record { bundle, record, picture } => recorded.push((bundle, record, picture)),
+			Held::Waiting => push(&mut waiting, item),
+			Held::Refused(Why::Missing) => push(&mut missing, item),
+			Held::Refused(Why::Unheard) => push(&mut unheard, item),
+			Held::Refused(Why::Gone) => push(&mut gone, item),
 		}
 	}
+	// The kind's record of what it gives, or what of it disagrees (a page
+	// two runs give unlike): those are gone.
+	let given = match kind {
+		Kind::Pages => pages::given(recorded).map_err(|items| items.iter().for_each(|item| push(&mut gone, item))).ok(),
+		Kind::Takes | Kind::Snips | Kind::ClipFrames => Some(snips::given(recorded)),
+	};
 	let refusal = |why, items| Handed::Refused(Refusal { kind, why, items });
 	Ok(if !missing.is_empty() {
 		refusal(Why::Missing, missing)
@@ -243,12 +282,15 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 	} else if !waiting.is_empty() {
 		Handed::Waiting(waiting)
 	} else {
-		if !snipped.is_empty() {
-			files.insert(0, snips::given(snipped));
-		}
+		// Its record first, then its pictures.
+		files.splice(0..0, given.unwrap_or_default());
 		Handed::Ready(files)
 	})
 }
+
+/// Every reason a refusal is said by ([`Refusal::reason`]), each once: what
+/// reads a `.refused` as home's own (`renders_again`).
+pub const REASONS: [&str; 7] = ["take-missing", "take-unheard", "snip-missing", "snip-gone", "clip-missing", "page-missing", "page-gone"];
 
 /// What home holds of everything a cut list names, kind by kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,6 +338,7 @@ pub async fn still_held(conn: &mut SqliteConnection, sources: &Sources, kind: Ki
 			Kind::Takes => takes::still_held(conn, sources, &item).await?,
 			Kind::Snips => snips::still_held(conn, sources, &item).await?,
 			Kind::ClipFrames => clip_frames::still_held(conn, sources, &item).await?,
+			Kind::Pages => pages::still_held(conn, sources, &item).await?,
 		};
 		if !held {
 			return Ok(false);
@@ -398,7 +441,7 @@ mod tests {
 	#[test]
 	fn each_kind_has_its_own_folder_and_reason() {
 		let folders: Vec<_> = Kind::ALL.iter().map(|kind| kind.folder()).collect();
-		assert_eq!(folders, ["takes", "snips", "clips"]);
+		assert_eq!(folders, ["takes", "snips", "clips", "pages"]);
 		for kind in Kind::ALL {
 			assert_eq!(parse_folder(&(String::from("hello-2026-11-20.") + kind.folder())), Some(("hello-2026-11-20", kind)));
 			assert!(is_partial(&(String::from(".hello-2026-11-20.") + kind.folder() + ".partial")));
@@ -411,11 +454,22 @@ mod tests {
 			(Kind::Snips, Why::Missing),
 			(Kind::Snips, Why::Gone),
 			(Kind::ClipFrames, Why::Missing),
+			(Kind::Pages, Why::Missing),
+			(Kind::Pages, Why::Gone),
 		]
 		.into_iter()
 		.map(|(kind, why)| Refusal { kind, why, items: Vec::new() }.reason())
 		.collect();
-		assert_eq!(reasons, ["take-missing", "take-unheard", "snip-missing", "snip-gone", "clip-missing"]);
+		assert_eq!(
+			reasons,
+			["take-missing", "take-unheard", "snip-missing", "snip-gone", "clip-missing", "page-missing", "page-gone"]
+		);
+		assert_eq!(reasons, REASONS, "every reason, each in REASONS");
+		for kind in Kind::ALL {
+			for why in [Why::Missing, Why::Unheard, Why::Gone] {
+				assert!(REASONS.contains(&Refusal { kind, why, items: Vec::new() }.reason()), "{kind:?} {why:?}");
+			}
+		}
 	}
 
 	#[tokio::test]

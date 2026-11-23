@@ -353,7 +353,7 @@ const POLICY: [&str; 3] = ["too-long", "too-large", "overflow"];
 
 /// Whether `reason` is a cards essay's home refusal (`essay_media`).
 fn is_home_refusal(reason: &str) -> bool {
-	matches!(reason, "take-missing" | "take-unheard" | "snip-missing" | "snip-gone" | "clip-missing")
+	crate::essay_media::REASONS.contains(&reason)
 }
 
 /// When `path` was last written, Unix seconds, if it is there (not
