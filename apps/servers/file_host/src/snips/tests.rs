@@ -774,6 +774,9 @@ async fn a_page_that_keeps_failing_takes_turns_with_a_failed_snip() {
 	fake.page_run(page_run(101), Err("timeout"));
 	for _ in 0..4 {
 		assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap().failures, ["timeout"]);
+		// Passes are an hour apart: apart here past the drive's coarse clock,
+		// so two retry marks never share a time.
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 	}
 	assert_eq!(*fake.asked.lock().unwrap(), [101, 1, 101, 1], "pages first, then each failed key in its turn");
 }

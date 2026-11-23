@@ -683,14 +683,18 @@ pub struct Blocking {
 	pub item_count: u32,
 }
 
-/// An item's id as a home refusal names one: 1 to 128 printable ASCII
+/// The longest item id a home refusal names: a page's, a run of up to 20
+/// digits, a space and a file of up to 113 (`essay_media::pages`).
+pub const MOST_ITEM_BYTES: usize = 134;
+
+/// An item's id as a home refusal names one: 1 to [`MOST_ITEM_BYTES`] printable ASCII
 /// characters, spaces inside but not at either end, and no comma (the
 /// list's own). A snip's id is its commit, a space and its place
 /// (`<commit> web:/settings:phone:…`), a clip frame's `<clip>/<side>/<file>`,
 /// a page's its run, a space and its file (`<run> <slug>-<hash12>.png`).
 #[must_use]
 pub(crate) fn item_id(text: &str) -> bool {
-	!text.is_empty() && text.len() <= 128 && text.trim() == text && text.bytes().all(|b| (b.is_ascii_graphic() || b == b' ') && b != b',')
+	!text.is_empty() && text.len() <= MOST_ITEM_BYTES && text.trim() == text && text.bytes().all(|b| (b.is_ascii_graphic() || b == b' ') && b != b',')
 }
 
 impl Blocking {
@@ -738,7 +742,7 @@ pub enum Over {
 }
 
 /// The refusal file's longest: four lines, the longest twelve scene ids of
-/// 64 bytes, or item ids of 128, and their commas, and a SHA-256.
+/// 64 bytes, or item ids of [`MOST_ITEM_BYTES`], and their commas, and a SHA-256.
 const REFUSED_CEILING: u64 = 2048;
 
 /// The most scenes an overflow names (the worker's `REFUSED_SCENES`).

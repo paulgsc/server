@@ -768,7 +768,7 @@ record() {
       # holds is given beside it, each kind in <key>.<kind>/ (CARDS_MEDIA;
       # `cards_essays::pass`, written whole before the essay): a spoken
       # card's takes (WALK7, #1052; each take's audio, word times and
-      # transcript), a scene's snips (SNIPS4; snips.json and the pictures)
+      # transcript), a scene's snips (SNIPS4; snips.json and the pictures),
       # its clip frames (the frames alone, <clip>/<side>/<file>) and its
       # public pages (#3395; pages.json and the pictures).
       local media=() kind

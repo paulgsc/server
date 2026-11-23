@@ -1244,3 +1244,14 @@ fn a_home_refusal_names_what_blocks_it() {
 		serde_json::json!({ "feed": "cards-essay", "key": "walk-2026-11-20", "at": 1, "by": "home", "exit": null, "reason": "take-unheard", "items": ["note-a", "note-b"], "itemCount": 2 })
 	);
 }
+
+#[test]
+fn the_longest_page_id_is_an_item_and_a_refusal_naming_twelve_reads_whole() {
+	let longest = String::from("9").repeat(20) + " " + &"a".repeat(96) + "-0123456789ab.png";
+	assert_eq!(longest.len(), super::MOST_ITEM_BYTES);
+	assert!(super::item_id(&longest) && !super::item_id(&(longest.clone() + "x")));
+	let items = vec![longest; super::MOST_ITEMS];
+	let text = String::from("reason=page-gone\nitems=") + &items.join(",") + "\ncount=99\n";
+	assert!(text.len() as u64 <= super::REFUSED_CEILING, "{} bytes", text.len());
+	assert_eq!(super::Blocking::parse(&text).map(|blocking| blocking.items.len()), Some(super::MOST_ITEMS));
+}

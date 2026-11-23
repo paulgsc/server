@@ -678,7 +678,7 @@ pub const REFUSED_ITEMS: usize = crate::feeds::renders::MOST_ITEMS;
 /// what still stops it); and its failed log's words: the reason and every
 /// item by id, never what they hold.
 fn refusal_files(refusal: &essay_media::Refusal) -> (String, String) {
-	// Only ids of an item's shape, each at most 128 bytes, so the file stays
+	// Only ids of an item's shape, each at most `MOST_ITEM_BYTES`, so the file stays
 	// under the board's ceiling and reads whole; `count` is every item.
 	let named: Vec<&str> = refusal
 		.items
