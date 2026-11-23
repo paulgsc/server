@@ -167,8 +167,8 @@ pub struct MailboxContext {
 	pub wake: Arc<bell::Wake>,
 	/// The mailbox's bell, through `MAILBOX_TOKEN`.
 	pub bell: Arc<bell::Bell>,
-	/// The snips pickup, through `SNIPS_GITHUB_TOKEN`, or `None` when the
-	/// deployment picks up none (`crate::snips`).
+	/// The snips and pages pickup, through `SNIPS_GITHUB_TOKEN`, or `None`
+	/// when the deployment picks up none (`crate::snips`).
 	pub snips: Option<Arc<crate::snips::GitHub>>,
 }
 
@@ -264,7 +264,7 @@ impl MailboxContext {
 		};
 		let snips = crate::snips::GitHub::new(config.snips_github_token.as_deref())?.map(Arc::new);
 		if snips.is_none() {
-			info!("SNIPS_GITHUB_TOKEN is not set; home will pick up no snips");
+			info!("SNIPS_GITHUB_TOKEN is not set; home will pick up no snips or public pages");
 		}
 		Ok(Some(Self {
 			snips,
@@ -463,11 +463,11 @@ async fn watch(db: &SqlitePool, context: &MailboxContext) {
 	}
 }
 
-/// The snips pickup's pass (`crate::snips`), after the mailbox's own work:
-/// counts and kinds, never a token, URL or record.
+/// The snips and pages pickup's pass (`crate::snips`), after the mailbox's
+/// own work: counts and kinds, never a token, URL or record.
 async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) {
-	let (essays, folder) = (std::path::Path::new(crate::cards_essays::ESSAYS_FOLDER), std::path::Path::new(crate::snips::FOLDER));
-	let Ok(done) = tokio::time::timeout(crate::snips::PASS_DEADLINE, crate::snips::run_once(db, capture, essays, folder)).await else {
+	let (essays, folders) = (std::path::Path::new(crate::cards_essays::ESSAYS_FOLDER), crate::snips::Folders::server());
+	let Ok(done) = tokio::time::timeout(crate::snips::PASS_DEADLINE, crate::snips::run_once(db, capture, essays, &folders)).await else {
 		// What it left half-made goes next pass (`snips::run_once`).
 		warn!("Snips pickup pass reached its deadline; asked again next pass");
 		return;

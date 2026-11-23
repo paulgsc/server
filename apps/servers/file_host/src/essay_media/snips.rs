@@ -79,8 +79,8 @@ pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: 
 	if super::sha256_hex(&bytes) != sha256 {
 		return Ok(Held::Refused(Why::Missing));
 	}
-	Ok(Held::Snip {
-		commit: String::from(commit),
+	Ok(Held::Record {
+		bundle: String::from(commit),
 		record,
 		picture: (name, bytes),
 	})
@@ -94,10 +94,15 @@ pub(super) async fn still_held(_conn: &mut SqliteConnection, _sources: &Sources,
 }
 
 /// `snips.json`: for each commit, in the order first named, the records of
-/// its snips the essay names.
-pub(super) fn given(snipped: Vec<(String, Value)>) -> File {
+/// its snips the essay names; then each snip's picture. None for none.
+pub(super) fn given(snipped: Vec<(String, Value, File)>) -> Vec<File> {
+	if snipped.is_empty() {
+		return Vec::new();
+	}
 	let mut bundles: Vec<(String, Vec<Value>)> = Vec::new();
-	for (commit, record) in snipped {
+	let mut pictures = Vec::with_capacity(snipped.len());
+	for (commit, record, picture) in snipped {
+		pictures.push(picture);
 		match bundles.iter_mut().find(|(held, _)| *held == commit) {
 			Some((_, records)) => records.push(record),
 			None => bundles.push((commit, vec![record])),
@@ -105,5 +110,5 @@ pub(super) fn given(snipped: Vec<(String, Value)>) -> File {
 	}
 	let bundles: Vec<Value> = bundles.into_iter().map(|(commit, snips)| serde_json::json!({ "commit": commit, "snips": snips })).collect();
 	let body = serde_json::json!({ "schema": GIVEN_SCHEMA, "bundles": bundles });
-	(String::from("snips.json"), body.to_string().into_bytes())
+	std::iter::once((String::from("snips.json"), body.to_string().into_bytes())).chain(pictures).collect()
 }

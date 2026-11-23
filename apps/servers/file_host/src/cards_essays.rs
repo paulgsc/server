@@ -134,8 +134,8 @@ pub fn start(state: &AppState) {
 	}
 	let context = state.cards_essays.clone();
 	let configured = state.mailbox.as_ref().and_then(|mailbox| mailbox.subject.clone());
-	// The mailbox pass fetches a waiting essay's snips when the deployment
-	// gave it a token (`snips`); without one, a snip is missing.
+	// The mailbox pass fetches a waiting essay's snips and pages when the
+	// deployment gave it a token (`snips`); without one, each is missing.
 	let fetching = state.mailbox.as_ref().is_some_and(|mailbox| mailbox.snips.is_some());
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
@@ -195,6 +195,7 @@ async fn given(db: &SqlitePool, configured: Option<&str>, fetching: bool, deleti
 		renders: std::path::PathBuf::from(RENDERS_FOLDER),
 		frames: std::path::PathBuf::from(crate::clips::FRAMES_FOLDER),
 		snips: fetching.then(|| std::path::PathBuf::from(crate::snips::FOLDER)),
+		pages: fetching.then(|| std::path::PathBuf::from(crate::snips::PAGES_FOLDER)),
 		work: std::path::PathBuf::from(WORK_FOLDER),
 		deletion: deletion.clone(),
 	})

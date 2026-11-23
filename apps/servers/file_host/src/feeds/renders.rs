@@ -583,7 +583,7 @@ pub struct Failed {
 	/// `too-large`, `overflow`, with [`Over`]), and a cards essay home
 	/// refused for what it names (`take-missing`, `take-unheard`,
 	/// paulgsc/server#1052; `snip-missing`, `snip-gone`, `clip-missing`,
-	/// `essay_media`).
+	/// `page-missing`, `page-gone`, `essay_media`).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<&'static str>,
 	/// By how much the render policy refused it (#929).
@@ -1304,7 +1304,8 @@ enum Refused {
 	/// `take-unheard`, one home couldn't make out or heard nothing in, or
 	/// `snip-missing` / `clip-missing`, a snip or clip frame a scene shows
 	/// that home doesn't hold, or `snip-gone`, a snip whose bundle GitHub no
-	/// longer has (`docs/snips.md`, C875). A class alone.
+	/// longer has (`docs/snips.md`, C875), or `page-missing` / `page-gone`,
+	/// the same of a public page (C1441). A class alone.
 	Home(&'static str),
 }
 
@@ -1316,6 +1317,8 @@ fn home_refusal(text: &str) -> Option<&'static str> {
 		"snip-missing" => Some("snip-missing"),
 		"clip-missing" => Some("clip-missing"),
 		"snip-gone" => Some("snip-gone"),
+		"page-missing" => Some("page-missing"),
+		"page-gone" => Some("page-gone"),
 		_ => None,
 	}
 }

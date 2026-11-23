@@ -46,8 +46,23 @@
 //! - **Counts and kinds, never bytes.** No token, URL or record reaches a log.
 //! - **No network in tests.** GitHub is the [`Capture`] port.
 //!
+//! **Public pages are the family's second member** (paulgsc/some-ui#3395,
+//! C1420, C1440): [`Family::Pages`]. A scene names a page by the run of
+//! some-ui's dispatch-only `Public Pages Capture` that took it, and that
+//! run's `pages-bundle-<run>` is fetched, checked ([`pages`]) and cached in
+//! `<PAGES_FOLDER>/<run>/` by every rule above, the run in the commit's
+//! place. What differs is said by [`Family`] alone: what names a bundle,
+//! how its run is found (a run of another workflow, or one that did not
+//! succeed, is no run), the artifact's name, its check and its folder. One
+//! queue holds both families' keys, so the bounds and the deadline above are
+//! the whole pickup's, never one per family. A page can't be taken again the
+//! same, so a page gone is the owner's to capture anew and name in a new cut
+//! list; a newer attempt of the same run still clears its mark.
+//!
 //! Not yet: putting each record in the mailbox for the routine (SNIPS2's
 //! fourth step) waits on the mailbox Worker gaining a folder for it.
+
+pub mod pages;
 
 use regex::Regex;
 use serde::Deserialize;
@@ -63,6 +78,14 @@ use std::sync::LazyLock;
 /// Where home keeps the bundles waiting essays name, as this server sees it:
 /// `<commit>/` (its `manifest.json` and pictures) or `<commit>.gone`.
 pub const FOLDER: &str = "/app/dbs/renders/snips";
+
+/// Where home keeps the bundles of the public pages waiting essays name:
+/// `<run>/` (its `pages.json` and pictures), `<run>.gone` or `<run>.retry`.
+pub const PAGES_FOLDER: &str = "/app/dbs/renders/pages";
+
+/// The one workflow whose runs home takes public pages from: a run of any
+/// other is no run of the pages (C1440).
+pub const PAGES_WORKFLOW: &str = ".github/workflows/public-pages-capture.yml";
 
 /// The capture's repository on GitHub's API.
 pub const REPOSITORY: &str = "https://api.github.com/repos/paulgsc/some-ui";
@@ -118,6 +141,13 @@ pub fn is_snip_id(id: &str) -> bool {
 	SNIP_ID.is_match(id)
 }
 
+/// Whether `run` is a capture run's id as a scene names it (some-ui's
+/// `RUN_ID`, `^[1-9][0-9]{0,19}$`) that a run on GitHub can have.
+#[must_use]
+pub fn is_run(run: &str) -> bool {
+	(1..=20).contains(&run.len()) && !run.starts_with('0') && run.bytes().all(|b| b.is_ascii_digit()) && run.parse::<i64>().is_ok()
+}
+
 /// Whether `commit` is a commit's 40 lowercase hex digits.
 #[must_use]
 pub fn is_commit(commit: &str) -> bool {
@@ -130,23 +160,109 @@ fn id_parts(id: &str) -> Option<(&str, &str)> {
 	Some((parts.get(4)?.as_str(), parts.get(5)?.as_str()))
 }
 
-/// `<commit>/`, a fetched bundle in `folder`.
+/// `<key>/`, a fetched bundle in `folder`: a commit's, or a run's.
 #[must_use]
-pub fn bundle_of(folder: &Path, commit: &str) -> PathBuf {
-	folder.join(commit)
+pub fn bundle_of(folder: &Path, key: &str) -> PathBuf {
+	folder.join(key)
 }
 
-/// `<commit>.gone`, the mark of a commit home cannot fetch.
+/// `<key>.gone`, the mark of a bundle home cannot fetch.
 #[must_use]
-pub fn gone_of(folder: &Path, commit: &str) -> PathBuf {
-	folder.join(String::from(commit) + ".gone")
+pub fn gone_of(folder: &Path, key: &str) -> PathBuf {
+	folder.join(String::from(key) + ".gone")
+}
+
+/// One kind of bundle home fetches for waiting essays: a closed set, as
+/// [`crate::essay_media::Kind`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Family {
+	/// `snips-bundle-<commit>`, of `Snips Capture`, named by its commit.
+	Snips,
+	/// `pages-bundle-<run>`, of `Public Pages Capture`, named by its run.
+	Pages,
+}
+
+impl Family {
+	/// Every family, in the order a pass's queue breaks a tie.
+	pub const ALL: [Self; 2] = [Self::Snips, Self::Pages];
+
+	/// The essay media kind whose items name its bundles.
+	#[must_use]
+	pub const fn kind(self) -> crate::essay_media::Kind {
+		match self {
+			Self::Snips => crate::essay_media::Kind::Snips,
+			Self::Pages => crate::essay_media::Kind::Pages,
+		}
+	}
+
+	/// Whether `key` names one of its bundles: a commit, or a run.
+	#[must_use]
+	pub fn is_key(self, key: &str) -> bool {
+		match self {
+			Self::Snips => is_commit(key),
+			Self::Pages => is_run(key),
+		}
+	}
+
+	/// Whether `run` is the run that made `key`'s bundle.
+	fn owns(self, run: &Run, key: &str) -> bool {
+		match self {
+			Self::Snips => run.head_sha == key,
+			Self::Pages => run.id.to_string() == key,
+		}
+	}
+
+	/// The name of `run`'s artifact.
+	#[must_use]
+	pub fn artifact(self, run: &Run) -> String {
+		match self {
+			Self::Snips => String::from("snips-bundle-") + &run.head_sha,
+			Self::Pages => String::from("pages-bundle-") + &run.id.to_string(),
+		}
+	}
+
+	/// Checks the bundle at `zip` against `run`, as the family's contract
+	/// says, and stages what is handed in `stage`.
+	fn open(self, zip: &Path, stage: &Path, run: &Run) -> Result<(), Why> {
+		match self {
+			Self::Snips => open(zip, stage, run),
+			Self::Pages => pages::open(zip, stage),
+		}
+	}
+}
+
+/// Where each family's bundles are cached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folders {
+	pub snips: PathBuf,
+	pub pages: PathBuf,
+}
+
+impl Folders {
+	/// The server's: [`FOLDER`] and [`PAGES_FOLDER`].
+	#[must_use]
+	pub fn server() -> Self {
+		Self {
+			snips: PathBuf::from(FOLDER),
+			pages: PathBuf::from(PAGES_FOLDER),
+		}
+	}
+
+	/// `family`'s.
+	#[must_use]
+	pub fn of(&self, family: Family) -> &Path {
+		match family {
+			Family::Snips => &self.snips,
+			Family::Pages => &self.pages,
+		}
+	}
 }
 
 /// One successful run of the capture.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Run {
 	pub id: i64,
-	/// The commit it captured.
+	/// The commit it captured (a page's run's is not its key).
 	pub head_sha: String,
 	/// Which attempt: a re-run keeps its id and makes a new attempt.
 	pub run_attempt: i64,
@@ -172,11 +288,14 @@ pub enum Bundle {
 
 /// GitHub, as the pickup sees it. A failure is a kind, never a URL or body.
 pub trait Capture: Send + Sync {
-	/// The capture's successful runs of `commit`, in any order.
-	fn runs(&self, commit: &str) -> impl Future<Output = Result<Vec<Run>, &'static str>> + Send;
+	/// `family`'s capture's successful runs that made `key`'s bundle, in
+	/// any order: none when there is no such run, or it is of another
+	/// workflow, or did not succeed.
+	fn runs(&self, family: Family, key: &str) -> impl Future<Output = Result<Vec<Run>, &'static str>> + Send;
 
-	/// `run`'s bundle, saved to `into`, at most [`MAX_BUNDLE`] bytes.
-	fn bundle(&self, run: &Run, into: &Path) -> impl Future<Output = Result<Bundle, &'static str>> + Send;
+	/// `run`'s bundle of `family`, saved to `into`, at most [`MAX_BUNDLE`]
+	/// bytes.
+	fn bundle(&self, family: Family, run: &Run, into: &Path) -> impl Future<Output = Result<Bundle, &'static str>> + Send;
 }
 
 /// [`Capture`] over GitHub's REST API with `SNIPS_GITHUB_TOKEN`.
@@ -233,20 +352,47 @@ impl GitHub {
 	}
 
 	async fn json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, &'static str> {
+		self.json_or_none(url).await?.ok_or("refused")
+	}
+
+	/// As [`Self::json`], with `None` for a 404: what GitHub answers for a
+	/// run it has no such id of.
+	async fn json_or_none<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<Option<T>, &'static str> {
 		// A list is small: a stalled one fails here, well inside the pass's
 		// deadline, and is said on OUTBOUND as any request's failure.
 		let answer = self.get(url).timeout(LIST_TIMEOUT).send().await.map_err(|err| kind_of(&err))?;
+		if answer.status() == reqwest::StatusCode::NOT_FOUND {
+			return Ok(None);
+		}
 		if !answer.status().is_success() {
 			return Err("refused");
 		}
 		let body = answer.bytes().await.map_err(|err| kind_of(&err))?;
-		serde_json::from_slice(&body).map_err(|_| "unreadable")
+		serde_json::from_slice(&body).map(Some).map_err(|_| "unreadable")
 	}
 }
 
 #[derive(Deserialize)]
 struct Runs {
 	workflow_runs: Vec<Run>,
+}
+
+/// One run, as `GET /actions/runs/<run>` answers: its latest attempt.
+#[derive(Deserialize)]
+struct OneRun {
+	#[serde(flatten)]
+	run: Run,
+	path: String,
+	conclusion: Option<String>,
+}
+
+impl OneRun {
+	/// The run, when it is a successful run of [`PAGES_WORKFLOW`]: a run of
+	/// another workflow, or one that did not succeed (or has not yet), is no
+	/// run of the pages.
+	fn of_pages(self) -> Option<Run> {
+		(self.path == PAGES_WORKFLOW && self.conclusion.as_deref() == Some("success")).then_some(self.run)
+	}
 }
 
 #[derive(Deserialize)]
@@ -256,6 +402,7 @@ struct Artifacts {
 
 #[derive(Deserialize)]
 struct Artifact {
+	id: i64,
 	name: String,
 	expired: bool,
 	size_in_bytes: u64,
@@ -263,17 +410,34 @@ struct Artifact {
 }
 
 impl Capture for GitHub {
-	async fn runs(&self, commit: &str) -> Result<Vec<Run>, &'static str> {
-		let url = String::from(REPOSITORY) + "/actions/workflows/" + WORKFLOW + "/runs?status=success&per_page=20&head_sha=" + commit;
-		Ok(self.json::<Runs>(&url).await?.workflow_runs)
+	async fn runs(&self, family: Family, key: &str) -> Result<Vec<Run>, &'static str> {
+		// Only a key of its family reaches a URL: digits, or hex.
+		if !family.is_key(key) {
+			return Ok(Vec::new());
+		}
+		match family {
+			Family::Snips => {
+				let url = String::from(REPOSITORY) + "/actions/workflows/" + WORKFLOW + "/runs?status=success&per_page=20&head_sha=" + key;
+				Ok(self.json::<Runs>(&url).await?.workflow_runs)
+			}
+			Family::Pages => {
+				let url = String::from(REPOSITORY) + "/actions/runs/" + key;
+				Ok(self.json_or_none::<OneRun>(&url).await?.into_iter().filter_map(OneRun::of_pages).collect())
+			}
+		}
 	}
 
-	async fn bundle(&self, run: &Run, into: &Path) -> Result<Bundle, &'static str> {
-		let url = String::from(REPOSITORY) + "/actions/runs/" + &run.id.to_string() + "/artifacts";
-		let wanted = String::from("snips-bundle-") + &run.head_sha;
-		// An earlier attempt's expired copy may be listed beside the newest.
+	async fn bundle(&self, family: Family, run: &Run, into: &Path) -> Result<Bundle, &'static str> {
+		let wanted = family.artifact(run);
+		let url = String::from(REPOSITORY) + "/actions/runs/" + &run.id.to_string() + "/artifacts?per_page=100&name=" + &wanted;
+		// An earlier attempt's copy may be listed beside the newest: the
+		// newest that has not expired is the run's.
 		let artifacts = self.json::<Artifacts>(&url).await?.artifacts;
-		let Some(artifact) = artifacts.into_iter().find(|artifact| artifact.name == wanted && !artifact.expired) else {
+		let Some(artifact) = artifacts
+			.into_iter()
+			.filter(|artifact| artifact.name == wanted && !artifact.expired)
+			.max_by_key(|artifact| artifact.id)
+		else {
 			return Ok(Bundle::Gone);
 		};
 		if artifact.size_in_bytes > MAX_BUNDLE {
@@ -475,11 +639,11 @@ fn open(zip: &Path, stage: &Path, run: &Run) -> Result<(), Why> {
 	stage_file(stage, "manifest.json", &manifest_bytes)
 }
 
-/// Every commit a snip names in an essay home holds that the essays' folder
-/// has not been given yet.
-async fn wanted(db: &SqlitePool, essays: &Path) -> Result<BTreeSet<String>, sqlx::Error> {
+/// Every bundle, by family and key, an item names in an essay home holds
+/// that the essays' folder has not been given yet: one read of each body.
+async fn wanted(db: &SqlitePool, essays: &Path) -> Result<BTreeSet<(Family, String)>, sqlx::Error> {
 	let mut conn = db.acquire().await?;
-	let mut commits = BTreeSet::new();
+	let mut keys = BTreeSet::new();
 	for essay in cards_essay_repo::held(&mut conn).await? {
 		if essays.join(String::from(&essay.key) + ".json").exists() {
 			continue;
@@ -488,51 +652,54 @@ async fn wanted(db: &SqlitePool, essays: &Path) -> Result<BTreeSet<String>, sqlx
 			continue;
 		};
 		let essay = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-		for item in crate::essay_media::named(crate::essay_media::Kind::Snips, &essay) {
-			if let Some((commit, _)) = item.split_once(' ').filter(|(commit, _)| is_commit(commit)) {
-				commits.insert(commit.to_owned());
+		for family in Family::ALL {
+			for item in crate::essay_media::named(family.kind(), &essay) {
+				// An item is `<key> …`: its bundle's key first.
+				if let Some(key) = item.split(' ').next().filter(|key| family.is_key(key)) {
+					keys.insert((family, key.to_owned()));
+				}
 			}
 		}
 	}
-	Ok(commits)
+	Ok(keys)
 }
 
 /// The run a `.gone` mark names, or `None` without one.
-async fn marked(folder: &Path, commit: &str) -> Option<String> {
-	let text = tokio::fs::read_to_string(gone_of(folder, commit)).await.ok()?;
+async fn marked(folder: &Path, key: &str) -> Option<String> {
+	let text = tokio::fs::read_to_string(gone_of(folder, key)).await.ok()?;
 	Some(text.lines().find_map(|line| line.strip_prefix("run=")).unwrap_or_default().to_owned())
 }
 
-/// `<commit>.retry`, touched when a commit's fetch failed in a way that may
+/// `<key>.retry`, touched when a key's fetch failed in a way that may
 /// clear: when, by its time, never why.
 #[must_use]
-pub fn retry_of(folder: &Path, commit: &str) -> PathBuf {
-	folder.join(String::from(commit) + ".retry")
+pub fn retry_of(folder: &Path, key: &str) -> PathBuf {
+	folder.join(String::from(key) + ".retry")
 }
 
-/// Touches `commit`'s retry mark.
-async fn mark_retry(folder: &Path, commit: &str) -> std::io::Result<()> {
-	tokio::fs::write(retry_of(folder, commit), b"").await
+/// Touches `key`'s retry mark.
+async fn mark_retry(folder: &Path, key: &str) -> std::io::Result<()> {
+	tokio::fs::write(retry_of(folder, key), b"").await
 }
 
-/// Marks `commit` gone, naming `run` and why.
-async fn mark_gone(folder: &Path, commit: &str, run: Option<&Run>, reason: &str) -> std::io::Result<()> {
-	let partial = folder.join(String::from(".") + commit + ".gone.partial");
+/// Marks `key` gone, naming `run` and why.
+async fn mark_gone(folder: &Path, key: &str, run: Option<&Run>, reason: &str) -> std::io::Result<()> {
+	let partial = folder.join(String::from(".") + key + ".gone.partial");
 	let text = String::from("reason=") + reason + "\nrun=" + &run.map_or_else(String::new, Run::mark) + "\n";
 	tokio::fs::write(&partial, text).await?;
-	tokio::fs::rename(&partial, gone_of(folder, commit)).await
+	tokio::fs::rename(&partial, gone_of(folder, key)).await
 }
 
 /// Removes the cache's entries no waiting essay names, and what a stopped
 /// pass left: the pickup is the cache's one writer, and runs in one task.
-async fn drop_unwanted(folder: &Path, wanted: &BTreeSet<String>, picked: &mut Picked) {
+async fn drop_unwanted(folder: &Path, family: Family, wanted: &BTreeSet<(Family, String)>, picked: &mut Picked) {
 	let Ok(mut entries) = tokio::fs::read_dir(folder).await else {
 		return;
 	};
 	while let Ok(Some(entry)) = entries.next_entry().await {
 		let name = entry.file_name().to_string_lossy().into_owned();
-		let commit = name.strip_suffix(".gone").or_else(|| name.strip_suffix(".retry")).unwrap_or(&name);
-		if !name.starts_with('.') && wanted.contains(commit) {
+		let key = name.strip_suffix(".gone").or_else(|| name.strip_suffix(".retry")).unwrap_or(&name);
+		if !name.starts_with('.') && wanted.contains(&(family, key.to_owned())) {
 			continue;
 		}
 		let path = entry.path();
@@ -547,75 +714,80 @@ async fn drop_unwanted(folder: &Path, wanted: &BTreeSet<String>, picked: &mut Pi
 	}
 }
 
-/// One pass of the pickup, as the module doc says: the bundles of the essays
-/// home holds and has not given to `essays`, cached in `folder`.
+/// One pass of the pickup, as the module doc says: the bundles of every
+/// family the essays home holds and has not given to `essays` name, each
+/// cached in its family's folder of `folders`.
 ///
 /// # Errors
 /// A storage failure.
-pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, folder: &Path) -> Result<Picked, sqlx::Error> {
+pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, folders: &Folders) -> Result<Picked, sqlx::Error> {
 	let mut picked = Picked::default();
 	let wanted = wanted(db, essays).await?;
-	drop_unwanted(folder, &wanted, &mut picked).await;
-	let mut missing: Vec<(u8, std::time::SystemTime, &String)> = Vec::new();
-	for commit in wanted.iter().filter(|commit| !bundle_of(folder, commit).is_dir()) {
+	for family in Family::ALL {
+		drop_unwanted(folders.of(family), family, &wanted, &mut picked).await;
+	}
+	let mut missing: Vec<(u8, std::time::SystemTime, Family, &String)> = Vec::new();
+	for (family, key) in &wanted {
+		let folder = folders.of(*family);
+		if bundle_of(folder, key).is_dir() {
+			continue;
+		}
 		// Never looked at first, then those whose fetch failed, longest ago
 		// first, then those marked gone (only a newer run clears one): so no
-		// commit holds another back for good.
-		let retried = tokio::fs::metadata(retry_of(folder, commit)).await.and_then(|meta| meta.modified()).ok();
-		let rank = if gone_of(folder, commit).exists() { 2 } else { u8::from(retried.is_some()) };
-		missing.push((rank, retried.unwrap_or(std::time::UNIX_EPOCH), commit));
+		// key, of either family, holds another back for good.
+		let retried = tokio::fs::metadata(retry_of(folder, key)).await.and_then(|meta| meta.modified()).ok();
+		let rank = if gone_of(folder, key).exists() { 2 } else { u8::from(retried.is_some()) };
+		missing.push((rank, retried.unwrap_or(std::time::UNIX_EPOCH), *family, key));
 	}
 	missing.sort();
-	if missing.is_empty() {
-		return Ok(picked);
-	}
-	if tokio::fs::create_dir_all(folder).await.is_err() {
-		picked.failures.push("drive");
-		return Ok(picked);
-	}
-	for (_, _, commit) in missing.into_iter().take(COMMITS_LOOKED) {
+	for (_, _, family, key) in missing.into_iter().take(COMMITS_LOOKED) {
+		let folder = folders.of(family);
+		if tokio::fs::create_dir_all(folder).await.is_err() {
+			picked.failures.push("drive");
+			continue;
+		}
 		// Marked before it is tried, and cleared once it comes to an outcome:
-		// a pass the deadline cuts short mid-request leaves the commit at the
+		// a pass the deadline cuts short mid-request leaves the key at the
 		// back of the queue, never at its head.
-		let _ = mark_retry(folder, commit).await;
-		let runs = match capture.runs(commit).await {
+		let _ = mark_retry(folder, key).await;
+		let runs = match capture.runs(family, key).await {
 			Ok(runs) => runs,
 			Err(kind) => {
 				picked.failures.push(kind);
 				continue;
 			}
 		};
-		let newest = runs.into_iter().filter(|run| &run.head_sha == commit).max_by_key(|run| (run.id, run.run_attempt));
-		let mark = marked(folder, commit).await;
+		let newest = runs.into_iter().filter(|run| family.owns(run, key)).max_by_key(|run| (run.id, run.run_attempt));
+		let mark = marked(folder, key).await;
 		let Some(run) = newest else {
 			if mark.is_none() {
 				picked.gone += 1;
-				if mark_gone(folder, commit, None, "no-run").await.is_err() {
+				if mark_gone(folder, key, None, "no-run").await.is_err() {
 					picked.failures.push("drive");
 					continue;
 				}
 			}
 			// Only once it is marked gone: a mark the drive refused leaves it
 			// at the back, never at the head.
-			let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
+			let _ = tokio::fs::remove_file(retry_of(folder, key)).await;
 			continue;
 		};
 		if mark.as_deref() == Some(run.mark().as_str()) {
 			// Gone as this run, and no newer one: said, not asked again.
-			let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
+			let _ = tokio::fs::remove_file(retry_of(folder, key)).await;
 			continue;
 		}
-		let zip = folder.join(String::from(".") + commit + ".zip.partial");
-		let stage = folder.join(String::from(".") + commit + ".partial");
+		let zip = folder.join(String::from(".") + key + ".zip.partial");
+		let stage = folder.join(String::from(".") + key + ".partial");
 		let _ = tokio::fs::remove_dir_all(&stage).await;
-		let outcome = match capture.bundle(&run, &zip).await {
+		let outcome = match capture.bundle(family, &run, &zip).await {
 			Err(kind) => Err(kind),
 			Ok(Bundle::Gone) => Ok(Some("gone")),
 			Ok(Bundle::TooBig) => Ok(Some("refused")),
 			Ok(Bundle::Saved) => {
 				let (zip_at, stage_at, asked) = (zip.clone(), stage.clone(), run.clone());
-				match tokio::task::spawn_blocking(move || open(&zip_at, &stage_at, &asked)).await {
-					Ok(Ok(())) => match tokio::fs::rename(&stage, bundle_of(folder, commit)).await {
+				match tokio::task::spawn_blocking(move || family.open(&zip_at, &stage_at, &asked)).await {
+					Ok(Ok(())) => match tokio::fs::rename(&stage, bundle_of(folder, key)).await {
 						Ok(()) => Ok(None),
 						Err(_) => Err("drive"),
 					},
@@ -629,23 +801,23 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		let _ = tokio::fs::remove_dir_all(&stage).await;
 		match outcome {
 			Ok(None) => {
-				let _ = tokio::fs::remove_file(gone_of(folder, commit)).await;
-				let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
+				let _ = tokio::fs::remove_file(gone_of(folder, key)).await;
+				let _ = tokio::fs::remove_file(retry_of(folder, key)).await;
 				picked.fetched += 1;
 			}
 			Ok(Some(reason)) => {
 				picked.gone += 1;
-				if mark_gone(folder, commit, Some(&run), reason).await.is_err() {
+				if mark_gone(folder, key, Some(&run), reason).await.is_err() {
 					picked.failures.push("drive");
 				} else {
-					let _ = tokio::fs::remove_file(retry_of(folder, commit)).await;
+					let _ = tokio::fs::remove_file(retry_of(folder, key)).await;
 				}
 			}
 			// Its retry mark stays: to the back of the queue, so it holds no
-			// other commit back.
+			// other key back.
 			Err(kind) => picked.failures.push(kind),
 		}
-		// One bundle a pass.
+		// One bundle a pass, of either family.
 		break;
 	}
 	Ok(picked)
