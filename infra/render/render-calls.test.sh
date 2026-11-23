@@ -1712,6 +1712,16 @@ run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a refusal naming no scene of an id's shape keeps no refusal, and the hourly retry" \
   bash -c 'test -e "$1.failed.log" -a ! -e "$1.refused"' _ "$ROOT/renders/rust-essay-worker/2026-w49"
 RETRY_AFTER=0
+# Every scene named: only the 12 ids kept keep their names, so the board
+# names the scenes it lists and the phone (some-ui#3449) counts the rest.
+fresh overflow-many-named
+mkdir -p "$ROOT/essays/2026-w51/takes"
+echo '{}' > "$ROOT/essays/2026-w51/essay.json"
+{ seq -f 'scene-%g' 1 14; seq 1 14 | sed 's/.*/scene scene-& is named: Chapter, &/'; } > "$FAKE/overflow"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay of 14 named scenes keeps the names of its first 12 only" \
+  test "$(grep '^name\.' "$ROOT/renders/rust-essay-worker/2026-w51.refused")" = "$(seq 1 12 | sed 's/.*/name.scene-&=Chapter, &/')"
+rm -f "$FAKE/overflow"
 
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
 # made and removes it, and the worker takes that as a refusal by the policy

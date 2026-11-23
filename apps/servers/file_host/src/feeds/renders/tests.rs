@@ -1339,6 +1339,41 @@ fn a_refusal_carries_the_recorders_names_for_its_scenes_when_it_names_each() {
 	);
 }
 
+/// Names go with the ids the worker keeps (its first 12 of 14 here): every
+/// kept scene named gives exactly those 12, in their order, whatever else was
+/// named; one of the 12 unnamed gives none, though scenes past the cut are.
+#[tokio::test]
+async fn scene_names_are_the_kept_scenes_whole_or_none() {
+	let dir = tempfile::tempdir().unwrap();
+	let path = dir.path().join("k.refused");
+	let ids: Vec<String> = (1..=14).map(|n| ["scene-", &n.to_string()].concat()).collect();
+	let name = |id: &str| ["Chapter, ", id].concat();
+	let refusal = |named: &dyn Fn(&str) -> bool| {
+		let mut text = String::from("reason=overflow\nscenes=");
+		text.push_str(&ids[..12].join(","));
+		text.push_str("\ncount=14\nheld=ab\n");
+		for id in ids.iter().filter(|id| named(id)) {
+			text.push_str(&["name.", id, "=", &name(id), "\n"].concat());
+		}
+		text
+	};
+	std::fs::write(&path, refusal(&|_| true)).unwrap();
+	match read_refused(&path).await {
+		Some(Refused::Over(Over::Overflow { scenes, scene_count }, names)) => {
+			assert_eq!((scenes.as_slice(), scene_count), (&ids[..12], 14));
+			assert_eq!(names, Some(ids[..12].iter().map(|id| name(id)).collect()));
+		}
+		other => panic!("{other:?}"),
+	}
+	std::fs::write(&path, refusal(&|id| id != "scene-7")).unwrap();
+	match read_refused(&path).await {
+		Some(Refused::Over(Over::Overflow { scenes, .. }, names)) => {
+			assert_eq!((scenes.as_slice(), names), (&ids[..12], None), "one kept scene unnamed: none");
+		}
+		other => panic!("{other:?}"),
+	}
+}
+
 /// A recorder's name that is no UTF-8 is a name refused, never the refusal:
 /// its reason, scenes and count still reach the board.
 #[tokio::test]
