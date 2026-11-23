@@ -75,10 +75,10 @@ The four invariants above hold for pages as written, with these readings:
   `<key>.pages/` copy goes with its video. A page is never a reason to take
   an essay back.
 - **Gone is said, never retried.** A run that doesn't exist, is of another
-  workflow, didn't succeed (or hasn't finished), whose artifact expired, or
+  workflow, didn't succeed, whose artifact expired, or
   whose bundle was refused gets `<run>.gone`, and the essay is refused
   `page-gone`. A newer attempt of the same run clears the mark. A timeout or
-  the drive gets only `<run>.retry`. The recovery is the owner's: a new
+  the drive, or a run not finished yet, gets only `<run>.retry`. The recovery is the owner's: a new
   dispatch, and a cut list naming the new run's pictures. Home never
   dispatches.
 
@@ -106,8 +106,10 @@ listed. The artifact list is asked by name.
 
 ### Call C1443: pages go first in the shared queue
 
-Among keys of the same standing (never looked at, failed, or gone), a run's
-pages come before a commit's snips. The pass runs hourly and downloads one
+Among keys never looked at, and among keys marked gone, a run's pages come
+before a commit's snips. Keys whose fetch failed keep their turn, longest ago
+first, whatever their family, so a page that keeps failing never holds a
+snip back for good. The pass runs hourly and downloads one
 bundle, so a day's worth of snips commits queued ahead of a run would
 outlive its one-day artifact. A snips bundle is a re-run away, and a page
 can't be taken again. Raised by the coordinator on #1144.
@@ -129,15 +131,16 @@ they give the same bytes, it is the same picture, and it is kept once. A
 scene with no run, or a run or file no capture makes, is `page-missing`, as is
 every page when `SNIPS_GITHUB_TOKEN` is unset.
 
-### Call C1442: a run not finished is no run
+### Call C1442: a run not finished is waited on, not gone
 
-A run that hasn't concluded `success` is read as no run of the pages and
-marked gone (`reason=no-run`), as the brief asks of a run that isn't a
-success. It does not wait. Its mark names no attempt, so every pass still
-asks it again, last in the queue, and it is fetched once it has succeeded.
-The cut list names a run only after the capture's summary prints its scenes,
-so a run still going is a cut list written too early. Rejected: waiting on
-it, which would hold an essay on a run that may never succeed.
+A run that hasn't concluded yet (`conclusion` null: queued or in progress) is
+the failure `unfinished`. It gets only `<run>.retry`, so its essay waits and
+is asked again next pass, behind the other keys. A run that concluded other
+than `success`, or doesn't exist, is no run and is marked gone. Studio's
+words for `page-gone` send the owner to capture the page again, which is the
+wrong advice for a run about to succeed. The routine may name a run while it
+is in flight, though the capture's own order names it only after it has
+succeeded. Asked by ESSAY-Q2 on #1144.
 
 ### Gap: an essay taken back loses its pages
 

@@ -187,8 +187,8 @@ impl Family {
 	/// Every family.
 	pub const ALL: [Self; 2] = [Self::Snips, Self::Pages];
 
-	/// Its place in a pass's queue among keys of the same standing: pages
-	/// first. A pages bundle lives one day and can't be made again, while a
+	/// Its place in a pass's queue among keys of the same standing and retry
+	/// time: pages first. A pages bundle lives one day and can't be made again, while a
 	/// snips bundle is a re-run away; and at one bundle a pass, hourly, a
 	/// day's worth of snips commits ahead of a run would outlive it (C1443).
 	const fn first(self) -> u8 {
@@ -400,10 +400,19 @@ struct OneRun {
 
 impl OneRun {
 	/// The run, when it is a successful run of [`PAGES_WORKFLOW`]: a run of
-	/// another workflow, or one that did not succeed (or has not yet), is no
-	/// run of the pages.
-	fn of_pages(self) -> Option<Run> {
-		(self.path == PAGES_WORKFLOW && self.conclusion.as_deref() == Some("success")).then_some(self.run)
+	/// another workflow, or one that concluded otherwise, is no run of the
+	/// pages. One not concluded yet (queued, or in progress) is the failure
+	/// `unfinished`: only retried, so its essay waits rather than being
+	/// refused for a capture about to succeed (C1442).
+	fn of_pages(self) -> Result<Option<Run>, &'static str> {
+		if self.path != PAGES_WORKFLOW {
+			return Ok(None);
+		}
+		match self.conclusion.as_deref() {
+			None => Err("unfinished"),
+			Some("success") => Ok(Some(self.run)),
+			Some(_) => Ok(None),
+		}
 	}
 }
 
@@ -434,7 +443,10 @@ impl Capture for GitHub {
 			}
 			Family::Pages => {
 				let url = String::from(REPOSITORY) + "/actions/runs/" + key;
-				Ok(self.json_or_none::<OneRun>(&url).await?.into_iter().filter_map(OneRun::of_pages).collect())
+				match self.json_or_none::<OneRun>(&url).await? {
+					Some(one) => Ok(one.of_pages()?.into_iter().collect()),
+					None => Ok(Vec::new()),
+				}
 			}
 		}
 	}
@@ -487,7 +499,8 @@ pub struct Picked {
 	/// Cached bundles and marks no waiting essay names, removed.
 	pub dropped: usize,
 	/// Each failure, by kind (`timeout`, `connect`, `transport`, `refused`,
-	/// `unreadable`, `drive`): asked again next pass.
+	/// `unreadable`, `drive`, or `unfinished`, a pages run not concluded
+	/// yet): asked again next pass.
 	pub failures: Vec<&'static str>,
 }
 
@@ -738,7 +751,10 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 	for family in Family::ALL {
 		drop_unwanted(folders.of(family), family, &wanted, &mut picked).await;
 	}
-	let mut missing: Vec<(u8, u8, std::time::SystemTime, Family, &String)> = Vec::new();
+	// By standing, then (for a failed key) longest ago, and only then pages
+	// first: never looked at and gone keys carry no retry time, so pages lead
+	// there, and failed keys keep their turn whatever their family.
+	let mut missing: Vec<(u8, std::time::SystemTime, u8, Family, &String)> = Vec::new();
 	for (family, key) in &wanted {
 		let folder = folders.of(*family);
 		if bundle_of(folder, key).is_dir() {
@@ -749,7 +765,7 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		// key, of either family, holds another back for good.
 		let retried = tokio::fs::metadata(retry_of(folder, key)).await.and_then(|meta| meta.modified()).ok();
 		let rank = if gone_of(folder, key).exists() { 2 } else { u8::from(retried.is_some()) };
-		missing.push((rank, family.first(), retried.unwrap_or(std::time::UNIX_EPOCH), *family, key));
+		missing.push((rank, retried.unwrap_or(std::time::UNIX_EPOCH), family.first(), *family, key));
 	}
 	missing.sort();
 	for (_, _, _, family, key) in missing.into_iter().take(COMMITS_LOOKED) {

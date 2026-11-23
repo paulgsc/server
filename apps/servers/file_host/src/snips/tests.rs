@@ -742,18 +742,38 @@ async fn both_families_share_one_queue_and_one_bundle_a_pass() {
 
 #[test]
 fn a_run_is_a_pages_run_only_when_of_its_workflow_and_a_success() {
-	let one = |path: &str, conclusion: serde_json::Value| -> Option<Run> {
+	let one = |path: &str, conclusion: serde_json::Value| -> Result<Option<Run>, &'static str> {
 		let answer = serde_json::json!({ "id": 101, "head_sha": commit(0), "run_attempt": 2, "path": path, "conclusion": conclusion, "status": "completed" });
 		serde_json::from_value::<OneRun>(answer).unwrap().of_pages()
 	};
-	assert_eq!(one(PAGES_WORKFLOW, serde_json::json!("success")), Some(Run { run_attempt: 2, ..page_run(101) }));
-	assert_eq!(one(".github/workflows/snips-capture.yml", serde_json::json!("success")), None, "another workflow's");
-	assert_eq!(one(PAGES_WORKFLOW, serde_json::json!("failure")), None);
-	assert_eq!(one(PAGES_WORKFLOW, serde_json::Value::Null), None, "not finished");
+	assert_eq!(one(PAGES_WORKFLOW, serde_json::json!("success")), Ok(Some(Run { run_attempt: 2, ..page_run(101) })));
+	assert_eq!(one(".github/workflows/snips-capture.yml", serde_json::json!("success")), Ok(None), "another workflow's");
+	assert_eq!(
+		one(".github/workflows/snips-capture.yml", serde_json::Value::Null),
+		Ok(None),
+		"another workflow's, unfinished"
+	);
+	assert_eq!(one(PAGES_WORKFLOW, serde_json::json!("failure")), Ok(None));
+	assert_eq!(one(PAGES_WORKFLOW, serde_json::Value::Null), Err("unfinished"), "not finished: only retried");
 	assert!(is_run("101") && is_run("9223372036854775807"));
 	for bad in ["", "0", "012", "1a", "99999999999999999999", "-1", "1 2"] {
 		assert!(!is_run(bad), "{bad:?}");
 	}
 	assert_eq!(Family::Pages.artifact(&page_run(101)), "pages-bundle-101");
 	assert_eq!(Family::Snips.artifact(&run(1, 0)), String::from("snips-bundle-") + &commit(0));
+}
+
+#[tokio::test]
+async fn a_page_that_keeps_failing_takes_turns_with_a_failed_snip() {
+	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
+	let (_, id, _) = record(b"a", "/a");
+	let (actions, _) = page(b"actions-png", "github-com-paulgsc-some-ui-actions", URL, AT);
+	hold_essay(&pool, "snipped-2026-11-22", &[(commit(0), id)]).await;
+	hold_page_essay(&pool, "paged-2026-11-23", &[scene(101, &actions, URL, AT)]).await;
+	fake.run(run(1, 0), Err("timeout"));
+	fake.page_run(page_run(101), Err("timeout"));
+	for _ in 0..4 {
+		assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap().failures, ["timeout"]);
+	}
+	assert_eq!(*fake.asked.lock().unwrap(), [101, 1, 101, 1], "pages first, then each failed key in its turn");
 }
