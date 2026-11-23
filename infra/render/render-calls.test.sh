@@ -323,6 +323,8 @@ if [ "$1" = tests/record/asset.ts ]; then
     shift
   done
   echo "$asset $feed $root $out" >> "$fake/asset-runs"
+  # The job the lane named while it drew (<root> is <ROOT>/renders/<feed>/<key>).
+  cat "$(dirname "$(dirname "$root")")/call-worker/job" > "$fake/seen-job" 2> /dev/null
   if [ -e "$fake/asset-fail" ]; then
     echo "asset refused: the title fits no size that reads at 320x180" >&2
     exit 1
@@ -2061,6 +2063,33 @@ before=$(asset_runs)
 run_job asset > "$SCRATCH/pass.out" 2>&1
 check "an asset drawn before a restart is kept, not drawn again" \
   test "$(asset_runs)" -eq "$before" -a "$(cat "$fourth/thumbnail.png")" = "drawn before"
+# A job a restart left is an ask too: resumed first under its id, and at
+# RESTARTS unasked restarts taken as failed (not held: a crash is no
+# refusal), as every job (#740).
+left_asset() {
+  echo 44 > "$ROOT/renders/call-worker/job"
+  printf 'id=44\nkind=asset\nkey=%s\nsince=1794000000\nstate=rendering\nstate_since=1794000000\nyields=0\nran=0\nrestarts=%s\n' "$1" "$2" \
+    > "$ROOT/renders/call-worker/job.state"
+}
+fifth=$ROOT/renders/cards-essay/fifth-2026-11-24
+mkdir -p "$fifth" "$ROOT/renders/call-worker" && echo video > "$fifth/cards.mp4"
+: > "$asks/thumbnail-cards-essay-fifth-2026-11-24"
+left_asset thumbnail-cards-essay-fifth-2026-11-24 0
+rm -f "$FAKE/seen-job"
+before=$(asset_runs)
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "an asset job a restart left is resumed first, and put in place" \
+  test "$(asset_runs)" -eq $(( before + 1 )) -a "$(cat "$fifth/thumbnail.png")" = "thumbnail of fifth-2026-11-24"
+check "under the id it had" test "$(cat "$FAKE/seen-job" 2> /dev/null)" = 44
+sixth=$ROOT/renders/cards-essay/sixth-2026-11-25
+mkdir -p "$sixth" && echo video > "$sixth/cards.mp4"
+: > "$asks/thumbnail-cards-essay-sixth-2026-11-25"
+left_asset thumbnail-cards-essay-sixth-2026-11-25 $(( RESTARTS - 1 ))
+before=$(asset_runs)
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "an asset job left by its RESTARTS-th unasked restart is not drawn again" test "$(asset_runs)" -eq "$before"
+check "it is taken as failed, not held" \
+  test -e "$ROOT/renders/asset-worker/thumbnail-cards-essay-sixth-2026-11-25.failed.log" -a ! -e "$ROOT/renders/asset-worker/thumbnail-cards-essay-sixth-2026-11-25.refused"
 # Putting one in place never replaces a file there.
 use_job asset
 mkdir -p "$SCRATCH/made" && echo new > "$SCRATCH/made/thumbnail.png" && echo good > "$third/thumbnail.png"

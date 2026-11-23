@@ -992,7 +992,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] && [[ "$LEFT_RESTARTS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay | report | site-shots) return 0 ;;
+    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay | report | site-shots | asset) return 0 ;;
     *) return 1 ;;
   esac
 }
