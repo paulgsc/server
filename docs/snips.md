@@ -120,7 +120,10 @@ as an instant, to the millisecond, as some-ui's `resolveScreens` reads it with
 `Date.parse`). If not, the essay is refused `page-gone`, naming the run and the
 file and never the address. A re-attempt of a run may upload other pictures
 under the same name, and a scene may name the wrong run. Neither can be put
-right by waiting, and a page can't be taken again the same. The same holds
+right by waiting, and a page can't be taken again the same. A run already
+cached is not fetched again for a newer attempt: a cut list naming a
+re-attempt's pictures while the first attempt's bundle is cached is refused
+the same way, and the recovery is the same new dispatch. The same holds
 when two runs give one file with another address, moment or picture. When
 they give the same bytes, it is the same picture, and it is kept once. A
 scene with no run, or a run or file no capture makes, is `page-missing`, as is

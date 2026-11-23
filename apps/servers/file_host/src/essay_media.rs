@@ -269,7 +269,7 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 	// The kind's record of what it gives, or what of it disagrees (a page
 	// two runs give unlike): those are gone.
 	let given = match kind {
-		Kind::Pages => pages::given(recorded).map_err(|items| gone.extend(items)).ok(),
+		Kind::Pages => pages::given(recorded).map_err(|items| items.iter().for_each(|item| push(&mut gone, item))).ok(),
 		Kind::Takes | Kind::Snips | Kind::ClipFrames => Some(snips::given(recorded)),
 	};
 	let refusal = |why, items| Handed::Refused(Refusal { kind, why, items });
