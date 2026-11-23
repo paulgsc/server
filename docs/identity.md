@@ -1498,6 +1498,9 @@ nowhere is marked as such and belongs to review.
     description, which its receipt names, a week's paste, an episode note),
     and a Rust Rounds or interview take deleted so withdraws its week's
     essay video only if the essay plays it ((c) of the essay videos, above).
+    Before a delete, both lists say which videos use each take and whether
+    its delete withdraws each (`usedBy`), by the same rule those passes
+    withdraw by (docs/take-library.md, "What uses each take").
     Deleting one
     removes the note, its audio, every transcript of it and its words, its
     vectors in the meaning index (invariant 35), its set-aside mark, its

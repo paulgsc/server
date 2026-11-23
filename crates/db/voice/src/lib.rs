@@ -110,6 +110,7 @@ pub mod on_drive;
 pub mod set_aside;
 pub mod takes;
 pub mod transcript;
+pub mod used;
 pub mod verdict;
 
 use chrono::{DateTime, SecondsFormat, Utc};

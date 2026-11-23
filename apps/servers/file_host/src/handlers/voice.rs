@@ -403,7 +403,12 @@ pub struct Kept {
 /// `of`, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "voice_kept_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query): Query<Vec<(String, String)>>) -> Result<Json<Kept>, FileHostError> {
+pub async fn get_kept(
+	paired: Paired,
+	State(from): State<crate::take_uses::UsesFrom>,
+	State(db): State<SqlitePool>,
+	Query(query): Query<Vec<(String, String)>>,
+) -> Result<Json<Kept>, FileHostError> {
 	let refused = || FileHostError::unprocessable_entity([("of", "a kind of voice note, said once")]);
 	let said = |name: &str| query.iter().filter(|(key, _)| key == name).map(|(_, value)| value.as_str()).collect::<Vec<&str>>();
 	let of = match said("of").as_slice() {
@@ -418,13 +423,21 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 		_ => return Err(unnamed()),
 	};
 	let subject = paired.subject.as_str();
+	// Read before the transaction, which holds a connection of its own.
+	let sources = crate::take_uses::Sources::read(&db, &from).await?;
 	let mut tx = db.begin().await?;
 	let kinds = voice_repo::kept::kinds(&mut tx, subject).await.map_err(refusal)?;
 	let weeks = voice_repo::kept::weeks(&mut tx, subject).await.map_err(refusal)?;
-	let notes = match of {
+	let mut notes = match of {
 		Some(of) => Some(voice_repo::kept::newest(&mut tx, subject, of, SWITCHED_ON, also.as_deref()).await.map_err(refusal)?),
 		None => None,
 	};
+	if let Some(notes) = notes.as_mut().filter(|notes| !notes.is_empty()) {
+		let uses = crate::take_uses::of(&mut tx, subject, &sources).await?;
+		for note in notes {
+			note.used_by = uses.get(&note.id).cloned().unwrap_or_default();
+		}
+	}
 	tx.commit().await?;
 	Ok(Json(Kept { kinds, weeks, notes }))
 }
@@ -459,6 +472,7 @@ pub async fn get_kept(paired: Paired, State(db): State<SqlitePool>, Query(query)
 #[instrument(name = "voice_takes_get", skip_all, fields(otel.kind = "server"))]
 pub async fn get_takes(
 	paired: Paired,
+	State(from): State<crate::take_uses::UsesFrom>,
 	State(db): State<SqlitePool>,
 	State(meaning): State<Option<MeaningContext>>,
 	State(Hears(hears)): State<Hears>,
@@ -469,20 +483,29 @@ pub async fn get_takes(
 		(Some(meaning), Some(words)) => ask.with_meaning(meaning.model.model(), meaning.model.embed(&words)),
 		_ => ask,
 	};
-	// One snapshot, so each transcript and its verdict (HEARD1) are read together.
+	// Read before the transaction, which holds a connection of its own.
+	let sources = crate::take_uses::Sources::read(&db, &from).await?;
+	// One snapshot, so each transcript and its verdict (HEARD1) and what uses
+	// each take are read together.
 	let mut conn = db.begin().await?;
 	let (plain, verbatim) = crate::transcribe::keys();
 	let keys = voice_repo::transcript::Keys {
 		plain: &plain,
 		verbatim: &verbatim,
 	};
-	voice_repo::takes::library(&mut conn, paired.subject.as_str(), hears.then_some(keys), &now(), &ask)
+	let subject = paired.subject.as_str();
+	let mut library = voice_repo::takes::library(&mut conn, subject, hears.then_some(keys), &now(), &ask)
 		.await
 		.map_err(refusal)?
-		.map(Json)
-		.ok_or_else(|| FileHostError::unprocessable_entity([("after", "a take this search still finds")]))
+		.ok_or_else(|| FileHostError::unprocessable_entity([("after", "a take this search still finds")]))?;
+	if !library.takes.is_empty() {
+		let uses = crate::take_uses::of(&mut conn, subject, &sources).await?;
+		for take in &mut library.takes {
+			take.used_by = uses.get(&take.id).cloned().unwrap_or_default();
+		}
+	}
+	Ok(Json(library))
 }
-
 /// `PUT /voice-notes/:id/set-aside`'s query: when the owner let the note go.
 #[derive(Debug, Deserialize)]
 pub struct SetAsideQuery {
@@ -1047,6 +1070,14 @@ mod tests {
 		outbox: crate::mailbox::Outbox,
 		/// Whether its home runs the transcriber.
 		hears: bool,
+		/// Where what uses a take is read from.
+		uses: crate::take_uses::UsesFrom,
+	}
+
+	impl FromRef<TestState> for crate::take_uses::UsesFrom {
+		fn from_ref(state: &TestState) -> Self {
+			state.uses.clone()
+		}
 	}
 
 	impl FromRef<TestState> for crate::transcribe::Hears {
@@ -1092,6 +1123,10 @@ mod tests {
 			meaning: None,
 			outbox: crate::mailbox::Outbox::default(),
 			hears: true,
+			uses: crate::take_uses::UsesFrom {
+				essays: Vec::new(),
+				configured: None,
+			},
 		}
 	}
 
@@ -2023,6 +2058,106 @@ mod tests {
 		assert_eq!(get(&app, "/voice-notes/i1/audio", Some(&phone)).await.0, StatusCode::NOT_FOUND, "a 404, never a 500");
 	}
 
+	/// INUSE (C1380–C1384): every note on the two lists says what uses it,
+	/// read by the rule each pass withdraws by (`take_uses`). A cards essay
+	/// whose spoken card plays a take withdraws on its delete; a queued Studio
+	/// video naming it does not, and still shows. Only the caller's own: the
+	/// cards essays are the mailbox subject's, a Studio video its subject's.
+	#[tokio::test]
+	async fn each_take_says_what_uses_it_and_whether_its_delete_withdraws_that() {
+		let mut state = state().await;
+		state.uses = crate::take_uses::UsesFrom {
+			essays: Vec::new(),
+			configured: Some(String::from(A)),
+		};
+		let pool = state.pool.clone();
+		let phone = session(&state, A, Carrier::Bearer).await;
+		let other = session(&state, B, Carrier::Bearer).await;
+		let app = app(state);
+		for (path, who) in [
+			("/voice-notes/t1?of=studio&ref=ep04:s1:1&at=2026-11-04T18:20:00Z", &phone),
+			("/voice-notes/t2?of=studio&ref=ep04:s1:2&at=2026-11-04T18:21:00Z", &phone),
+			("/voice-notes/t3?of=studio&ref=ep04:s1:3&at=2026-11-04T18:22:00Z", &phone),
+			// Another subject's note under the same id is not the one either names.
+			("/voice-notes/t1?of=studio&ref=ep04:s1:1&at=2026-11-04T18:20:00Z", &other),
+		] {
+			assert!(put(&app, path, Some(who), "audio/webm;codecs=opus", TAKE).await.0.is_success(), "{path}");
+		}
+		let dna = json!({
+			"schema": "some-ui.video-dna/1", "video": "v1", "rev": 1, "title": "Episode 4",
+			"queuedAt": "2026-11-05T10:00:00.000Z",
+			"template": { "kind": "show-format", "id": "playoff-delta", "version": 2 },
+			"takes": [{ "scene": "division", "note": "t1" }, { "scene": "outro", "note": "t3" }],
+			"shape": { "scenes": [] }, "data": {}
+		})
+		.to_string();
+		studio_video_repo::queue(&mut pool.acquire().await.unwrap(), A, "v1", "1", dna.as_bytes(), "2026-11-05T10:00:01.000Z")
+			.await
+			.unwrap();
+		let spoken = |take: &str| {
+			json!({ "spoken": { "role": "spoken", "exchanges": [
+			{ "ask": { "voice": "kokoro", "said": "Why?" }, "answer": { "voice": "owner", "take": take } }
+		] } })
+		};
+		let card = json!({ "title": "ZFS in a week", "shots": [spoken("t1"), spoken("t2")] }).to_string();
+		let kept = cards_essay_repo::Essay {
+			key: "zfs-2026-11-02",
+			day: "2026-11-02",
+			body: card.as_bytes(),
+			taken_at: "2026-11-02T08:00:00.000Z",
+		};
+		cards_essay_repo::keep(&mut pool.acquire().await.unwrap(), &kept).await.unwrap();
+
+		let essay = json!({ "kind": "essay", "key": "zfs-2026-11-02", "title": "ZFS in a week", "at": "2026-11-02T08:00:00.000Z", "withdrawsOnDelete": true });
+		let studio = json!({ "kind": "studio-video", "key": "v1", "title": "Episode 4", "at": "2026-11-05T10:00:00.000Z", "withdrawsOnDelete": false });
+		let used = |body: &Value, list: &str| -> Vec<(String, Value)> {
+			body[list]
+				.as_array()
+				.unwrap()
+				.iter()
+				.map(|note| (note["id"].as_str().unwrap().to_owned(), note["usedBy"].clone()))
+				.collect()
+		};
+		let (status, library) = get(&app, "/voice-notes/takes?sort=oldest", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(
+			used(&library, "takes"),
+			[
+				(String::from("t1"), json!([essay, studio])),
+				(String::from("t2"), json!([essay])),
+				(String::from("t3"), json!([studio])),
+			],
+			"each video once per take, essays before Studio videos"
+		);
+		let (status, kept) = get(&app, "/voice-notes/kept?of=studio", Some(&phone)).await;
+		assert_eq!(status, StatusCode::OK);
+		let mut on_kept = used(&kept, "notes");
+		on_kept.sort_by(|a, b| a.0.cmp(&b.0));
+		assert_eq!(on_kept, used(&library, "takes"), "My data says the same as the library");
+		let (_, theirs) = get(&app, "/voice-notes/takes", Some(&other)).await;
+		assert_eq!(used(&theirs, "takes"), [(String::from("t1"), json!([]))], "nothing of another subject's");
+
+		// The delete itself withdraws nothing, and its receipt is unchanged;
+		// the cards pass's next tick withdraws the essay by the same takes.
+		let (status, deleted) = remove(&app, "/voice-notes/t2", &phone).await;
+		assert_eq!(status, StatusCode::OK);
+		assert_eq!(deleted["receipt"]["went"], json!(["recording"]));
+		let body = cards_essay_repo::body(&mut pool.acquire().await.unwrap(), "zfs-2026-11-02").await.unwrap().unwrap();
+		assert!(
+			crate::cards_essays::pass::spoken_takes(&body).contains(&String::from("t2")),
+			"the rule the pass withdraws by names it"
+		);
+		cards_essay_repo::withdraw(&mut pool.acquire().await.unwrap(), "zfs-2026-11-02", A, "t2", 0, "2026-11-23T00:00:00.000Z")
+			.await
+			.unwrap();
+		let (_, library) = get(&app, "/voice-notes/takes?sort=oldest", Some(&phone)).await;
+		assert_eq!(
+			used(&library, "takes"),
+			[(String::from("t1"), json!([studio])), (String::from("t3"), json!([studio]))],
+			"a withdrawn essay uses nothing; a Studio video stays"
+		);
+	}
+
 	/// ST32 (paulgsc/some-ui#2590): the take library lists the caller's
 	/// Studio takes with what home heard in each, searches their words, and
 	/// is a paired phone's only. Which takes and words are chosen is
@@ -2064,14 +2199,14 @@ mod tests {
 						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
 						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
 						"about": { "key": "studio:library:t2", "form": "loose", "ref": "library:t2" },
-						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null } },
+						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null }, "usedBy": [] },
 					{ "id": "t1", "kind": "studio", "ref": "ep04:s1:1", "recordedAt": "2026-11-04T18:20:00.000Z", "storedAt": all["takes"][1]["storedAt"],
 						"size": TAKE.len(), "durationMs": 1000, "setAsideAt": null,
 						"heard": { "text": "the brand intro", "language": "en", "model": "small", "heardAt": "2026-11-04T18:30:00Z" }, "verdict": null,
 						"status": "kept", "receipt": null, "kept": { "home": true, "drive": false }, "onConveyor": true,
 						"station": "in-the-oven", "stationAt": null, "stationSeq": 0,
 						"about": { "key": "studio:ep04", "form": "scene", "project": "ep04", "shot": "s1", "take": "1" },
-						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null } }
+						"hearAgain": { "open": false, "hearing": false, "askedAt": null, "nextAt": null }, "usedBy": [] }
 				],
 				"total": 2, "matched": null, "by": "newest", "next": null
 			}),
@@ -2190,6 +2325,7 @@ mod tests {
 				"stationSeq",
 				"status",
 				"storedAt",
+				"usedBy",
 				"verdict",
 			],
 			"no vector"
@@ -2356,7 +2492,7 @@ mod tests {
 			listed,
 			json!({
 				"id": "n1", "recordedAt": "2026-10-25T03:10:00.000Z", "size": TAKE.len(), "setAsideAt": null, "deletable": false,
-				"durationMs": null, "heard": null, "heardCut": false, "playsBack": true, "recordingLetGoAt": null
+				"durationMs": null, "heard": null, "heardCut": false, "playsBack": true, "recordingLetGoAt": null, "usedBy": []
 			})
 		);
 		hear(&pool, A, "n1", "ggml-small-q5_1.bin", said("a small idea", "en"), "2026-10-25T16:05:00.000Z").await;

@@ -114,6 +114,7 @@ where
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
+	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 	crate::renders_again::Again: FromRef<S>,
 {
@@ -186,6 +187,7 @@ where
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
+	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 	crate::renders_again::Again: FromRef<S>,
 {
@@ -208,6 +210,7 @@ where
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
+	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 	crate::renders_again::Again: FromRef<S>,
 {
