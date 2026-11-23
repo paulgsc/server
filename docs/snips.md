@@ -104,6 +104,14 @@ Two small changes reach the snips side. Of several unexpired artifacts with
 the bundle's name, the newest is taken, where it used to be the first
 listed. The artifact list is asked by name.
 
+### Call C1443: pages go first in the shared queue
+
+Among keys of the same standing (never looked at, failed, or gone), a run's
+pages come before a commit's snips. The pass runs hourly and downloads one
+bundle, so a day's worth of snips commits queued ahead of a run would
+outlive its one-day artifact. A snips bundle is a re-run away, and a page
+can't be taken again. Raised by the coordinator on #1144.
+
 ### Call C1441: a scene its run doesn't give as named is `page-gone`
 
 Each page scene is checked against its run's `pages.json`. Its `file` must be

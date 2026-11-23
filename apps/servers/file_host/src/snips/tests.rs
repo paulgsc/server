@@ -729,7 +729,7 @@ async fn both_families_share_one_queue_and_one_bundle_a_pass() {
 	fake.page_run(page_run(101), Ok(Some(pages_bundle(&[(b"actions-png", page_record)], |_| {}))));
 	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap().fetched, 1);
 	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap().fetched, 1);
-	assert_eq!(*fake.asked.lock().unwrap(), [1, 101]);
+	assert_eq!(*fake.asked.lock().unwrap(), [101, 1], "a page first: its bundle lives a day and can't be made again");
 	assert!(bundle_of(&dirs.cache, &commit(0)).is_dir() && bundle_of(&dirs.pages, "101").is_dir());
 	// A run's key in the snips' cache is no snips key: never kept there.
 	std::fs::create_dir_all(bundle_of(&dirs.cache, "101")).unwrap();

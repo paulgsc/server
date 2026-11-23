@@ -55,7 +55,8 @@
 //! how its run is found (a run of another workflow, or one that did not
 //! succeed, is no run), the artifact's name, its check and its folder. One
 //! queue holds both families' keys, so the bounds and the deadline above are
-//! the whole pickup's, never one per family. A page can't be taken again the
+//! the whole pickup's, never one per family; pages go first among keys of
+//! the same standing, since their bundle can't be made again (C1443). A page can't be taken again the
 //! same, so a page gone is the owner's to capture anew and name in a new cut
 //! list; a newer attempt of the same run still clears its mark.
 //!
@@ -183,8 +184,19 @@ pub enum Family {
 }
 
 impl Family {
-	/// Every family, in the order a pass's queue breaks a tie.
+	/// Every family.
 	pub const ALL: [Self; 2] = [Self::Snips, Self::Pages];
+
+	/// Its place in a pass's queue among keys of the same standing: pages
+	/// first. A pages bundle lives one day and can't be made again, while a
+	/// snips bundle is a re-run away; and at one bundle a pass, hourly, a
+	/// day's worth of snips commits ahead of a run would outlive it (C1443).
+	const fn first(self) -> u8 {
+		match self {
+			Self::Pages => 0,
+			Self::Snips => 1,
+		}
+	}
 
 	/// The essay media kind whose items name its bundles.
 	#[must_use]
@@ -726,7 +738,7 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 	for family in Family::ALL {
 		drop_unwanted(folders.of(family), family, &wanted, &mut picked).await;
 	}
-	let mut missing: Vec<(u8, std::time::SystemTime, Family, &String)> = Vec::new();
+	let mut missing: Vec<(u8, u8, std::time::SystemTime, Family, &String)> = Vec::new();
 	for (family, key) in &wanted {
 		let folder = folders.of(*family);
 		if bundle_of(folder, key).is_dir() {
@@ -737,10 +749,10 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		// key, of either family, holds another back for good.
 		let retried = tokio::fs::metadata(retry_of(folder, key)).await.and_then(|meta| meta.modified()).ok();
 		let rank = if gone_of(folder, key).exists() { 2 } else { u8::from(retried.is_some()) };
-		missing.push((rank, retried.unwrap_or(std::time::UNIX_EPOCH), *family, key));
+		missing.push((rank, family.first(), retried.unwrap_or(std::time::UNIX_EPOCH), *family, key));
 	}
 	missing.sort();
-	for (_, _, family, key) in missing.into_iter().take(COMMITS_LOOKED) {
+	for (_, _, _, family, key) in missing.into_iter().take(COMMITS_LOOKED) {
 		let folder = folders.of(family);
 		if tokio::fs::create_dir_all(folder).await.is_err() {
 			picked.failures.push("drive");
