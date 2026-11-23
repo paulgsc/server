@@ -116,6 +116,7 @@ where
 	crate::transcribe::Hears: FromRef<S>,
 	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
+	crate::renders_again::Again: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -188,6 +189,7 @@ where
 	crate::transcribe::Hears: FromRef<S>,
 	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
+	crate::renders_again::Again: FromRef<S>,
 {
 	split(|module| {
 		if module.is_versioned() {
@@ -210,6 +212,7 @@ where
 	crate::transcribe::Hears: FromRef<S>,
 	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
+	crate::renders_again::Again: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

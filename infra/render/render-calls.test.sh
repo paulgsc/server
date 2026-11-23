@@ -306,6 +306,37 @@ if [ "$1" = src/cli.ts ]; then
   printf '{"schema":"some-ui.walk/1","app":"%s"}\n' "$app" > "$out/walk.json"
   exit 0
 fi
+# An asset alone (`renders_again`): `tsx tests/record/asset.ts --asset <a>
+# --feed <f> --root <episode> --out <w>` writes <w>/thumbnail.png, or fails as
+# the real one does while $FAKE/asset-fail exists. Each run is counted in
+# $FAKE/asset-runs as `<asset> <feed> <root> <out>`; it writes nothing into
+# --root.
+if [ "$1" = tests/record/asset.ts ]; then
+  asset= feed= root= out=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --asset) asset=$2; shift ;;
+      --feed) feed=$2; shift ;;
+      --root) root=$2; shift ;;
+      --out) out=$2; shift ;;
+    esac
+    shift
+  done
+  echo "$asset $feed $root $out" >> "$fake/asset-runs"
+  # The job the lane named while it drew (<root> is <ROOT>/renders/<feed>/<key>).
+  cat "$(dirname "$(dirname "$root")")/call-worker/job" > "$fake/seen-job" 2> /dev/null
+  if [ -e "$fake/asset-fail" ]; then
+    echo "asset refused: the title fits no size that reads at 320x180" >&2
+    exit 1
+  fi
+  # An uncaught throw exits 1 too, without the refusal's line.
+  if [ -e "$fake/asset-crash" ]; then
+    echo "Error: Target page, context or browser has been closed" >&2
+    exit 1
+  fi
+  echo "thumbnail of $(basename "$root")" > "$out/thumbnail.png"
+  exit 0
+fi
 # An essay (RR16): `tsx tests/record/essay.ts … --essay-file <f> --takes <d>
 # --out <w>` writes essay.mp4 and a cache into <w>/<week>, the week being
 # the essay file's folder's name, or fails as the real one does for a take
@@ -552,7 +583,8 @@ fresh() {
   rm -f "$FAKE"/fail-* "$FAKE"/bulk-* "$FAKE/warn" "$FAKE/runs" "$FAKE/steps" "$FAKE/slow" "$FAKE/hold-at" "$FAKE/silent" \
     "$FAKE/pid" "$FAKE/child" "$FAKE/held-child" "$FAKE/seen-job" "$FAKE/no-sample" "$FAKE/preview-runs" "$FAKE/no-take" "$FAKE/essay-runs" "$FAKE/essay-weeks" "$FAKE/correct-mid-render" \
     "$FAKE"/args-* "$FAKE/times" "$FAKE/too-large" "$FAKE/walk-runs" "$FAKE/cards-runs" "$FAKE/cards-takes" "$FAKE/not-cards" "$FAKE/report-runs" "$FAKE/under-way" \
-    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/overflow-prefix" "$FAKE/pd-runs"
+    "$FAKE"/parts-* "$FAKE/parts-refuse" "$FAKE"/minutes-* "$FAKE/refuse-once" "$FAKE/overflow" "$FAKE/overflow-prefix" "$FAKE/pd-runs" \
+    "$FAKE/asset-runs" "$FAKE/asset-fail" "$FAKE/asset-crash"
   echo "$ROOT" > "$SCRATCH/root"
   : > "$SCRATCH/saw"
   lane_says run
@@ -1025,6 +1057,21 @@ check "a failed week is not tried again within RETRY_AFTER" test "$(runs_of 2026
 touch -d '2 hours ago' "$ROOT/renders/call-worker/2026-10-30.failed.log"
 pass
 check "and is, RETRY_AFTER after its failure" test "$(runs_of 2026-10-30)" -eq 2
+
+# Run again (file_host's `renders_again`): a failed log moved aside to
+# <key>.again.log is no failure, so the week is tried on the next look, not
+# RETRY_AFTER after it, and the aside log goes once that attempt ends.
+fresh again 2026-10-30
+RETRY_AFTER=3600
+touch "$FAKE/fail-2026-10-30"
+pass
+mv "$ROOT/renders/call-worker/2026-10-30.failed.log" "$ROOT/renders/call-worker/2026-10-30.again.log"
+rm -f "$FAKE/fail-2026-10-30"
+pass
+check "a failed log moved aside is tried again at once" test "$(runs_of 2026-10-30)" -eq 2
+check "and the aside log goes once the attempt ends" test ! -e "$ROOT/renders/call-worker/2026-10-30.again.log"
+check "and the week renders" test ! -e "$ROOT/renders/call-worker/2026-10-30.failed.log"
+RETRY_AFTER=0
 
 # RETRY_AFTER counts from the failure, not from the log's last line: a
 # recorder silent for a while before it fails is not tried again at once.
@@ -1898,6 +1945,164 @@ check "the render waits on the speaker, for every job alike" \
     r && d' "$COMPOSE" | grep -A1 -xF '      kokoro:' | sed -n 2p | tr -d ' ')" = "condition:service_started"
 check "the stage is the image's own, never a container beside it" \
   test -z "$(grep -E '^  call-stage:|"call-stage"|--app ' "$COMPOSE" "$RELEASE" "$HERE/render-calls.sh")"
+
+# Promise RA1, with renders_again's tests. An asset alone (`renders_again`):
+# file_host's ask for a finished episode's
+# thumbnail is drawn into the job's own work folder and put beside the video
+# whole, by a link that never replaces a file, under the lane as every job;
+# the video is never rendered again. Present means done; an ask whose
+# episode has no video, or an asset already there, is over; one the
+# recorder could not draw is held until its episode's folder (or the image,
+# or this worker) changes; a partial a kill left is swept; and a name that is
+# not an ask's is never read.
+fresh asset
+asks=$ROOT/renders/asks episode=$ROOT/renders/cards-essay/zfs-2026-11-02
+mkdir -p "$asks" "$episode"
+echo video > "$episode/cards.mp4"
+echo '{}' > "$episode/cut-list.json"
+touch -d '1 hour ago' "$episode/cards.mp4"
+video_time=$(stat -c %Y "$episode/cards.mp4")
+: > "$asks/thumbnail-cards-essay-zfs-2026-11-02"
+asset_runs() { grep -c . "$FAKE/asset-runs" 2> /dev/null || echo 0; }
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "an asset is drawn from its episode's folder, into its own work folder" \
+  grep -qx "thumbnail cards-essay $episode $ROOT/renders/asset-work/thumbnail-cards-essay-zfs-2026-11-02" "$FAKE/asset-runs"
+check "and put beside the video" test "$(cat "$episode/thumbnail.png")" = "thumbnail of zfs-2026-11-02"
+check "whole: no partial is left" test ! -e "$episode/.thumbnail.png.partial"
+check "the video is not rendered again, nor touched" \
+  test ! -e "$FAKE/cards-runs" -a "$(stat -c %Y "$episode/cards.mp4")" = "$video_time"
+check "the ask is over" test ! -e "$asks/thumbnail-cards-essay-zfs-2026-11-02"
+check "and its work folder goes" test ! -e "$ROOT/renders/asset-work/thumbnail-cards-essay-zfs-2026-11-02"
+check "the lane held it as every job: one job at a time" grep -q . "$SCRATCH/saw"
+: > "$asks/thumbnail-cards-essay-zfs-2026-11-02"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "asked again once made, nothing is drawn: present means done" test "$(asset_runs)" -eq 1
+check "and the ask is over" test ! -e "$asks/thumbnail-cards-essay-zfs-2026-11-02"
+# An ask for an episode with no video is over, and draws nothing.
+mkdir -p "$ROOT/renders/cards-essay/later-2026-11-09"
+: > "$asks/thumbnail-cards-essay-later-2026-11-09"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "an ask before its video draws nothing and is over" \
+  test "$(asset_runs)" -eq 1 -a ! -e "$asks/thumbnail-cards-essay-later-2026-11-09"
+# A name that is not an ask's is never read nor removed.
+for odd in thumbnail-nope-zfs-2026-11-02 .thumbnail-cards-essay-zfs-2026-11-02 thumbnail-cards-essay-zfs--x poster-cards-essay-zfs-2026-11-02; do
+  : > "$asks/$odd"
+done
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "a name that is not an ask's is never read" test "$(asset_runs)" -eq 1 -a -e "$asks/thumbnail-nope-zfs-2026-11-02"
+rm -f "$asks"/thumbnail-nope-* "$asks"/.thumbnail-* "$asks"/thumbnail-cards-essay-zfs--x "$asks"/poster-*
+# One it could not draw: held, never on the hour's clock; drawn again once
+# its episode's folder changes.
+other=$ROOT/renders/report/2026-W46
+mkdir -p "$other" && echo video > "$other/report.mp4"
+: > "$asks/thumbnail-report-2026-W46"
+touch "$FAKE/asset-fail"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "an asset not drawn leaves its log and holds" \
+  test -e "$ROOT/renders/asset-worker/thumbnail-report-2026-W46.failed.log" -a \
+  "$(sed -n 's/^reason=//p' "$ROOT/renders/asset-worker/thumbnail-report-2026-W46.refused")" = recorder
+check "and nothing half made beside the video" test ! -e "$other/thumbnail.png" -a ! -e "$other/.thumbnail.png.partial"
+check "its ask stands, for file_host to say failed" test -e "$asks/thumbnail-report-2026-W46"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "it is not drawn again while nothing it is made from changed, RETRY_AFTER or not" test "$(asset_runs)" -eq 2
+rm -f "$FAKE/asset-fail"
+echo '{"title":"shorter"}' > "$other/report.json"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "and is, once its episode's folder changes" test "$(asset_runs)" -eq 3 -a -e "$other/thumbnail.png"
+check "and its log and hold go with its ask" \
+  test ! -e "$ROOT/renders/asset-worker/thumbnail-report-2026-W46.failed.log" -a ! -e "$ROOT/renders/asset-worker/thumbnail-report-2026-W46.refused" -a ! -e "$asks/thumbnail-report-2026-W46"
+# A crash is not the recorder's refusal: no hold, tried again on
+# RETRY_AFTER's clock like any failure.
+crash=$ROOT/renders/report/2026-W47
+mkdir -p "$crash" && echo video > "$crash/report.mp4"
+: > "$asks/thumbnail-report-2026-W47"
+touch "$FAKE/asset-crash"
+RETRY_AFTER=3600
+before=$(asset_runs)
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "a crash drawing an asset (exit 1, no refusal's line) is no refusal: nothing holds it" \
+  test -e "$ROOT/renders/asset-worker/thumbnail-report-2026-W47.failed.log" -a ! -e "$ROOT/renders/asset-worker/thumbnail-report-2026-W47.refused"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "and it waits RETRY_AFTER" test "$(asset_runs)" -eq $(( before + 1 ))
+rm -f "$FAKE/asset-crash"
+mv "$ROOT/renders/asset-worker/thumbnail-report-2026-W47.failed.log" "$ROOT/renders/asset-worker/thumbnail-report-2026-W47.again.log"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "moved aside by Run again, it is drawn on the next look, and the aside log goes" \
+  test "$(asset_runs)" -eq $(( before + 2 )) -a -e "$crash/thumbnail.png" -a ! -e "$ROOT/renders/asset-worker/thumbnail-report-2026-W47.again.log"
+RETRY_AFTER=0
+# The hold is of the episode's files, not its folder's time: a placing that
+# failed, or a hidden file in it, never lifts it.
+touch "$FAKE/asset-fail"
+held_ep=$ROOT/renders/report/2026-W48
+mkdir -p "$held_ep" && echo video > "$held_ep/report.mp4"
+: > "$asks/thumbnail-report-2026-W48"
+before=$(asset_runs)
+run_job asset > "$SCRATCH/pass.out" 2>&1
+touch "$held_ep" && : > "$held_ep/.thumbnail.png.partial"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "a hold is not lifted by its folder's time or a hidden file in it" test "$(asset_runs)" -eq $(( before + 1 ))
+rm -f "$FAKE/asset-fail" "$held_ep/.thumbnail.png.partial" "$asks/thumbnail-report-2026-W48"
+# A kill mid-placing leaves one partial at most; the next pass sweeps it.
+third=$ROOT/renders/cards-essay/third-2026-11-16
+mkdir -p "$third" "$ROOT/renders/asset-work/thumbnail-cards-essay-third-2026-11-16" && echo video > "$third/cards.mp4" && echo half > "$third/.thumbnail.png.partial"
+echo half > "$ROOT/renders/asset-work/thumbnail-cards-essay-third-2026-11-16/.thumbnail.png.123.abc.partial"
+: > "$asks/thumbnail-cards-essay-third-2026-11-16"
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "a draw's partial a kill left in its work folder is swept" \
+  test -z "$(ls -A "$ROOT/renders/asset-work" 2> /dev/null | grep partial)"
+check "a partial a kill left is swept, and the asset is put whole" \
+  test ! -e "$third/.thumbnail.png.partial" -a "$(cat "$third/thumbnail.png")" = "thumbnail of third-2026-11-16"
+# A restart after it was drawn and before it was put in place: the drawn
+# file is kept as a finished step (the recorder draws over none), and put in
+# place without drawing again.
+fourth=$ROOT/renders/cards-essay/fourth-2026-11-23
+mkdir -p "$fourth" "$ROOT/renders/asset-work/thumbnail-cards-essay-fourth-2026-11-23" && echo video > "$fourth/cards.mp4"
+echo "drawn before" > "$ROOT/renders/asset-work/thumbnail-cards-essay-fourth-2026-11-23/thumbnail.png"
+: > "$asks/thumbnail-cards-essay-fourth-2026-11-23"
+before=$(asset_runs)
+run_job asset > "$SCRATCH/pass.out" 2>&1
+check "an asset drawn before a restart is kept, not drawn again" \
+  test "$(asset_runs)" -eq "$before" -a "$(cat "$fourth/thumbnail.png")" = "drawn before"
+# A job a restart left is an ask too: resumed first under its id, and at
+# RESTARTS unasked restarts taken as failed (not held: a crash is no
+# refusal), as every job (#740).
+left_asset() {
+  echo 44 > "$ROOT/renders/call-worker/job"
+  printf 'id=44\nkind=asset\nkey=%s\nsince=1794000000\nstate=rendering\nstate_since=1794000000\nyields=0\nran=0\nrestarts=%s\n' "$1" "$2" \
+    > "$ROOT/renders/call-worker/job.state"
+}
+fifth=$ROOT/renders/cards-essay/fifth-2026-11-24
+mkdir -p "$fifth" "$ROOT/renders/call-worker" && echo video > "$fifth/cards.mp4"
+: > "$asks/thumbnail-cards-essay-fifth-2026-11-24"
+left_asset thumbnail-cards-essay-fifth-2026-11-24 0
+rm -f "$FAKE/seen-job"
+before=$(asset_runs)
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "an asset job a restart left is resumed first, and put in place" \
+  test "$(asset_runs)" -eq $(( before + 1 )) -a "$(cat "$fifth/thumbnail.png")" = "thumbnail of fifth-2026-11-24"
+check "under the id it had" test "$(cat "$FAKE/seen-job" 2> /dev/null)" = 44
+sixth=$ROOT/renders/cards-essay/sixth-2026-11-25
+mkdir -p "$sixth" && echo video > "$sixth/cards.mp4"
+: > "$asks/thumbnail-cards-essay-sixth-2026-11-25"
+left_asset thumbnail-cards-essay-sixth-2026-11-25 $(( RESTARTS - 1 ))
+before=$(asset_runs)
+resume_left > "$SCRATCH/pass.out" 2>&1
+check "an asset job left by its RESTARTS-th unasked restart is not drawn again" test "$(asset_runs)" -eq "$before"
+check "it is taken as failed, not held" \
+  test -e "$ROOT/renders/asset-worker/thumbnail-cards-essay-sixth-2026-11-25.failed.log" -a ! -e "$ROOT/renders/asset-worker/thumbnail-cards-essay-sixth-2026-11-25.refused"
+# Putting one in place never replaces a file there.
+use_job asset
+mkdir -p "$SCRATCH/made" && echo new > "$SCRATCH/made/thumbnail.png" && echo good > "$third/thumbnail.png"
+place_asset thumbnail-cards-essay-third-2026-11-16 "$SCRATCH/made" > /dev/null 2>&1
+check "putting an asset in place never replaces one there" \
+  test "$(cat "$third/thumbnail.png")" = good -a ! -e "$third/.thumbnail.png.partial"
+# Nor counts a folder or a link of its name as placed.
+rm -f "$third/thumbnail.png" && mkdir "$third/thumbnail.png"
+check "a folder of its name is no asset placed" \
+  test "$(place_asset thumbnail-cards-essay-third-2026-11-16 "$SCRATCH/made" > /dev/null 2>&1; echo $?)" = 1 -a -z "$(ls -A "$third/thumbnail.png")"
+rmdir "$third/thumbnail.png" && ln -s "$SCRATCH/made/thumbnail.png" "$third/thumbnail.png"
+check "nor a link of its name" \
+  test "$(place_asset thumbnail-cards-essay-third-2026-11-16 "$SCRATCH/made" > /dev/null 2>&1; echo $?)" = 1 -a ! -e "$third/.thumbnail.png.partial"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures of the render worker's guarantees failed"

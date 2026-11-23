@@ -19,7 +19,7 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    render worker is the one batch worker. It runs one job at a time and
    names it in `<lane>/job`, one file for every kind (the call, Playoff
    Delta, previews, essays, clip walks, cards essays, engagement reports, the
-   site's pictures of home's dashboards),
+   site's pictures of home's dashboards, and an episode's asset made alone),
    and the lane admits
    one job per run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
    second batch worker joins this lane, never one of its own (L5,
@@ -82,7 +82,12 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    the same flags by the same recorders and speaker over the same brand
    files, is the same refusal) is held in `<status>/<key>.refused` with what
    its last attempt was refused for, and tried again only once one of those
-   changes, never on the hourly clock. Only the last attempt's own refusal
+   changes, never on the hourly clock. So is an episode's asset the recorder
+   itself refused (its `asset refused:` line: a title no size fits, files not
+   there), the same folder giving the same answer (`reason=recorder`), held
+   until what the hold sums changes (the render and speaker images, the
+   worker, the recorders' flags, the brand files, the episode's own files); any other failure of it
+   (a crash, which exits 1 too) keeps the hour. Only the last attempt's own refusal
    counts: an earlier attempt of the same job refused is not what a later
    one failed of. Every other
    failure may clear on its own and is tried again an hour after it.
@@ -244,7 +249,7 @@ how long, and `CallRenderOverdue` fires on the week left waiting.
 
 `infra/render/render-calls.sh` (L4c #708), for each of its jobs alike (the
 call's, Playoff Delta's, a template's preview's, a Rust Rounds essay's, a
-clip's walk and a cards essay's). A clip's walk (paulgsc/some-ui#2670's clips) is batch class
+clip's walk, a cards essay's and an episode's asset alone). A clip's walk (paulgsc/some-ui#2670's clips) is batch class
 like the others: the motion replays an app's scripted walk in Chromium and
 keeps its stills, no speaker and no video, so it is the smallest job the
 lane admits, measured like any other once it has run. A cards essay
@@ -333,6 +338,41 @@ way; CI runs it on every PR.
   pass whose sum differs tries it at once; so a cap
   raised and deployed renders the refused episode on its next pass, with no
   new input.
+- **Run again** (`POST /feeds/:feed/videos/:key/produce` with `{asset:
+  video}`, file_host's `renders_again`) is the owner asking for a failure's
+  hour to be over now: file_host moves `<key>.failed.log` aside to
+  `<key>.again.log`, its time the ask's, which is no failure, so the
+  worker's next look takes the episode, still only on the lane's `run`
+  (invariant 6). The worker removes `<key>.again.log` once that attempt
+  ends, however it ends, so there is one at most per episode, and only
+  while it is asked: the log keeps `failed.log`'s own life, nothing longer.
+  A refusal is never moved: by the policy it would come out the same
+  (invariant 7), so Run again answers `409` with its reason; and no log with
+  any `.refused` beside it moves: the worker writes the refusal from the
+  attempt's own log before moving the log into place, and a refusal that
+  appears as file_host moves a log puts it back. A cards essay home refused for its media is
+  file_host's own and never the worker's: Run again looks at it again as
+  home holds its media now, and only when that would no longer refuse it
+  does it run the cards pass at once rather than on the hour (never during
+  the pass's failure backoff).
+- **An asset alone** (the `asset` job, `{asset: thumbnail}`): file_host
+  writes one empty ask per `(feed, key, asset)`, `renders/asks/<asset>-<feed>-<key>`,
+  once (a second ask is the first). The job draws it with some-ui's
+  `record:asset` from the episode's own folder, read-only, into its own work
+  folder, then puts it beside the video whole: copied to
+  `.<file>.partial` in the episode's folder, linked to its name (a link
+  never replaces a file there, so a made asset is never overwritten), the
+  partial removed. The video is never rendered again. Present means done: an
+  ask whose asset is there, or whose episode has no video, is over, with its
+  log and any partial a kill left. One the recorder refused (its `asset
+  refused:` line, never its exit alone) is
+  held, as a policy refusal is, by `reason=recorder` and `held`, until what
+  `held` sums changes (the render and speaker images, this worker, the
+  recorders' flags, the brand files, the episode's own files; never its
+  folder's time, which a placing moves); any other failure keeps the hour, and Run
+  again moves its log aside as a video's. A drawn file a restart left in the
+  work folder is put in place without drawing it again. A description is the
+  render's own chapters and is made only with its video.
 - **Each job's length cap is its own** (`max_minutes`): an essay, Rust
   Rounds or mock interview, may run 60 minutes (C780: the owner's 30 of
   2026-11-17, #927, raised on 2026-11-19 when interview takes went to 3

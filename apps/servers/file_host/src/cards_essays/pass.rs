@@ -277,7 +277,7 @@ pub struct Given {
 
 impl Given {
 	/// Where the essays' media are read ([`essay_media::Sources`]).
-	fn sources(&self) -> essay_media::Sources {
+	pub(crate) fn sources(&self) -> essay_media::Sources {
 		essay_media::Sources {
 			subject: self.subject.clone(),
 			frames: self.frames.clone(),
@@ -663,12 +663,28 @@ async fn export(db: &SqlitePool, given: &Given, clock: &(dyn Fn() -> DateTime<Ut
 	Ok(())
 }
 
-/// The refusal's `.refused`, as the worker writes its own (`reason=…`), and
-/// its failed log's words: the reason and the items by id, never what they
-/// hold.
+/// The most items a `.refused` names, as the worker's `REFUSED_SCENES`
+/// (`feeds::renders::MOST_ITEMS`, which reads them): the failed log has
+/// every one.
+pub const REFUSED_ITEMS: usize = crate::feeds::renders::MOST_ITEMS;
+
+/// The refusal's `.refused`, as the worker writes its own (`reason=…`), with
+/// the first [`REFUSED_ITEMS`] items that block it by id and how many there
+/// are (`items=`, `count=`), for Studio › Renders' row (`Run again` names
+/// what still stops it); and its failed log's words: the reason and every
+/// item by id, never what they hold.
 fn refusal_files(refusal: &essay_media::Refusal) -> (String, String) {
+	// Only ids of an item's shape, each at most 128 bytes, so the file stays
+	// under the board's ceiling and reads whole; `count` is every item.
+	let named: Vec<&str> = refusal
+		.items
+		.iter()
+		.filter(|item| crate::feeds::renders::item_id(item))
+		.take(REFUSED_ITEMS)
+		.map(String::as_str)
+		.collect();
 	(
-		String::from("reason=") + refusal.reason() + "\n",
+		String::from("reason=") + refusal.reason() + "\nitems=" + &named.join(",") + "\ncount=" + &refusal.items.len().to_string() + "\n",
 		String::from("home refused this essay before the render: ") + refusal.words() + ": " + &refusal.items.join(", ") + "\n",
 	)
 }
@@ -1199,8 +1215,14 @@ mod tests {
 
 		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
 		assert_eq!((done.exported, done.refused), (0, 2));
-		assert_eq!(std::fs::read_to_string(status.join("framed-2026-11-20.refused")).unwrap(), "reason=clip-missing\n");
-		assert_eq!(std::fs::read_to_string(status.join("snipped-2026-11-21.refused")).unwrap(), "reason=snip-missing\n");
+		assert_eq!(
+			std::fs::read_to_string(status.join("framed-2026-11-20.refused")).unwrap(),
+			"reason=clip-missing\nitems=studio-promo/after/01.png\ncount=1\n"
+		);
+		assert_eq!(
+			std::fs::read_to_string(status.join("snipped-2026-11-21.refused")).unwrap(),
+			"reason=snip-missing\nitems=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa web:/settings:phone:1.2.3:0123456789ab\ncount=1\n"
+		);
 		let log = std::fs::read_to_string(status.join("framed-2026-11-20.failed.log")).unwrap();
 		assert!(log.ends_with(": studio-promo/after/01.png\n"), "{log}");
 
@@ -1261,8 +1283,14 @@ mod tests {
 		let done = run_once(&pool, &fake, &mine, &clock).await.unwrap();
 		assert_eq!((done.exported, done.refused, done.waiting), (0, 2, 0), "a refusal outranks a wait");
 		let status = dir.path().join("status");
-		assert_eq!(std::fs::read_to_string(status.join("gone-2026-11-19.refused")).unwrap(), "reason=take-missing\n");
-		assert_eq!(std::fs::read_to_string(status.join("mumbled-2026-11-20.refused")).unwrap(), "reason=take-unheard\n");
+		assert_eq!(
+			std::fs::read_to_string(status.join("gone-2026-11-19.refused")).unwrap(),
+			"reason=take-missing\nitems=nope\ncount=1\n"
+		);
+		assert_eq!(
+			std::fs::read_to_string(status.join("mumbled-2026-11-20.refused")).unwrap(),
+			"reason=take-unheard\nitems=take-3\ncount=1\n"
+		);
 		let log = std::fs::read_to_string(status.join("gone-2026-11-19.failed.log")).unwrap();
 		assert!(log.ends_with(": nope\n"), "{log}");
 		assert!(!log.contains("mm hm"), "never what was said");
@@ -1328,7 +1356,7 @@ mod tests {
 		assert_eq!((next.exported, next.refused), (0, 1), "the taken-back one is refused, not given again");
 		assert_eq!(
 			std::fs::read_to_string(dir.path().join("status").join("kept-2026-11-20.refused")).unwrap(),
-			"reason=take-missing\n"
+			"reason=take-missing\nitems=take-2\ncount=1\n"
 		);
 	}
 
@@ -1383,10 +1411,10 @@ mod tests {
 		assert_eq!((done.exported, done.refused, done.waiting, done.withdrawn), (0, 4, 0, 1), "a deleted take withdraws, #1055");
 		let reason = |key: &str| std::fs::read_to_string(dir.path().join("status").join(String::from(key) + ".refused")).unwrap();
 		for key in &keys[..3] {
-			assert_eq!(reason(key), "reason=take-unheard\n", "{key}");
+			assert!(reason(key).starts_with("reason=take-unheard\nitems=t-") && reason(key).ends_with("\ncount=1\n"), "{key}");
 		}
 		assert!(!dir.path().join("status").join("deleted-2026-11-19.refused").exists(), "withdrawn, not refused");
-		assert_eq!(reason("late-2026-11-20"), "reason=take-missing\n", "not sent yet: missing");
+		assert_eq!(reason("late-2026-11-20"), "reason=take-missing\nitems=t-late\ncount=1\n", "not sent yet: missing");
 
 		hold_take(&pool, "t-late").await;
 		let later = run_once(&pool, &fake, &mine, &clock).await.unwrap();
