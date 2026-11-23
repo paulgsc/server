@@ -126,7 +126,10 @@
 # alerts): <status>/last-pass, the Unix time each pass started (and, while a
 # render runs or waits for room, at least every EVERY seconds), and
 # <status>/<key>.failed.log, the whole output of an episode's last failed
-# attempt, removed once it renders. The same output is on stdout too, for
+# attempt, removed once it renders. The owner's Run again (file_host's
+# `renders_again`) moves it aside to <key>.again.log, which is then no
+# failure: the episode is tried on the next look, and that log goes once
+# the attempt ends. The same output is on stdout too, for
 # `docker logs render`.
 #
 # A waiting episode's work, its step cache included, is kept between attempts
@@ -233,6 +236,12 @@ REFUSED_LARGE="the video is ([0-9]+) MB, past the policy's ([0-9]+) MB"
 REFUSED_FIT="These scenes don't fit the frame, so the video would cut them off:"
 SCENE_ID='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 REFUSED_SCENES=12
+# The asset recorder's own refusal (some-ui's `record:asset`): this line,
+# then its reason, printed only when the same folder will always give the
+# same answer (a title no size fits, its files not there). Exit 1 alone is
+# no refusal: an uncaught throw (a crash, a timeout) exits 1 too.
+REFUSED_ASSET='^asset refused: '
+
 # The image the recorders are (deploy/home/release.json's render pin, which
 # call-render.yml hands in): a new image may say another length or size.
 RENDER_IMAGE=${RENDER_IMAGE:-}
@@ -303,7 +312,16 @@ max_minutes() {
   esac
 }
 
-JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay report site-shots)
+JOBS=(call playoff-delta preview rust-essay clip-walk cards-essay interview-essay report site-shots asset)
+
+# An ask for one asset of a finished episode (file_host's `renders_again`):
+# <asset>-<feed>-<key> in renders/asks, an empty file written once. The
+# feeds are the ones whose episodes have assets; no feed's name is another's
+# followed by `-`, so the match is one way only. Today the asset is a
+# thumbnail, made alone; a description is made only with its video.
+ASK_KEY='^(thumbnail)-(call|playoff-delta|rust-essay|interview-essay|cards-essay|report)-([A-Za-z0-9]+(-[A-Za-z0-9]+)*)$'
+# The file each asset is, in its episode's folder (`renders_again::THUMBNAIL`).
+declare -A ASSET_FILES=([thumbnail]=thumbnail.png)
 
 # The templates a preview may be of (paulgsc/some-ui
 # packages/video-render/src/templates.ts, TEMPLATE_IDS; file_host's
@@ -380,6 +398,11 @@ use_job() {
     site-shots)
       INPUT=$ROOT/site-shots RENDERS=$ROOT/renders/site-shots STATUS=$ROOT/renders/site-shots-worker
       WORK=$ROOT/renders/site-shots-work VIDEO=server.mp4 ;;
+    asset)
+      # Its finished file goes into the episode's own folder, never into
+      # RENDERS (`place_asset`): RENDERS is unused.
+      INPUT=$ROOT/renders/asks RENDERS=$ROOT/renders/asset STATUS=$ROOT/renders/asset-worker
+      WORK=$ROOT/renders/asset-work VIDEO=thumbnail.png ;;
   esac
   # The lane's folder, whichever job runs: file_host reads the job and its
   # peak there, and writes its decision there.
@@ -456,7 +479,85 @@ episodes() {
         key=$(basename "$entry" .json)
         [[ "$key" =~ $SHOTS_KEY ]] && echo "$key"
       done | LC_ALL=C sort ;;
+    asset)
+      # Oldest ask first, by its time (the ask's, file_host's `askedAt`).
+      for entry in "$INPUT"/*; do
+        [ -f "$entry" ] || continue
+        key=$(basename "$entry")
+        [[ "$key" =~ $ASK_KEY ]] && echo "$(stat -c %Y "$entry") $key"
+      done | LC_ALL=C sort -n | cut -d' ' -f2 ;;
   esac
+}
+
+# An ask's parts: its asset, its feed and the episode's key, into ASK_ASSET,
+# ASK_FEED and ASK_EPISODE (the episode's folder); false for a name that is
+# not an ask's.
+ask_of() {
+  [[ "$1" =~ $ASK_KEY ]] || return 1
+  ASK_ASSET=${BASH_REMATCH[1]} ASK_FEED=${BASH_REMATCH[2]}
+  ASK_EPISODE=$ROOT/renders/$ASK_FEED/${BASH_REMATCH[3]}
+}
+
+# The video file of a feed's finished episode, as each feed's job names it.
+feed_video() {
+  case $1 in
+    call) echo call.mp4 ;;
+    playoff-delta) echo episode.mp4 ;;
+    rust-essay | interview-essay) echo essay.mp4 ;;
+    cards-essay) echo cards.mp4 ;;
+    report) echo report.mp4 ;;
+  esac
+}
+
+# Whether `job`'s `key` is made: its video in RENDERS, or for an ask, the
+# asset in its episode's folder.
+made() {
+  if [ "$1" = asset ]; then
+    # A plain file, as file_host reads one: a link or a folder is not made.
+    ask_of "$2" && [ -f "$ASK_EPISODE/${ASSET_FILES[$ASK_ASSET]}" ] && [ ! -L "$ASK_EPISODE/${ASSET_FILES[$ASK_ASSET]}" ]
+  else
+    [ -e "$RENDERS/$2/$VIDEO" ]
+  fi
+}
+
+# An ask that is over (its asset made, or its episode no longer finished):
+# the ask goes, with its failed log, its refusal and a partial a killed
+# placing left. Nothing else of the episode's is touched.
+end_ask() {
+  ask_of "$1" || return 0
+  rm -f "${INPUT:?}/$1" "${STATUS:?}/$1.failed.log" "${STATUS:?}/$1.refused" "${STATUS:?}/.$1.refused" "${STATUS:?}/$1.again.log" \
+    "${ASK_EPISODE:?}/.${ASSET_FILES[$ASK_ASSET]}.partial"
+  rm -rf "${WORK:?}/$1"
+}
+
+# Puts an ask's made asset in its episode's folder whole, never over one
+# there: copied to a partial beside it on the same drive, then linked to
+# its name (a link fails where a file is, and is all or nothing), then the
+# partial goes. A kill leaves at most that one partial, which `end_ask`
+# sweeps; file_host never serves it.
+place_asset() {
+  local key=$1 made=$2 file partial
+  ask_of "$key" || return 1
+  file=${ASSET_FILES[$ASK_ASSET]}
+  partial=$ASK_EPISODE/.$file.partial
+  if [ ! -f "$made/$file" ]; then
+    echo "the recorder made no $file for $key"
+    return 1
+  fi
+  rm -f "$partial"
+  if ! cp "$made/$file" "$partial"; then
+    rm -f "$partial"
+    echo "the $file of $key could not be copied beside its video"
+    return 1
+  fi
+  # -T: never into a folder of that name. Done only as `made` reads it: a
+  # plain file, not a link, whether this link made it or one was there.
+  ln -T "$partial" "$ASK_EPISODE/$file" 2> /dev/null
+  rm -f "$partial"
+  if ! { [ -f "$ASK_EPISODE/$file" ] && [ ! -L "$ASK_EPISODE/$file" ]; }; then
+    echo "the $file of $key could not be put in place as a plain file"
+    return 1
+  fi
 }
 
 # A call's part keys (paulgsc/some-ui#2918): <from> is the week's first
@@ -593,6 +694,8 @@ holds() {
     rust-essay | interview-essay) [ -e "$INPUT/$2/essay.json" ] ;;
     clip-walk) [ -e "$INPUT/$2/sample.json" ] ;;
     cards-essay | report | site-shots) [ -e "$INPUT/$2.json" ] ;;
+    # An ask whose episode is finished: an asset is made beside a video.
+    asset) [ -e "$INPUT/$2" ] && ask_of "$2" && [ -e "$ASK_EPISODE/$(feed_video "$ASK_FEED")" ] ;;
   esac
 }
 
@@ -685,6 +788,27 @@ record() {
         --report-file "$INPUT/$key.json" --out "$WORK") ;;
     site-shots)
       site_shots "$key" ;;
+    asset)
+      # The asset alone, from the episode's own folder, read-only: drawn
+      # into this ask's work folder, never into the episode's. The video is
+      # never rendered again (some-ui's `record:asset`).
+      ask_of "$key" || return 2
+      # Drawn before and not yet put in place (a restart between the two):
+      # the recorder writes it whole and refuses to draw over it, so it is
+      # kept as a finished step, not drawn again.
+      if [ -f "$WORK/$key/${ASSET_FILES[$ASK_ASSET]}" ]; then
+        echo "the $ASK_ASSET of $key was drawn before; it is kept"
+        return 0
+      fi
+      # A partial a killed draw left in the work folder (the recorder's own,
+      # `.<file>.<pid>.<random>.partial`) is never drawn through: swept.
+      rm -f "$WORK/$key/.${ASSET_FILES[$ASK_ASSET]}".*.partial
+      if ! mkdir -p "$WORK/$key"; then
+        echo "the work folder of $key could not be made"
+        return 1
+      fi
+      (cd "$APP_DIR" && "$TSX" tests/record/asset.ts --asset "$ASK_ASSET" --feed "$ASK_FEED" \
+          --root "$ASK_EPISODE" --out "$WORK/$key") ;;
   esac
 }
 
@@ -757,6 +881,7 @@ finished() {
     interview-essay) echo "$WORK/$2" ;;
     report) echo "$WORK/$2" ;;
     site-shots) echo "$WORK/$2" ;;
+    asset) echo "$WORK/$2" ;;
   esac
 }
 
@@ -868,7 +993,7 @@ left_job() {
   [[ "$LEFT_RAN" =~ ^[0-9]{1,9}$ ]] && [[ "$LEFT_RESTARTS" =~ ^[0-9]{1,9}$ ]] || return 1
   [[ "$LEFT_KEY" =~ ^[0-9A-Za-z-]+$ ]] || return 1
   case $LEFT_KIND in
-    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay | report | site-shots) return 0 ;;
+    call | playoff-delta | preview | rust-essay | clip-walk | cards-essay | interview-essay | report | site-shots | asset) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1237,6 +1362,16 @@ render_episode() {
   made=$(finished "$job" "$key")
   # The renderer's intermediates can be made again from what is kept.
   rm -rf "${made:?}/cache"
+  if [ "$job" = asset ]; then
+    if ! place_asset "$key" "$made" >> "$log" 2>&1; then
+      echo "the $key could not be put in its episode's folder" | tee -a "$log"
+      end_job
+      return 1
+    fi
+    end_ask "$key"
+    end_job
+    return 0
+  fi
   if ! { mkdir -p "$RENDERS" && mv "$made" "$RENDERS/$key"; } 2>> "$log"; then
     echo "the finished $job of $key could not be moved into $RENDERS" | tee -a "$log"
     end_job
@@ -1357,6 +1492,13 @@ inputs_of() {
       printf '%s\n' "$INPUT/$2.json"
       local kind
       for kind in "${CARDS_MEDIA[@]}"; do printf '%s\n' "$INPUT/$2.$kind"; done ;;
+    # An asset is made from its episode's folder: each of its entries at the
+    # top, not the folder itself (whose time a placing moves) nor a hidden
+    # one (a partial); an entry that is a folder counts whole. A changed file
+    # is a change.
+    asset)
+      ask_of "$2" || return 0
+      find "$ASK_EPISODE" -mindepth 1 -maxdepth 1 ! -name '.*' 2> /dev/null ;;
   esac
 }
 
@@ -1436,10 +1578,22 @@ failed_recently() {
 # `key` of `job`, unless it has its video or failed lately.
 render_one() {
   local job=$1 key=$2 outcome
-  [ -e "$RENDERS/$key/$VIDEO" ] && return 0
+  if made "$job" "$key"; then
+    # Present means done: an ask for an asset already made is over, and so
+    # is a Run again's log moved aside.
+    [ "$job" != asset ] || end_ask "$key"
+    rm -f "${STATUS:?}/$key.again.log"
+    return 0
+  fi
   # Let go (a part of a call's week marked so) or no longer given: no job is
   # named for it, so the lane never sees one it will not admit.
-  holds "$job" "$key" || return 0
+  if ! holds "$job" "$key"; then
+    # An ask whose episode is not finished, or no longer held, is over; so
+    # is a Run again's log of an episode let go.
+    [ "$job" != asset ] || end_ask "$key"
+    rm -f "${STATUS:?}/$key.again.log"
+    return 0
+  fi
   # A newer revision of a week of the call is taken in first, outside any
   # render (`promote`); one that can't be is tried again next pass.
   if [ "$job" = call ] && ! promote "$(week_of "$key")"; then
@@ -1466,10 +1620,15 @@ render_one() {
   # What a refusal holds for is taken before each attempt (`render_episode`),
   # after its wait for room: an input that changes while one runs is then a
   # change, and the refusal is not held. None before any attempt.
-  HELD= ATTEMPT_FROM=0
+  HELD= ATTEMPT_FROM=0 ATTEMPT= ATTEMPT_EXIT=0
   render_episode "$job" "$key"
   outcome=$?
   keep_cache_warnings "$key"
+  # Run again (file_host's `renders_again`) moved a failed log aside to
+  # <key>.again.log, so this attempt was taken at once rather than
+  # RETRY_AFTER after it: whatever this attempt came to, that log is of an
+  # older one, and goes.
+  rm -f "${STATUS:?}/$key.again.log"
   case $outcome in
     0)
       rm -f "${STATUS:?}/.$key.log" "${STATUS:?}/$key.failed.log" "${STATUS:?}/$key.refused"
@@ -1481,16 +1640,39 @@ render_one() {
       # The last attempt's refusal first: a failed.log is never read beside
       # another attempt's.
       rm -f "${STATUS:?}/$key.refused"
-      mv -f "$STATUS/.$key.log" "$STATUS/$key.failed.log"
-      # Its time is the failure's, which RETRY_AFTER counts from.
-      touch "$STATUS/$key.failed.log"
+      # The refusal first, read from the attempt's own log, then the log
+      # moved into place: a failed.log is never there without the refusal it
+      # has, so Run again (which never moves a log beside a .refused) never
+      # takes a refused one for a burnt one. A .refused with no failed.log
+      # beside it is read by nothing, and swept next pass if the move fails.
       # A refusal by the policy is kept as its reason, a preview's too: the
       # phone says why (#929).
-      if [ -n "$HELD" ] && refusal "$STATUS/$key.failed.log" "$HELD" "$ATTEMPT_FROM" > "$STATUS/.$key.refused"; then
+      # Not `tail | grep -q`: under pipefail, grep leaving early can fail the
+      # tail, and a refusal would read as none.
+      if [ "$job" = asset ] && [ -n "$HELD" ] && [ "$ATTEMPT" = failed ] &&
+        grep -qE "$REFUSED_ASSET" < <(tail -c +"$(( ATTEMPT_FROM + 1 ))" "$STATUS/.$key.log"); then
+        # The recorder's own refusal (REFUSED_ASSET, in this attempt's own
+        # lines): the same folder gives the same answer, so it would come out
+        # the same (invariant 7), held until what `held_by` sums changes (the
+        # render and speaker images, this worker, the recorders' flags, the
+        # brand files, the episode's own files). Any other failure (a
+        # crash, a timeout, a placing the drive refused) keeps RETRY_AFTER.
+        printf 'reason=recorder\nheld=%s\n' "$HELD" > "$STATUS/.$key.refused" &&
+          mv -f "$STATUS/.$key.refused" "$STATUS/$key.refused"
+      elif [ "$job" != asset ] && [ -n "$HELD" ] && refusal "$STATUS/.$key.log" "$HELD" "$ATTEMPT_FROM" > "$STATUS/.$key.refused"; then
         mv -f "$STATUS/.$key.refused" "$STATUS/$key.refused"
       else
         rm -f "${STATUS:?}/.$key.refused"
       fi
+      # Its time is the failure's, which RETRY_AFTER counts from: set before
+      # the move, so the log is never made again after it (Run again may
+      # move it aside the moment it is there).
+      touch "$STATUS/.$key.log"
+      # A Run again that moved the previous attempt's log aside as this one
+      # ended left a log of no attempt now: it goes, before this one is in
+      # place, so a Run again of this one keeps its own.
+      rm -f "${STATUS:?}/$key.again.log"
+      mv -f "$STATUS/.$key.log" "$STATUS/$key.failed.log"
       if [ "$job" = preview ]; then
         echo "the preview $key did not render; the owner asks for another" >&2
       elif [ -e "$STATUS/$key.refused" ]; then
@@ -1545,7 +1727,7 @@ resume_left() {
   fi
   local kind=$LEFT_KIND key=$LEFT_KEY
   use_job "$kind"
-  if holds "$kind" "$key" && [ ! -e "$RENDERS/$key/$VIDEO" ]; then
+  if holds "$kind" "$key" && ! made "$kind" "$key"; then
     mkdir -p "$STATUS" && render_one "$kind" "$key"
   else
     end_job

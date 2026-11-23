@@ -58,7 +58,9 @@ use crate::call_weeks::render::{tally, Held, Renders};
 use crate::AppState;
 use sqlx::SqlitePool;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
 /// How often home reads the index: an essay comes when a session writes one.
@@ -104,18 +106,104 @@ pub const VIDEO: &str = "cards.mp4";
 #[derive(Clone)]
 pub struct CardsEssaysContext {
 	pub fetch: crate::game_feed::pass::ReqwestFetch,
+	/// Run again's way in (`renders_again`): one essay's refusal looked at
+	/// again, and the next pass asked for now.
+	pub recheck: Recheck,
 }
 
 impl CardsEssaysContext {
-	/// The worker's context once, at startup.
+	/// The worker's context once, at startup: whose takes a spoken card
+	/// plays, and whether a snip is fetched, are the mailbox's
+	/// (`mailbox::pass_subject`, `snips`).
 	///
 	/// # Errors
 	/// An HTTP client that does not build.
-	pub fn new() -> anyhow::Result<Self> {
+	pub fn new(mailbox: Option<&crate::mailbox::MailboxContext>, deletion: crate::auth::DeletionLock) -> anyhow::Result<Self> {
 		let client = outbound::client(outbound::Caller::CardsEssays).timeout(REQUEST_TIMEOUT).build()?;
 		Ok(Self {
 			fetch: crate::game_feed::pass::ReqwestFetch::new(client),
+			recheck: Recheck {
+				poke: Arc::new(Notify::new()),
+				configured: mailbox.and_then(|mailbox| mailbox.subject.clone()),
+				fetching: mailbox.is_some_and(|mailbox| mailbox.snips.is_some()),
+				deletion,
+			},
 		})
+	}
+}
+
+/// What [`Recheck::refusal`] found.
+#[derive(Debug)]
+pub enum Rechecked {
+	/// Still refused, for what it names now.
+	Refused(crate::essay_media::Refusal),
+	/// It would be given, or wait for a take to be heard: the pass may run.
+	Clear,
+	/// Its media can't be read as named: the pass would say so again.
+	Unreadable,
+}
+
+/// Run again for a cards essay home refused (`renders_again`): whether it
+/// is still refused as home holds its media now, and a poke that runs the
+/// next pass at once, not on the hour.
+///
+/// The poke is a [`Notify`]: taps before the worker wakes are one pass, and
+/// the pass is the one the worker runs, so nothing is given to the render
+/// worker by any other writer. A poke runs a pass only while the last one
+/// succeeded: during a failure's backoff ([`RETRY`]) it waits for it, so taps
+/// never make the fetches the backoff holds back.
+#[derive(Clone)]
+pub struct Recheck {
+	poke: Arc<Notify>,
+	configured: Option<String>,
+	fetching: bool,
+	deletion: crate::auth::DeletionLock,
+}
+
+impl Recheck {
+	/// A recheck over `configured`'s takes, for tests.
+	#[cfg(test)]
+	#[must_use]
+	pub fn for_tests(configured: Option<String>) -> Self {
+		Self {
+			poke: Arc::new(Notify::new()),
+			configured,
+			fetching: false,
+			deletion: crate::auth::DeletionLock::default(),
+		}
+	}
+
+	/// Whether the next pass was asked for and not yet run, for tests.
+	#[cfg(test)]
+	pub async fn poked(&self) -> bool {
+		tokio::time::timeout(Duration::from_millis(50), self.poke.notified()).await.is_ok()
+	}
+
+	/// What the pass would make of `key` as home holds its media now, by its
+	/// own check (`essay_media::for_essay`), which only reads. (Whether a
+	/// take it plays was deleted is the pass's to find: it withdraws the
+	/// essay, and the board no longer lists it.)
+	///
+	/// # Errors
+	/// A storage failure.
+	pub async fn refusal(&self, db: &SqlitePool, key: &str) -> Result<Rechecked, sqlx::Error> {
+		let given = given(db, self.configured.as_deref(), self.fetching, &self.deletion).await?;
+		let mut conn = db.acquire().await?;
+		let Some(body) = cards_essay_repo::body(&mut conn, key).await? else {
+			return Ok(Rechecked::Clear);
+		};
+		let essay = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);
+		match crate::essay_media::for_essay(&mut conn, &given.sources(), &essay).await {
+			Ok(crate::essay_media::Given::Refused(refusal)) => Ok(Rechecked::Refused(refusal)),
+			Ok(_) => Ok(Rechecked::Clear),
+			Err(crate::essay_media::Failed::Unreadable) => Ok(Rechecked::Unreadable),
+			Err(crate::essay_media::Failed::Storage(err)) => Err(err),
+		}
+	}
+
+	/// Runs the next pass now.
+	pub fn poke(&self) {
+		self.poke.notify_one();
 	}
 }
 
@@ -133,10 +221,11 @@ pub fn start(state: &AppState) {
 		}
 	}
 	let context = state.cards_essays.clone();
-	let configured = state.mailbox.as_ref().and_then(|mailbox| mailbox.subject.clone());
+	let configured = context.recheck.configured.clone();
 	// The mailbox pass fetches a waiting essay's snips and pages when the
 	// deployment gave it a token (`snips`); without one, each is missing.
-	let fetching = state.mailbox.as_ref().is_some_and(|mailbox| mailbox.snips.is_some());
+	let fetching = context.recheck.fetching;
+	let poke = context.recheck.poke.clone();
 	let cancel = state.core.cancel_token.clone();
 	let db = state.core.shared_db.clone();
 	let deletion = state.auth.deletion_lock();
@@ -148,6 +237,8 @@ pub fn start(state: &AppState) {
 		crate::metrics::cards_essays::record_started();
 		let mut schedule = crate::game_feed::pass::Target::now(chrono::Utc::now());
 		let mut ticker = tokio::time::interval(TICK);
+		// Whether the last pass succeeded: a poke runs one only then.
+		let mut last_ok = true;
 		ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		loop {
 			tokio::select! {
@@ -155,11 +246,20 @@ pub fn start(state: &AppState) {
 					info!("cards essays worker cancelled");
 					return;
 				}
-				_ = ticker.tick() => {
-					observe_renders(&db).await;
-					tidy_tick(&db, configured.as_deref(), fetching, &deletion).await;
+				poked = async {
+					tokio::select! {
+						_ = ticker.tick() => false,
+						() = poke.notified() => true,
+					}
+				} => {
+					if !poked {
+						observe_renders(&db).await;
+						tidy_tick(&db, configured.as_deref(), fetching, &deletion).await;
+					}
 					let now = chrono::Utc::now();
-					if !schedule.due(now) {
+					// Run again (`Recheck::poke`): this pass is due now, and
+					// the schedule goes on from its outcome as ever.
+					if !(schedule.due(now) || (poked && last_ok)) {
 						continue;
 					}
 					crate::metrics::cards_essays::record_pass_started();
@@ -168,7 +268,8 @@ pub fn start(state: &AppState) {
 						Err(err) => Err(err),
 					};
 					crate::metrics::cards_essays::record_pass(&result);
-					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
+					last_ok = result.as_ref().is_ok_and(|done| done.failures.is_empty());
+					if last_ok {
 						schedule.succeeded(now, INTERVAL);
 					} else {
 						schedule.failed(now, RETRY, INTERVAL);

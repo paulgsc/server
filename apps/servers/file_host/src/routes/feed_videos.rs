@@ -5,6 +5,8 @@
 //! GET    /feeds/:feed/videos                  → { episodes: [{ key, week, part, of, videoBytes, restBytes, link, receipts, title }] }: newest first
 //! GET    /feeds/:feed/videos/:key/video       → the episode's video, streamed, with ranges
 //! GET    /feeds/:feed/videos/:key/description → its `YouTube` chapter lines, `text/plain`, or 404
+//! GET    /feeds/:feed/videos/:key/thumbnail   → its thumbnail, `image/png`, whole, or 404
+//! POST   /feeds/:feed/videos/:key/produce     → a Step: the body is { asset }, `video`, `thumbnail` or `description`
 //! PUT    /feeds/:feed/videos/:key/link        → { url }: the body is { link }, a `YouTube` video's link as pasted
 //! DELETE /feeds/:feed/videos/:key/video       → { receipt }: lets its video go, once a link is recorded
 //! DELETE /feeds/:feed/videos/:key/rest        → { receipt }: lets the rest of its folder go, once the video has
@@ -30,6 +32,16 @@
 //! keyed by the week's day as a week of one video always was, part k by
 //! `<day>-p<k>`, all sharing `week` and `of`. Each part is brought, linked
 //! and let go on its own through the same routes, by its key.
+//!
+//! **Make part of it again** (`renders_again`): `produce` asks home for one
+//! asset of an episode, `202` when home will make it (asked, waiting its
+//! turn or rendering: asking again is the same answer), `200` when it is
+//! made, `409` when a step still stops it (its `reason`, and for a cards
+//! essay home refused the `items` that block it), `422` for a description
+//! beside its video (it is made only with the video), `404` for an episode
+//! home doesn't hold. Every answer, and each listed episode's `assets`, is a
+//! Step: `{ asset, state, askedAt?, startedAt?, endedAt?, reason?, items?,
+//! itemCount? }`.
 //!
 //! **Trust model:** a paired phone's only, as `routes::voice`'s delete. Every
 //! handler takes a `Paired`, so a request without a session is `401` and a
@@ -58,11 +70,14 @@ where
 	S: Clone + Send + Sync + 'static,
 	SqlitePool: FromRef<S>,
 	AuthContext: FromRef<S>,
+	crate::renders_again::Again: FromRef<S>,
 {
 	let table = RouteTable::new()
 		.get("/feeds/:feed/videos", handlers::get_episodes)
 		.get("/feeds/:feed/videos/:key/video", handlers::get_video)
 		.get("/feeds/:feed/videos/:key/description", handlers::get_description)
+		.get("/feeds/:feed/videos/:key/thumbnail", handlers::get_thumbnail)
+		.post("/feeds/:feed/videos/:key/produce", handlers::post_produce)
 		.put("/feeds/:feed/videos/:key/link", handlers::put_link)
 		.delete("/feeds/:feed/videos/:key/video", handlers::delete_video)
 		.delete("/feeds/:feed/videos/:key/rest", handlers::delete_rest);
@@ -73,7 +88,7 @@ where
 fn cors(config: &Config) -> CorsLayer {
 	allowlisted_cors_with_credentials(
 		config,
-		vec![Method::GET, Method::PUT, Method::DELETE, Method::OPTIONS],
+		vec![Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS],
 		vec![CONTENT_TYPE, ACCEPT, AUTHORIZATION, RANGE],
 	)
 }

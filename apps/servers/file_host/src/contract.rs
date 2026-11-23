@@ -28,7 +28,7 @@
 //! fails until the Dockerfile says the same.
 
 /// This build's contract epoch. See the module doc for when it moves.
-pub const CONTRACT_EPOCH: u32 = 27;
+pub const CONTRACT_EPOCH: u32 = 28;
 
 /// The lowest epoch this build still serves. Raised when a client-breaking
 /// route change lands; at most [`CONTRACT_EPOCH`].
@@ -63,14 +63,20 @@ pub const OLDEST_SUPPORTED: u32 = 1;
 /// each question n the essay names. A render that requires 2 still runs
 /// against this (a provision meets any lower requirement); render raises
 /// its `requires` with the change that reads them.
-pub const RENDER_FOLDERS_EPOCH: u32 = 3;
+///
+/// 4 (`renders_again`): `renders/asks/` may hold an ask for one asset of a
+/// finished episode, `<asset>-<feed>-<key>` (today `thumbnail-…`), for the
+/// worker's `asset` job; and a status folder may hold `<key>.again.log`, a
+/// failed log the owner's Run again moved aside, which is no failure. A
+/// render that requires 3 still runs against this.
+pub const RENDER_FOLDERS_EPOCH: u32 = 4;
 
 /// The route surface [`CONTRACT_EPOCH`] was last set for.
 ///
 /// FNV-1a over the sorted `METHOD full_path` lines of every route this build
 /// serves, as [`route_fingerprint`] computes it. A route change fails `the_fingerprint_is_this_route_surface`,
 /// whose message names the new value, until this and the epoch are updated.
-pub const ROUTE_FINGERPRINT: &str = "8bcb6ecbd163efa7";
+pub const ROUTE_FINGERPRINT: &str = "0a6a9be6e2ff74a7";
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;

@@ -454,6 +454,7 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		part: None,
 		reason: None,
 		over: None,
+		blocking: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "recorder", "exit": 1 }));
@@ -466,6 +467,7 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		part: None,
 		reason: None,
 		over: None,
+		blocking: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "home", "exit": null }));
@@ -527,6 +529,7 @@ fn a_policy_refusal_is_its_reason_and_numbers() {
 		part: None,
 		reason: Some(over.reason()),
 		over: Some(over),
+		blocking: None,
 	};
 	assert_eq!(
 		serde_json::to_value(failed(long)).unwrap(),
@@ -790,7 +793,7 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 			})
 		)
 	);
-	std::fs::write(&refused, "reason=too-long\nminutes=24.4\ncap=15.0\n".repeat(40)).unwrap();
+	std::fs::write(&refused, "reason=too-long\nminutes=24.4\ncap=15.0\n".repeat(60)).unwrap();
 	let read = super::read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(read.failed[0].over, None, "a file past its ceiling is no refusal");
 }
@@ -1189,4 +1192,55 @@ fn a_home_refusal_reads_as_its_class() {
 	assert_eq!(super::home_refusal("reason=too-long\n"), None);
 	assert_eq!(super::home_refusal("take-missing\n"), None);
 	assert_eq!(Over::parse("reason=take-missing\n"), None, "never the policy's");
+}
+
+/// Run again (`renders_again`): a cards essay home refused names the items
+/// that still block it, by id, as its `.refused` says them; one that names
+/// none whole (written before it named any) is its reason alone.
+#[test]
+fn a_home_refusal_names_what_blocks_it() {
+	let text = "reason=take-unheard\nitems=note-a,note-b\ncount=2\n";
+	assert_eq!(home_refusal(text), Some("take-unheard"));
+	assert_eq!(
+		Blocking::parse(text),
+		Some(Blocking {
+			items: vec![String::from("note-a"), String::from("note-b")],
+			item_count: 2,
+		})
+	);
+	let frames = Blocking::parse("reason=clip-missing\nitems=clip-1/before/f001.png\ncount=1\n").unwrap();
+	assert_eq!(frames.items, vec![String::from("clip-1/before/f001.png")]);
+	let snip = Blocking::parse("reason=snip-missing\nitems=0123abcd web:/settings:phone:1.2.3:0123456789ab\ncount=1\n").unwrap();
+	assert_eq!(snip.items, vec![String::from("0123abcd web:/settings:phone:1.2.3:0123456789ab")]);
+	let twelve = (1..=12).map(|i| ["n", &i.to_string()].concat()).collect::<Vec<_>>().join(",");
+	assert_eq!(
+		Blocking::parse(&["reason=take-missing\nitems=", &twelve, "\ncount=20\n"].concat()).map(|b| b.item_count),
+		Some(20)
+	);
+	for text in [
+		"reason=take-missing\n",
+		"reason=take-missing\nitems=\ncount=0\n",
+		"reason=take-missing\nitems=a,b\ncount=1\n",
+		"reason=take-missing\nitems=a\n",
+		"reason=take-missing\nitems= padded\ncount=1\n",
+		"reason=take-missing\nitems=a\tb\ncount=1\n",
+		"reason=take-missing\nitems=caf\u{e9}\ncount=1\n",
+	] {
+		assert_eq!(Blocking::parse(text), None, "{text:?}");
+	}
+	let row = Failed {
+		feed: String::from("cards-essay"),
+		key: String::from("walk-2026-11-20"),
+		at: 1,
+		failure: Failure { by: FailedBy::Home, exit: None },
+		template: None,
+		part: None,
+		reason: Some("take-unheard"),
+		over: None,
+		blocking: Blocking::parse(text),
+	};
+	assert_eq!(
+		serde_json::to_value(row).unwrap(),
+		serde_json::json!({ "feed": "cards-essay", "key": "walk-2026-11-20", "at": 1, "by": "home", "exit": null, "reason": "take-unheard", "items": ["note-a", "note-b"], "itemCount": 2 })
+	);
 }

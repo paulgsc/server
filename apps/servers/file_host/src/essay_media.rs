@@ -288,6 +288,10 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 	})
 }
 
+/// Every reason a refusal is said by ([`Refusal::reason`]), each once: what
+/// reads a `.refused` as home's own (`renders_again`).
+pub const REASONS: [&str; 7] = ["take-missing", "take-unheard", "snip-missing", "snip-gone", "clip-missing", "page-missing", "page-gone"];
+
 /// What home holds of everything a cut list names, kind by kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Given {
@@ -460,6 +464,12 @@ mod tests {
 			reasons,
 			["take-missing", "take-unheard", "snip-missing", "snip-gone", "clip-missing", "page-missing", "page-gone"]
 		);
+		assert_eq!(reasons, REASONS, "every reason, each in REASONS");
+		for kind in Kind::ALL {
+			for why in [Why::Missing, Why::Unheard, Why::Gone] {
+				assert!(REASONS.contains(&Refusal { kind, why, items: Vec::new() }.reason()), "{kind:?} {why:?}");
+			}
+		}
 	}
 
 	#[tokio::test]
