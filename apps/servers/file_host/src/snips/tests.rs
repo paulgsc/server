@@ -10,13 +10,16 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations")
 /// A change to a bundle's files before it is zipped.
 type Edit = Box<dyn FnOnce(&mut BTreeMap<String, Vec<u8>>)>;
 
+/// The runs listed of a key, or a failure.
+type Listed = Result<Vec<Run>, &'static str>;
+
 /// A run's bundle: its zip's bytes, `None` for one gone, or a failure.
 type Answer = Result<Option<Vec<u8>>, &'static str>;
 
 /// Answers runs and bundles from tables, and records each bundle asked for.
 #[derive(Default)]
 struct Fake {
-	runs: Mutex<HashMap<(Family, String), Result<Vec<Run>, &'static str>>>,
+	runs: Mutex<HashMap<(Family, String), Listed>>,
 	/// A run's bundle: its zip's bytes, `None` for one gone, or a failure.
 	bundles: Mutex<HashMap<i64, Answer>>,
 	asked: Mutex<Vec<i64>>,
@@ -559,7 +562,7 @@ async fn a_scene_its_runs_bundle_does_not_give_as_named_is_gone_naming_the_run_a
 		("another moment", scene(101, &actions, URL, "2026-11-23T09:30:01.000Z")),
 		("a moment that doesn't read", scene(101, &actions, URL, "yesterday")),
 	] {
-		let refusal = refused(pages_handed(&pool, &dirs, &[of.clone()]).await);
+		let refusal = refused(pages_handed(&pool, &dirs, std::slice::from_ref(&of)).await);
 		assert_eq!(refusal.reason(), "page-gone", "{case}");
 		let file = of["file"].as_str().unwrap();
 		assert_eq!(refusal.items, [String::from("101 ") + file], "{case}: by its run and file, never its address");
@@ -621,7 +624,7 @@ async fn a_pages_bundle_that_does_not_check_out_is_refused_whole_and_said_gone()
 	};
 	let rewrite = move |body: serde_json::Value| -> Edit {
 		Box::new(move |files: &mut BTreeMap<String, Vec<u8>>| {
-			files.insert(String::from("pages.json"), serde_json::to_vec(&body).unwrap());
+			files.insert(String::from("pages.json"), serde_json::to_vec_pretty(&body).unwrap());
 			resummed(files);
 		})
 	};
@@ -647,13 +650,13 @@ async fn a_pages_bundle_that_does_not_check_out_is_refused_whole_and_said_gone()
 		("a name whose hash is not its sum's", {
 			let renamed = String::from("github-com-0123456789ab.png");
 			let mut wrong = record.clone();
-			wrong["image"]["name"] = serde_json::json!(renamed.clone());
+			wrong["image"]["name"] = serde_json::json!(&renamed);
 			let body = serde_json::json!({ "schema": pages::SCHEMA, "pages": [wrong, docs_record.clone()] });
 			let (from, to) = (actions.clone(), renamed);
 			Box::new(move |files: &mut BTreeMap<String, Vec<u8>>| {
 				let png = files.remove(&from).unwrap();
 				files.insert(to, png);
-				files.insert(String::from("pages.json"), serde_json::to_vec(&body).unwrap());
+				files.insert(String::from("pages.json"), serde_json::to_vec_pretty(&body).unwrap());
 				resummed(files);
 			})
 		}),
