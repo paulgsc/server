@@ -49,7 +49,6 @@ pub mod rust_essays;
 pub mod rust_rounds;
 pub mod schema;
 pub mod settings;
-pub mod site_shots;
 pub mod snips;
 pub mod stage;
 pub mod storage;
@@ -347,7 +346,6 @@ pub fn start_polls(state: &AppState) {
 	clips::start(state);
 	cards_essays::start(state);
 	report_weeks::start(state);
-	site_shots::start();
 	renders_again::start();
 }
 

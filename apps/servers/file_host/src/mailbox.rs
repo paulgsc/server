@@ -480,33 +480,6 @@ async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) {
 	}
 }
 
-/// The site's pictures (`crate::site_shots`), after everything a phone or
-/// the routine waits on: what happened, never a token, URL or picture.
-async fn send_site_shots(mailbox: &Mailbox<ReqwestTransport>) {
-	let folders = crate::site_shots::Folders::server();
-	let pass = crate::site_shots::run_once(mailbox, &folders, env!("CARGO_PKG_VERSION"), chrono::Utc::now());
-	let Ok(done) = tokio::time::timeout(SITE_SHOTS_DEADLINE, pass).await else {
-		warn!("Site pictures pass reached its deadline; asked again next pass");
-		return;
-	};
-	match done {
-		Ok(done) if done.sent => info!("Site pictures: this week's went to the mailbox"),
-		Ok(crate::site_shots::Done { refused: Some(why), .. }) => error!(why = %why, "Site pictures: this week's were not sent"),
-		Ok(crate::site_shots::Done { render_failed: Some(line), .. }) => error!(line = %line, "Site pictures: the render worker could not make this week's"),
-		Ok(done) if done.asked => info!("Site pictures: this week's were asked of the render worker"),
-		Ok(done) if done.missed => warn!("Site pictures: last week ended over a day ago with none asked; the site keeps the week before's until next week's"),
-		Ok(_) => {}
-		Err(err) if err.lasting() => error!(error = %err, "Site pictures: the mailbox will not take them; asked again next pass"),
-		Err(err) => warn!(error = %err, "Site pictures pass did not finish; asked again next pass"),
-	}
-}
-
-/// The longest the site's pictures hold up the mailbox pass: two puts of at
-/// most 768 KiB each, at `REQUEST_TIMEOUT` apiece, and a few small files.
-/// Short, since `MailboxPollerStale` reads the loop's stamp, written between
-/// passes.
-const SITE_SHOTS_DEADLINE: Duration = Duration::from_secs(65);
-
 /// One pass of the poller: find whose copy to keep, run a pass for it, then
 /// stamp the routine watch and tell the phones. True when it settled: no
 /// phase failed, there was an account to keep the files for, and no phase
@@ -569,8 +542,6 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 		if let Some(capture) = context.snips.as_deref() {
 			pick_up_snips(db, capture).await;
 		}
-		// Nor does a picture of home's dashboards.
-		send_site_shots(&context.mailbox).await;
 		return settled;
 	};
 	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
@@ -591,6 +562,5 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 	if let Some(capture) = context.snips.as_deref() {
 		pick_up_snips(db, capture).await;
 	}
-	send_site_shots(&context.mailbox).await;
 	settled
 }
