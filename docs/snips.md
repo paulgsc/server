@@ -140,7 +140,11 @@ than `success`, or doesn't exist, is no run and is marked gone. Studio's
 words for `page-gone` send the owner to capture the page again, which is the
 wrong advice for a run about to succeed. The routine may name a run while it
 is in flight, though the capture's own order names it only after it has
-succeeded. Asked by ESSAY-Q2 on #1144.
+succeeded. Asked by ESSAY-Q2 on #1144. A newer attempt under way also clears a
+run's gone mark, so an essay waits on the owner's re-run rather than being
+refused for the attempt before it. A run that never concludes (one waiting
+on an approval no one gives) is asked again every pass until GitHub ends
+it, and its essay waits that long.
 
 ### Gap: an essay taken back loses its pages
 

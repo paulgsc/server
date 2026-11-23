@@ -777,3 +777,27 @@ async fn a_page_that_keeps_failing_takes_turns_with_a_failed_snip() {
 	}
 	assert_eq!(*fake.asked.lock().unwrap(), [101, 1, 101, 1], "pages first, then each failed key in its turn");
 }
+
+#[tokio::test]
+async fn a_page_run_under_way_is_waited_on_and_a_newer_attempt_under_way_clears_its_gone_mark() {
+	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
+	let (actions, record) = page(b"actions-png", "github-com-paulgsc-some-ui-actions", URL, AT);
+	let scenes = [scene(101, &actions, URL, AT)];
+	hold_page_essay(&pool, "pages-2026-11-23", &scenes).await;
+	// Its first attempt failed: gone.
+	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap().gone, 1);
+	assert_eq!(refused(pages_handed(&pool, &dirs, &scenes).await).reason(), "page-gone");
+	// The owner re-runs it, and the new attempt is under way.
+	fake.runs.lock().unwrap().insert((Family::Pages, String::from("101")), Err(UNFINISHED));
+	for _ in 0..2 {
+		let picked = run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+		assert_eq!((picked.gone, picked.failures.as_slice()), (0, &[UNFINISHED][..]));
+		assert!(!gone_of(&dirs.pages, "101").exists(), "never gone while under way");
+		assert!(retry_of(&dirs.pages, "101").exists());
+		assert!(matches!(pages_handed(&pool, &dirs, &scenes).await, essay_media::Handed::Waiting(_)), "it waits");
+	}
+	fake.runs.lock().unwrap().remove(&(Family::Pages, String::from("101")));
+	fake.page_run(Run { run_attempt: 2, ..page_run(101) }, Ok(Some(pages_bundle(&[(b"actions-png", record)], |_| {}))));
+	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap().fetched, 1, "fetched once it succeeds");
+	assert!(matches!(pages_handed(&pool, &dirs, &scenes).await, essay_media::Handed::Ready(_)));
+}

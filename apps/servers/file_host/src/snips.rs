@@ -88,6 +88,11 @@ pub const PAGES_FOLDER: &str = "/app/dbs/renders/pages";
 /// other is no run of the pages (C1440).
 pub const PAGES_WORKFLOW: &str = ".github/workflows/public-pages-capture.yml";
 
+/// The failure of a run still under way (a pages run not concluded): only
+/// retried, and a newer attempt under way clears its key's gone mark, so
+/// its essay waits rather than being refused (C1442).
+pub const UNFINISHED: &str = "unfinished";
+
 /// The capture's repository on GitHub's API.
 pub const REPOSITORY: &str = "https://api.github.com/repos/paulgsc/some-ui";
 
@@ -409,7 +414,7 @@ impl OneRun {
 			return Ok(None);
 		}
 		match self.conclusion.as_deref() {
-			None => Err("unfinished"),
+			None => Err(UNFINISHED),
 			Some("success") => Ok(Some(self.run)),
 			Some(_) => Ok(None),
 		}
@@ -781,6 +786,11 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		let runs = match capture.runs(family, key).await {
 			Ok(runs) => runs,
 			Err(kind) => {
+				if kind == UNFINISHED {
+					// A newer attempt under way: what was said of an older one
+					// is no longer so. Said again if this one fails too.
+					let _ = tokio::fs::remove_file(gone_of(folder, key)).await;
+				}
 				picked.failures.push(kind);
 				continue;
 			}
