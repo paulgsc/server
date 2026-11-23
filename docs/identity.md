@@ -951,7 +951,9 @@ nowhere is marked as such and belongs to review.
       week's routine reads each answer and read; paulgsc/some-ui#2932), the
       kinds a routine reads and
       the mailbox's `transcript` folder takes (never a game bite, a soundbite, a
-      grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180),
+      grammar-lens take or a LeetType spoken answer; paulgsc/some-ui#2180; a
+      game bite's words reach the mailbox only in the Game Week week file,
+      below),
       and never of a note but a Jobs note the owner set aside before it was
       filed (`voice_note_set_aside`, invariant 23, read again in the
       transaction that files it). Each carries home's verdict on it
@@ -1056,6 +1058,25 @@ nowhere is marked as such and belongs to review.
       subject the pass is for. No week's words. It is put only when home has
       taken a week since the last one the mailbox answered, so an idle pass
       puts none, and none at all before home holds a week.
+      The poller puts the Game Week essay's week file as
+      `index-game-week-<stamp>.json` in the same schema, a view of the same
+      kind (`mailbox::index::game_week`, paulgsc/some-ui#2074): each of the
+      four newest ended NFL weeks (Tuesday to Monday) that is ready, its
+      games with a bite of the subject's and every bite of theirs, each with
+      the scenario, how it was chosen, its unit, the watching flag, when it
+      was said, what home made of the take (its verdict, its transcript when
+      heard, and the mean of its words' probabilities) and the play the
+      reconciler matched it to (ESPN's id and text, and its still: quarter,
+      clock, down, distance, spot, score). **This is the one place a game
+      bite's words leave home**: the owner's decision 2 of 2026-10-26 put a
+      weekly bundle of each bite's transcript, never its audio, in the
+      mailbox for the cloud writer (paulgsc/some-ui#2082), and D1 of
+      2026-11-16 made that bundle the essay's week. Which folder it goes in
+      (`index`, or a folder of its own as decision 2 first said) waits on the
+      owner (paulgsc/some-ui#3441). A take is named by its voice note's id,
+      never audio; nothing of the file reaches a log line. It is put only
+      when its bytes change since the last one the mailbox answered, and
+      none before a week is ready.
     - `mailbox_transcript`, written only by the poller, in the transaction
       that files the transcript: which transcript (note and model) it filed
       and the number `n` its name carries, decided once as the note's next,
@@ -1127,6 +1148,9 @@ nowhere is marked as such and belongs to review.
     `a_prompts_notes_are_the_ones_it_names_in_the_order_said` (no prompt's
     words), `a_groups_unheard_note_waits_two_days_from_its_newest_put_then_is_missed`
     and `the_same_rows_give_the_same_bytes_until_valid_until`;
+    `mailbox::index::game_week`'s
+    `a_ready_week_carries_each_bite_its_take_and_its_play` and
+    `a_week_waits_for_every_bite_to_be_matched_and_heard`;
     `mailbox::pass`'s
     `a_sha_mismatch_is_not_kept`, `a_non_json_body_is_not_kept`,
     `nothing_is_written_for_a_deleted_subject`,
@@ -1309,7 +1333,8 @@ nowhere is marked as such and belongs to review.
     (`20261030000100_add_studio_to_voice_note`). A redo is a new take under a
     new id, never an update of the one it redoes. A take is sent home like
     every note, heard by the transcriber like every note, and its transcript filed for the mailbox like every
-    note's but a game bite's (invariant 19). **A soundbite, a grammar-lens
+    note's but a game bite's, whose words reach it only in the Game Week week
+    file (invariant 19). **A soundbite, a grammar-lens
     take and a LeetType spoken answer are voice notes** too
     (paulgsc/some-ui#2180, HF5; owner's decision D1 on paulgsc/some-ui#2174:
     home is the record, and the phone lets go only what home has read back):

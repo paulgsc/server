@@ -107,7 +107,7 @@ fn engine_game(game: &scoreboard::Game, listed: &wire::Game, summary: Option<Sum
 /// Playoff Delta's reading (`story::NextPiece::want`), which home does not
 /// make per week yet, so any other game says none, and the engine reads it
 /// as one that cannot move SF.
-fn listing(game: &scoreboard::Game) -> Option<wire::Game> {
+pub(crate) fn listing(game: &scoreboard::Game) -> Option<wire::Game> {
 	let home = game.home.team.clone()?;
 	let away = game.away.team.clone()?;
 	let want = [&home, &away].into_iter().find(|team| *team == TEAM).cloned();

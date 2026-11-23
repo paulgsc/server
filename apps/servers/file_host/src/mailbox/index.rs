@@ -83,6 +83,10 @@
 //!
 //! **The interview essay routine's index** is [`interview`]'s: each final
 //! interview week's record, built the same way (paulgsc/some-ui#2935, IW4).
+//!
+//! **The Game Week essay's week file** is [`game_week`]'s: each ended NFL
+//! week's games, bites and matched plays, put only when it changes
+//! (paulgsc/some-ui#2074).
 
 use chrono::{DateTime, NaiveDate, Utc};
 use mailbox_kit::{Folder, Mailbox, MailboxError, MailboxTransport, Put};
@@ -95,11 +99,13 @@ use std::sync::{Mutex, PoisonError};
 use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
 
 pub mod call;
+pub mod game_week;
 pub mod interview;
 pub mod reflections;
 pub mod rust;
 
 pub(super) use call::put_call_index;
+pub(super) use game_week::put_game_week_index;
 pub(super) use interview::put_interview_index;
 pub(super) use reflections::put_reflections_index;
 pub(super) use rust::put_rust_index;
@@ -809,6 +815,7 @@ pub struct LastIndexes {
 	pub call: LastIndex,
 	pub rust: LastIndex,
 	pub interview: LastIndex,
+	pub game_week: LastIndex,
 	/// Whether a pass of this process has queued the programs of every week
 	/// of Rust Rounds home holds (`pass::queue_held_weeks`, RR25): once per
 	/// process, so the first pass after an upgrade queues a week an older

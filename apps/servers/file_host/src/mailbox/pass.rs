@@ -491,7 +491,8 @@ pub async fn run_once<T: MailboxTransport>(
 		let call = super::index::put_call_index(db, mailbox, subject, &last_index.call, now, &mut outcome).await;
 		let rust = super::index::put_rust_index(db, mailbox, subject, deletion, &last_index.rust, now, &mut outcome).await;
 		let interview = super::index::put_interview_index(db, mailbox, subject, deletion, &last_index.interview, now, &mut outcome).await;
-		jobs.and(reflections).and(call).and(rust).and(interview)
+		let game_week = super::index::put_game_week_index(db, mailbox, subject, &last_index.game_week, now, &mut outcome).await;
+		jobs.and(reflections).and(call).and(rust).and(interview).and(game_week)
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
