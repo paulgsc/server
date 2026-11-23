@@ -24,7 +24,7 @@
 //! **Cost** (docs/home-compute.md: interactive work, bounded by what the
 //! subject holds, never by notes × videos): per list, one read of each video
 //! family the subject holds, as each pass reads it (its essays, its gone
-//! weeks, and per week two indexed reads and one small file; the cards
+//! weeks, and per week one indexed read and one small file; the cards
 //! essays and one body each; the queued videos' newest revisions), then one
 //! map lookup per note. Nothing runs per note.
 //!
@@ -48,7 +48,8 @@ pub struct Sources {
 	/// Each essay kind's [`rust_essays::Folders::essays`], where the revision
 	/// given is read.
 	pub essays: Vec<(Kind, PathBuf)>,
-	/// The cards essays' subject, the mailbox's; none without one.
+	/// The mailbox's subject, whose cards essays and essay revisions given the
+	/// passes render; none without one.
 	pub cards_subject: Option<String>,
 }
 
@@ -119,8 +120,10 @@ fn add(uses: &mut HashMap<String, Vec<Use>>, take: &str, used: Use) {
 /// A storage failure, or a stored record that no longer reads.
 pub async fn of(conn: &mut SqliteConnection, subject: &str, sources: &Sources) -> Result<HashMap<String, Vec<Use>>, sqlx::Error> {
 	let mut uses: HashMap<String, Vec<Use>> = HashMap::new();
+	// The drive holds the pass subject's revisions alone (`rust_essays::uses`).
+	let renders_for = sources.cards_subject.as_deref() == Some(subject);
 	for (kind, essays) in &sources.essays {
-		for week in rust_essays::uses(conn, *kind, subject, essays).await? {
+		for week in rust_essays::uses(conn, *kind, subject, renders_for.then_some(essays.as_path())).await? {
 			for play in &week.plays {
 				add(
 					&mut uses,

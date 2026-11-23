@@ -212,8 +212,7 @@ Invariants:
 2. **A take a video plays is never shown as unused.** Where the badge and
    the withdraw can differ, it errs toward showing a use. A week whose
    newest revision is not given yet shows its opening's takes, which
-   withdraw nothing (that revision is refused instead, C1381). A week two
-   accounts hold is never given, so its takes withdraw nothing. A refused
+   withdraw nothing (that revision is refused instead, C1381). A refused
    essay still shows its takes as withdrawing. A Studio video shows its takes
    with `withdrawsOnDelete: false`: nothing withdraws one, so it stays and
    loses the take. That is claude's call, C1383, and the owner can move it.
@@ -223,13 +222,15 @@ Invariants:
    listed.
 4. **Only the caller's.** Every read takes the subject. Cards essays are the
    mailbox subject's alone (`mailbox::pass_subject`), as their pass reads
-   them, so no other subject sees them.
+   them, so no other subject sees them. The essay revision given to the render
+   is read from the drive only for that subject: the drive holds its essays
+   alone.
 5. **Nothing per note** (C1384). A list reads each video family the subject
    holds once, then looks each note up in a map. Before the list's
    transaction it reads whose the cards essays are. Inside it, it reads:
-   - the subject's essays of each kind and its gone weeks, then per week two
-     indexed reads (its standing send, its holders) and one small file (the
-     revision given);
+   - the subject's essays of each kind and its gone weeks, then per week one
+     indexed read (its standing send) and one small file (the revision
+     given, read only for the subject the essay pass renders for);
    - the cards essays, their titles, their gone keys and one body each;
    - the queued videos' newest revisions, one indexed read.
 

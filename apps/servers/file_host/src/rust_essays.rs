@@ -895,15 +895,18 @@ pub(crate) struct WeekPlays {
 /// [`plays`], the revision given read from `essays` (the kind's
 /// [`Folders::essays`]) as [`tidy`] reads it.
 ///
-/// A week more than one account holds is never given (the drive keys an
-/// essay by its week alone), so nothing it names withdraws it.
+/// `essays` is `None` for a subject the essay pass does not render for: the
+/// drive holds the pass subject's revisions alone, and another subject's
+/// never are given, so its revision given is none. A week more than one
+/// account holds keeps its withdrawing takes: one given before it was shared
+/// is still on the drive, and [`tidy`] withdraws it.
 ///
 /// Cost: one read of the subject's essays of `kind`, one of its gone weeks,
-/// and per week held two indexed reads and one small file's read.
+/// and per week held one indexed read and one small file's read.
 ///
 /// # Errors
 /// A storage failure.
-pub(crate) async fn uses(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, essays: &Path) -> Result<Vec<WeekPlays>, sqlx::Error> {
+pub(crate) async fn uses(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, essays: Option<&Path>) -> Result<Vec<WeekPlays>, sqlx::Error> {
 	let held = held_essays(conn, kind, subject).await?;
 	let gone = rust_round_repo::essay_video::let_go(conn, kind, subject).await?;
 	let mut weeks = Vec::new();
@@ -911,14 +914,12 @@ pub(crate) async fn uses(conn: &mut sqlx::SqliteConnection, kind: Kind, subject:
 		if gone.contains(&week) {
 			continue;
 		}
-		let given = given_revision(&essays.join(&week)).await;
+		let given = match essays {
+			Some(essays) => given_revision(&essays.join(&week)).await,
+			None => None,
+		};
 		let standing = standing(conn, kind, subject, &week).await?;
-		let mut plays = plays(kind, &week, &held, standing.as_ref(), given);
-		if holders(conn, kind, &week).await? > 1 {
-			for play in &mut plays {
-				play.withdraws = false;
-			}
-		}
+		let plays = plays(kind, &week, &held, standing.as_ref(), given);
 		weeks.push(WeekPlays { week, at: file.pulled_at, plays });
 	}
 	Ok(weeks)
@@ -1153,7 +1154,7 @@ mod tests {
 	/// whether its deletion withdraws a week, `None` when no week uses it.
 	async fn badge(pool: &SqlitePool, kind: Kind, folders: &Folders, take: &str) -> Option<bool> {
 		let mut conn = pool.acquire().await.unwrap();
-		let weeks = uses(&mut conn, kind, ME, &folders.essays).await.unwrap();
+		let weeks = uses(&mut conn, kind, ME, Some(&folders.essays)).await.unwrap();
 		weeks.into_iter().flat_map(|week| week.plays).find(|play| play.take == take).map(|play| play.withdraws)
 	}
 
@@ -1875,6 +1876,35 @@ mod tests {
 				"{subject} can't reach it"
 			);
 		}
+	}
+
+	/// A week given before another account came to hold it too stays on the
+	/// drive, and the tidy withdraws it for a deleted take: so the badge says
+	/// its takes withdraw it (the fresh-context review of C1381). The other
+	/// account's badge reads no revision given from the drive, which holds
+	/// only the pass subject's.
+	#[tokio::test]
+	async fn a_week_shared_after_it_was_given_still_withdraws_and_the_badge_says_so() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		final_week(&pool).await;
+		hold_take(&pool).await;
+		assert_eq!(export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap().written, 1);
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('them', 'them')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO mailbox_item (subject_id, folder, name, seq, sha256, size, body, pulled_at) VALUES ('them', 'brief', 'rust-essay-2026-w46.json', 1, 's', 2, x'7b7d', 'now')")
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(badge(&pool, Kind::RustRounds, &folders, TAKE).await, Some(true));
+		let mut conn = pool.acquire().await.unwrap();
+		let theirs = uses(&mut conn, Kind::RustRounds, "them", None).await.unwrap();
+		assert_eq!(theirs.len(), 1, "their own week, by their own essay");
+		drop(conn);
+		delete_take(&pool).await;
+		assert_eq!(tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap().withdrawn, 1);
 	}
 
 	/// A week of mock interview held, sent (one question answered, one card
