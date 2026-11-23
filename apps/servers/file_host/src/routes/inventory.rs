@@ -115,6 +115,7 @@ where
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
+	crate::renders_again::Again: FromRef<S>,
 {
 	vec![
 		// ── unversioned ─────────────────────────────────────────────────────
@@ -186,6 +187,7 @@ where
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
+	crate::renders_again::Again: FromRef<S>,
 {
 	split(|module| {
 		if module.is_versioned() {
@@ -207,6 +209,7 @@ where
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
+	crate::renders_again::Again: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {
 		if module.is_versioned() {

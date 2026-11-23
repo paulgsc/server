@@ -403,6 +403,8 @@ pub struct FeedSeen {
 	pub reasons: BTreeMap<String, &'static str>,
 	/// Of the failed, each the render policy refused, and by how much.
 	pub overs: BTreeMap<String, Over>,
+	/// Of the failed, each home refused, with the items that block it.
+	pub blocking: BTreeMap<String, Blocking>,
 	/// Of the failed, each that is over whatever `job.state` says: a preview
 	/// past its day, which the worker lets go.
 	pub ended: BTreeSet<String>,
@@ -421,6 +423,74 @@ pub struct FeedSeen {
 	/// by id, with the Monday its essay is written, the day after its `due` at
 	/// home (paulgsc/server#890).
 	pub rounds: Vec<(String, NaiveDate)>,
+}
+
+/// One shelf as the board reads it: what its folders say of its episodes,
+/// and where those folders are.
+#[derive(Debug, Clone)]
+pub struct ShelfSeen {
+	pub seen: FeedSeen,
+	/// Its renders folder: `<renders>/<key>/` is a finished episode's.
+	pub renders: PathBuf,
+	/// Its status folder: `<key>.failed.log`, `<key>.refused`.
+	pub status: PathBuf,
+}
+
+/// What `shelf`'s folders say of its episodes, as [`read`] reads every
+/// shelf, or `None` for a shelf `folders` has no folders for. One shelf's
+/// cost of the board's read.
+///
+/// # Errors
+/// A storage failure reading what home holds.
+pub async fn seen_of(db: &SqlitePool, folders: &Folders, subject: &str, shelf: Shelf, now: i64) -> Result<Option<ShelfSeen>, sqlx::Error> {
+	let found = match shelf {
+		Shelf::Feed(feed) => {
+			let Some((_, renders, status)) = folders.feeds.iter().find(|(held, _, _)| *held == feed) else {
+				return Ok(None);
+			};
+			let (held, let_go) = match feed {
+				Feed::Call => crate::call_weeks::render::held(db, renders).await?,
+				Feed::PlayoffDelta => {
+					let (_, voiced, let_go) = crate::pd_fills::render::voiced(db).await?;
+					(voiced, let_go)
+				}
+				Feed::RustEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::RustRounds, subject, Feed::RustEssay.input()).await?,
+				Feed::InterviewEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::Interview, subject, Feed::InterviewEssay.input()).await?,
+				Feed::Report => crate::report_weeks::held(db, subject).await?,
+				// On its own shelf (`Shelf::CardsEssay`), never in `feeds`.
+				Feed::CardsEssay => return Ok(None),
+			};
+			let mut seen = seen(shelf, &held, &let_go, renders, status).await;
+			match feed {
+				Feed::RustEssay => seen.rounds = rounds_of(db, subject, Weeks::RustRounds).await?,
+				Feed::InterviewEssay => seen.rounds = rounds_of(db, subject, Weeks::Interview).await?,
+				_ => {}
+			}
+			(seen, renders, status)
+		}
+		Shelf::ClipWalk => {
+			let Some((given, renders, status)) = &folders.clip_walks else { return Ok(None) };
+			(seen(shelf, &walks_given(given).await, &[], renders, status).await, renders, status)
+		}
+		Shelf::Preview => {
+			let Some((requests, renders, status)) = &folders.previews else { return Ok(None) };
+			let (asked, overdue) = previews_asked(requests).await;
+			let mut seen = seen(shelf, &asked, &[], renders, status).await;
+			previews_lived(&mut seen, &overdue, now);
+			(seen, renders, status)
+		}
+		Shelf::CardsEssay => {
+			let Some((renders, status)) = &folders.cards_essays else { return Ok(None) };
+			let held = crate::cards_essays::held(db).await?;
+			(seen(shelf, &held, &[], renders, status).await, renders, status)
+		}
+	};
+	let (seen, renders, status) = found;
+	Ok(Some(ShelfSeen {
+		seen,
+		renders: renders.clone(),
+		status: status.clone(),
+	}))
 }
 
 /// The read, as the phone gets it.
@@ -589,6 +659,56 @@ pub struct Failed {
 	/// By how much the render policy refused it (#929).
 	#[serde(flatten, skip_serializing_if = "Option::is_none")]
 	pub over: Option<Over>,
+	/// What still stops a cards essay home refused (`reason` `take-missing`,
+	/// `take-unheard`, `snip-missing`, `snip-gone`, `clip-missing`): the
+	/// items it names, by id, so Run again (`renders_again`) says what blocks
+	/// it.
+	#[serde(flatten, skip_serializing_if = "Option::is_none")]
+	pub blocking: Option<Blocking>,
+}
+
+/// The most items a home refusal names: as many as an overflow's scenes.
+pub const MOST_ITEMS: usize = MOST_SCENES;
+
+/// The items a home refusal names (`cards_essays::pass`'s `.refused`).
+///
+/// Up to the first [`MOST_ITEMS`] of an item's shape, by id, of `itemCount`.
+/// Ids only, never what they hold: a take's note id, a snip's id, a clip
+/// frame's `<clip>/<side>/<file>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Blocking {
+	pub items: Vec<String>,
+	pub item_count: u32,
+}
+
+/// An item's id as a home refusal names one: 1 to 128 printable ASCII
+/// characters, spaces inside but not at either end, and no comma (the
+/// list's own). A snip's id is its commit, a space and its place
+/// (`<commit> web:/settings:phone:…`), a clip frame's `<clip>/<side>/<file>`.
+#[must_use]
+pub(crate) fn item_id(text: &str) -> bool {
+	!text.is_empty() && text.len() <= 128 && text.trim() == text && text.bytes().all(|b| (b.is_ascii_graphic() || b == b' ') && b != b',')
+}
+
+impl Blocking {
+	/// The first `items` of `count` a refusal names, as a `.refused` would
+	/// say them, or `None` for none or any not of an item's shape.
+	#[must_use]
+	pub fn of(items: Vec<String>, count: usize) -> Option<Self> {
+		let item_count = u32::try_from(count).ok()?;
+		(!items.is_empty() && items.iter().all(|item| item_id(item)) && items.len() <= count.min(MOST_ITEMS)).then_some(Self { items, item_count })
+	}
+
+	/// What a home refusal's `.refused` names, or `None` when it names none
+	/// whole (one written before it named any).
+	fn parse(text: &str) -> Option<Self> {
+		let field = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
+		let items: Vec<String> = field("items")?.split(',').filter(|item| !item.is_empty()).map(String::from).collect();
+		let item_count = whole(field("count")?)?;
+		(!items.is_empty() && items.iter().all(|item| item_id(item)) && usize::try_from(item_count).is_ok_and(|count| items.len() <= count.min(MOST_ITEMS)))
+			.then_some(Self { items, item_count })
+	}
 }
 
 /// What the render policy refused an episode for, as the worker's
@@ -616,8 +736,8 @@ pub enum Over {
 }
 
 /// The refusal file's longest: four lines, the longest twelve scene ids of
-/// 64 bytes and their commas, and a SHA-256.
-const REFUSED_CEILING: u64 = 1024;
+/// 64 bytes, or item ids of 128, and their commas, and a SHA-256.
+const REFUSED_CEILING: u64 = 2048;
 
 /// The most scenes an overflow names (the worker's `REFUSED_SCENES`).
 const MOST_SCENES: usize = 12;
@@ -929,6 +1049,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					template: template_of(Some(*feed), key),
 					reason: seen.reasons.get(key).copied(),
 					over: seen.overs.get(key).cloned(),
+					blocking: seen.blocking.get(key).cloned(),
 				});
 			} else if !current {
 				waiting.push(Episode {
@@ -987,6 +1108,38 @@ pub struct Folders {
 }
 
 impl Folders {
+	/// Every shelf it has folders for, in the board's order: the feeds as
+	/// listed, then the clips' walks, the previews and the cards essays.
+	#[must_use]
+	pub fn shelves(&self) -> Vec<Shelf> {
+		let mut shelves: Vec<Shelf> = self
+			.feeds
+			.iter()
+			.filter(|(feed, _, _)| *feed != Feed::CardsEssay)
+			.map(|(feed, _, _)| Shelf::Feed(*feed))
+			.collect();
+		shelves.extend(self.clip_walks.as_ref().map(|_| Shelf::ClipWalk));
+		shelves.extend(self.previews.as_ref().map(|_| Shelf::Preview));
+		shelves.extend(self.cards_essays.as_ref().map(|_| Shelf::CardsEssay));
+		shelves
+	}
+
+	/// `of`'s renders and status folders, when it has them.
+	#[must_use]
+	pub fn dirs(&self, of: Shelf) -> Option<(&Path, &Path)> {
+		match of {
+			Shelf::Feed(Feed::CardsEssay) => None,
+			Shelf::Feed(feed) => self
+				.feeds
+				.iter()
+				.find(|(held, _, _)| *held == feed)
+				.map(|(_, renders, status)| (renders.as_path(), status.as_path())),
+			Shelf::ClipWalk => self.clip_walks.as_ref().map(|(_, renders, status)| (renders.as_path(), status.as_path())),
+			Shelf::Preview => self.previews.as_ref().map(|(_, renders, status)| (renders.as_path(), status.as_path())),
+			Shelf::CardsEssay => self.cards_essays.as_ref().map(|(renders, status)| (renders.as_path(), status.as_path())),
+		}
+	}
+
 	#[must_use]
 	pub fn server() -> Self {
 		Self {
@@ -1042,42 +1195,13 @@ impl Folders {
 /// The call's and Playoff Delta's episodes are no one's; the essays are the
 /// caller's own (`subject`), given to the worker in [`Feed::input`].
 pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -> Result<Board, sqlx::Error> {
-	let mut feeds = Vec::with_capacity(folders.feeds.len());
-	for (feed, renders, status) in &folders.feeds {
-		let (held, let_go) = match feed {
-			Feed::Call => crate::call_weeks::render::held(db, renders).await?,
-			Feed::PlayoffDelta => {
-				let (_, voiced, let_go) = crate::pd_fills::render::voiced(db).await?;
-				(voiced, let_go)
-			}
-			Feed::RustEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::RustRounds, subject, Feed::RustEssay.input()).await?,
-			Feed::InterviewEssay => crate::rust_essays::held(db, crate::rust_essays::Kind::Interview, subject, Feed::InterviewEssay.input()).await?,
-			Feed::Report => crate::report_weeks::held(db, subject).await?,
-			// On its own shelf below (`Shelf::CardsEssay`), never in `feeds`.
-			Feed::CardsEssay => continue,
-		};
-		let mut seen = seen(Shelf::Feed(*feed), &held, &let_go, renders, status).await;
-		match feed {
-			Feed::RustEssay => seen.rounds = rounds_of(db, subject, Weeks::RustRounds).await?,
-			Feed::InterviewEssay => seen.rounds = rounds_of(db, subject, Weeks::Interview).await?,
-			_ => {}
+	let mut feeds = Vec::with_capacity(folders.feeds.len() + 3);
+	for shelf in folders.shelves() {
+		if let Some(seen) = seen_of(db, folders, subject, shelf, now).await? {
+			feeds.push((shelf, seen.seen));
 		}
-		feeds.push((Shelf::Feed(*feed), seen));
 	}
-	if let Some((given, renders, status)) = &folders.clip_walks {
-		feeds.push((Shelf::ClipWalk, seen(Shelf::ClipWalk, &walks_given(given).await, &[], renders, status).await));
-	}
-	if let Some((requests, renders, status)) = &folders.previews {
-		let (asked, overdue) = previews_asked(requests).await;
-		let mut seen = seen(Shelf::Preview, &asked, &[], renders, status).await;
-		previews_lived(&mut seen, &overdue, now);
-		feeds.push((Shelf::Preview, seen));
-	}
-	if let Some((renders, status)) = &folders.cards_essays {
-		let held = crate::cards_essays::held(db).await?;
-		feeds.push((Shelf::CardsEssay, seen(Shelf::CardsEssay, &held, &[], renders, status).await));
-	}
-	let mut job = small(&folders.lane.join("job.state")).await.as_deref().and_then(Job::parse);
+	let mut job = job_of(folders).await;
 	if let Some(job) = job.as_mut() {
 		// A run's progress is its job's only: one left by another job is not.
 		let progress = small(&folders.lane.join("job.progress")).await.as_deref().and_then(Progress::parse);
@@ -1089,6 +1213,12 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 	let lane = small(&folders.lane.join(crate::call_weeks::lane::DECISION)).await.as_deref().and_then(Lane::parse);
 	let shelves: Vec<(Shelf, &FeedSeen)> = feeds.iter().map(|(shelf, seen)| (*shelf, seen)).collect();
 	Ok(board_of(&shelves, job.as_ref(), lane.as_ref(), now))
+}
+
+/// The job the lane holds, as `job.state` names it, if any: its kind and
+/// key, where it is and since when (no progress or sign of life).
+pub async fn job_of(folders: &Folders) -> Option<Job> {
+	small(&folders.lane.join("job.state")).await.as_deref().and_then(Job::parse)
 }
 
 /// Each walk `file_host` gave the worker, by its folder's name, taken when
@@ -1247,8 +1377,11 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 					seen.reasons.insert(episode.key.clone(), over.reason());
 					seen.overs.insert(episode.key.clone(), over);
 				}
-				Some(Refused::Home(reason)) => {
+				Some(Refused::Home(reason, blocking)) => {
 					seen.reasons.insert(episode.key.clone(), reason);
+					if let Some(blocking) = blocking {
+						seen.blocking.insert(episode.key.clone(), blocking);
+					}
 				}
 				None => {}
 			}
@@ -1304,8 +1437,9 @@ enum Refused {
 	/// `take-unheard`, one home couldn't make out or heard nothing in, or
 	/// `snip-missing` / `clip-missing`, a snip or clip frame a scene shows
 	/// that home doesn't hold, or `snip-gone`, a snip whose bundle GitHub no
-	/// longer has (`docs/snips.md`, C875). A class alone.
-	Home(&'static str),
+	/// longer has (`docs/snips.md`, C875). Its class, and the items it
+	/// names when it names them whole.
+	Home(&'static str, Option<Blocking>),
 }
 
 /// The home refusal `text` says, as [`Refused::Home`] has it, if any.
@@ -1330,7 +1464,9 @@ async fn read_refused(path: &Path) -> Option<Refused> {
 		return None;
 	}
 	let text = std::str::from_utf8(&bytes).ok()?;
-	Over::parse(text).map(Refused::Over).or_else(|| home_refusal(text).map(Refused::Home))
+	Over::parse(text)
+		.map(Refused::Over)
+		.or_else(|| home_refusal(text).map(|reason| Refused::Home(reason, Blocking::parse(text))))
 }
 
 /// The end of a failed attempt's log.

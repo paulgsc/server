@@ -15,6 +15,7 @@ use crate::feeds::{
 	videos::{self, Description, DescriptionError, EpisodeVideo, Folders, LetGo, LetGoError, LinkRecorded},
 	Feed,
 };
+use crate::renders_again::{self, Again, Code};
 use crate::subject::Paired;
 use crate::FileHostError;
 use axum::{
@@ -22,7 +23,7 @@ use axum::{
 	extract::{Path, Request, State},
 	http::{
 		header::{CONTENT_DISPOSITION, CONTENT_TYPE},
-		HeaderValue,
+		HeaderValue, StatusCode,
 	},
 	response::{IntoResponse, Response},
 	Json,
@@ -165,6 +166,10 @@ pub struct EpisodeView {
 	/// while home has the video; `null` once it is let go or when the file
 	/// says none. Never guessed.
 	pub duration_ms: Option<u64>,
+	/// Where each of its assets is, video, thumbnail and description, each a
+	/// Step (`renders_again`): what Generate and Run again offer.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub assets: Option<renders_again::Assets>,
 	/// The length of all of `week`, every part together, in milliseconds,
 	/// while home has every part's video: the same as `durationMs` for an
 	/// episode of one part; otherwise `null`.
@@ -189,6 +194,7 @@ impl From<EpisodeVideo> for EpisodeView {
 			date: episode.date,
 			duration_ms: episode.duration_ms,
 			week_duration_ms: episode.week_duration_ms,
+			assets: None,
 		}
 	}
 }
@@ -211,12 +217,96 @@ pub struct Episodes {
 /// render, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "feed_videos_get", skip_all, fields(otel.kind = "server"))]
-pub async fn get_episodes(paired: Paired, State(db): State<SqlitePool>, Path(feed): Path<String>) -> Result<Json<Episodes>, FileHostError> {
+pub async fn get_episodes(paired: Paired, State(db): State<SqlitePool>, State(again): State<Again>, Path(feed): Path<String>) -> Result<Json<Episodes>, FileHostError> {
 	let feed = feed_of(&feed)?;
 	let episodes = videos::list(&db, feed, paired.subject.as_str(), feed.renders()).await?;
+	let mut assets = renders_again::assets_of(&db, &again, paired.subject.as_str(), feed, Utc::now().timestamp()).await?;
 	Ok(Json(Episodes {
-		episodes: episodes.into_iter().map(EpisodeView::from).collect(),
+		episodes: episodes
+			.into_iter()
+			.map(|episode| {
+				let steps = assets.remove(&episode.key);
+				EpisodeView {
+					assets: steps,
+					..EpisodeView::from(episode)
+				}
+			})
+			.collect(),
 	}))
+}
+
+/// `POST /feeds/:feed/videos/:key/produce`'s body: the asset asked for.
+#[derive(Debug, Deserialize)]
+pub struct ProduceBody {
+	/// `video`, `thumbnail` or `description` (`renders_again::Asset`).
+	pub asset: String,
+}
+
+/// `POST /feeds/:feed/videos/:key/produce`: make one asset of an episode
+/// again (`renders_again`), answered with its Step.
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's, 404 for a feed, episode or
+/// asset home doesn't make, and 500 for a storage or drive failure. A step
+/// that still stops it is a `409` or `422` that says why, not an error.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "feed_videos_produce", skip_all, fields(otel.kind = "server"))]
+pub async fn post_produce(
+	paired: Paired,
+	State(db): State<SqlitePool>,
+	State(again): State<Again>,
+	Path((feed, key)): Path<(String, String)>,
+	Json(body): Json<ProduceBody>,
+) -> Result<(StatusCode, Json<renders_again::Step>), FileHostError> {
+	let feed = feed_of(&feed)?;
+	let asset = renders_again::Asset::parse(&body.asset).ok_or(FileHostError::NotFound)?;
+	match renders_again::produce(&db, &again, paired.subject.as_str(), feed, &key, asset, Utc::now().timestamp()).await {
+		Ok(Some((code, step))) => {
+			let status = match code {
+				Code::Accepted => StatusCode::ACCEPTED,
+				Code::Made => StatusCode::OK,
+				Code::Conflict => StatusCode::CONFLICT,
+				Code::Unprocessable => StatusCode::UNPROCESSABLE_ENTITY,
+			};
+			Ok((status, Json(step)))
+		}
+		Ok(None) => Err(FileHostError::NotFound),
+		Err(err) => Err(again_failed(err)),
+	}
+}
+
+/// `GET /feeds/:feed/videos/:key/thumbnail`: the episode's thumbnail,
+/// `image/png`, whole (it is small: no ranges).
+///
+/// # Errors
+/// 401 without a session, 403 for a browser's, 404 for a feed or an episode
+/// home doesn't hold or one with no thumbnail, and 500 for a storage
+/// failure or a drive that refuses the read.
+#[axum::debug_handler(state = crate::AppState)]
+#[instrument(name = "feed_videos_thumbnail", skip_all, fields(otel.kind = "server"))]
+pub async fn get_thumbnail(
+	paired: Paired,
+	State(db): State<SqlitePool>,
+	State(again): State<Again>,
+	Path((feed, key)): Path<(String, String)>,
+) -> Result<Response, FileHostError> {
+	let feed = feed_of(&feed)?;
+	match renders_again::thumbnail(&db, &again, paired.subject.as_str(), feed, &key).await {
+		Ok(Some(bytes)) => Ok(([(CONTENT_TYPE, HeaderValue::from_static("image/png"))], bytes).into_response()),
+		Ok(None) => Err(FileHostError::NotFound),
+		Err(err) => Err(again_failed(err)),
+	}
+}
+
+/// What a `renders_again` failure answers: its kind only, never a path.
+fn again_failed(err: renders_again::Failed) -> FileHostError {
+	match err {
+		renders_again::Failed::Storage(err) => FileHostError::Sqlite(err),
+		renders_again::Failed::Drive(err) => {
+			tracing::warn!(kind = ?err.kind(), "the drive refused an episode's asset");
+			FileHostError::OperationError("the drive refused an episode's asset".to_owned())
+		}
+	}
 }
 
 /// `GET /feeds/:feed/videos/:key/video`: the episode's video, streamed from
@@ -373,6 +463,14 @@ mod tests {
 	struct TestState {
 		pool: SqlitePool,
 		auth: AuthContext,
+		again: crate::renders_again::Again,
+		dir: std::sync::Arc<tempfile::TempDir>,
+	}
+
+	impl FromRef<TestState> for crate::renders_again::Again {
+		fn from_ref(state: &TestState) -> Self {
+			state.again.clone()
+		}
 	}
 
 	impl FromRef<TestState> for SqlitePool {
@@ -413,9 +511,26 @@ mod tests {
 		};
 		cards_essay_repo::keep(&mut conn, &essay).await.unwrap();
 		drop(conn);
+		// Run again over a cards essays shelf in a folder of its own.
+		let dir = tempfile::tempdir().unwrap();
+		let again = crate::renders_again::Again {
+			folders: crate::feeds::renders::Folders {
+				feeds: Vec::new(),
+				clip_walks: None,
+				previews: None,
+				cards_essays: Some((dir.path().join("renders"), dir.path().join("status"))),
+				lane: dir.path().join("lane"),
+			},
+			asks: dir.path().join("asks"),
+			asset_status: dir.path().join("asset-worker"),
+			cards_given: dir.path().join("given"),
+			cards: crate::cards_essays::Recheck::for_tests(None),
+		};
 		TestState {
 			auth: AuthContext::for_tests(pool.clone(), 100),
 			pool,
+			again,
+			dir: std::sync::Arc::new(dir),
 		}
 	}
 
@@ -468,7 +583,7 @@ mod tests {
 		let state = state().await;
 		let (phone, browser) = (session(&state, Carrier::Bearer).await, session(&state, Carrier::Cookie).await);
 		let app = module().into_table_router().with_state(state);
-		assert_eq!(module().descriptors().count(), 6);
+		assert_eq!(module().descriptors().count(), 8);
 
 		let list = "/feeds/playoff-delta/videos";
 		assert_eq!(send(&app, Method::GET, list, None, None).await.0, StatusCode::UNAUTHORIZED);
@@ -490,7 +605,7 @@ mod tests {
 		assert_eq!(status, StatusCode::OK);
 		assert_eq!(
 			cards,
-			json!({ "episodes": [{ "key": "zfs-2026-11-02", "week": "zfs-2026-11-02", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": "Snapshots, not backups", "date": "2026-11-02", "durationMs": null, "weekDurationMs": null }] })
+			json!({ "episodes": [{ "key": "zfs-2026-11-02", "week": "zfs-2026-11-02", "part": 1, "of": 1, "videoBytes": null, "restBytes": null, "link": null, "receipts": [], "title": "Snapshots, not backups", "date": "2026-11-02", "durationMs": null, "weekDurationMs": null, "assets": { "video": { "asset": "video", "state": "waiting" }, "thumbnail": { "asset": "thumbnail", "state": "blocked", "reason": "no-video" }, "description": { "asset": "description", "state": "waiting" } } }] })
 		);
 		let essay = "/feeds/cards-essay/videos/zfs-2026-11-02";
 		let pasted = Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" }));
@@ -564,5 +679,75 @@ mod tests {
 			Some(json!({ "link": "https://youtu.be/dQw4w9WgXcQ" })),
 		);
 		assert_eq!(unheld.await.0, StatusCode::NOT_FOUND);
+	}
+
+	/// Make part of an episode again through the router: a paired phone's
+	/// only; each answer a Step with its status (`renders_again`'s tests hold
+	/// every branch); the thumbnail served whole as `image/png`.
+	#[tokio::test]
+	async fn only_a_paired_phone_asks_home_to_produce_an_asset() {
+		let state = state().await;
+		let (phone, browser) = (session(&state, Carrier::Bearer).await, session(&state, Carrier::Cookie).await);
+		let key = cards_essay_repo::held(&mut state.pool.acquire().await.unwrap()).await.unwrap()[0].key.clone();
+		let dir = state.dir.path().to_path_buf();
+		let app = module().into_table_router().with_state(state);
+		let produce = |key: &str| ["/feeds/cards-essay/videos/", key, "/produce"].concat();
+		let thumbnail = ["/feeds/cards-essay/videos/", &key, "/thumbnail"].concat();
+		let video = Some(json!({ "asset": "video" }));
+		let thumb = Some(json!({ "asset": "thumbnail" }));
+
+		assert_eq!(send(&app, Method::POST, &produce(&key), None, video.clone()).await.0, StatusCode::UNAUTHORIZED);
+		assert_eq!(send(&app, Method::POST, &produce(&key), Some(&browser), video.clone()).await.0, StatusCode::FORBIDDEN);
+		assert_eq!(
+			send(&app, Method::POST, "/feeds/nope/videos/x/produce", Some(&phone), video.clone()).await.0,
+			StatusCode::NOT_FOUND
+		);
+		assert_eq!(
+			send(&app, Method::POST, &produce(&key), Some(&phone), Some(json!({ "asset": "chapters" }))).await.0,
+			StatusCode::NOT_FOUND
+		);
+		assert_eq!(
+			send(&app, Method::POST, &produce("never-2026-11-01"), Some(&phone), video.clone()).await.0,
+			StatusCode::NOT_FOUND
+		);
+		// In line, never rendered: already asked of home.
+		assert_eq!(
+			send(&app, Method::POST, &produce(&key), Some(&phone), video.clone()).await,
+			(StatusCode::ACCEPTED, json!({ "asset": "video", "state": "waiting" }))
+		);
+		assert_eq!(
+			send(&app, Method::POST, &produce(&key), Some(&phone), thumb.clone()).await,
+			(StatusCode::CONFLICT, json!({ "asset": "thumbnail", "state": "blocked", "reason": "no-video" }))
+		);
+		let episode = dir.join("renders").join(&key);
+		std::fs::create_dir_all(&episode).unwrap();
+		std::fs::write(episode.join("cards.mp4"), "mp4").unwrap();
+		assert_eq!(
+			send(&app, Method::POST, &produce(&key), Some(&phone), Some(json!({ "asset": "description" }))).await,
+			(
+				StatusCode::UNPROCESSABLE_ENTITY,
+				json!({ "asset": "description", "state": "blocked", "reason": "made-with-video" })
+			)
+		);
+		let (status, step) = send(&app, Method::POST, &produce(&key), Some(&phone), thumb.clone()).await;
+		assert_eq!((status, step["state"].clone()), (StatusCode::ACCEPTED, json!("asked")));
+		let (_, listed) = send(&app, Method::GET, "/feeds/cards-essay/videos", Some(&phone), None).await;
+		assert_eq!(listed["episodes"][0]["assets"]["thumbnail"]["state"], json!("asked"));
+		assert_eq!(listed["episodes"][0]["assets"]["video"]["state"], json!("done"));
+
+		let request = |auth: Option<&(HeaderName, String)>| {
+			let mut request = Request::builder().uri(&thumbnail);
+			if let Some((name, value)) = auth {
+				request = request.header(name, value);
+			}
+			request.body(Body::empty()).unwrap()
+		};
+		assert_eq!(app.clone().oneshot(request(Some(&browser))).await.unwrap().status(), StatusCode::FORBIDDEN);
+		assert_eq!(app.clone().oneshot(request(Some(&phone))).await.unwrap().status(), StatusCode::NOT_FOUND);
+		std::fs::write(episode.join("thumbnail.png"), b"\x89PNG").unwrap();
+		let response = app.clone().oneshot(request(Some(&phone))).await.unwrap();
+		assert_eq!((response.status(), response.headers()[CONTENT_TYPE].to_str().unwrap()), (StatusCode::OK, "image/png"));
+		assert_eq!(axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap().as_ref(), b"\x89PNG");
+		assert_eq!(send(&app, Method::POST, &produce(&key), Some(&phone), thumb).await.0, StatusCode::OK);
 	}
 }

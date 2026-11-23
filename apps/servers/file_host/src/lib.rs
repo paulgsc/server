@@ -41,6 +41,7 @@ mod privacy;
 pub mod rate_limiter;
 pub mod reconcile;
 pub mod redacted;
+pub mod renders_again;
 pub mod report_weeks;
 pub mod routes;
 pub(crate) mod routine_watch;
@@ -217,7 +218,7 @@ impl AppState {
 		let transcribe = transcribe::TranscribeContext::from_config(&config, auth.deletion_lock(), meaning.as_ref())?;
 		let rust_rounds = rust_rounds::RustRoundsContext::new();
 		let call_weeks = call_weeks::CallWeeksContext::new()?;
-		let cards_essays = cards_essays::CardsEssaysContext::new()?;
+		let cards_essays = cards_essays::CardsEssaysContext::new(mailbox.as_ref(), auth.deletion_lock())?;
 
 		Ok(Self {
 			core,
@@ -330,7 +331,8 @@ impl AppState {
 /// - the cards essays (`cards_essays`), read hourly from `paulgsc/testing`'s
 ///   `cards/` index and given to the render worker; always on;
 /// - each ended week's engagement report (`report_weeks`), read hourly from
-///   home's own records and given to the render worker; always on.
+///   home's own records and given to the render worker; always on;
+/// - Run again's folders (`renders_again`): made, nothing polled.
 pub fn start_polls(state: &AppState) {
 	mailbox::start(state);
 	transcribe::start(state);
@@ -345,6 +347,7 @@ pub fn start_polls(state: &AppState) {
 	cards_essays::start(state);
 	report_weeks::start(state);
 	site_shots::start();
+	renders_again::start();
 }
 
 // TODO: Ask eh eye! do we need this?!
