@@ -164,6 +164,7 @@ where
 	Option<MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
+	crate::take_uses::UsesFrom: FromRef<S>,
 {
 	let table = RouteTable::new()
 		.put("/voice-notes/:id", handlers::put_note)

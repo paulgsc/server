@@ -1,4 +1,4 @@
-use super::{queue, videos, Change, DnaError, Queued, VIDEOS_LISTED};
+use super::{naming, queue, videos, Change, DnaError, Queued, VIDEOS_LISTED};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
@@ -225,4 +225,32 @@ async fn the_record_leaves_with_the_account() {
 	sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
 	let left: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject_id FROM studio_video_queued").fetch_all(&pool).await.unwrap();
 	assert_eq!(left, [B], "A's record went with A's account, B's stayed");
+}
+
+#[tokio::test]
+async fn naming_is_each_videos_newest_revision_and_the_takes_it_names_never_another_subjects() {
+	let pool = pool().await;
+	put(&pool, A, &dna("v1", 1, "2026-11-05T10:00:00.000Z")).await.unwrap();
+	let mut second = dna("v1", 2, "2026-11-05T11:00:00.000Z");
+	second["takes"] = json!([{ "scene": "division", "note": "n2" }, { "scene": "outro", "note": "n2" }]);
+	second["title"] = json!("Second cut");
+	put(&pool, A, &second).await.unwrap();
+	put(&pool, A, &dna("v0", 1, "2026-11-05T09:00:00.000Z")).await.unwrap();
+	put(&pool, B, &dna("v9", 1, "2026-11-05T08:00:00.000Z")).await.unwrap();
+	let mut conn = pool.acquire().await.unwrap();
+	let named = naming(&mut conn, A).await.unwrap();
+	let seen: Vec<_> = named.iter().map(|n| (n.video.as_str(), n.title.as_str(), n.queued_at.as_str(), n.notes.clone())).collect();
+	assert_eq!(
+		seen,
+		[
+			(
+				"v0",
+				"Playoff Delta · 2026 week 8",
+				"2026-11-05T09:00:00.000Z",
+				vec![String::from("n1"), String::from("n2")]
+			),
+			("v1", "Second cut", "2026-11-05T11:00:00.000Z", vec![String::from("n2")]),
+		],
+		"oldest queued first; a superseded revision's takes are not the video's; each note once"
+	);
 }

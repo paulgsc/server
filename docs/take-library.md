@@ -177,6 +177,67 @@ The study nudge's scaling invariants (docs/study-nudge.md) do not reach it:
 it reads no signal and holds nothing per subject beyond the subject's own
 takes. The identity doc's do, as above.
 
+## What uses each take (INUSE)
+
+The phone badges every take with what uses it, and warns more strongly
+before it deletes a used one (INUSE, paulgsc/some-ui). One use only home
+knows: a video whose audio plays the take. So every note on
+`GET /voice-notes/kept` (`notes[]`) and every take on
+`GET /voice-notes/takes` (`takes[]`) carries `usedBy`, `[]` when nothing
+uses it (`file_host::take_uses`, `voice_repo::used`):
+
+`{ kind: "essay" | "feed-video" | "studio-video", key, title, at, withdrawsOnDelete }`
+
+- **`feed-video`**: a Rust Rounds or mock-interview week's essay video, the
+  one the feed lists. `key` is the week, and `title` is fixed words with the
+  week.
+- **`essay`**: a cards essay whose spoken cards play the take. `title` is the
+  essay's own, or its key.
+- **`studio-video`**: a Studio video queued on home whose newest DNA revision
+  names the take (docs/identity.md, invariant 36). A revision supersedes the
+  one before it, so an older revision's takes are not the video's.
+
+Invariants:
+
+1. **The badge reads the withdraw's own rule, never a copy.** A delete
+   (`DELETE /voice-notes/:id`) withdraws no video itself, and its receipt
+   names none: each render pass withdraws its own videos on its next tick, by
+   a take's receipt. So which takes a video uses is the function its pass
+   withdraws by: `rust_essays::plays` for a week (the tidy's `deleted_take`
+   is the first withdrawing take of it that has a receipt), and
+   `cards_essays::pass::spoken_takes` for a cards essay (its tidy and its
+   export). `withdrawsOnDelete` is that rule's answer (C1380, C1381, C1382).
+   The tests check the badge against the withdraw in every scenario the
+   withdraw is tested in (`rust_essays`' `badge`).
+2. **A take a video plays is never shown as unused.** Where the badge and
+   the withdraw can differ, it errs toward showing a use. A week whose
+   newest revision is not given yet shows its opening's takes, which
+   withdraw nothing (that revision is refused instead, C1381). A refused
+   essay still shows its takes as withdrawing. A Studio video shows its takes
+   with `withdrawsOnDelete: false`: nothing withdraws one, so it stays and
+   loses the take. That is claude's call, C1383, and the owner can move it.
+   A take an essay answers as a silence in every revision home could render
+   is not listed, since the video plays nothing for it.
+3. **A video gone uses nothing.** A week or essay let go or withdrawn is not
+   listed.
+4. **Only the caller's.** Every read takes the subject. Cards essays are the
+   mailbox subject's alone (`mailbox::pass_subject`), as their pass reads
+   them, so no other subject sees them. The essay revision given to the render
+   is read from the drive only for that subject: the drive holds its essays
+   alone.
+5. **Nothing per note** (C1384). A list reads each video family the subject
+   holds once, then looks each note up in a map. Before the list's
+   transaction it reads whose the cards essays are. Inside it, it reads:
+   - the subject's essays of each kind and its gone weeks, then per week one
+     indexed read (its standing send) and one small file (the revision
+     given, read only for the subject the essay pass renders for);
+   - the cards essays, their titles, their gone keys and one body each;
+   - the queued videos' newest revisions, one indexed read.
+
+   It grows with the videos the subject holds, never with notes × videos
+   or with other subjects' videos. It runs only on the owner's own list
+   reads (interactive work, docs/home-compute.md).
+
 ## Cost
 
 Each library read is one statement: it walks the caller's note descriptions
