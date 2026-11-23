@@ -236,6 +236,12 @@ REFUSED_LARGE="the video is ([0-9]+) MB, past the policy's ([0-9]+) MB"
 REFUSED_FIT="These scenes don't fit the frame, so the video would cut them off:"
 SCENE_ID='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 REFUSED_SCENES=12
+# The recorder's name for a scene it lists (some-ui#3455, `recordStills`),
+# after its ids: `scene <id> is named: <name>`, one line, at most 120
+# characters. Kept in .refused as `name.<id>=<name>` for the ids kept, so
+# file_host's board says the scene by name (`sceneNames`), never its id.
+SCENE_NAMED='^scene ([A-Za-z0-9][A-Za-z0-9._-]{0,63}) is named: (.{1,480})$'
+
 # The asset recorder's own refusal (some-ui's `record:asset`): this line,
 # then its reason, printed only when the same folder will always give the
 # same answer (a title no size fits, its files not there). Exit 1 alone is
@@ -1534,13 +1540,19 @@ refusal() {
     # The ids on the lines after the attempt's last line holding it, up to
     # the first that is not one. Matched by bash, as the other refusals are,
     # never by the image's awk.
-    local text listing=0
+    local text listing=0 id
+    local -A named=()
     scenes=
     while IFS= read -r text; do
+      text=${text%$'\r'}
       if [[ "$text" == *"$REFUSED_FIT"* ]]; then
         listing=1 scenes=
+        named=()
       elif [ "$listing" = 1 ] && [[ "$text" =~ $SCENE_ID ]]; then
         scenes+=$text$'\n'
+      elif [[ "$text" =~ $SCENE_NAMED ]]; then
+        listing=0
+        named[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
       else
         listing=0
       fi
@@ -1549,6 +1561,12 @@ refusal() {
     [ -n "$scenes" ] || return 1
     printf 'reason=overflow\nscenes=%s\ncount=%s\nheld=%s\n' \
       "$(head -n "$REFUSED_SCENES" <<< "$scenes" | paste -sd,)" "$(wc -l <<< "$scenes")" "$held"
+    # Each kept scene's name, where the recorder gave one.
+    while IFS= read -r id; do
+      if [ -n "${named[$id]+x}" ]; then
+        printf 'name.%s=%s\n' "$id" "${named[$id]}"
+      fi
+    done < <(head -n "$REFUSED_SCENES" <<< "$scenes")
   elif [[ "$line" =~ ^$REFUSED_LONG$ ]]; then
     printf 'reason=too-long\nminutes=%s\ncap=%s\nheld=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "$held"
   elif [[ "$line" =~ ^$REFUSED_LARGE$ ]]; then

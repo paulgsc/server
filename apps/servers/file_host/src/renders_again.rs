@@ -637,11 +637,22 @@ async fn recheck(db: &SqlitePool, again: &Again, key: &str, current: Step) -> Re
 				.take(crate::cards_essays::pass::REFUSED_ITEMS)
 				.cloned()
 				.collect();
+			let mut blocking = Blocking::of(items, refusal.items.len());
+			// A take's name is where the essay plays it (`cards_essays::names`).
+			if let Some(blocking) = blocking.as_mut().filter(|_| refusal.kind == crate::essay_media::Kind::Takes) {
+				let body = {
+					let mut conn = db.acquire().await?;
+					cards_essay_repo::body(&mut conn, key).await?
+				};
+				if let Some(essay) = body.and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok()) {
+					blocking.item_names = crate::cards_essays::names::take_names(&essay, &blocking.items);
+				}
+			}
 			(
 				Code::Conflict,
 				Step {
 					reason: Some(refusal.reason()),
-					blocking: Blocking::of(items, refusal.items.len()),
+					blocking,
 					..current
 				},
 			)
@@ -1128,6 +1139,51 @@ mod tests {
 		assert_eq!((code, step.state), (Code::Accepted, Stage::Asked));
 		assert!(again.cards.poked().await, "the pass runs now");
 		assert!(status.join("cleared-2026-11-18.failed.log").exists(), "the pass clears it as it gives it");
+	}
+
+	/// A take still unheard (heard, and judged that nothing was said) keeps
+	/// its essay refused: Run again answers 409, blocked `take-unheard`,
+	/// naming that take by id and by where its card plays it, and runs no
+	/// pass (some-ui's ledger CW9 cites this).
+	#[tokio::test]
+	async fn a_take_still_unheard_answers_409_naming_it() {
+		const ME: &str = "subject-me";
+		let (db, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let again = Again {
+			cards: Recheck::for_tests(Some(String::from(ME))),
+			..again(dir.path())
+		};
+		for statement in [
+			"INSERT INTO account (subject_id, user_handle) VALUES ('subject-me', 'subject-me')",
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES ('subject-me', 't-silent', 'studio', 'intro:s1:1', '2026-11-20T10:00:00.000Z', 'audio/ogg', 4, 's', 'now')",
+			"INSERT INTO voice_note_audio (subject_id, note_id, body) VALUES ('subject-me', 't-silent', x'4f676753')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES ('subject-me', 't-silent', 'm', 'e', 1, 'heard', 'en', 1.0, 900, 'Hi.', 1, '2026-11-20T10:01:00.000Z')",
+			"INSERT INTO voice_transcript_word (subject_id, note_id, model, word_index, text, start_ms, end_ms) VALUES ('subject-me', 't-silent', 'm', 0, 'hello', 0, 400)",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, judged_at)
+			 VALUES ('subject-me', 't-silent', 'm', 1, 'heard-1', 'nothing_said', '[]', 'now')",
+		] {
+			sqlx::query(statement).execute(&db).await.unwrap();
+		}
+		let card = serde_json::json!({ "id": "me", "spoken": { "role": "spoken", "category": "questions", "exchanges": [
+			{ "ask": { "voice": "kokoro", "said": "Why?" }, "answer": { "voice": "owner", "take": "t-silent" } },
+		] } });
+		let chapter = serde_json::json!({ "id": "dive-1", "spoken": { "role": "scene", "chapter": "Snapshots.", "narration": "Free." } });
+		keep(&db, dir.path(), "mumbled-2026-11-20", "2026-11-20", serde_json::json!([chapter, card])).await;
+		std::fs::remove_file(dir.path().join("given/mumbled-2026-11-20.json")).unwrap();
+		let status = dir.path().join("status");
+		write(&status.join("mumbled-2026-11-20.failed.log"), "home refused this essay before the render: …: t-silent\n");
+		// What the pass said an hour ago, which no longer holds: the answer
+		// is the re-check's, never this file's.
+		write(&status.join("mumbled-2026-11-20.refused"), "reason=take-missing\nitems=t-old\ncount=1\n");
+
+		let (code, step) = produce(&db, &again, "mumbled-2026-11-20", Asset::Video).await.unwrap();
+		assert_eq!((code, step.state, step.reason), (Code::Conflict, Stage::Blocked, Some("take-unheard")));
+		let blocking = step.blocking.unwrap();
+		assert_eq!(blocking.items, vec![String::from("t-silent")]);
+		assert_eq!(blocking.item_names, Some(vec![String::from("Snapshots., exchange 1, your answer")]));
+		assert!(!again.cards.poked().await, "still refused: no pass");
 	}
 
 	#[test]

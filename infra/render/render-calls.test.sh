@@ -1685,6 +1685,17 @@ echo '{"r":2}' > "$ROOT/essays/2026-w46/.essay.json" && mv "$ROOT/essays/2026-w4
 run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a corrected essay is tried at once, and renders" \
   test "$(overflow_runs rust-essay 2026-w46)" -eq 2 -a -e "$ROOT/renders/rust-essay/2026-w46/essay.mp4" -a ! -e "$ROOT/renders/rust-essay-worker/2026-w46.refused"
+# The recorder's names for its scenes (some-ui#3455), after its ids: kept
+# as name.<id>= for the ids kept, and none for a scene it named none of or
+# one not among them.
+fresh overflow-named
+mkdir -p "$ROOT/essays/2026-w50/takes"
+echo '{}' > "$ROOT/essays/2026-w50/essay.json"
+printf 'dive-2\nbeside-2\nscene dive-2 is named: How a round opens, scene 3\nscene other-9 is named: Not one of them\n' > "$FAKE/overflow"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "a refusal keeps the recorder's name for each scene it named, and only those" \
+  test "$(grep -v '^held=' "$ROOT/renders/rust-essay-worker/2026-w50.refused")" = "$(printf 'reason=overflow\nscenes=dive-2,beside-2\ncount=2\nname.dive-2=How a round opens, scene 3')"
+rm -f "$FAKE/overflow"
 # At most REFUSED_SCENES are named, with how many there were; an id of
 # another shape is not one, and a refusal naming none keeps the hourly retry.
 fresh overflow-many
@@ -1703,6 +1714,16 @@ run_job rust-essay > "$SCRATCH/pass.out" 2>&1
 check "a refusal naming no scene of an id's shape keeps no refusal, and the hourly retry" \
   bash -c 'test -e "$1.failed.log" -a ! -e "$1.refused"' _ "$ROOT/renders/rust-essay-worker/2026-w49"
 RETRY_AFTER=0
+# Every scene named: only the 12 ids kept keep their names, so the board
+# names the scenes it lists and the phone (some-ui#3449) counts the rest.
+fresh overflow-many-named
+mkdir -p "$ROOT/essays/2026-w51/takes"
+echo '{}' > "$ROOT/essays/2026-w51/essay.json"
+{ seq -f 'scene-%g' 1 14; seq 1 14 | sed 's/.*/scene scene-& is named: Chapter, &/'; } > "$FAKE/overflow"
+run_job rust-essay > "$SCRATCH/pass.out" 2>&1
+check "an essay of 14 named scenes keeps the names of its first 12 only" \
+  test "$(grep '^name\.' "$ROOT/renders/rust-essay-worker/2026-w51.refused")" = "$(seq 1 12 | sed 's/.*/name.scene-&=Chapter, &/')"
+rm -f "$FAKE/overflow"
 
 # A video past MAX_VIDEO_MB (#752; PV2, CW5): the recorder refuses it once
 # made and removes it, and the worker takes that as a refusal by the policy
