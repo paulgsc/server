@@ -1,7 +1,8 @@
-//! What uses each take (INUSE, paulgsc/server C1380–C1384): the videos home
-//! holds whose audio plays it, for the badge `GET /voice-notes/kept` and
-//! `GET /voice-notes/takes` put on every note (`usedBy`) and the phone's
-//! warning before a delete.
+//! What uses each take: the videos home holds whose audio plays it.
+//!
+//! For the badge `GET /voice-notes/kept` and `GET /voice-notes/takes` put
+//! on every note (`usedBy`) and the phone's warning before a delete (INUSE,
+//! paulgsc/server C1380–C1384).
 //!
 //! **One rule with the withdraw.** A delete (`voice_repo::delete::delete`)
 //! withdraws no video itself: each render pass withdraws its own on its next
@@ -108,9 +109,9 @@ const fn week_title(kind: Kind) -> &'static str {
 	}
 }
 
-/// Puts `used` among `take`'s uses.
-fn add(uses: &mut HashMap<String, Vec<Use>>, take: &str, used: Use) {
-	uses.entry(take.to_owned()).or_default().push(used);
+/// Puts `video` among `take`'s uses.
+fn add(uses: &mut HashMap<String, Vec<Use>>, take: &str, video: Use) {
+	uses.entry(take.to_owned()).or_default().push(video);
 }
 
 /// Every video `subject` holds that uses a take, by the take's note id:
