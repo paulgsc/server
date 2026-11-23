@@ -52,6 +52,7 @@
 //! per take it names, each pass until it is given; one `stat` per essay
 //! each minute.
 
+pub mod names;
 pub mod pass;
 
 use crate::call_weeks::render::{tally, Held, Renders};

@@ -455,6 +455,7 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		reason: None,
 		over: None,
 		blocking: None,
+		scene_names: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "recorder", "exit": 1 }));
@@ -468,6 +469,7 @@ fn a_failed_attempt_is_a_code_never_its_words() {
 		reason: None,
 		over: None,
 		blocking: None,
+		scene_names: None,
 	})
 	.unwrap();
 	assert_eq!(json, serde_json::json!({ "feed": "call", "key": "2026-11-06", "at": 1, "by": "home", "exit": null }));
@@ -530,6 +532,7 @@ fn a_policy_refusal_is_its_reason_and_numbers() {
 		reason: Some(over.reason()),
 		over: Some(over),
 		blocking: None,
+		scene_names: None,
 	};
 	assert_eq!(
 		serde_json::to_value(failed(long)).unwrap(),
@@ -793,7 +796,7 @@ async fn the_cards_essays_home_holds_are_on_the_board_as_episodes_are() {
 			})
 		)
 	);
-	std::fs::write(&refused, "reason=too-long\nminutes=24.4\ncap=15.0\n".repeat(60)).unwrap();
+	std::fs::write(&refused, "reason=too-long\nminutes=24.4\ncap=15.0\n".repeat(1000)).unwrap();
 	let read = super::read(&db, &folders, "", NOW).await.unwrap();
 	assert_eq!(read.failed[0].over, None, "a file past its ceiling is no refusal");
 }
@@ -1204,6 +1207,7 @@ fn a_home_refusal_names_what_blocks_it() {
 		Some(Blocking {
 			items: vec![String::from("note-a"), String::from("note-b")],
 			item_count: 2,
+			item_names: None,
 		})
 	);
 	let frames = Blocking::parse("reason=clip-missing\nitems=clip-1/before/f001.png\ncount=1\n").unwrap();
@@ -1236,9 +1240,118 @@ fn a_home_refusal_names_what_blocks_it() {
 		reason: Some("take-unheard"),
 		over: None,
 		blocking: Blocking::parse(text),
+		scene_names: None,
 	};
 	assert_eq!(
 		serde_json::to_value(row).unwrap(),
 		serde_json::json!({ "feed": "cards-essay", "key": "walk-2026-11-20", "at": 1, "by": "home", "exit": null, "reason": "take-unheard", "items": ["note-a", "note-b"], "itemCount": 2 })
 	);
+}
+
+/// The owner's rule that a failure names its scene or part (RETRY): a cards
+/// essay's overflow says its scenes, and a take refusal its takes, by the
+/// names the essay's own cut list gives their place, never an id; absent
+/// where the essay can't name every one.
+#[tokio::test]
+async fn a_cards_essays_failure_names_its_scenes_and_takes() {
+	let db = pool().await;
+	let dir = tempfile::tempdir().unwrap();
+	let (renders, status, lane) = (dir.path().join("cards-essay"), dir.path().join("cards-essay-worker"), dir.path().join("call-worker"));
+	for folder in [&renders, &status, &lane] {
+		std::fs::create_dir_all(folder).unwrap();
+	}
+	let body = serde_json::json!({
+		"shots": [
+			{ "id": "intro", "spoken": { "role": "intro", "said": "Hello." } },
+			{ "id": "dive-1", "spoken": { "role": "scene", "chapter": "Snapshots.", "narration": "Free." } },
+			{ "id": "me", "spoken": { "role": "spoken", "category": "questions", "exchanges": [
+				{ "ask": { "voice": "kokoro", "said": "Why?" }, "answer": { "voice": "owner", "take": "note-a" } },
+			] } },
+		],
+	})
+	.to_string();
+	{
+		let mut conn = db.acquire().await.unwrap();
+		for key in ["wide-2026-11-02", "mumbled-2026-11-03", "odd-2026-11-04"] {
+			let essay = cards_essay_repo::Essay {
+				key,
+				day: &key[key.len() - 10..],
+				body: body.as_bytes(),
+				taken_at: "2026-11-08T10:00:00.000Z",
+			};
+			cards_essay_repo::keep(&mut conn, &essay).await.unwrap();
+		}
+	}
+	for key in ["wide-2026-11-02", "mumbled-2026-11-03", "odd-2026-11-04"] {
+		std::fs::write(status.join(String::from(key) + ".failed.log"), b"x\n").unwrap();
+	}
+	std::fs::write(status.join("wide-2026-11-02.refused"), b"reason=overflow\nscenes=dive-1,intro\ncount=2\nheld=ab\n").unwrap();
+	std::fs::write(status.join("mumbled-2026-11-03.refused"), b"reason=take-unheard\nitems=note-a\ncount=1\n").unwrap();
+	// A take no card plays: never named beside the wrong id.
+	std::fs::write(status.join("odd-2026-11-04.refused"), b"reason=take-missing\nitems=note-z\ncount=1\n").unwrap();
+	let folders = Folders {
+		feeds: vec![],
+		clip_walks: None,
+		previews: None,
+		cards_essays: Some((renders, status)),
+		lane,
+	};
+	let read = read(&db, &folders, "", NOW).await.unwrap();
+	let row = |key: &str| serde_json::to_value(read.failed.iter().find(|row| row.key == key).unwrap()).unwrap();
+	assert_eq!(row("wide-2026-11-02")["sceneNames"], serde_json::json!(["Snapshots., shot 2", "shot 1"]));
+	assert_eq!(row("wide-2026-11-02")["scenes"], serde_json::json!(["dive-1", "intro"]), "beside its ids, in their order");
+	assert_eq!(row("mumbled-2026-11-03")["itemNames"], serde_json::json!(["Snapshots., exchange 1, your answer"]));
+	assert_eq!(row("odd-2026-11-04").get("itemNames"), None);
+	assert_eq!(row("odd-2026-11-04").get("sceneNames"), None);
+}
+
+/// The recorder's own names for scenes past the frame (some-ui#3455), kept
+/// by the worker as `name.<id>=` lines: said for every shelf, beside the ids;
+/// none unless every kept scene is named.
+#[test]
+fn a_refusal_carries_the_recorders_names_for_its_scenes_when_it_names_each() {
+	let text = "reason=overflow\nscenes=ask-1,chapter-2\ncount=5\nheld=ab\nname.ask-1=How a round opens, scene 3\nname.chapter-2=scene 7\n";
+	let scenes = vec![String::from("ask-1"), String::from("chapter-2")];
+	assert_eq!(
+		recorder_names(text, &scenes),
+		Some(vec![String::from("How a round opens, scene 3"), String::from("scene 7")])
+	);
+	assert_eq!(recorder_names("reason=overflow\nname.ask-1=x\n", &scenes), None, "one unnamed: none");
+	assert_eq!(recorder_names("name.ask-1=a\u{7}b\nname.chapter-2=c\n", &scenes), None, "a control character is no name");
+	assert_eq!(
+		recorder_names(&["name.ask-1=", &"y".repeat(200), "\nname.chapter-2=c\n"].concat(), &scenes),
+		None,
+		"nor one past its cap"
+	);
+	assert_eq!(
+		recorder_names("name.ask-1-x=a\nname.ask-1=b\nname.chapter-2=c\n", &scenes).map(|names| names[0].clone()),
+		Some(String::from("b")),
+		"an id is matched whole"
+	);
+	assert_eq!(
+		recorder_names("name.ask-1=a\u{202E}b\nname.chapter-2=c\n", &scenes),
+		None,
+		"a name that reorders text is none"
+	);
+	assert!(
+		recorder_names("name.ask-1=\u{1F468}\u{200D}\u{1F373} cooks\nname.chapter-2=c\n", &scenes).is_some(),
+		"a joiner is text"
+	);
+}
+
+/// A recorder's name that is no UTF-8 is a name refused, never the refusal:
+/// its reason, scenes and count still reach the board.
+#[tokio::test]
+async fn a_name_of_bytes_that_are_no_utf8_loses_only_the_names() {
+	let dir = tempfile::tempdir().unwrap();
+	let path = dir.path().join("k.refused");
+	let mut bytes = b"reason=overflow\nscenes=a,b\ncount=2\nheld=ab\nname.a=".to_vec();
+	bytes.extend_from_slice(b"\xff\xfe\nname.b=fine\n");
+	std::fs::write(&path, bytes).unwrap();
+	match read_refused(&path).await {
+		Some(Refused::Over(Over::Overflow { scenes, scene_count }, names)) => {
+			assert_eq!((scenes, scene_count, names), (vec![String::from("a"), String::from("b")], 2, None));
+		}
+		other => panic!("{other:?}"),
+	}
 }

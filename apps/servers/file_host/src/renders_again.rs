@@ -637,11 +637,22 @@ async fn recheck(db: &SqlitePool, again: &Again, key: &str, current: Step) -> Re
 				.take(crate::cards_essays::pass::REFUSED_ITEMS)
 				.cloned()
 				.collect();
+			let mut blocking = Blocking::of(items, refusal.items.len());
+			// A take's name is where the essay plays it (`cards_essays::names`).
+			if let Some(blocking) = blocking.as_mut().filter(|_| refusal.kind == crate::essay_media::Kind::Takes) {
+				let body = {
+					let mut conn = db.acquire().await?;
+					cards_essay_repo::body(&mut conn, key).await?
+				};
+				if let Some(essay) = body.and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok()) {
+					blocking.item_names = crate::cards_essays::names::take_names(&essay, &blocking.items);
+				}
+			}
 			(
 				Code::Conflict,
 				Step {
 					reason: Some(refusal.reason()),
-					blocking: Blocking::of(items, refusal.items.len()),
+					blocking,
 					..current
 				},
 			)

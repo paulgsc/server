@@ -68,7 +68,12 @@
 //! (`sceneCount`): read from the worker's `<key>.refused`
 //! (`infra/render/render-calls.sh`, `refusal`), a closed shape of the
 //! recorder's numbers and scene ids, never its words. Any other failure carries none of
-//! them, as before.
+//! them, as before. An overflow's scenes are said by name too (`sceneNames`,
+//! parallel to `scenes`): the recorder's own names, which the worker keeps
+//! beside the ids (`name.<id>=`, some-ui#3455), or for a cards essay its cut
+//! list's (`cards_essays::names`); none unless every one is named. A cards
+//! essay home refused for its takes names each where its card plays it
+//! (`itemNames`, parallel to `items`).
 //!
 //! **A done row's size** (`bytes`): a finished video's length on the drive,
 //! for every shelf whose finished file is a video (not a clip's walk, whose
@@ -405,6 +410,9 @@ pub struct FeedSeen {
 	pub overs: BTreeMap<String, Over>,
 	/// Of the failed, each home refused, with the items that block it.
 	pub blocking: BTreeMap<String, Blocking>,
+	/// Of the failed that overflowed, each one's scenes by name, where its
+	/// shelf can name them (a cards essay's).
+	pub scene_names: BTreeMap<String, Vec<String>>,
 	/// Of the failed, each that is over whatever `job.state` says: a preview
 	/// past its day, which the worker lets go.
 	pub ended: BTreeSet<String>,
@@ -482,7 +490,9 @@ pub async fn seen_of(db: &SqlitePool, folders: &Folders, subject: &str, shelf: S
 		Shelf::CardsEssay => {
 			let Some((renders, status)) = &folders.cards_essays else { return Ok(None) };
 			let held = crate::cards_essays::held(db).await?;
-			(seen(shelf, &held, &[], renders, status).await, renders, status)
+			let mut seen = seen(shelf, &held, &[], renders, status).await;
+			name_failures(db, &mut seen).await?;
+			(seen, renders, status)
 		}
 	};
 	let (seen, renders, status) = found;
@@ -665,6 +675,12 @@ pub struct Failed {
 	/// it.
 	#[serde(flatten, skip_serializing_if = "Option::is_none")]
 	pub blocking: Option<Blocking>,
+	/// An overflow's `scenes`, each by name, parallel to `scenes`: the
+	/// recorder's own names (`name.<id>=` in its `.refused`), or for a cards
+	/// essay without them its cut list's (`cards_essays::names`); absent
+	/// where home can't name every one.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub scene_names: Option<Vec<String>>,
 }
 
 /// The most items a home refusal names: as many as an overflow's scenes.
@@ -680,6 +696,11 @@ pub const MOST_ITEMS: usize = MOST_SCENES;
 pub struct Blocking {
 	pub items: Vec<String>,
 	pub item_count: u32,
+	/// Each item by the name the essay gives where it plays it
+	/// (`cards_essays::names`), parallel to `items`; absent when the essay
+	/// can't name every one.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub item_names: Option<Vec<String>>,
 }
 
 /// An item's id as a home refusal names one: 1 to 128 printable ASCII
@@ -697,7 +718,11 @@ impl Blocking {
 	#[must_use]
 	pub fn of(items: Vec<String>, count: usize) -> Option<Self> {
 		let item_count = u32::try_from(count).ok()?;
-		(!items.is_empty() && items.iter().all(|item| item_id(item)) && items.len() <= count.min(MOST_ITEMS)).then_some(Self { items, item_count })
+		(!items.is_empty() && items.iter().all(|item| item_id(item)) && items.len() <= count.min(MOST_ITEMS)).then_some(Self {
+			items,
+			item_count,
+			item_names: None,
+		})
 	}
 
 	/// What a home refusal's `.refused` names, or `None` when it names none
@@ -706,8 +731,11 @@ impl Blocking {
 		let field = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
 		let items: Vec<String> = field("items")?.split(',').filter(|item| !item.is_empty()).map(String::from).collect();
 		let item_count = whole(field("count")?)?;
-		(!items.is_empty() && items.iter().all(|item| item_id(item)) && usize::try_from(item_count).is_ok_and(|count| items.len() <= count.min(MOST_ITEMS)))
-			.then_some(Self { items, item_count })
+		(!items.is_empty() && items.iter().all(|item| item_id(item)) && usize::try_from(item_count).is_ok_and(|count| items.len() <= count.min(MOST_ITEMS))).then_some(Self {
+			items,
+			item_count,
+			item_names: None,
+		})
 	}
 }
 
@@ -736,8 +764,9 @@ pub enum Over {
 }
 
 /// The refusal file's longest: four lines, the longest twelve scene ids of
-/// 64 bytes, or item ids of 128, and their commas, and a SHA-256.
-const REFUSED_CEILING: u64 = 2048;
+/// 64 bytes, or item ids of 128, and their commas, a SHA-256, and twelve
+/// scenes' names of the worker's 480 characters at most, mostly far less.
+const REFUSED_CEILING: u64 = 32 * 1024;
 
 /// The most scenes an overflow names (the worker's `REFUSED_SCENES`).
 const MOST_SCENES: usize = 12;
@@ -1050,6 +1079,7 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 					reason: seen.reasons.get(key).copied(),
 					over: seen.overs.get(key).cloned(),
 					blocking: seen.blocking.get(key).cloned(),
+					scene_names: seen.scene_names.get(key).cloned(),
 				});
 			} else if !current {
 				waiting.push(Episode {
@@ -1215,6 +1245,41 @@ pub async fn read(db: &SqlitePool, folders: &Folders, subject: &str, now: i64) -
 	Ok(board_of(&shelves, job.as_ref(), lane.as_ref(), now))
 }
 
+/// Names a cards essay's failures by its own cut list
+/// (`cards_essays::names`): an overflow's scenes, a home refusal's takes.
+/// One indexed read of a failed essay's body, only for one that names some.
+async fn name_failures(db: &SqlitePool, seen: &mut FeedSeen) -> Result<(), sqlx::Error> {
+	let keys: Vec<String> = seen
+		.failed
+		.keys()
+		// Only what a name is given for: an overflow, or a take refusal.
+		.filter(|key| {
+			(matches!(seen.overs.get(*key), Some(Over::Overflow { .. })) && !seen.scene_names.contains_key(*key))
+				|| (seen.blocking.contains_key(*key) && seen.reasons.get(*key).is_some_and(|reason| reason.starts_with("take-")))
+		})
+		.cloned()
+		.collect();
+	for key in keys {
+		let body = {
+			let mut conn = db.acquire().await?;
+			cards_essay_repo::body(&mut conn, &key).await?
+		};
+		let Some(essay) = body.and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok()) else {
+			continue;
+		};
+		if let Some(Over::Overflow { scenes, .. }) = seen.overs.get(&key).filter(|_| !seen.scene_names.contains_key(&key)) {
+			if let Some(names) = crate::cards_essays::names::scene_names(&essay, scenes) {
+				seen.scene_names.insert(key.clone(), names);
+			}
+		}
+		let takes = seen.reasons.get(&key).is_some_and(|reason| reason.starts_with("take-"));
+		if let Some(blocking) = seen.blocking.get_mut(&key).filter(|_| takes) {
+			blocking.item_names = crate::cards_essays::names::take_names(&essay, &blocking.items);
+		}
+	}
+	Ok(())
+}
+
 /// The job the lane holds, as `job.state` names it, if any: its kind and
 /// key, where it is and since when (no progress or sign of life).
 pub async fn job_of(folders: &Folders) -> Option<Job> {
@@ -1373,9 +1438,12 @@ async fn seen(feed: Shelf, held: &[Held], let_go: &[String], renders: &Path, sta
 			let mut refused = episode.key.clone();
 			refused.push_str(".refused");
 			match read_refused(&status.join(refused)).await {
-				Some(Refused::Over(over)) => {
+				Some(Refused::Over(over, names)) => {
 					seen.reasons.insert(episode.key.clone(), over.reason());
 					seen.overs.insert(episode.key.clone(), over);
+					if let Some(names) = names {
+						seen.scene_names.insert(episode.key.clone(), names);
+					}
 				}
 				Some(Refused::Home(reason, blocking)) => {
 					seen.reasons.insert(episode.key.clone(), reason);
@@ -1430,7 +1498,9 @@ async fn made_and_size(path: &Path, follows: bool) -> Option<(i64, Option<u64>)>
 /// before the render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Refused {
-	Over(Over),
+	/// The render policy's refusal, and for an overflow its scenes by the
+	/// recorder's names, when it named every one.
+	Over(Over, Option<Vec<String>>),
 	/// A cards essay home refused to give the worker (WALK7,
 	/// paulgsc/server#1052, `cards_essays::pass`, `essay_media`):
 	/// `take-missing`, a take a spoken card names that home doesn't hold,
@@ -1463,10 +1533,47 @@ async fn read_refused(path: &Path) -> Option<Refused> {
 	if bytes.len() as u64 > REFUSED_CEILING {
 		return None;
 	}
-	let text = std::str::from_utf8(&bytes).ok()?;
+	// Lossily: the ids and numbers are ASCII, and a recorder's name that is
+	// no UTF-8 is a name refused below, never the whole refusal lost.
+	let text = String::from_utf8_lossy(&bytes);
+	let text = text.as_ref();
 	Over::parse(text)
-		.map(Refused::Over)
+		.map(|over| {
+			let names = match &over {
+				Over::Overflow { scenes, .. } => recorder_names(text, scenes),
+				_ => None,
+			};
+			Refused::Over(over, names)
+		})
 		.or_else(|| home_refusal(text).map(|reason| Refused::Home(reason, Blocking::parse(text))))
+}
+
+/// The most characters of a scene's name the board takes (the recorder's
+/// own cap is 120).
+const SCENE_NAME_MOST: usize = 160;
+
+/// A character a name never holds: a control, one that stands for bytes
+/// that were no UTF-8, or one that reorders or hides text (bidi overrides,
+/// zero-width marks), so a name reads as it is. The zero-width joiner and
+/// non-joiner are text (an emoji's, Persian's), and stay.
+fn unshown(c: char) -> bool {
+	c.is_control()
+		|| matches!(c, '\u{FFFD}' | '\u{FEFF}' | '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{2060}' | '\u{00AD}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Each of `scenes` by the recorder's name for it, as the worker keeps them
+/// in a `.refused` (`name.<id>=<name>`, some-ui#3455), in order; `None` unless
+/// every one is named, one line of at most [`SCENE_NAME_MOST`] characters
+/// with no character it never holds ([`unshown`]).
+fn recorder_names(text: &str, scenes: &[String]) -> Option<Vec<String>> {
+	scenes
+		.iter()
+		.map(|id| {
+			let name = text.lines().find_map(|line| line.strip_prefix("name.")?.strip_prefix(id.as_str())?.strip_prefix('='))?;
+			let name = name.trim();
+			(!name.is_empty() && name.chars().count() <= SCENE_NAME_MOST && !name.chars().any(unshown)).then(|| name.to_owned())
+		})
+		.collect()
 }
 
 /// The end of a failed attempt's log.
