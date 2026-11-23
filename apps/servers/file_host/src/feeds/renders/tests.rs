@@ -1319,6 +1319,11 @@ fn a_refusal_carries_the_recorders_names_for_its_scenes_when_it_names_each() {
 	assert_eq!(recorder_names("reason=overflow\nname.ask-1=x\n", &scenes), None, "one unnamed: none");
 	assert_eq!(recorder_names("name.ask-1=a\u{7}b\nname.chapter-2=c\n", &scenes), None, "a control character is no name");
 	assert_eq!(
+		recorder_names("name.ask-1=a\u{2028}b\nname.chapter-2=c\n", &scenes),
+		None,
+		"nor a line break of another kind"
+	);
+	assert_eq!(
 		recorder_names(&["name.ask-1=", &"y".repeat(200), "\nname.chapter-2=c\n"].concat(), &scenes),
 		None,
 		"nor one past its cap"

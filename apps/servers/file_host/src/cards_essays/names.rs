@@ -18,8 +18,10 @@
 //!   answer. A spoken card has no title of its own.
 //!
 //! A name is one line of at most [`MOST_CHARS`] characters. A list is named
-//! whole or not at all: one id the essay does not hold leaves the list
-//! unnamed (`None`), so a name never sits beside the wrong id.
+//! whole or not at all: one id the essay does not hold, or one name with a
+//! character a name never holds (a control, a bidi override, a hidden mark),
+//! leaves the list unnamed (`None`), so a name never sits beside the wrong
+//! id and never reads other than it shows.
 
 use serde_json::Value;
 
@@ -79,6 +81,14 @@ fn named(chapter: Option<&str>, rest: &str) -> String {
 	}
 }
 
+/// `name`, unless it holds a character a name never holds (the board's
+/// rule for the recorder's names, [`crate::feeds::renders::unshown`]): the
+/// essay's own words are no more trusted than the recorder's, so such a
+/// name leaves its list unnamed.
+fn shown(name: String) -> Option<String> {
+	(!name.chars().any(crate::feeds::renders::unshown)).then_some(name)
+}
+
 /// A spoken card's turn as the owner reads it: exchange `k` (from 1), and
 /// whose words. `owner` says the turn is theirs (their take), else Kokoro's.
 fn turn_name(k: usize, ask: bool, owner: bool) -> String {
@@ -130,7 +140,8 @@ fn owners(shots: &[Value], at: usize, k: usize, ask: bool) -> bool {
 /// In order: a spoken card's turn by its chapter and exchange; any
 /// other shot by its chapter and its number among the essay's shots
 /// (`shot <n>`, the cut list's own count, not the video's scenes). `None`
-/// when any is no scene of `essay`.
+/// when any is no scene of `essay`, or its name holds a character a name
+/// never holds.
 #[must_use]
 pub fn scene_names(essay: &Value, ids: &[String]) -> Option<Vec<String>> {
 	let shots = shots(essay);
@@ -141,10 +152,10 @@ pub fn scene_names(essay: &Value, ids: &[String]) -> Option<Vec<String>> {
 			// A card's turn first: its id is the card's and the turn's, and a
 			// shot named the same never takes its place.
 			if let Some((at, k, ask)) = card_turn(shots, id) {
-				return Some(named(chapters.get(at)?.as_deref(), &turn_name(k, ask, owners(shots, at, k, ask))));
+				return shown(named(chapters.get(at)?.as_deref(), &turn_name(k, ask, owners(shots, at, k, ask))));
 			}
 			let at = shots.iter().position(|shot| shot.get("id").and_then(Value::as_str) == Some(id.as_str()))?;
-			Some(named(chapters.get(at)?.as_deref(), &(String::from("shot ") + &(at + 1).to_string())))
+			shown(named(chapters.get(at)?.as_deref(), &(String::from("shot ") + &(at + 1).to_string())))
 		})
 		.collect()
 }
@@ -152,7 +163,8 @@ pub fn scene_names(essay: &Value, ids: &[String]) -> Option<Vec<String>> {
 /// Each of `takes`, note ids a spoken card plays, by where it is played.
 ///
 /// In order: its chapter, its exchange, and whether it is the owner's question
-/// or answer. `None` when any is played by no spoken card of `essay`.
+/// or answer. `None` when any is played by no spoken card of `essay`, or its
+/// name holds a character a name never holds.
 #[must_use]
 pub fn take_names(essay: &Value, takes: &[String]) -> Option<Vec<String>> {
 	let shots = shots(essay);
@@ -169,7 +181,7 @@ pub fn take_names(essay: &Value, takes: &[String]) -> Option<Vec<String>> {
 					for (turn, ask) in [("ask", true), ("answer", false)] {
 						let owner = exchange.get(turn).filter(|turn| turn.get("voice").and_then(Value::as_str) == Some("owner"));
 						if owner.and_then(|turn| turn.get("take")).and_then(Value::as_str) == Some(take.as_str()) {
-							return Some(named(chapters.get(at)?.as_deref(), &turn_name(k + 1, ask, true)));
+							return shown(named(chapters.get(at)?.as_deref(), &turn_name(k + 1, ask, true)));
 						}
 					}
 				}
@@ -198,6 +210,25 @@ mod tests {
 				{ "id": "me-ask-1", "spoken": { "role": "scene", "narration": "Odd name." } },
 			],
 		})
+	}
+
+	/// A chapter that hides or reorders its text is no name, for a scene or
+	/// a take: the list goes unnamed, as with a recorder's name like it.
+	#[test]
+	fn a_chapter_with_a_character_a_name_never_holds_names_nothing() {
+		let essay = json!({
+			"shots": [
+				{ "id": "dive-1", "spoken": { "role": "scene", "chapter": "Snap\u{202E}shots", "narration": "Free." } },
+				{ "id": "me", "spoken": { "role": "spoken", "category": "questions", "exchanges": [
+					{ "ask": { "voice": "kokoro", "said": "Why?" }, "answer": { "voice": "owner", "take": "note-a" } },
+				] } },
+			],
+		});
+		assert_eq!(scene_names(&essay, &ids(&["dive-1"])), None);
+		assert_eq!(scene_names(&essay, &ids(&["me-answer-1"])), None);
+		assert_eq!(take_names(&essay, &ids(&["note-a"])), None);
+		let plain = json!({ "shots": [{ "id": "dive-1", "spoken": { "role": "scene", "chapter": "Snapshots", "narration": "Free." } }] });
+		assert_eq!(scene_names(&plain, &ids(&["dive-1"])), Some(ids(&["Snapshots, shot 1"])), "and a plain one is");
 	}
 
 	fn ids(names: &[&str]) -> Vec<String> {

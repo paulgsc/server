@@ -1553,12 +1553,13 @@ async fn read_refused(path: &Path) -> Option<Refused> {
 const SCENE_NAME_MOST: usize = 160;
 
 /// A character a name never holds: a control, one that stands for bytes
-/// that were no UTF-8, or one that reorders or hides text (bidi overrides,
-/// zero-width marks), so a name reads as it is. The zero-width joiner and
+/// that were no UTF-8, one that breaks its line (U+2028, U+2029), or one
+/// that reorders or hides text (bidi overrides, zero-width marks), so a name
+/// reads as it is, on one line. The zero-width joiner and
 /// non-joiner are text (an emoji's, Persian's), and stay.
-fn unshown(c: char) -> bool {
+pub(crate) fn unshown(c: char) -> bool {
 	c.is_control()
-		|| matches!(c, '\u{FFFD}' | '\u{FEFF}' | '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{2060}' | '\u{00AD}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+		|| matches!(c, '\u{FFFD}' | '\u{FEFF}' | '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{2060}' | '\u{00AD}' | '\u{061C}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Each of `scenes` by the recorder's name for it, as the worker keeps them
