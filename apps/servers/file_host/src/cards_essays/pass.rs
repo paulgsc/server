@@ -458,8 +458,10 @@ async fn deleted_take(db: &SqlitePool, subject: &str, key: &str) -> Result<Optio
 }
 
 /// Every take the essay `body`'s spoken cards name, each once
-/// (`essay_media`'s takes).
-fn spoken_takes(body: &[u8]) -> Vec<String> {
+/// (`essay_media`'s takes): the one rule this pass withdraws an essay by
+/// ([`deleted_take`], and the export's own check) and `take_uses` shows the
+/// phone (INUSE, C1382), so the badge and the delete never disagree.
+pub(crate) fn spoken_takes(body: &[u8]) -> Vec<String> {
 	essay_media::named(essay_media::Kind::Takes, &serde_json::from_slice(body).unwrap_or(Value::Null))
 }
 

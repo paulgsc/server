@@ -239,5 +239,78 @@ pub async fn videos(conn: &mut SqliteConnection, subject: &str) -> Result<Videos
 	})
 }
 
+/// A queued video as what uses a take sees it: its newest revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Naming {
+	/// The phone's id for the video.
+	pub video: String,
+	/// Its newest revision's title.
+	pub title: String,
+	/// When the phone queued its newest revision, ISO-8601 UTC.
+	pub queued_at: String,
+	/// Each voice note its newest revision's takes name, once, in the order
+	/// first named.
+	pub notes: Vec<String>,
+}
+
+/// The takes a stored DNA names, read with only what a take is: a DNA was
+/// checked whole when it was queued ([`queue`]), and a rule tightened since
+/// must never hide the takes it names.
+fn named_notes(text: &str) -> Option<Vec<String>> {
+	#[derive(serde::Deserialize)]
+	struct Take {
+		note: String,
+	}
+	#[derive(serde::Deserialize)]
+	struct Takes {
+		takes: Vec<Take>,
+	}
+	let takes: Takes = serde_json::from_str(text).ok()?;
+	let mut notes: Vec<String> = Vec::new();
+	for take in takes.takes {
+		if !notes.contains(&take.note) {
+			notes.push(take.note);
+		}
+	}
+	Some(notes)
+}
+
+/// Each of `subject`'s queued videos by its newest revision, with the voice
+/// notes that revision's takes name (INUSE: what uses a take, C1383), oldest
+/// queued first.
+///
+/// A revision supersedes the one before it as what the video is: an older
+/// revision's takes are not the video's. One indexed range read of the
+/// subject's rows (the primary key serves the newest-revision lookup), every
+/// revision's DNA at most [`DNA_CEILING`] bytes.
+///
+/// # Errors
+/// Any `sqlx` failure, and [`sqlx::Error::Protocol`] for a stored DNA that no
+/// longer reads as one with takes: never read as naming none.
+pub async fn naming(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Naming>, sqlx::Error> {
+	let rows = sqlx::query!(
+		r#"SELECT q.video_id AS "video_id!", q.title AS "title!", q.queued_at AS "queued_at!", q.dna AS "dna!"
+		   FROM studio_video_queued AS q
+		   WHERE q.subject_id = ?1
+		     AND q.rev = (SELECT MAX(r.rev) FROM studio_video_queued AS r WHERE r.subject_id = q.subject_id AND r.video_id = q.video_id)
+		   ORDER BY q.queued_at, q.video_id"#,
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	rows
+		.into_iter()
+		.map(|row| {
+			let notes = named_notes(&row.dna).ok_or_else(|| sqlx::Error::Protocol(String::from("a queued video's DNA no longer reads")))?;
+			Ok(Naming {
+				video: row.video_id,
+				title: row.title,
+				queued_at: row.queued_at,
+				notes,
+			})
+		})
+		.collect()
+}
+
 #[cfg(test)]
 mod tests;

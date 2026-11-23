@@ -400,6 +400,10 @@ pub struct Take {
 	/// Its newest move's number, 0 in the oven, what a move of it names;
 	/// null off the conveyor.
 	pub station_seq: Option<i64>,
+	/// The videos home holds that play it ([`crate::used`]); empty here,
+	/// filled by `file_host`'s `take_uses`, which reads the render passes'
+	/// own rule.
+	pub used_by: Vec<crate::used::Use>,
 	/// What it is about, by its kind ([`crate::about`]); null for a take
 	/// deleted for good.
 	pub about: Option<About>,
@@ -573,6 +577,7 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 				station,
 				station_at,
 				station_seq,
+				used_by: Vec::new(),
 			},
 		));
 	}
@@ -625,6 +630,7 @@ async fn chosen(conn: &mut SqliteConnection, subject: &str, ask: &Ask) -> Result
 					station: None,
 					station_at: None,
 					station_seq: None,
+					used_by: Vec::new(),
 					about: None,
 				},
 			));
