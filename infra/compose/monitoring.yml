@@ -163,9 +163,6 @@ services:
       - ${STATE_ROOT:?envctl sets STATE_ROOT, so run compose through make up or make compose}/infra/grafana/generated:/var/lib/grafana/dashboards:ro
     networks:
       - monitoring-network
-      # The render worker's way in, for the site's pictures (call-render.yml,
-      # paulgsc/some-ui C1074): a Viewer token reads the panels it walks.
-      - site-shots-network
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in deploy/<role>/compose.sops.env}

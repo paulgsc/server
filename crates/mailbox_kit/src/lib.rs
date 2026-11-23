@@ -32,7 +32,7 @@ mod client;
 pub mod transport;
 
 pub use client::{Archive, Folder, ItemMeta, Mailbox, MailboxError, Put, Restore, Wanted, PAGE_LIMIT};
-pub use transport::{BodyType, MailboxTransport, Method, Request, Response, Token};
+pub use transport::{MailboxTransport, Method, Request, Response, Token};
 
 #[cfg(feature = "reqwest-transport")]
 pub use transport::reqwest_transport::ReqwestTransport;

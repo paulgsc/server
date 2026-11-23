@@ -18,8 +18,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
 1. **At most one batch job runs on home at a time, across every kind.** The
    render worker is the one batch worker. It runs one job at a time and
    names it in `<lane>/job`, one file for every kind (the call, Playoff
-   Delta, previews, essays, clip walks, cards essays, engagement reports, the
-   site's pictures of home's dashboards, and an episode's asset made alone),
+   Delta, previews, essays, clip walks, cards essays, engagement reports, and an
+   episode's asset made alone),
    and the lane admits
    one job per run (LA2). Held by `crates/lane`'s tests and `render-calls.test.sh`. A
    second batch worker joins this lane, never one of its own (L5,
@@ -72,9 +72,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    every minute, but only the lane's `run` starts a job: room, not a clock
    (the owner, 2026-11-07). Held by the worker's "no render starts on a
    missing or stale decision" cases.
-   A request written once a time has passed (a week ended: the report weeks'
-   and the site's pictures', `report_weeks` and `site_shots`) only makes work
-   available; the lane still starts it.
+   A request written once a time has passed (a week ended, as `report_weeks`
+   writes one) only makes work available; the lane still starts it.
 7. **Nothing does work it does not need: a failure that would come out the
    same is not tried again.** A video the render policy refused (too long,
    too large, or scenes past the frame, #975: the recorder's own refusal,

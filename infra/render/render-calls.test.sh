@@ -268,29 +268,8 @@ fi
 # A clip's walk: `tsx src/cli.ts walk <app> --sample <f> --out <w>/<key>`
 # writes walk.json and a snip into <w>/<key>, as the motion does. Each run is
 # counted in $FAKE/walk-runs as `<app> <sample> <out>`.
-# A walkthrough (the site's server clip): `tsx src/cli.ts walkthrough
-# <words> --walk <w> --out <o>` writes <o>/video.mp4 of $FAKE/clip-bytes
-# bytes (1000 without it). Each run is counted in $FAKE/walkthrough-runs, and
-# whether Grafana's token was in its environment in $FAKE/tokens.
-if [ "$1" = src/cli.ts ] && [ "$2" = walkthrough ]; then
-  out= walk=
-  shift 3
-  while [ $# -gt 0 ]; do
-    case $1 in
-      --walk) walk=$2; shift ;;
-      --out) out=$2; shift ;;
-    esac
-    shift
-  done
-  echo "$walk $out" >> "$fake/walkthrough-runs"
-  echo "walkthrough ${GRAFANA_TOKEN:+token}" >> "$fake/tokens"
-  mkdir -p "$out"
-  head -c "$(cat "$fake/clip-bytes" 2> /dev/null || echo 1000)" /dev/zero > "$out/video.mp4"
-  exit 0
-fi
 if [ "$1" = src/cli.ts ]; then
   [ "$2" = walk ] || { echo "not a walk: $2"; exit 2; }
-  echo "walk $3 ${GRAFANA_TOKEN:+token}" >> "$fake/tokens"
   app=$3 sample= out=
   shift 3
   while [ $# -gt 0 ]; do
@@ -1343,77 +1322,6 @@ rm "$FAKE/under-way"
 run_job report > "$SCRATCH/pass.out" 2>&1
 check "and once it can be made it renders, and its failed.log goes" \
   test -e "$ROOT/renders/report/2026-W46/report.mp4" -a ! -e "$ROOT/renders/report-worker/2026-W46.failed.log"
-
-# The site's pictures (paulgsc/some-ui#3415, C1073): each <day>.json
-# file_host gave is walked twice on home's Grafana, the server clip made from
-# the first walk's walkthrough and encoded to fit the mailbox's cap, the
-# cores still taken from the second; only the two pictures are kept. Only
-# the walks are given Grafana's token, and a clip over the cap at half size
-# fails the week.
-fresh site-shots
-mkdir -p "$ROOT/site-shots"
-echo '{}' > "$ROOT/site-shots/2026-11-23.json"
-echo '{}' > "$ROOT/site-shots/not-a-day.json"
-# A fake encoder: the clip's size is $FAKE/encoded-<scale>'s bytes (500
-# without it), so a case decides which size fits.
-cat > "$FAKE/ffmpeg" <<'FAKE_FFMPEG'
-#!/usr/bin/env bash
-fake=$(dirname "$0")
-scale=$(printf '%s\n' "$@" | grep -o 'scale=[0-9]*' | head -n 1)
-for last; do :; done
-head -c "$(cat "$fake/encoded-${scale#scale=}" 2> /dev/null || echo 500)" /dev/zero > "$last"
-echo "${scale#scale=}" >> "$fake/encodes"
-FAKE_FFMPEG
-chmod +x "$FAKE/ffmpeg"
-FFMPEG=$FAKE/ffmpeg
-rm -f "$FAKE/tokens" "$FAKE/encodes" "$FAKE/walkthrough-runs" "$FAKE"/encoded-*
-SITE_SHOTS_GRAFANA_TOKEN_HELD=a-viewer-token
-run_job site-shots > "$SCRATCH/pass.out" 2>&1
-check "the site's week is walked on Grafana twice, then made into its clip" \
-  test "$(cut -d' ' -f1 "$FAKE/walk-runs" | tr '\n' ' ')" = "home-server home-cores "
-check "over the day's sample" \
-  test "$(cut -d' ' -f2 "$FAKE/walk-runs" | sort -u)" = "$ROOT/site-shots/2026-11-23.json"
-check "only the walks are given Grafana's token" \
-  test "$(tr '\n' '|' < "$FAKE/tokens")" = "walk home-server token|walk home-cores token|walkthrough |"
-check "and only the two pictures are kept, in renders/site-shots" \
-  test "$(ls "$ROOT/renders/site-shots/2026-11-23" | tr '\n' ' ')" = "cores.png server.mp4 "
-check "the clip fits at full size, so it is made once" test "$(cat "$FAKE/encodes")" = 1080
-check "a file not named for a day is never read" test "$(wc -l < "$FAKE/walk-runs")" -eq 2
-
-fresh site-shots-half
-mkdir -p "$ROOT/site-shots"
-echo '{}' > "$ROOT/site-shots/2026-11-23.json"
-rm -f "$FAKE/encodes" "$FAKE"/encoded-*
-echo 900000 > "$FAKE/encoded-1080"
-run_job site-shots > "$SCRATCH/pass.out" 2>&1
-check "a clip over the mailbox's cap at full size is made at half size" \
-  test "$(tr '\n' ' ' < "$FAKE/encodes")" = "1080 540 " -a -e "$ROOT/renders/site-shots/2026-11-23/server.mp4"
-check "and the half size is what is kept" test "$(stat -c %s "$ROOT/renders/site-shots/2026-11-23/server.mp4")" -eq 500
-
-fresh site-shots-too-big
-mkdir -p "$ROOT/site-shots"
-echo '{}' > "$ROOT/site-shots/2026-11-23.json"
-echo 900000 > "$FAKE/encoded-1080"
-echo 800000 > "$FAKE/encoded-540"
-run_job site-shots > "$SCRATCH/pass.out" 2>&1
-check "a clip over the cap at half size fails the week, in its words" \
-  grep -q "even at half size" "$ROOT/renders/site-shots-worker/2026-11-23.failed.log"
-check "and leaves no folder in renders/site-shots" test ! -e "$ROOT/renders/site-shots/2026-11-23"
-rm -f "$FAKE"/encoded-*
-
-fresh site-shots-no-token
-mkdir -p "$ROOT/site-shots"
-echo '{}' > "$ROOT/site-shots/2026-11-23.json"
-SITE_SHOTS_GRAFANA_TOKEN_HELD=
-run_job site-shots > "$SCRATCH/pass.out" 2>&1
-check "with no Grafana token the week fails, saying so, and nothing is walked" \
-  grep -q "SITE_SHOTS_GRAFANA_TOKEN is not set" "$ROOT/renders/site-shots-worker/2026-11-23.failed.log"
-check "nothing is walked" test ! -e "$FAKE/walk-runs"
-FFMPEG=ffmpeg
-check "the worker takes Grafana's token out of its environment at start, holding it for the walks" \
-  env SITE_SHOTS_GRAFANA_TOKEN=a-viewer-token bash -c \
-    'source "$1" && [ -z "${SITE_SHOTS_GRAFANA_TOKEN+set}" ] && [ "$SITE_SHOTS_GRAFANA_TOKEN_HELD" = a-viewer-token ] &&
-      [ -z "$(env | grep -c a-viewer-token | grep -v "^0$")" ]' _ "$HERE/render-calls.sh"
 
 # A preview a restart left runs first, as any job does.
 fresh preview-left

@@ -43,11 +43,6 @@
    "why": "A secret."
   },
   {
-   "variable": "SITE_SHOTS_GRAFANA_TOKEN",
-   "class": "deployment",
-   "why": "A secret: Grafana's Viewer token for the site's walks (paulgsc/some-ui C1074)."
-  },
-  {
    "variable": "FILE_HOST_ALERT_SLACK_WEBHOOK_URL",
    "class": "deployment",
    "why": "A secret: where this deployment's alerts go."
