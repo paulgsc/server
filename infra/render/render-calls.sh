@@ -340,8 +340,8 @@ CARDS_KEY='^[a-z0-9]+(-[a-z0-9]+)*-[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 # What file_host hands beside a cards essay, one folder <key>.<kind>/ per
 # kind it names (`essay_media::Kind::folder`), each handed to the recorder as
 # --<kind> <folder> when it is there, and only then: a spoken card's takes,
-# a scene's snips and its clip frames.
-CARDS_MEDIA=(takes snips clips)
+# a scene's snips, its clip frames and its public pages.
+CARDS_MEDIA=(takes snips clips pages)
 
 # A week's engagement report: its ISO week (file_host's `IsoWeek`).
 REPORT_KEY='^[0-9]{4}-W[0-9]{2}$'
@@ -768,8 +768,9 @@ record() {
       # holds is given beside it, each kind in <key>.<kind>/ (CARDS_MEDIA;
       # `cards_essays::pass`, written whole before the essay): a spoken
       # card's takes (WALK7, #1052; each take's audio, word times and
-      # transcript), a scene's snips (SNIPS4; snips.json and the pictures)
-      # and its clip frames (the frames alone, <clip>/<side>/<file>).
+      # transcript), a scene's snips (SNIPS4; snips.json and the pictures),
+      # its clip frames (the frames alone, <clip>/<side>/<file>) and its
+      # public pages (#3395; pages.json and the pictures).
       local media=() kind
       for kind in "${CARDS_MEDIA[@]}"; do
         if [ -d "$INPUT/$key.$kind" ]; then

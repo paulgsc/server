@@ -653,14 +653,15 @@ pub struct Failed {
 	/// `too-large`, `overflow`, with [`Over`]), and a cards essay home
 	/// refused for what it names (`take-missing`, `take-unheard`,
 	/// paulgsc/server#1052; `snip-missing`, `snip-gone`, `clip-missing`,
-	/// `essay_media`).
+	/// `page-missing`, `page-gone`, `essay_media`).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub reason: Option<&'static str>,
 	/// By how much the render policy refused it (#929).
 	#[serde(flatten, skip_serializing_if = "Option::is_none")]
 	pub over: Option<Over>,
 	/// What still stops a cards essay home refused (`reason` `take-missing`,
-	/// `take-unheard`, `snip-missing`, `snip-gone`, `clip-missing`): the
+	/// `take-unheard`, `snip-missing`, `snip-gone`, `clip-missing`,
+	/// `page-missing`, `page-gone`): the
 	/// items it names, by id, so Run again (`renders_again`) says what blocks
 	/// it.
 	#[serde(flatten, skip_serializing_if = "Option::is_none")]
@@ -682,13 +683,18 @@ pub struct Blocking {
 	pub item_count: u32,
 }
 
-/// An item's id as a home refusal names one: 1 to 128 printable ASCII
+/// The longest item id a home refusal names: a page's, a run of up to 20
+/// digits, a space and a file of up to 113 (`essay_media::pages`).
+pub const MOST_ITEM_BYTES: usize = 134;
+
+/// An item's id as a home refusal names one: 1 to [`MOST_ITEM_BYTES`] printable ASCII
 /// characters, spaces inside but not at either end, and no comma (the
 /// list's own). A snip's id is its commit, a space and its place
-/// (`<commit> web:/settings:phone:…`), a clip frame's `<clip>/<side>/<file>`.
+/// (`<commit> web:/settings:phone:…`), a clip frame's `<clip>/<side>/<file>`,
+/// a page's its run, a space and its file (`<run> <slug>-<hash12>.png`).
 #[must_use]
 pub(crate) fn item_id(text: &str) -> bool {
-	!text.is_empty() && text.len() <= 128 && text.trim() == text && text.bytes().all(|b| (b.is_ascii_graphic() || b == b' ') && b != b',')
+	!text.is_empty() && text.len() <= MOST_ITEM_BYTES && text.trim() == text && text.bytes().all(|b| (b.is_ascii_graphic() || b == b' ') && b != b',')
 }
 
 impl Blocking {
@@ -736,7 +742,7 @@ pub enum Over {
 }
 
 /// The refusal file's longest: four lines, the longest twelve scene ids of
-/// 64 bytes, or item ids of 128, and their commas, and a SHA-256.
+/// 64 bytes, or item ids of [`MOST_ITEM_BYTES`], and their commas, and a SHA-256.
 const REFUSED_CEILING: u64 = 2048;
 
 /// The most scenes an overflow names (the worker's `REFUSED_SCENES`).
@@ -1437,8 +1443,9 @@ enum Refused {
 	/// `take-unheard`, one home couldn't make out or heard nothing in, or
 	/// `snip-missing` / `clip-missing`, a snip or clip frame a scene shows
 	/// that home doesn't hold, or `snip-gone`, a snip whose bundle GitHub no
-	/// longer has (`docs/snips.md`, C875). Its class, and the items it
-	/// names when it names them whole.
+	/// longer has (`docs/snips.md`, C875), or `page-missing` / `page-gone`,
+	/// the same of a public page (C1441). Its class, and the items it names
+	/// when it names them whole.
 	Home(&'static str, Option<Blocking>),
 }
 
@@ -1450,6 +1457,8 @@ fn home_refusal(text: &str) -> Option<&'static str> {
 		"snip-missing" => Some("snip-missing"),
 		"clip-missing" => Some("clip-missing"),
 		"snip-gone" => Some("snip-gone"),
+		"page-missing" => Some("page-missing"),
+		"page-gone" => Some("page-gone"),
 		_ => None,
 	}
 }
