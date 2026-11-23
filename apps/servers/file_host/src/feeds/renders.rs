@@ -769,10 +769,10 @@ pub enum Over {
 	Overflow { scenes: Vec<String>, scene_count: u32 },
 }
 
-/// The refusal file's longest: four lines, the longest twelve scene ids of
-/// 64 bytes, or item ids of [`MOST_ITEM_BYTES`], and their commas, a
-/// SHA-256, and twelve scenes' names of the worker's 480 characters at most,
-/// mostly far less.
+/// The refusal file's longest: four lines (twelve scene ids of 64 bytes, or
+/// item ids of [`MOST_ITEM_BYTES`], and their commas, and a SHA-256), then
+/// an overflow's twelve `name.<id>=` lines of the worker's 480 characters
+/// at most (some 25 KB in four-byte characters, mostly far less).
 const REFUSED_CEILING: u64 = 32 * 1024;
 
 /// The most scenes an overflow names (the worker's `REFUSED_SCENES`).

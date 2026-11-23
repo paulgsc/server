@@ -1381,6 +1381,32 @@ async fn scene_names_are_the_kept_scenes_whole_or_none() {
 	}
 }
 
+/// The longest overflow the worker writes, twelve ids of 64 bytes each named
+/// in 480 four-byte characters, is read whole under the ceiling: its scenes
+/// still reach the board, though names that long are none of the board's.
+#[tokio::test]
+async fn the_longest_named_overflow_reads_whole() {
+	let dir = tempfile::tempdir().unwrap();
+	let path = dir.path().join("k.refused");
+	let ids: Vec<String> = (0..12u8).map(|n| String::from(char::from(b'a' + n)) + &"x".repeat(63)).collect();
+	let mut text = String::from("reason=overflow\nscenes=");
+	text.push_str(&ids.join(","));
+	text.push_str("\ncount=99\nheld=");
+	text.push_str(&"f".repeat(64));
+	text.push('\n');
+	for id in &ids {
+		text.push_str(&["name.", id, "=", &"\u{1D11E}".repeat(480), "\n"].concat());
+	}
+	assert!(text.len() as u64 <= super::REFUSED_CEILING, "{} bytes", text.len());
+	std::fs::write(&path, &text).unwrap();
+	match read_refused(&path).await {
+		Some(Refused::Over(Over::Overflow { scenes, scene_count }, names)) => {
+			assert_eq!((scenes, scene_count, names), (ids, 99, None));
+		}
+		other => panic!("{other:?}"),
+	}
+}
+
 /// A recorder's name that is no UTF-8 is a name refused, never the refusal:
 /// its reason, scenes and count still reach the board.
 #[tokio::test]
