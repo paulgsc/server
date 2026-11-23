@@ -755,77 +755,173 @@ pub async fn tidy(db: &SqlitePool, kind: Kind, subject: Option<&str>, folders: &
 	Ok(done)
 }
 
-/// A take `week`'s final record names that was deleted and that its essay
-/// may play, if any.
+/// A take a week's essay video may play, and whether deleting it withdraws
+/// the week: what [`plays`] answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Plays {
+	/// The take's voice-note id.
+	pub take: String,
+	/// Whether a receipt for it withdraws the week ([`deleted_take`]).
+	pub withdraws: bool,
+}
+
+/// Every take `week`'s essay video may play: the one rule [`deleted_take`]
+/// withdraws by and `take_uses` shows the phone (INUSE, C1381), so the badge
+/// and the delete never disagree.
 ///
 /// An essay may answer an item whose take home could not hear as a silence,
-/// and then plays nothing for it (HEARD1); it may also play it. So a
-/// deleted take withdraws the week unless every revision of the week's
-/// essay `subject` holds that could hold it answers its item as a silence:
-/// the revision `given` to the render, if one was, and the newest, which the
-/// next export would give. Deleting a take the essay never played, as the
-/// owner's reconciliation of an unheard one may (paulgsc/server#912,
-/// HEARD3), withdraws nothing. A revision that does not read counts as
-/// playing it.
+/// and then plays nothing for it (HEARD1); it may also play it. So a take
+/// the week's final record (`standing`) names plays unless every revision of
+/// the week's essay `subject` holds that could hold it answers its item as a
+/// silence: the revision `given` to the render, if one was, and the newest,
+/// which the next export would give. A revision that does not read counts as
+/// playing it. Each such take withdraws the week.
 ///
 /// An answer of the owner's opening (paulgsc/some-ui#3269) names its take in
-/// the essay, which may be another week's: a deleted one withdraws the week
-/// when the revision given to the render plays it. One only a revision not
-/// yet given plays withdraws nothing: [`essay::against`] refuses that
-/// revision when it is given, so one playing the next older take can follow.
-async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str, given: Option<u32>) -> Result<Option<String>, sqlx::Error> {
-	let mut conn = db.acquire().await?;
-	if let Some(given) = given.filter(|_| kind == Kind::RustRounds) {
-		let given_opening = held_essays(&mut conn, kind, subject)
-			.await?
-			.into_iter()
-			.filter(|file| essay::parse_name_of(kind, &file.name) == Some((week.to_owned(), given)))
-			.filter_map(|file| essay::read_of(kind, &file.body).ok())
-			.flat_map(|essay| essay.opening);
-		for (_, take) in given_opening {
-			if voice_repo::delete::receipt(&mut conn, subject, &take).await.map_err(voice)?.is_some() {
-				return Ok(Some(take));
-			}
-		}
-	}
-	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
-		return Ok(None);
-	};
-	let mut deleted = Vec::new();
-	for ((item, take), read) in standing.answers.iter().map(|pair| (pair, false)).chain(standing.reads.iter().map(|pair| (pair, true))) {
-		if voice_repo::delete::receipt(&mut conn, subject, take).await.map_err(voice)?.is_some() {
-			deleted.push((item.clone(), take.clone(), read));
-		}
-	}
-	if deleted.is_empty() {
-		return Ok(None);
-	}
-	let held: Vec<_> = held_essays(&mut conn, kind, subject)
-		.await?
-		.into_iter()
+/// the essay, which may be another week's. One the revision given to the
+/// render names plays it and withdraws the week. One only the newest
+/// revision names, not given yet, plays in that revision but withdraws
+/// nothing: [`essay::against`] refuses that revision when it is given, so
+/// one playing the next older take can follow. Rust Rounds only: home does
+/// not read an interview essay's opening.
+///
+/// Each take once, a withdrawing use first: the given revision's opening,
+/// then the final's answers and reads in order, then the newest revision's
+/// opening. `held` is every essay file of `kind` the subject holds.
+fn plays(kind: Kind, week: &str, held: &[mailbox_repo::HeldEssay], standing: Option<&Standing>, given: Option<u32>) -> Vec<Plays> {
+	let held: Vec<(u32, Option<essay::Essay>)> = held
+		.iter()
 		.filter_map(|file| {
 			let (of, revision) = essay::parse_name_of(kind, &file.name)?;
 			(of == week).then(|| (revision, essay::read_of(kind, &file.body).ok()))
 		})
 		.collect();
 	let newest = held.iter().map(|(revision, _)| *revision).max();
-	let revisions: Vec<_> = held
-		.into_iter()
-		.filter(|(revision, _)| Some(*revision) == newest || Some(*revision) == given)
-		.map(|(_, essay)| essay)
-		.collect();
-	for (item, take, read) in deleted {
-		let silent = |essay: &Option<essay::Essay>| {
-			essay.as_ref().is_some_and(|essay| {
-				let items = if read { &essay.reads } else { &essay.tickets };
-				items.iter().any(|(id, answered)| *id == item && *answered == essay::Answered::Silence)
-			})
-		};
-		if revisions.is_empty() || !revisions.iter().all(silent) {
-			return Ok(Some(take));
+	let opening_of = |revision: Option<u32>| -> Vec<String> {
+		if kind != Kind::RustRounds {
+			return Vec::new();
+		}
+		held
+			.iter()
+			.filter(|(held, _)| revision == Some(*held))
+			.filter_map(|(_, essay)| essay.as_ref())
+			.flat_map(|essay| essay.opening.iter().map(|(_, take)| take.clone()))
+			.collect()
+	};
+	let mut plays: Vec<Plays> = Vec::new();
+	let mut push = |take: &str, withdraws: bool| {
+		if !plays.iter().any(|play| play.take == take) {
+			plays.push(Plays { take: take.to_owned(), withdraws });
+		}
+	};
+	for take in opening_of(given) {
+		push(&take, true);
+	}
+	if let Some(standing) = standing {
+		let revisions: Vec<&Option<essay::Essay>> = held
+			.iter()
+			.filter(|(revision, _)| Some(*revision) == newest || Some(*revision) == given)
+			.map(|(_, essay)| essay)
+			.collect();
+		let pairs = standing.answers.iter().map(|pair| (pair, false)).chain(standing.reads.iter().map(|pair| (pair, true)));
+		for ((item, take), read) in pairs {
+			let silent = |essay: &&Option<essay::Essay>| {
+				essay.as_ref().is_some_and(|essay| {
+					let items = if read { &essay.reads } else { &essay.tickets };
+					items.iter().any(|(id, answered)| id == item && *answered == essay::Answered::Silence)
+				})
+			};
+			if revisions.is_empty() || !revisions.iter().all(silent) {
+				push(take, true);
+			}
+		}
+	}
+	for take in opening_of(newest) {
+		push(&take, false);
+	}
+	plays
+}
+
+/// A take `week`'s essay plays ([`plays`]) that was deleted and whose
+/// deletion withdraws the week, if any.
+///
+/// Deleting a take the essay never played, as the owner's reconciliation of
+/// an unheard one may (paulgsc/server#912, HEARD3), withdraws nothing.
+async fn deleted_take(db: &SqlitePool, kind: Kind, subject: &str, week: &str, given: Option<u32>) -> Result<Option<String>, sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	let standing = standing(&mut conn, kind, subject, week).await?;
+	// Each minute for each week on the drive, so the essays are read only
+	// when a take could withdraw it: a given Rust Rounds revision's opening,
+	// or one the final names that was deleted.
+	if kind != Kind::RustRounds || given.is_none() {
+		let named: Vec<String> = standing
+			.iter()
+			.flat_map(|standing| standing.answers.iter().chain(&standing.reads))
+			.map(|(_, take)| take.clone())
+			.collect();
+		let mut any = false;
+		for take in &named {
+			if voice_repo::delete::receipt(&mut conn, subject, take).await.map_err(voice)?.is_some() {
+				any = true;
+				break;
+			}
+		}
+		if !any {
+			return Ok(None);
+		}
+	}
+	let held = held_essays(&mut conn, kind, subject).await?;
+	for play in plays(kind, week, &held, standing.as_ref(), given).into_iter().filter(|play| play.withdraws) {
+		if voice_repo::delete::receipt(&mut conn, subject, &play.take).await.map_err(voice)?.is_some() {
+			return Ok(Some(play.take));
 		}
 	}
 	Ok(None)
+}
+
+/// One week's essay video `subject` holds, with what it may play.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WeekPlays {
+	/// The week's id.
+	pub week: String,
+	/// When home kept the week's newest revision.
+	pub at: String,
+	/// What its video may play ([`plays`]).
+	pub plays: Vec<Plays>,
+}
+
+/// Every week of `kind` whose essay `subject` holds and whose video has not
+/// gone (let go or withdrawn), oldest first, with what it may play by
+/// [`plays`], the revision given read from `essays` (the kind's
+/// [`Folders::essays`]) as [`tidy`] reads it.
+///
+/// A week more than one account holds is never given (the drive keys an
+/// essay by its week alone), so nothing it names withdraws it.
+///
+/// Cost: one read of the subject's essays of `kind`, one of its gone weeks,
+/// and per week held two indexed reads and one small file's read.
+///
+/// # Errors
+/// A storage failure.
+pub(crate) async fn uses(conn: &mut sqlx::SqliteConnection, kind: Kind, subject: &str, essays: &Path) -> Result<Vec<WeekPlays>, sqlx::Error> {
+	let held = held_essays(conn, kind, subject).await?;
+	let gone = rust_round_repo::essay_video::let_go(conn, kind, subject).await?;
+	let mut weeks = Vec::new();
+	for (week, _, file) in newest(kind, held.clone()) {
+		if gone.contains(&week) {
+			continue;
+		}
+		let given = given_revision(&essays.join(&week)).await;
+		let standing = standing(conn, kind, subject, &week).await?;
+		let mut plays = plays(kind, &week, &held, standing.as_ref(), given);
+		if holders(conn, kind, &week).await? > 1 {
+			for play in &mut plays {
+				play.withdraws = false;
+			}
+		}
+		weeks.push(WeekPlays { week, at: file.pulled_at, plays });
+	}
+	Ok(weeks)
 }
 
 /// Removes every `.<name>.partial` directly under `folder`; how many could
@@ -1051,6 +1147,14 @@ mod tests {
 			status: dir.join("status"),
 			work: dir.join("work"),
 		}
+	}
+
+	/// What the badge shows `take` as on `kind`'s weeks ([`uses`], C1381):
+	/// whether its deletion withdraws a week, `None` when no week uses it.
+	async fn badge(pool: &SqlitePool, kind: Kind, folders: &Folders, take: &str) -> Option<bool> {
+		let mut conn = pool.acquire().await.unwrap();
+		let weeks = uses(&mut conn, kind, ME, &folders.essays).await.unwrap();
+		weeks.into_iter().flat_map(|week| week.plays).find(|play| play.take == take).map(|play| play.withdraws)
 	}
 
 	async fn hold(pool: &SqlitePool, seq: i64, name: &str, body: &str) {
@@ -1516,6 +1620,13 @@ mod tests {
 		names.sort();
 		assert_eq!(names, ["QM-311.ogg", "QM-311.words.json", "opening.1.ogg", "opening.2.ogg"]);
 
+		// The badge says what the given essay plays, each take's deletion
+		// withdrawing it, the reused take of another week's included.
+		for take in ["note-o1", "note-o2", TAKE] {
+			assert_eq!(badge(&pool, Kind::RustRounds, &folders, take).await, Some(true), "{take}");
+		}
+		assert_eq!(badge(&pool, Kind::RustRounds, &folders, "note-o1-old").await, None, "superseded, never given");
+
 		// Deleting w45's take of question 2, which the given essay plays.
 		for statement in [
 			"DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = 'note-o2'",
@@ -1572,6 +1683,10 @@ mod tests {
 				std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 				std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
 			}
+			// The badge and the withdraw read one rule: listed exactly when
+			// its deletion withdraws the week.
+			let shown = badge(&pool, Kind::RustRounds, &folders, "note-311").await;
+			assert_eq!(shown, plays.then_some(true), "given first: {given_first}, plays: {plays}, older plays: {older_plays}");
 			let mut conn = pool.acquire().await.unwrap();
 			let deleted = voice_repo::delete::delete(&mut conn, ME, "note-311", voice_repo::delete::SWITCHED_ON, now).await.unwrap();
 			assert!(matches!(deleted, voice_repo::delete::Deleted::Gone(_)), "an unheard take may go");
@@ -1605,6 +1720,7 @@ mod tests {
 		export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
 		std::fs::create_dir_all(folders.renders.join("2026-w46")).unwrap();
 		std::fs::write(folders.renders.join("2026-w46").join(VIDEO), b"video").unwrap();
+		assert_eq!(badge(&pool, Kind::RustRounds, &folders, TAKE).await, Some(true), "the badge warns before");
 
 		delete_take(&pool).await;
 		let tidied = tidy(&pool, Kind::RustRounds, Some(ME), &folders, AFTER).await.unwrap();
@@ -1645,6 +1761,7 @@ mod tests {
 		let folders = super::tests::folders(dir.path());
 		final_week(&pool).await;
 		hold_take(&pool).await;
+		assert_eq!(badge(&pool, Kind::RustRounds, &folders, TAKE).await, Some(true), "a week not given yet uses it too");
 		delete_take(&pool).await;
 		assert_eq!(
 			export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap(),
@@ -1929,6 +2046,7 @@ mod tests {
 		let folders = folders(dir.path());
 		interview_week(&pool, ["take", "silence"]).await;
 		assert_eq!(export(&pool, Kind::Interview, ME, &folders, AFTER).await.unwrap().written, 1);
+		assert_eq!(badge(&pool, Kind::Interview, &folders, note).await, Some(true), "{note}");
 		for statement in [
 			"DELETE FROM voice_note_audio WHERE subject_id = ?1 AND note_id = ?2",
 			"DELETE FROM voice_note WHERE subject_id = ?1 AND note_id = ?2",
@@ -1943,7 +2061,78 @@ mod tests {
 		let mut conn = pool.acquire().await.unwrap();
 		let withdrawn = rust_round_repo::essay_video::withdrawn(&mut conn, Kind::Interview, ME).await.unwrap();
 		assert_eq!(withdrawn.iter().map(|w| (w.week.as_str(), w.note.as_str())).collect::<Vec<_>>(), [("2026-w46", note)]);
+		drop(conn);
+		assert_eq!(badge(&pool, Kind::Interview, &folders, note).await, None, "a withdrawn week uses nothing");
+		let mut conn = pool.acquire().await.unwrap();
 		assert!(rust_round_repo::essay_video::let_go(&mut conn, Kind::RustRounds, ME).await.unwrap().is_empty());
+	}
+
+	/// [`plays`], the one rule the tidy withdraws by and the badge shows: a
+	/// take the newest or given revision may play is listed, one only a
+	/// revision not given names in its opening never withdraws, and a
+	/// revision that does not read plays everything its week names.
+	#[test]
+	fn plays_is_every_take_a_revision_home_could_render_may_play() {
+		let held = |name: &str, body: String| mailbox_repo::HeldEssay {
+			name: name.to_owned(),
+			pulled_at: String::from("then"),
+			body: body.into_bytes(),
+		};
+		let with_opening = |kinds: [&str; 2], take: &str| {
+			let mut body: serde_json::Value = serde_json::from_str(&essay("2026-w46", kinds)).unwrap();
+			body["opening"] = json!({ "exchanges": [{ "n": 1, "ask": "Why?", "transcript": "t", "take": take }] });
+			body.to_string()
+		};
+		let standing = Standing {
+			draft: false,
+			answers: vec![(String::from("QM-311"), String::from(TAKE)), (String::from("QM-312"), String::from("note-312"))],
+			reads: Vec::new(),
+		};
+		let shown = |held: &[mailbox_repo::HeldEssay], given: Option<u32>| {
+			plays(Kind::RustRounds, "2026-w46", held, Some(&standing), given)
+				.into_iter()
+				.map(|play| (play.take, play.withdraws))
+				.collect::<Vec<_>>()
+		};
+		let one = [held("rust-essay-2026-w46.json", with_opening(["take", "silence"], "note-o1"))];
+		assert_eq!(
+			shown(&one, None),
+			[(String::from(TAKE), true), (String::from("note-o1"), false)],
+			"not given: its opening is refused, not withdrawn, on a deleted take; a silence plays nothing"
+		);
+		assert_eq!(
+			shown(&one, Some(1)),
+			[(String::from("note-o1"), true), (String::from(TAKE), true)],
+			"given: its opening withdraws it"
+		);
+		let two = [
+			held("rust-essay-2026-w46.json", with_opening(["take", "take"], "note-o1")),
+			held("rust-essay-2026-w46-r2.json", with_opening(["silence", "silence"], "note-o2")),
+		];
+		assert_eq!(
+			shown(&two, Some(1)),
+			[
+				(String::from("note-o1"), true),
+				(String::from(TAKE), true),
+				(String::from("note-312"), true),
+				(String::from("note-o2"), false)
+			],
+			"the given revision plays what the newest calls a silence"
+		);
+		assert_eq!(shown(&two, Some(2)), [(String::from("note-o2"), true)], "both silent in the revision given and the newest");
+		let unreadable = [held("rust-essay-2026-w46.json", String::from("{"))];
+		assert_eq!(
+			shown(&unreadable, None),
+			[(String::from(TAKE), true), (String::from("note-312"), true)],
+			"a revision that does not read plays every take its week names"
+		);
+		assert_eq!(
+			plays(Kind::RustRounds, "2026-w46", &[], Some(&standing), None).len(),
+			2,
+			"no revision held: every take the week names"
+		);
+		let other_week = [held("rust-essay-2026-w47.json", essay("2026-w47", ["silence", "silence"]))];
+		assert_eq!(shown(&other_week, None).len(), 2, "another week's essay is not this week's");
 	}
 
 	#[test]

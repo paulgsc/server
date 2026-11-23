@@ -114,6 +114,7 @@ where
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
+	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	vec![
@@ -185,6 +186,7 @@ where
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
+	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	split(|module| {
@@ -206,6 +208,7 @@ where
 	Option<crate::meaning::MeaningContext>: FromRef<S>,
 	crate::mailbox::Outbox: FromRef<S>,
 	crate::transcribe::Hears: FromRef<S>,
+	crate::take_uses::UsesFrom: FromRef<S>,
 	crate::handlers::clips::ClipFrames: FromRef<S>,
 {
 	modules().into_iter().fold((Router::new(), Router::new()), |(versioned, unversioned), module| {

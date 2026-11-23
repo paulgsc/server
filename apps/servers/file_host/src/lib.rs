@@ -53,6 +53,7 @@ pub mod snips;
 pub mod stage;
 pub mod storage;
 pub mod subject;
+pub mod take_uses;
 pub mod trace;
 pub mod transcribe;
 pub mod utils;

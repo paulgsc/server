@@ -117,6 +117,10 @@ pub struct NoteKept {
 	/// while home holds it. The receipt is in My data's list of what was
 	/// deleted, while the note, its words and its counts stay here.
 	pub recording_let_go_at: Option<String>,
+	/// The videos home holds that play it ([`crate::used`]); empty here,
+	/// filled by `file_host`'s `take_uses`, which reads the render passes'
+	/// own rule.
+	pub used_by: Vec<crate::used::Use>,
 }
 
 /// One `voice_note` row as [`newest`] reads it, with its chosen ending.
@@ -166,6 +170,7 @@ impl Row {
 			heard_cut,
 			plays_back: self.let_go_at.is_none() && PLAYED_BACK.contains(&of),
 			recording_let_go_at: self.let_go_at,
+			used_by: Vec::new(),
 		})
 	}
 }
