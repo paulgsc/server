@@ -708,37 +708,34 @@ tests:
         alertname: DeployFailed
         exp_alerts: []
 
-  - name: a rollback by the deploy that heals an unreadable record is DeployFailed (#1208)
-    # The record read 3 rollbacks, then could not be read (NaN), then the
-    # deploy that rewrote it from nothing rolled back: 1. Without dropping
-    # the NaN samples, increase() is NaN or negative here and never fires.
+  - name: a rollback by the deploy that heals a record unreadable for 2 hours is DeployFailed (#1208)
+    # The record read 3 rollbacks, then could not be read for 2.5 hours, which
+    # file_host holds at 3 (C1511); the deploy that rewrote it from nothing
+    # rolled back: 1.
     interval: 1m
     input_series:
       - series: 'home_deploy_runs{job="file_host",outcome="rolled_back"}'
-        values: '3x10 NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN 1x60'
+        values: '3x160 1x60'
     alert_rule_test:
-      - eval_time: 9m
+      - eval_time: 150m
         alertname: DeployFailed
         exp_alerts: []
-      - eval_time: 25m
+      - eval_time: 165m
         alertname: DeployFailed
         exp_alerts:
           - exp_labels:
               objective: HD2
               says: "Home's on-demand deploy rolled back or failed in the last hour: `journalctl -u home-deploy` says why. If it names a missing or refused variable, the image needs a newer checkout on home."
 
-  - name: an unreadable record that reads again unchanged is not DeployFailed (#1208)
+  - name: a record unreadable for 2 hours that reads again unchanged is not DeployFailed (#1208)
     interval: 1m
     input_series:
       - series: 'home_deploy_runs{job="file_host",outcome="rolled_back"}'
-        values: '3x10 NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN 3x60'
+        values: '3x220'
       - series: 'home_deploy_runs{job="file_host",outcome="failed"}'
-        values: '0x10 NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN 0x60'
+        values: '0x220'
     alert_rule_test:
-      - eval_time: 15m
-        alertname: DeployFailed
-        exp_alerts: []
-      - eval_time: 25m
+      - eval_time: 165m
         alertname: DeployFailed
         exp_alerts: []
 

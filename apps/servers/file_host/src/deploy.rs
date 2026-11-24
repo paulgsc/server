@@ -179,9 +179,10 @@ pub(crate) fn decide(needs: u32, now: i64, recorded: &Recorded, marker_waiting: 
 
 /// What [`FOLDER`]'s `state.json` says: nothing recorded when it is
 /// missing, and an error when it is there and can't be read or parsed (HD3,
-/// #1208). Unreadable is not "nothing recorded": the sweep reads it as
-/// unknown, never as totals of 0, and holds it open at `home-deploy`'s
-/// `read_state` until a sweep reads it (`metrics::deploy::record_state`).
+/// #1208). Unreadable is not "nothing recorded": the sweep keeps the
+/// totals as it last read them and gaps the rest, never 0, and holds it
+/// open at `home-deploy`'s `read_state` until a sweep reads it
+/// (`metrics::deploy::record_state`).
 /// `/compat` still decides as if nothing were recorded, so a newer client's
 /// deploy runs and a garbled record is written anew. One envctl can't
 /// replace either (a directory in its place, no permission) does not heal:

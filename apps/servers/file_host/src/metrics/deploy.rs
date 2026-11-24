@@ -50,44 +50,68 @@ const fn seconds(value: i64) -> f64 {
 	value as f64
 }
 
+/// What the gauge sweep remembers between ticks: the deploy's totals as it
+/// last read them, and whether each file was unreadable at the last tick.
+/// Held by the sweep's task, in memory only, so a restart starts it empty.
+#[derive(Debug, Default)]
+pub struct Last {
+	totals: Option<crate::deploy::Counts>,
+	record_unreadable: bool,
+	marker_unreadable: bool,
+}
+
 /// What home's deploy recorded, at `now` (seconds since the epoch), with
 /// the marker's time if one is waiting and the migration backups held.
 ///
 /// `recorded` is an error when `state.json` is there and can't be read, and
 /// `marker_since` an error when the marker can't be read (`Ok(None)`: no
-/// marker). Either unknown is `NaN`, a gap on the graph, never 0 (HD3,
-/// #1208): a total read as 0 and then as itself again would be a reset and
-/// an increase `DeployFailed` reads as a failure. `DeployFailed` drops the
-/// `NaN` samples before `increase()`, so the gap is absent to it and the
-/// totals the healing deploy writes anew still read as a reset it sees.
+/// marker). Unknown is never 0 (HD3, #1208): a total read as 0 and then as
+/// itself again would be a reset and an increase `DeployFailed` reads as a
+/// failure. So while the record can't be read:
+///
+/// - the run totals stay as `last` last read them, since a running total that
+///   was read is still true as a lower bound, and the deploy that rewrites
+///   the record anew then reads as a reset `DeployFailed` sees, however long
+///   it was unreadable. After a restart nothing was read, so they are
+///   absent until a tick reads them (the coordinator's call C1511, after
+///   `NaN` on the totals hid that reset from `increase()`);
+/// - the last run's time and exit code and the newest epoch seen, which
+///   state a current value, are `NaN`, a gap, as is the marker's age when it
+///   can't be read.
 ///
 /// This sweep is the pass that looks, so it holds each unreadable file open
 /// at `home-deploy`'s `read_state` and `read_marker` (docs/home-compute.md,
-/// invariant 9: a level, never a recount) and logs why at `warn`.
-/// `HomeFailuresOpen` tells the owner while one stays unreadable; `/compat`
-/// decides on it without saying it again on every ask.
-pub fn record_state(recorded: &std::io::Result<Recorded>, marker_since: &std::io::Result<Option<i64>>, now: i64, backups: (u64, u64)) {
-	if let Err(err) = recorded {
-		tracing::warn!(error = %err, "home's deploy record can't be read: its gauges are unknown");
+/// invariant 9: a level, never a recount) and logs why at `warn` when a
+/// file turns unreadable, not on every tick (the sweep runs every few
+/// seconds). `HomeFailuresOpen` tells the owner while one stays unreadable;
+/// `/compat` decides on it without saying it again on every ask.
+pub fn record_state(last: &mut Last, recorded: &std::io::Result<Recorded>, marker_since: &std::io::Result<Option<i64>>, now: i64, backups: (u64, u64)) {
+	if let (Err(err), false) = (recorded, last.record_unreadable) {
+		tracing::warn!(error = %err, "home's deploy record can't be read: its totals stay as last read");
 	}
-	if let Err(err) = marker_since {
+	if let (Err(err), false) = (marker_since, last.marker_unreadable) {
 		tracing::warn!(error = %err, "home's deploy marker can't be read: its age is unknown");
 	}
-	crate::failure::open(crate::failure::Step::HomeDeployReadState, usize::from(recorded.is_err()));
-	crate::failure::open(crate::failure::Step::HomeDeployReadMarker, usize::from(marker_since.is_err()));
-	let counts = recorded.as_ref().map(|recorded| &recorded.counts);
-	let total = |value: fn(&crate::deploy::Counts) -> u64| counts.as_ref().map_or(f64::NAN, |counts| as_f64(value(counts)));
-	for (outcome, value) in [
-		("deployed", total(|counts| counts.deployed)),
-		("rolled_back", total(|counts| counts.rolled_back)),
-		("failed", total(|counts| counts.failed)),
-		("no_newer_image", total(|counts| counts.no_newer_image)),
-		("deferred", total(|counts| counts.deferred)),
-	] {
-		metrics::gauge!("home_deploy_runs", "outcome" => outcome).set(value);
+	last.record_unreadable = recorded.is_err();
+	last.marker_unreadable = marker_since.is_err();
+	crate::failure::open(crate::failure::Step::HomeDeployReadState, usize::from(last.record_unreadable));
+	crate::failure::open(crate::failure::Step::HomeDeployReadMarker, usize::from(last.marker_unreadable));
+	if let Ok(recorded) = recorded {
+		last.totals = Some(recorded.counts.clone());
 	}
-	metrics::gauge!("home_deploy_pulls").set(total(|counts| counts.pulls));
-	metrics::gauge!("home_deploy_pulled_bytes").set(total(|counts| counts.pulled_bytes));
+	if let Some(counts) = &last.totals {
+		for (outcome, value) in [
+			("deployed", counts.deployed),
+			("rolled_back", counts.rolled_back),
+			("failed", counts.failed),
+			("no_newer_image", counts.no_newer_image),
+			("deferred", counts.deferred),
+		] {
+			metrics::gauge!("home_deploy_runs", "outcome" => outcome).set(as_f64(value));
+		}
+		metrics::gauge!("home_deploy_pulls").set(as_f64(counts.pulls));
+		metrics::gauge!("home_deploy_pulled_bytes").set(as_f64(counts.pulled_bytes));
+	}
 	recorded.as_ref().map_or_else(
 		|_| {
 			metrics::gauge!("home_deploy_last_run_timestamp_seconds").set(f64::NAN);
@@ -114,15 +138,15 @@ pub fn record_state(recorded: &std::io::Result<Recorded>, marker_since: &std::io
 
 #[cfg(test)]
 mod tests {
-	use super::record_state;
+	use super::{record_state, Last};
 	use crate::deploy::{Counts, Recorded};
 	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 	/// Every gauge `record_state` set, by name and `outcome` or `step` label.
-	fn gauges(state: &std::io::Result<Recorded>, marker: &std::io::Result<Option<i64>>) -> Vec<(String, f64)> {
+	fn gauges(last: &mut Last, state: &std::io::Result<Recorded>, marker: &std::io::Result<Option<i64>>) -> Vec<(String, f64)> {
 		let recorder = DebuggingRecorder::new();
 		let snapshotter = recorder.snapshotter();
-		metrics::with_local_recorder(&recorder, || record_state(state, marker, 1_000, (0, 0)));
+		metrics::with_local_recorder(&recorder, || record_state(last, state, marker, 1_000, (0, 0)));
 		snapshotter
 			.snapshot()
 			.into_vec()
@@ -148,37 +172,57 @@ mod tests {
 		gauges.iter().find(|(name, _)| *name == format!("failures_open/{step}")).map(|(_, value)| *value)
 	}
 
-	/// HD3 (#1208): a record that can't be read is a gap on every deploy
-	/// gauge, and a marker that can't be read a gap on its age, never 0, so
-	/// neither a reset `DeployFailed` reads as failures nor an age
-	/// `DeployStuck` can't see.
+	fn value(gauges: &[(String, f64)], name: &str) -> Option<f64> {
+		gauges.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
+	}
+
+	fn garbled<T>() -> std::io::Result<T> {
+		Err(std::io::Error::other("garbled"))
+	}
+
+	/// HD3 (#1208), C1511: while the record can't be read its run totals
+	/// stay as last read (a lower bound still true), so the deploy that
+	/// writes it anew reads as a reset `DeployFailed` sees; read from no
+	/// earlier tick (a restart) they are absent, never 0. What states a
+	/// current value (the last run, the newest epoch, the marker's age) is a
+	/// gap. Family: unreadable from the start, read then unreadable, then
+	/// read anew; the marker absent, waiting, unreadable.
 	#[test]
-	fn an_unreadable_record_or_marker_is_a_gap_never_zero() {
-		let unreadable = gauges(&Err(std::io::Error::other("garbled")), &Err(std::io::Error::other("unreadable")));
-		assert!(unreadable.len() >= 10, "{unreadable:?}");
-		for (name, value) in unreadable.iter().filter(|(name, _)| name.starts_with("home_deploy")) {
-			assert!(value.is_nan(), "{name} = {value}");
+	fn an_unreadable_record_holds_its_totals_and_gaps_the_rest_never_zero() {
+		let mut last = Last::default();
+		let first = gauges(&mut last, &garbled(), &garbled());
+		assert_eq!(value(&first, "home_deploy_runs/rolled_back"), None, "nothing read since the start: absent");
+		assert_eq!(value(&first, "home_deploy_pulls"), None);
+		for name in [
+			"home_deploy_last_run_timestamp_seconds",
+			"home_deploy_last_exit_code",
+			"home_deploy_latest_seen_epoch",
+			"home_deploy_wanted_age_seconds",
+		] {
+			assert!(value(&first, name).is_some_and(f64::is_nan), "{name}: {first:?}");
 		}
 
-		let recorded = Recorded {
+		let recorded = |rolled_back| Recorded {
 			counts: Counts {
-				rolled_back: 2,
+				rolled_back,
+				pulls: 4,
 				..Counts::default()
 			},
 			..Recorded::default()
 		};
-		let readable = gauges(&Ok(recorded.clone()), &Ok(None));
-		let value = |name: &str| readable.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
-		assert_eq!(value("home_deploy_runs/rolled_back"), Some(2.0));
-		assert_eq!(value("home_deploy_runs/failed"), Some(0.0));
-		assert_eq!(value("home_deploy_wanted_age_seconds"), Some(0.0), "no marker is an age of 0");
-		assert_eq!(
-			gauges(&Ok(recorded.clone()), &Ok(Some(400)))
-				.iter()
-				.find(|(n, _)| n == "home_deploy_wanted_age_seconds")
-				.map(|(_, v)| *v),
-			Some(600.0)
-		);
+		let read = gauges(&mut last, &Ok(recorded(3)), &Ok(None));
+		assert_eq!(value(&read, "home_deploy_runs/rolled_back"), Some(3.0));
+		assert_eq!(value(&read, "home_deploy_runs/failed"), Some(0.0));
+		assert_eq!(value(&read, "home_deploy_wanted_age_seconds"), Some(0.0), "no marker is an age of 0");
+
+		let held = gauges(&mut last, &garbled(), &Ok(Some(400)));
+		assert_eq!(value(&held, "home_deploy_runs/rolled_back"), Some(3.0), "held as last read");
+		assert_eq!(value(&held, "home_deploy_pulls"), Some(4.0));
+		assert!(value(&held, "home_deploy_latest_seen_epoch").is_some_and(f64::is_nan));
+		assert_eq!(value(&held, "home_deploy_wanted_age_seconds"), Some(600.0));
+
+		let healed = gauges(&mut last, &Ok(recorded(1)), &Ok(None));
+		assert_eq!(value(&healed, "home_deploy_runs/rolled_back"), Some(1.0), "written anew: a reset, then its own outcome");
 	}
 
 	/// HD3 (#1208), invariant 9: each unreadable file is held open, as a
@@ -186,14 +230,13 @@ mod tests {
 	/// Family: record unreadable, marker unreadable, both, neither.
 	#[test]
 	fn an_unreadable_record_or_marker_is_held_open_until_read() {
-		let garbled = || Err(std::io::Error::other("garbled"));
 		for (recorded, marker, state_open, marker_open) in [
 			(garbled(), Ok(None), 1.0, 0.0),
 			(Ok(Recorded::default()), garbled(), 0.0, 1.0),
 			(garbled(), garbled(), 1.0, 1.0),
 			(Ok(Recorded::default()), Ok(Some(400)), 0.0, 0.0),
 		] {
-			let set = gauges(&recorded, &marker);
+			let set = gauges(&mut Last::default(), &recorded, &marker);
 			assert_eq!(open(&set, "read_state"), Some(state_open), "{set:?}");
 			assert_eq!(open(&set, "read_marker"), Some(marker_open), "{set:?}");
 		}

@@ -88,10 +88,11 @@ pub async fn compat(State(state): State<AppState>, Query(query): Query<CompatQue
 /// The answer for `needs` at `now`, against the deploy folder `folder`.
 fn answer(folder: &Path, needs: u32, now: i64, rate_limit: Option<RateLimit>) -> CompatResponse {
 	// HD3 (#1208): a record or marker that can't be read is decided on as if
-	// absent, and not said here: the gauge sweep holds it open at
-	// `home-deploy`'s `read_state`/`read_marker` (`metrics::deploy`), so it
-	// is told once as a level, not once per ask (docs/home-compute.md,
-	// invariant 9). With no record there is no last pull, so neither
+	// absent, and said here only at debug: the gauge sweep reads both every
+	// tick and holds one that stays unreadable open at `home-deploy`'s
+	// `read_state`/`read_marker` (`metrics::deploy`), so a lasting one is
+	// told once as a level, not once per ask (docs/home-compute.md,
+	// invariant 9). One that fails only at this ask is in the debug line. With no record there is no last pull, so neither
 	// `PULL_GAP` nor `UNMET_RETRY` holds a newer client back: the deploy it
 	// asks for runs and, when envctl can replace the record, writes it anew.
 	// A marker that is there after all can't be linked over (`request`),
@@ -99,11 +100,17 @@ fn answer(folder: &Path, needs: u32, now: i64, rate_limit: Option<RateLimit>) ->
 	// which alerts.
 	let recorded = match deploy::read_recorded(folder) {
 		Ok(recorded) => recorded,
-		Err(_held_open) => deploy::Recorded::default(),
+		Err(err) => {
+			tracing::debug!(needs, error = %err, "home's deploy record can't be read: deciding as if nothing were recorded");
+			deploy::Recorded::default()
+		}
 	};
 	let marker_waiting = match deploy::marker_since(folder) {
 		Ok(since) => since.is_some(),
-		Err(_held_open) => false,
+		Err(err) => {
+			tracing::debug!(needs, error = %err, "home's deploy marker can't be read: deciding as if none were waiting");
+			false
+		}
 	};
 	let mut decision = deploy::decide(needs, now, &recorded, marker_waiting);
 	if decision.deploy == Deploy::Wanted {

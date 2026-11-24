@@ -141,8 +141,12 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    counted, since process memory cannot tell the first boot after a deploy
    from any other restart, and a record of it would be a new store
    (the coordinator's call on #1201, 2026-11-24). The owner's choice on #1201 (2026-11-24): a gauge, not a
-   counted-once table. Held by `failure`'s and the mailbox pass's tests and
-   `HomeFailuresOpen`'s promtool cases.
+   counted-once table. The deploy's gauge sweep (`metrics::deploy`) holds
+   home's deploy record or marker open while it can't be read
+   (`home-deploy`'s `read_state`/`read_marker`, #1208), and logs it when it
+   turns unreadable, not on every tick. Held by `failure`'s, the mailbox
+   pass's and `metrics::deploy`'s tests and `HomeFailuresOpen`'s promtool
+   cases.
 
 ## Classes: who is low priority, and what that means
 
