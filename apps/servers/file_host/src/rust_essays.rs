@@ -1170,14 +1170,16 @@ pub(crate) async fn waits_on(db: &SqlitePool, kind: Kind, subject: &str, status:
 		let refused = tokio::fs::try_exists(status.join(String::from(week) + ".refused.log")).await.unwrap_or(false);
 		return Ok(Some(if refused { WaitsOn::EssayRefused } else { WaitsOn::EssayWaiting }));
 	}
-	let Some(standing) = standing(&mut conn, kind, subject, week).await? else {
-		// Nothing sent: every item is a silence, nothing to hear.
-		return Ok(None);
-	};
-	if standing.draft {
-		return Ok(Some(WaitsOn::NotFinal));
+	// Nothing sent of the week: every item is a silence, but its opening may
+	// still play a take sent in an earlier week, which the routine waits on
+	// as any.
+	let mut takes: Vec<String> = Vec::new();
+	if let Some(standing) = standing(&mut conn, kind, subject, week).await? {
+		if standing.draft {
+			return Ok(Some(WaitsOn::NotFinal));
+		}
+		takes.extend(standing.answers.into_iter().chain(standing.reads).map(|(_, take)| take));
 	}
-	let mut takes: Vec<String> = standing.answers.into_iter().chain(standing.reads).map(|(_, take)| take).collect();
 	if kind == Kind::RustRounds {
 		if let Some(held) = held_rust_week(&mut conn, subject, week).await? {
 			takes.extend(
@@ -1619,6 +1621,31 @@ mod tests {
 			None,
 			"another kind's week is not this one's"
 		);
+	}
+
+	/// A week nothing was sent of may still open with a take sent in an
+	/// earlier week (paulgsc/some-ui#3269): the routine waits on it as on any,
+	/// so the board says so, not that nothing was written.
+	#[tokio::test]
+	async fn an_unsent_week_still_waits_on_an_opening_take_from_an_earlier_week() {
+		let pool = pool().await;
+		let week = json!({
+			"schema": "some-ui.rust-week/1", "id": "2026-w46", "opens": "2026-11-09T00:00:00.000-08:00", "due": DUE,
+			"opening": { "version": 1, "exchanges": [{ "ask": "Why?", "script": "paulgsc here." }] },
+			"tickets": [{ "id": "QM-311", "program": "fn main() {}\n" }],
+		});
+		hold(&pool, 1, &rust_round_repo::week::mailbox_name("2026-w46"), &week.to_string()).await;
+		let w45 = json!({ "week": "2026-w45", "at": "2026-11-08T10:00:00.000Z", "answers": [], "passed": [], "opening": [
+			opening_json(1, "note-o1", "2026-11-07T10:00:00.000Z"),
+		] });
+		sqlx::query("INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w45', 'then', ?2, 'then')")
+			.bind(ME)
+			.bind(w45.to_string())
+			.execute(&pool)
+			.await
+			.unwrap();
+		let status = tempfile::tempdir().unwrap();
+		assert_eq!(waits_on(&pool, Kind::RustRounds, ME, status.path(), "2026-w46").await.unwrap(), Some(WaitsOn::TakeHearing));
 	}
 
 	/// A refusal is of the revision it read: a corrected revision that waits
