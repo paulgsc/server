@@ -22,7 +22,10 @@ flags), and a forced lint is reported through any `#[allow]` or `#[expect]`,
 with or without a `reason`, by a lint group or `warnings`, on an item, a
 statement or a whole module. Clippy reads the scopes, so nothing here does.
 A new erasure is fixed (returned, or counted with `Failure::record`), or it
-fails: a stated reason does not excuse one. `--probe` holds that against the
+fails: a stated reason does not excuse one. A macro's erasure is counted once
+per call site, so a new use of an old erasing macro is new. The rules
+themselves are checked too: the root `clippy.toml` must name each erasure
+method, and no crate may carry a `clippy.toml` of its own. `--probe` holds that against the
 real clippy, on a scratch crate with this repo's `clippy.toml`: the
 associated-function form, a reasoned `#[expect]` on an `if` with no `;`, a
 function reference with generics, `#[allow(warnings)]`, `#![allow]` and
@@ -59,7 +62,7 @@ Three comparisons, as the clippy ratchet makes them:
 
 A finding's identity is the clippy ratchet's own (file, lint, enclosing item,
 source text), counted. What the lints do not see, and review covers:
-`map_err(|_e| ...)` (a named, unused binding), `is_ok()`/`is_err()` as the
+`map_err(|_e| ...)` and `let _e = result;` (named, unused bindings), `is_ok()`/`is_err()` as the
 only use, `map_or`/`map_or_else`, `if let Ok(..)` and `let Ok(x) = .. else`,
 `Err(_) => default` arms, `.flatten()` over `Result`s, and `drop(result)`.
 
@@ -96,6 +99,35 @@ LEVEL_SOURCE = re.compile(r"on by default$|^requested on the command line with |
 FORCED = re.compile(r"^requested on the command line with `--force-warn ")
 
 
+def call_sites(message: dict) -> tuple:
+	"""Where each macro expansion behind a finding was invoked, outermost last. A finding inside a
+	`macro_rules!` body has the body as its primary span at every use, so without this a new use
+	of an old erasing macro would fold into the finding already recorded."""
+	sites = []
+	expansion = clippy.primary_span(message).get("expansion")
+	while expansion:
+		span = expansion.get("span") or {}
+		sites.append((span.get("file_name"), span.get("line_start"), span.get("column_start")))
+		expansion = span.get("expansion")
+	return tuple(sites)
+
+
+def config_problems(root: Path) -> list[str]:
+	"""The rules this ratchet relies on, as clippy would read them: the root `clippy.toml` names
+	every erasure method, and no crate has a `clippy.toml` of its own, which clippy would read
+	instead of the root's (dropping the `Result` rules for that crate, with nothing to see)."""
+	problems = []
+	listed = subprocess.run(["git", "ls-files", "-z", "--", "*clippy.toml"], cwd=root, capture_output=True, check=True)
+	for name in sorted(name for name in listed.stdout.decode().split("\0") if name):
+		if name != "clippy.toml" and Path(name).name in ("clippy.toml", ".clippy.toml"):
+			problems.append(f"::error::{name} replaces the root clippy.toml for its crate, and with it the erasure rules: merge it into the root one")
+	config = (root / "clippy.toml").read_text(encoding="utf-8") if (root / "clippy.toml").is_file() else ""
+	for method in sorted(clippy.ERASURE_METHODS):
+		if not re.search(r'path\s*=\s*"' + re.escape(method) + '"', config):
+			problems.append(f"::error::clippy.toml's disallowed-methods no longer names {method}: the erasure ratchet cannot see it")
+	return problems
+
+
 class NotForced(ValueError):
 	"""The clippy output was not made with the erasure lints forced."""
 
@@ -112,7 +144,7 @@ def read(stream) -> tuple[Counter, list[str], bool]:
 		sources.extend(child.get("message", "") for child in message.get("children", []) if LEVEL_SOURCE.search(child.get("message", "")))
 		return True
 
-	findings, errors, succeeded = clippy.read(stream, keep=keep)
+	findings, errors, succeeded = clippy.read(stream, keep=keep, site=call_sites)
 	if errors or not succeeded:
 		return findings, errors, succeeded
 	unforced = sorted({source for source in sources if not FORCED.match(source)})
@@ -169,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
 	if args.messages is None:
 		parser.error("the clippy messages are required")
 
+	configured = config_problems(clippy.REPO_ROOT)
+	if configured:
+		print("\n".join(configured))
+		return 1
 	with args.messages.open(encoding="utf-8") as stream:
 		try:
 			findings, errors, succeeded = read(stream)
@@ -254,6 +290,17 @@ pub mod inner {
     }
 }
 
+// A macro's erasure, once per call site: its span is the macro body at each use.
+macro_rules! quietly {
+    ($e:expr) => {
+        $e.ok()
+    };
+}
+#[allow(clippy::disallowed_methods)]
+pub fn macro_uses(s: &str) -> (Option<u8>, Option<u16>) {
+    (quietly!(s.parse::<u8>()), quietly!(s.parse::<u16>()))
+}
+
 // Another disallowed_methods policy under a bare allow: not this ratchet's.
 #[allow(clippy::disallowed_methods)]
 pub fn other_policy() -> bool {
@@ -273,6 +320,7 @@ PROBE_EXPECTED = Counter(
 		("clippy::disallowed_methods", '"1".parse::<u8>().unwrap_or_else(|_| 0) + u8::from(mapped.is_ok())'): 1,
 		("clippy::disallowed_methods", "s.parse::<u8>().unwrap_or(7)"): 1,
 		("clippy::disallowed_methods", "s.parse::<u8>().ok()"): 1,
+		("clippy::disallowed_methods", "$e.ok()"): 2,
 	}
 )
 
@@ -435,6 +483,31 @@ def self_test() -> int:
 			messages.write_text("", encoding="utf-8")
 			code, out = _run(str(messages))
 			assert code == 1 and "did not build" in out, "an unfinished build fails"
+
+			# One macro body, two call sites: two findings; the same call site twice (lib and lib test): one.
+			def expanded(line: int) -> str:
+				record = json.loads(OK)
+				record["message"]["spans"][0]["expansion"] = {"span": {"file_name": "apps/x/src/lib.rs", "line_start": line, "column_start": 5}}
+				return json.dumps(record)
+
+			macro, _, _ = read(_stream(expanded(20), expanded(30), expanded(30)))
+			assert sum(macro.values()) == 2, macro
+
+			# The rules themselves: every erasure method named at the root, and no crate's own clippy.toml.
+			repo = root / "repo"
+			(repo / "crates/a").mkdir(parents=True)
+			shutil.copy(clippy.REPO_ROOT / "clippy.toml", repo / "clippy.toml")
+			subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+			subprocess.run(["git", "add", "clippy.toml"], cwd=repo, check=True)
+			assert config_problems(repo) == [], config_problems(repo)
+			(repo / "crates/a/clippy.toml").write_text("", encoding="utf-8")
+			subprocess.run(["git", "add", "crates/a/clippy.toml"], cwd=repo, check=True)
+			assert any("crates/a/clippy.toml" in line for line in config_problems(repo))
+			(repo / "crates/a/clippy.toml").unlink()
+			subprocess.run(["git", "rm", "-q", "--cached", "crates/a/clippy.toml"], cwd=repo, check=True)
+			config = (repo / "clippy.toml").read_text(encoding="utf-8")
+			(repo / "clippy.toml").write_text(config.replace('"core::result::Result::unwrap_or_default"', '"core::option::Option::unwrap_or_default"'), encoding="utf-8")
+			assert [line for line in config_problems(repo) if "unwrap_or_default" in line], config_problems(repo)
 		finally:
 			BASELINE = saved_baseline
 	print("check_erasures self-test: ok")

@@ -181,8 +181,11 @@ def source_text(span: dict, message: dict) -> str:
 	return text or message.get("message", "")
 
 
-def read(stream, keep=not_erasure) -> tuple[Counter, list[str], bool]:
-	"""Findings per key that `keep` passes, hard compiler errors, and whether the build finished."""
+def read(stream, keep=not_erasure, site=None) -> tuple[Counter, list[str], bool]:
+	"""Findings per key that `keep` passes, hard compiler errors, and whether the build finished.
+
+	`site(message)`, if given, joins what tells two reports of one span apart
+	(check_erasures.py passes each macro call site, so a macro's erasure counts once per use)."""
 	seen: set[tuple] = set()
 	findings: Counter = Counter()
 	errors: list[str] = []
@@ -218,7 +221,7 @@ def read(stream, keep=not_erasure) -> tuple[Counter, list[str], bool]:
 		file = relative_file(span)
 		# `--all-targets` compiles a lib's sources twice (lib and lib test),
 		# and each reports the same finding; count it once.
-		occurrence = (file, span.get("line_start"), span.get("column_start"), code, message.get("message"))
+		occurrence = (file, span.get("line_start"), span.get("column_start"), code, message.get("message"), site(message) if site else None)
 		if occurrence in seen:
 			continue
 		seen.add(occurrence)
