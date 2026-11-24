@@ -23,17 +23,31 @@
 //! yet there is none, and the phone shows a bar that moves without a share.
 //!
 //! **What's coming** is each feed's cadence, not a schedule anyone keeps:
-//! the call's next week (a week after the newest one home holds, on its
-//! Friday) and Playoff Delta's next Tuesday, for a feed that took an episode
-//! in the last [`ACTIVE_DAYS`] days, by home's clock ([`HOME_ZONE`]). The
+//! the call's next week (the Friday after the newest one home holds ended,
+//! when the weekly routine writes it) and Playoff Delta's next Tuesday, for
+//! a feed that took an episode in the last [`ACTIVE_DAYS`] days, by home's
+//! clock ([`HOME_ZONE`]). The
 //! Rust Rounds essay's is the Monday after a week's `due`, when the Monday
-//! routine (RR18) writes the essay of the round that closed, for each of the
-//! newest [`ROUND_WEEKS_READ`] weeks home holds whose essay it has not taken:
+//! routine (RR18) writes the essay of the round that closed, for the oldest
+//! of the newest [`ROUND_WEEKS_READ`] weeks home holds whose essay it has
+//! not taken:
 //! promised from the round, so the first is listed before any essay came
 //! (C387, paulgsc/server#890). The interview essay's is the same Monday for
 //! a week of mock interview: its Monday routine runs then and writes the
 //! essay of each week that ended (paulgsc/some-ui#2931). A cards essay comes
 //! when a session writes one: no day.
+//!
+//! **An episode owed stays until it comes** (paulgsc/some-ui#3478, widening
+//! EV3): an essay or the call's week whose day has passed is `overdue` on
+//! its own day, never moved on to the next or dropped, which read as a quiet
+//! week. Each says what it waits on where home can know (`waitsOn`,
+//! [`WaitsOn`]): for an essay, from its Monday, the essay refused or waiting
+//! on a take, a week not final, a take home couldn't hear or hasn't heard
+//! (`rust_essays::waits_on`), or once overdue, nothing written; for the
+//! call, its week not come. Playoff Delta's day is the owner's next fill,
+//! never owed, so never overdue. The same read ([`overdue`]) sets the
+//! gauges the `RustEssayOverdue`, `InterviewEssayOverdue` and
+//! `CallWeekOverdue` alerts read, so it is said while nobody looks.
 //!
 //! **A clip's walk** (paulgsc/some-ui#2670's clips) is on the board too, as
 //! the `clip-walk` shelf: no feed (no video, no link, nothing let go), each
@@ -103,9 +117,12 @@
 //! mid-render stops reading as rendering within a minute.
 //!
 //! **Cost:** the two feeds' held episodes (one read each, the tables grow by
-//! an episode a week), a `stat` per episode, the newest two weeks of Rust
-//! Rounds (one bounded read), and a handful of small files, once per
-//! request. Nothing here adds a clock or a poll: the phone asks.
+//! an episode a week), a `stat` per episode, the newest
+//! [`ROUND_WEEKS_READ`] weeks of each essay (one bounded read) and, for each
+//! that closed with its essay owed, a few indexed reads per take its send
+//! names, and a handful of small files, once per request, and once per pass
+//! of the essays' and the call's workers for their alerts. Nothing here adds a clock or a poll: the phone
+//! asks, and those workers' passes already run.
 //! It names no person and carries no words of an episode: a failed attempt is
 //! a code (who stopped it, and the recorder's exit), its log stays on home.
 
@@ -130,10 +147,14 @@ pub const ACTIVE_DAYS: i64 = 21;
 /// How many of the newest weeks of Rust Rounds, and of mock interview, the
 /// board reads for each essay's day.
 ///
-/// The week that closed and the one that opened after it, so the next week
-/// arriving before Monday doesn't hide the essay still owed for the one
-/// before. A week put two or more ahead would hide it.
-pub const ROUND_WEEKS_READ: i64 = 2;
+/// The routine puts each next week on the Monday it writes the essay of the
+/// week that closed, so the essay of a week stays in this read for three
+/// Mondays after its own: an essay owed and overdue is on the board, and its
+/// alert fires, for those three weeks (paulgsc/some-ui#3478). It was two,
+/// the week that closed and the one after it, which dropped an essay still
+/// owed from the board a week after its Monday, without a word. The bound
+/// keeps the read one bounded read, as every pass's.
+pub const ROUND_WEEKS_READ: i64 = 4;
 
 /// The most of the bar shown before a render is done: an estimate never
 /// says it has finished.
@@ -431,6 +452,9 @@ pub struct FeedSeen {
 	/// by id, with the Monday its essay is written, the day after its `due` at
 	/// home (paulgsc/server#890).
 	pub rounds: Vec<(String, NaiveDate)>,
+	/// Of those whose essay is owed, what each waits on, where home can know
+	/// (`rust_essays::waits_on`, paulgsc/some-ui#3478).
+	pub waits: BTreeMap<String, WaitsOn>,
 }
 
 /// One shelf as the board reads it: what its folders say of its episodes,
@@ -469,10 +493,25 @@ pub async fn seen_of(db: &SqlitePool, folders: &Folders, subject: &str, shelf: S
 				Feed::CardsEssay => return Ok(None),
 			};
 			let mut seen = seen(shelf, &held, &let_go, renders, status).await;
-			match feed {
-				Feed::RustEssay => seen.rounds = rounds_of(db, subject, Weeks::RustRounds).await?,
-				Feed::InterviewEssay => seen.rounds = rounds_of(db, subject, Weeks::Interview).await?,
-				_ => {}
+			let kind = match feed {
+				Feed::RustEssay => Some((Weeks::RustRounds, crate::rust_essays::Kind::RustRounds)),
+				Feed::InterviewEssay => Some((Weeks::Interview, crate::rust_essays::Kind::Interview)),
+				_ => None,
+			};
+			if let Some((weeks, kind)) = kind {
+				seen.rounds = rounds_of(db, subject, weeks).await?;
+				// Only a week that closed: an open week's send is a draft, and
+				// its takes are still being said.
+				let today = home_day(now);
+				let closed: Vec<String> = owed(&seen)
+					.into_iter()
+					.filter(|week| seen.rounds.iter().any(|(held, monday)| held == week && *monday <= today))
+					.collect();
+				for week in closed {
+					if let Some(waits) = crate::rust_essays::waits_on(db, kind, subject, status, &week).await? {
+						seen.waits.insert(week, waits);
+					}
+				}
 			}
 			(seen, renders, status)
 		}
@@ -501,6 +540,23 @@ pub async fn seen_of(db: &SqlitePool, folders: &Folders, subject: &str, shelf: S
 		renders: renders.clone(),
 		status: status.clone(),
 	}))
+}
+
+/// Whether the episode `feed` is owed has passed its day without coming, as
+/// the board's `coming` row says it (`overdue`), for the alerts that say so
+/// while nobody is looking at the board (paulgsc/some-ui#3478): an essay's,
+/// for `subject`, and the call's week, which is no subject's (its read takes
+/// none, so any `subject` reads the same). Playoff Delta
+/// is never owed. One shelf's read of the board ([`seen_of`]), once per
+/// pass of the worker that asks.
+///
+/// # Errors
+/// A storage failure reading what home holds.
+pub async fn overdue(db: &SqlitePool, folders: &Folders, subject: &str, feed: Feed, now: i64) -> Result<bool, sqlx::Error> {
+	let Some(shelf) = seen_of(db, folders, subject, Shelf::Feed(feed), now).await? else {
+		return Ok(false);
+	};
+	Ok(coming(feed, &shelf.seen, now, home_day(now)).is_some_and(|coming| coming.overdue))
 }
 
 /// The read, as the phone gets it.
@@ -861,12 +917,54 @@ pub enum FailedBy {
 }
 
 /// A feed's next expected episode, on its day by home's clock.
+///
+/// An episode home is owed stays here past its day, as `overdue`, until it
+/// comes (paulgsc/some-ui#3478): never dropped or moved on to a later day
+/// without a word, which read as a quiet week. `key` and `waitsOn` are
+/// said only where known, so a row of a feed that has neither reads as it
+/// did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Coming {
 	pub feed: String,
-	/// `YYYY-MM-DD`.
+	/// `YYYY-MM-DD`: the day it was expected, kept once it has passed.
 	pub on: String,
+	/// The episode it is, where the feed's day names one: an essay's week.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub key: Option<String>,
+	/// Its day has passed, by home's clock, and it has not come.
+	pub overdue: bool,
+	/// What it waits on, where home can know ([`WaitsOn`]).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub waits_on: Option<WaitsOn>,
+}
+
+/// What an episode home is owed waits on, as home can know it: a short class
+/// the phone says in the owner's words (paulgsc/some-ui#3478). Never a
+/// take's or an essay's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaitsOn {
+	/// The essay came, and home refused it before rendering: its
+	/// `<week>.refused.log` says why (the `*EssayRefused` alerts).
+	EssayRefused,
+	/// The essay came, and waits for a take it plays to reach home.
+	EssayWaiting,
+	/// The week's send is still a draft home has not made final, so the
+	/// routine has no final record to write from.
+	NotFinal,
+	/// Home couldn't hear a take the week names, and it waits on the owner
+	/// under Needs your attention: the routine writes no essay until it can
+	/// read a transcript of it.
+	TakeUnheard,
+	/// Home hasn't heard a take the week names yet, so the routine waits.
+	TakeHearing,
+	/// Its day passed and nothing home holds says why: the routine wrote
+	/// nothing (it did not run, or it failed).
+	NotWritten,
+	/// The call's week hasn't reached home: the weekly routine wrote none to
+	/// `paulgsc/testing`, or home has not read it.
+	WeekMissing,
 }
 
 /// The estimate for `job`, given its feed's last render's time.
@@ -906,33 +1004,57 @@ fn held_by(job: &Job, lane: Option<&Lane>, now: i64) -> Option<HeldBy> {
 	}
 }
 
+/// `now`'s day by home's clock ([`HOME_ZONE`]).
+fn home_day(now: i64) -> NaiveDate {
+	DateTime::<Utc>::from_timestamp(now, 0).map_or(NaiveDate::MIN, |at| at.with_timezone(&HOME_ZONE).date_naive())
+}
+
 /// The first day `weekday` on or after `day`.
 fn on_or_after(day: NaiveDate, weekday: Weekday) -> NaiveDate {
 	let ahead = (7 + i64::from(weekday.num_days_from_monday()) - i64::from(day.weekday().num_days_from_monday())) % 7;
 	day + Duration::days(ahead)
 }
 
-/// The day `feed`'s next episode is expected, if it is expecting one.
-fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<NaiveDate> {
+/// `feed`'s next expected episode, if it is expecting one: its day, and
+/// once that day has passed with nothing come, overdue and what it waits on.
+fn coming(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Coming> {
+	let expected = |on: NaiveDate, key: Option<&String>, waits_on: Option<WaitsOn>| Coming {
+		feed: feed.as_str().to_owned(),
+		on: on.format("%Y-%m-%d").to_string(),
+		key: key.cloned(),
+		overdue: on < today,
+		waits_on,
+	};
 	match feed {
 		// The Rust Rounds Monday routine (RR18) writes the essay of the round
 		// that closed on Sunday: the Monday after a week's `due`, for each
-		// week home holds whose essay it has not taken yet, while that Monday
-		// is today or later. Promised from the round being open, before the
-		// first essay ever comes (C387): no `ACTIVE_DAYS`, since the round,
-		// not the feed's last episode, is what says one is owed. The interview
-		// week's Monday routine does the same for a week of mock interview.
-		Feed::RustEssay | Feed::InterviewEssay => seen
-			.rounds
-			.iter()
-			.filter(|(week, monday)| *monday >= today && !seen.let_go.contains(week) && !seen.held.iter().any(|(key, _)| key == week))
-			.map(|(_, monday)| *monday)
-			.min(),
+		// week home holds whose essay it has not taken yet. Promised from the
+		// round being open, before the first essay ever comes (C387): no
+		// `ACTIVE_DAYS`, since the round, not the feed's last episode, is what
+		// says one is owed. The interview week's Monday routine does the same
+		// for a week of mock interview. The oldest owed is the row: the
+		// routine writes oldest first. Past its Monday it stays, overdue
+		// (paulgsc/some-ui#3478), saying what it waits on, or that nothing
+		// was written.
+		Feed::RustEssay | Feed::InterviewEssay => {
+			let owed = owed(seen);
+			let (week, monday) = seen.rounds.iter().filter(|(week, _)| owed.contains(week)).min_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)))?;
+			let waits_on = seen.waits.get(week).copied().or_else(|| (*monday < today).then_some(WaitsOn::NotWritten));
+			Some(expected(*monday, Some(week), waits_on))
+		}
 		// A cards essay comes when a session writes one: none is promised.
 		// Nor is a report's: a week with no engagement record makes none
 		// (`report_weeks`), so its day is not known before.
 		Feed::CardsEssay | Feed::Report => None,
-		Feed::Call | Feed::PlayoffDelta => cadence(feed, seen, now, today),
+		// The call's week is owed by the weekly routine: past its Friday it
+		// stays, overdue, as its week not come.
+		Feed::Call => {
+			let on = cadence(feed, seen, now, today)?;
+			Some(expected(on, None, (on < today).then_some(WaitsOn::WeekMissing)))
+		}
+		// Playoff Delta's day is the owner's next fill, never owed: never
+		// overdue.
+		Feed::PlayoffDelta => cadence(feed, seen, now, today).map(|on| expected(on, None, None)),
 	}
 }
 
@@ -943,17 +1065,20 @@ fn cadence(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Na
 	if now.saturating_sub(newest_taken) > ACTIVE_DAYS * 86_400 {
 		return None;
 	}
+	let taken = DateTime::<Utc>::from_timestamp(newest_taken, 0)?.with_timezone(&HOME_ZONE).date_naive();
 	match feed {
-		// A week after the newest week held, on its first day, a Friday.
+		// The weekly routine writes a week on the Friday after it ends
+		// (paulgsc/some-ui's `CALL-ROUTINE.md`): the week from Friday F, to
+		// Thursday F + 6, on F + 7. So the next week comes on F + 14, the
+		// first Friday after the newest came, or later for a week the
+		// routine made longer to catch up a missed run (up to 14 days). Kept
+		// once it has passed: the board's `overdue` (paulgsc/some-ui#3478).
 		Feed::Call => {
-			let next = seen.newest_week? + Duration::days(7);
-			Some(if next >= today { next } else { on_or_after(today, next.weekday()) })
+			let from = seen.newest_week?;
+			Some((from + Duration::days(14)).max(on_or_after(taken + Duration::days(1), from.weekday())))
 		}
 		// The Tuesday after the newest fill was taken, today at the soonest.
-		Feed::PlayoffDelta => {
-			let taken = DateTime::<Utc>::from_timestamp(newest_taken, 0)?.with_timezone(&HOME_ZONE).date_naive();
-			Some(on_or_after((taken + Duration::days(1)).max(today), Weekday::Tue))
-		}
+		Feed::PlayoffDelta => Some(on_or_after((taken + Duration::days(1)).max(today), Weekday::Tue)),
 		Feed::RustEssay | Feed::InterviewEssay | Feed::CardsEssay | Feed::Report => None,
 	}
 }
@@ -964,6 +1089,17 @@ fn cadence(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Na
 fn essay_monday(window: &rust_round_repo::week::Window) -> Option<NaiveDate> {
 	let due = DateTime::parse_from_rfc3339(&window.due).ok()?.with_timezone(&HOME_ZONE).date_naive();
 	Some(on_or_after(due.succ_opt()?, Weekday::Mon))
+}
+
+/// The weeks of `seen.rounds` whose essay is owed: neither given to the
+/// worker nor let go.
+fn owed(seen: &FeedSeen) -> Vec<String> {
+	seen
+		.rounds
+		.iter()
+		.filter(|(week, _)| !seen.let_go.contains(week) && !seen.held.iter().any(|(key, _)| key == week))
+		.map(|(week, _)| week.clone())
+		.collect()
 }
 
 /// Which weeks an essay is written from.
@@ -1025,7 +1161,7 @@ pub fn board(feeds: &[(Feed, FeedSeen)], job: Option<&Job>, lane: Option<&Lane>,
 /// [`board`], over every shelf: the feeds' and the clips' walks.
 #[must_use]
 pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&Lane>, now: i64) -> Board {
-	let today = DateTime::<Utc>::from_timestamp(now, 0).map_or(NaiveDate::MIN, |at| at.with_timezone(&HOME_ZONE).date_naive());
+	let today = home_day(now);
 	// A job.state the worker left behind for an episode let go or already
 	// rendered is over.
 	let job = job.filter(|job| {
@@ -1102,11 +1238,8 @@ pub fn board_of(feeds: &[(Shelf, &FeedSeen)], job: Option<&Job>, lane: Option<&L
 			}
 		}
 		let Shelf::Feed(feed) = *feed else { continue };
-		if let Some(on) = coming(feed, seen, now, today) {
-			expected.push(Coming {
-				feed: name.to_owned(),
-				on: on.format("%Y-%m-%d").to_string(),
-			});
+		if let Some(coming) = coming(feed, seen, now, today) {
+			expected.push(coming);
 		}
 	}
 	// The worker's own order: the call's first, each feed's by key (its

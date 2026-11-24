@@ -26,6 +26,8 @@ const RUST_FAILED: &str = "rust_essay_render_failed";
 const INTERVIEW_FAILED: &str = "interview_essay_render_failed";
 const RUST_OLDEST_WAITING: &str = "rust_essay_render_oldest_waiting_taken_timestamp_seconds";
 const INTERVIEW_OLDEST_WAITING: &str = "interview_essay_render_oldest_waiting_taken_timestamp_seconds";
+const RUST_OWED_OVERDUE: &str = "rust_essays_owed_overdue";
+const INTERVIEW_OWED_OVERDUE: &str = "interview_essays_owed_overdue";
 const RUST_WORKER_LAST_PASS: &str = "rust_essay_render_worker_last_pass_timestamp_seconds";
 const INTERVIEW_WORKER_LAST_PASS: &str = "interview_essay_render_worker_last_pass_timestamp_seconds";
 
@@ -40,6 +42,7 @@ enum Gauge {
 	Failed,
 	OldestWaiting,
 	WorkerLastPass,
+	OwedOverdue,
 }
 
 /// `kind`'s `gauge`.
@@ -61,6 +64,8 @@ fn gauge(kind: Kind, gauge: Gauge) -> metrics::Gauge {
 		(Kind::Interview, Gauge::OldestWaiting) => metrics::gauge!(INTERVIEW_OLDEST_WAITING),
 		(Kind::RustRounds, Gauge::WorkerLastPass) => metrics::gauge!(RUST_WORKER_LAST_PASS),
 		(Kind::Interview, Gauge::WorkerLastPass) => metrics::gauge!(INTERVIEW_WORKER_LAST_PASS),
+		(Kind::RustRounds, Gauge::OwedOverdue) => metrics::gauge!(RUST_OWED_OVERDUE),
+		(Kind::Interview, Gauge::OwedOverdue) => metrics::gauge!(INTERVIEW_OWED_OVERDUE),
 	}
 }
 
@@ -96,4 +101,12 @@ pub fn record_renders(kind: Kind, seen: &Seen) {
 	gauge(kind, Gauge::Failed).set(count(seen.renders.failed));
 	gauge(kind, Gauge::OldestWaiting).set(seen.renders.oldest_waiting_taken.map_or(0.0, as_f64));
 	gauge(kind, Gauge::WorkerLastPass).set(seen.renders.worker_last_pass.map_or(0.0, as_f64));
+}
+
+/// Whether an essay home is owed has passed its Monday at home without being
+/// given to the worker (`feeds::renders::overdue`, paulgsc/some-ui#3478):
+/// 1 or 0, set by each pass. The render gauges above count only essays
+/// given, so a week whose essay never came read as quiet.
+pub fn record_overdue(kind: Kind, overdue: bool) {
+	gauge(kind, Gauge::OwedOverdue).set(if overdue { 1.0 } else { 0.0 });
 }

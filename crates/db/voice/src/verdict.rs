@@ -421,6 +421,33 @@ pub async fn as_the_routine_reads(conn: &mut SqliteConnection, subject: &str, no
 	kind.map(|kind| Kind::parse(&kind).ok_or(VoiceError::Unreadable)).transpose()
 }
 
+/// Whether a week's routine can read any transcript of `subject`'s take
+/// `note_id`: one filed and taken by the mailbox, as
+/// [`as_the_routine_reads`] chooses among. With none, the routine waits on
+/// the take (paulgsc/some-ui's `monday` prepare: "home hasn't heard the take
+/// yet"), so the week's essay is not written. One indexed read.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn routine_reads_any(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<bool, VoiceError> {
+	let any = sqlx::query_scalar!(
+		r#"SELECT EXISTS (
+		     SELECT 1 FROM mailbox_transcript AS filed
+		     WHERE filed.subject_id = ?1 AND filed.note_id = ?2
+		       AND EXISTS (
+		         SELECT 1 FROM mailbox_handed AS handed
+		         WHERE handed.subject_id = filed.subject_id AND handed.folder = 'transcript'
+		           AND handed.name = 'transcript-' || filed.note_id || '-' || filed.n || '.json'
+		           AND handed.answer IN ('added', 'unchanged'))
+		   ) AS "any!: bool""#,
+		subject,
+		note_id
+	)
+	.fetch_one(&mut *conn)
+	.await?;
+	Ok(any)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{expected_language, keep, of_ending, of_note, Judged, Kind, Signals, Verdict};
