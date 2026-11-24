@@ -55,9 +55,12 @@
 //! why every session home holds is finished, is docs/identity.md invariant
 //! 18's; [`file_leetype_logs`] files them.
 //!
-//! Handing over is once per file: the mailbox's answer, whatever it is, is
-//! recorded and final (a `conflict` or a refusal is not retried), and only a
-//! failure to reach it leaves the file to be handed again.
+//! Handing over: the mailbox's answer is recorded, and final but for its own
+//! refusal (a `422`), which is handed again hourly until it has had
+//! `mailbox_repo::REFUSED_TRIES` answers (MI8); a file it can never take is `unfit`,
+//! final. A failure to reach it leaves the file to be handed again. Every
+//! answer but `added` and `unchanged` is a failure, counted in
+//! `failures_total` and logged at error (#1172).
 //!
 //! With the archive token (`MAILBOX_ARCHIVE_TOKEN`), a pass also keeps the
 //! mailbox small. It first puts back each archived file the routine asked
@@ -79,6 +82,7 @@
 //! makes no request for either folder.
 
 use crate::auth::DeletionLock;
+use crate::failure::{Failure as Counted, Step};
 use chrono::{DateTime, SecondsFormat, Utc};
 use leetype_log_repo::{Event, LogError, SessionEvents};
 use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
@@ -273,7 +277,8 @@ pub struct Outcome {
 	/// and `LeetType` session logs.
 	pub filed: usize,
 	/// Filed files handed to the mailbox this pass, each by its answer:
-	/// `added`, `unchanged`, `conflict` or `refused` (`mailbox_repo::Answer`).
+	/// `added`, `unchanged`, `conflict`, `refused` or `unfit`
+	/// (`mailbox_repo::Answer`).
 	pub handed: Vec<&'static str>,
 	/// Indexes put this pass (`index`), each by the mailbox's answer, as
 	/// `handed`; an index over the mailbox's ceiling, never put (`too_big`),
@@ -645,7 +650,9 @@ async fn held_sha256(db: &SqlitePool, subject: &str, folder: &str, name: &str) -
 
 /// Hands each filed file the mailbox has not answered, oldest first, at most
 /// [`ITEMS_PER_PASS`]. Every answer is recorded: taken, already held, held
-/// with other bytes (`conflict`), or refused. Each is final but a refusal: a
+/// with other bytes (`conflict`), refused, or never to be taken (`unfit`).
+/// The last three are failures, each counted as the mailbox answers it
+/// ([`Handing`]). Each is final but a refusal: a
 /// refused file is handed again [`REFUSED_AGAIN_AFTER`] its last refusal, after
 /// the files never answered, until it has had [`mailbox_repo::REFUSED_TRIES`]
 /// answers. A failure to reach the mailbox records nothing, so the next pass
@@ -684,13 +691,20 @@ async fn hand_over<T: MailboxTransport>(
 			// `file_pickups` and `file_leetype_logs` file only these.
 			_ => continue,
 		};
-		let answer = match mailbox.put(folder, &file.name, file.body).await {
-			Ok(Put::Added { .. }) => Answer::Added,
-			Ok(Put::Unchanged { .. }) => Answer::Unchanged,
-			Ok(Put::Conflict) => Answer::Conflict,
-			Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => Answer::Refused,
+		let handing = match mailbox.put(folder, &file.name, file.body).await {
+			Ok(Put::Added { .. }) => Handing::Added,
+			Ok(Put::Unchanged { .. }) => Handing::Unchanged,
+			Ok(Put::Conflict) => Handing::Conflict(Counted::record(
+				Step::MailboxHandOverConflict,
+				&format_args!("{}: the mailbox holds other bytes under the name", file.folder),
+			)),
+			// The folder and the mailbox's own reason (at most 200 characters,
+			// `mailbox_kit`), never the file's body.
+			Err(err @ MailboxError::Refused(_)) => Handing::Refused(Counted::record(Step::MailboxHandOver, &format_args!("{}: {err}", file.folder))),
+			Err(err @ (MailboxError::TooBig | MailboxError::BadName)) => Handing::Unfit(Counted::record(Step::MailboxHandOverUnfit, &format_args!("{}: {err}", file.folder))),
 			Err(err) => return Err(Failure::Mailbox(err)),
 		};
+		let answer = handing.stored();
 		match record(db, deletion, subject, (&file.folder, &file.name), answer, &now()).await.map_err(storage)? {
 			Change::NoAccount => {
 				outcome.no_account = true;
@@ -700,6 +714,47 @@ async fn hand_over<T: MailboxTransport>(
 		}
 	}
 	Ok(())
+}
+
+/// What came of handing a file, as the pass carries it to the store. A
+/// failure carries its count (#1172, epic #1174): a refusal in the mailbox's
+/// own words, which is handed again; a file that can never be taken (`unfit`);
+/// or a name the mailbox holds other bytes under. None is stored without being
+/// counted first, since only `Counted::record` makes the token each holds.
+/// The count is made when the mailbox answers, one per handing: if storing
+/// the answer then fails with a storage error, the file is handed again and
+/// that handing is counted too (with no account, the file has gone with it).
+#[derive(Debug)]
+enum Handing {
+	Added,
+	Unchanged,
+	Conflict(Counted),
+	Refused(Counted),
+	Unfit(Counted),
+}
+
+impl Handing {
+	/// The answer `mailbox_handed` is to store. The token has done its work
+	/// once the failure was counted, and goes here, on the way to the store;
+	/// each was counted at its own step.
+	fn stored(self) -> Answer {
+		let (answer, counted) = match self {
+			Self::Added => return Answer::Added,
+			Self::Unchanged => return Answer::Unchanged,
+			Self::Conflict(counted) => (Answer::Conflict, counted),
+			Self::Refused(counted) => (Answer::Refused, counted),
+			Self::Unfit(counted) => (Answer::Unfit, counted),
+		};
+		debug_assert_eq!(
+			counted.step(),
+			match answer {
+				Answer::Conflict => Step::MailboxHandOverConflict,
+				Answer::Refused => Step::MailboxHandOver,
+				_ => Step::MailboxHandOverUnfit,
+			}
+		);
+		answer
+	}
 }
 
 /// Files each transcript home heard and has not filed, oldest heard first,
@@ -2123,6 +2178,78 @@ mod tests {
 		assert_eq!(answers(&pool).await.last().unwrap(), &(String::from("decisions-2026-10-23.json"), String::from("added")));
 		pass_at(&pool, &fake, "2026-10-23T18:00:00.000Z").await.unwrap();
 		assert_eq!(decisions(&fake).len(), 3, "once taken, it is final");
+	}
+
+	/// #1172: a handing the mailbox did not take is a failure, counted in
+	/// `failures_total` and logged at error with the folder and the mailbox's
+	/// reason, and stored as before. A file that can never be taken (`unfit`) is
+	/// final; only the mailbox's own refusal is handed again.
+	#[tokio::test]
+	async fn a_handing_not_taken_is_counted_and_logged_at_error_and_an_unfit_file_is_final() {
+		use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+		let (captured, _capture) = crate::privacy::capture_where(|meta| *meta.level() == tracing::Level::ERROR);
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		// The last name has a space, which no URL carries as it stands: unfit
+		// before it is ever put.
+		for name in [
+			"decisions-2026-10-21.json",
+			"decisions-2026-10-22.json",
+			"decisions-2026-10-23.json",
+			"decisions 2026-10-24.json",
+		] {
+			filed(&pool, name).await;
+		}
+		*fake.put_answers.lock().unwrap() = vec![(409, r#"{"error":"conflict"}"#), (422, r#"{"error":"the schema does not match the folder"}"#), (413, "{}")];
+
+		assert_eq!(pass(&pool, &fake).await.unwrap().handed, ["conflict", "refused", "unfit", "unfit"]);
+		assert_eq!(
+			answers(&pool).await.iter().map(|(_, answer)| answer.as_str()).collect::<Vec<_>>(),
+			["conflict", "refused", "unfit", "unfit"]
+		);
+		let mut counts: Vec<(String, u64)> = snapshotter
+			.snapshot()
+			.into_vec()
+			.into_iter()
+			.filter(|(key, ..)| key.key().name() == "failures_total")
+			.filter_map(|(key, _, _, value)| match value {
+				DebugValue::Counter(n) if n > 0 => key.key().labels().find(|l| l.key() == "step").map(|l| (l.value().to_owned(), n)),
+				_ => None,
+			})
+			.collect();
+		counts.sort();
+		assert_eq!(
+			counts,
+			[
+				(String::from("hand_over"), 1),
+				(String::from("hand_over_conflict"), 1),
+				(String::from("hand_over_unfit"), 2)
+			],
+			"each handing not taken counted once, at its own step, and nothing else"
+		);
+		let lines = captured.lines();
+		for cause in [
+			"cause=decisions: the mailbox refused it: the schema does not match the folder",
+			"cause=decisions: the body is over the mailbox's ceiling",
+			"cause=decisions: the mailbox holds other bytes under the name",
+			"cause=decisions: not a name an item can have",
+		] {
+			assert!(lines.iter().any(|line| line == cause), "{cause} in {lines:#?}");
+		}
+
+		let decisions = |fake: &Fake| fake.puts.lock().unwrap().iter().filter(|put| put.contains("/v1/decisions/")).cloned().collect::<Vec<_>>();
+		pass_at(&pool, &fake, "2026-10-23T16:00:00.000Z").await.unwrap();
+		let handed = decisions(&fake);
+		assert_eq!(handed.len(), 4, "an hour on, the refused file alone is handed again, not the unfit ones: {handed:?}");
+		assert!(handed[3].ends_with("/decisions-2026-10-22.json"), "{handed:?}");
+		// The bad name never reaches the mailbox, so its finality shows in what
+		// is stored: one answer each for the unfit files, two for the refused.
+		let stored = answers(&pool).await;
+		for (name, answers) in [("decisions 2026-10-24.json", 1), ("decisions-2026-10-23.json", 1), ("decisions-2026-10-22.json", 2)] {
+			assert_eq!(stored.iter().filter(|(stored, _)| stored == name).count(), answers, "{name}: {stored:?}");
+		}
 	}
 
 	/// A voice note of the owner's, and what `model` heard in it.
