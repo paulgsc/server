@@ -19,6 +19,7 @@
 //!   ([`Pass::failures`]): no URL, body or label reaches a log.
 //! - **No network in tests.** Fetching is `game_feed`'s [`Fetch`] port.
 
+use crate::failure::{Failure, Step};
 use crate::game_feed::pass::{fetch_capped, Fetch};
 use chrono::{DateTime, SecondsFormat, Utc};
 use clip_frame_repo::{Frame, Kept, Made};
@@ -110,6 +111,9 @@ pub struct Pass {
 	/// that doesn't name the index's snips), `differs` (other bytes under a
 	/// held name) and `drive` (a file that could not be read or written).
 	pub failures: Vec<&'static str>,
+	/// Of those, walk sides rejected and removed, so the next pass does not
+	/// meet them: each is counted once, at `walk_rejected`, never held open.
+	pub rejected: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -383,8 +387,15 @@ async fn take_walk(at: &Taking<'_>, side: &Side, made: &Path, body: &[u8], pass:
 		}
 		Err(kind) => {
 			pass.failures.push(kind);
-			if kind != "drive" && tokio::fs::remove_dir_all(made).await.is_err() {
-				pass.failures.push("drive");
+			if kind != "drive" {
+				if tokio::fs::remove_dir_all(made).await.is_ok() {
+					// Removed, this render is never met again: one count.
+					pass.rejected += 1;
+					Failure::alone(Step::ClipsWalkRejected, &format_args!("a walk side was rejected as {kind} and removed, to be walked again"));
+				} else {
+					// Still there, the next pass checks it again.
+					pass.failures.push("drive");
+				}
 			}
 		}
 	}
@@ -712,6 +723,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_walk_that_does_not_match_the_index_is_not_kept() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
 		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
 		let folders = folders(dir.path());
 		let fake = Fake::default();
@@ -725,6 +739,15 @@ mod tests {
 			!folders.walk_renders.join("ledger-wake-after").exists(),
 			"its output is removed, so the worker walks it again (with a newer image, rightly)"
 		);
+		assert_eq!(pass.rejected, 1);
+		assert_eq!(
+			crate::failure::counted::failures(&snapshotter, Step::ClipsWalkRejected),
+			Some(1),
+			"a render rejected and removed is one count (#809)"
+		);
+		let waiting = run_once(&pool, &fake, &folders, &clock).await.unwrap();
+		assert_eq!(waiting.rejected, 0, "until it is walked again, the rejected render is not met");
+		assert!(!waiting.failures.contains(&"mismatch"), "{:?}", waiting.failures);
 
 		// A snip that is not a PNG keeps none of the side.
 		finish_walk(&folders, &["Opens", "Keeps awake"]);
