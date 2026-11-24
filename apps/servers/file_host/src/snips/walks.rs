@@ -46,7 +46,7 @@ pub static APP: LazyLock<Regex> = LazyLock::new(|| {
 /// A step's file in its walk, `snips/<NN>.png`, step `n` counted from 1.
 #[must_use]
 pub fn step_file(n: usize) -> String {
-	format!("snips/{n:02}.png")
+	String::from("snips/") + if n < 10 { "0" } else { "" } + &n.to_string() + ".png"
 }
 
 /// A step's picture in the bundle, `<app>/snips/<NN>.png`.

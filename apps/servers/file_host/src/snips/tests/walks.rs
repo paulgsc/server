@@ -222,22 +222,29 @@ async fn an_app_or_step_its_run_does_not_have_is_gone_and_a_scene_naming_nothing
 	);
 }
 
-#[tokio::test]
-async fn a_walks_bundle_that_does_not_check_out_is_refused_whole_and_said_gone() {
-	let apps: &[(&str, usize)] = &[("jobs", 2), ("studio", 1)];
-	let body = |edit: &dyn Fn(&mut serde_json::Value)| -> serde_json::Value {
-		let walks: Vec<_> = apps.iter().map(|(app, steps)| entry(app, *steps)).collect();
-		let mut body = serde_json::json!({ "schema": check::SCHEMA, "commit": walked(), "run": "301", "walks": walks });
-		edit(&mut body);
-		body
-	};
-	let rewrite = |body: serde_json::Value| -> Edit {
-		Box::new(move |files: &mut BTreeMap<String, Vec<u8>>| {
-			files.insert(String::from(check::RECORD), serde_json::to_vec_pretty(&body).unwrap());
-			resum(files);
-		})
-	};
-	let cases: Vec<(&str, Edit)> = vec![
+/// The walks a refused bundle is of.
+const APPS: &[(&str, usize)] = &[("jobs", 2), ("studio", 1)];
+
+/// [`APPS`]' `walks.json` of run 301, then `edit` applied.
+fn walks_body(edit: &dyn Fn(&mut serde_json::Value)) -> serde_json::Value {
+	let walks: Vec<_> = APPS.iter().map(|(app, steps)| entry(app, *steps)).collect();
+	let mut body = serde_json::json!({ "schema": check::SCHEMA, "commit": walked(), "run": "301", "walks": walks });
+	edit(&mut body);
+	body
+}
+
+/// `walks.json` replaced by `edit`'s, summed again.
+fn rewrite(edit: &dyn Fn(&mut serde_json::Value)) -> Edit {
+	let body = walks_body(edit);
+	Box::new(move |files: &mut BTreeMap<String, Vec<u8>>| {
+		files.insert(String::from(check::RECORD), serde_json::to_vec_pretty(&body).unwrap());
+		resum(files);
+	})
+}
+
+/// Bundles whose files don't check out.
+fn broken_files() -> Vec<(&'static str, Edit)> {
+	vec![
 		(
 			"a picture swapped for another",
 			Box::new(|files| drop(files.insert(String::from("jobs/snips/02.png"), b"other".to_vec()))),
@@ -263,78 +270,79 @@ async fn a_walks_bundle_that_does_not_check_out_is_refused_whole_and_said_gone()
 		),
 		("no sums", Box::new(|files| drop(files.remove("SHA256SUMS")))),
 		("an escaping name", Box::new(|files| drop(files.insert(String::from("../escape.png"), b"x".to_vec())))),
-		("another schema", rewrite(body(&|body| body["schema"] = serde_json::json!("some-ui.walks/2")))),
-		("another commit", rewrite(body(&|body| body["commit"] = serde_json::json!(commit(3))))),
-		("another run", rewrite(body(&|body| body["run"] = serde_json::json!("302")))),
-		("the run as a number", rewrite(body(&|body| body["run"] = serde_json::json!(301)))),
+	]
+}
+
+/// Bundles whose `walks.json` doesn't.
+fn broken_records() -> Vec<(&'static str, Edit)> {
+	vec![
+		("another schema", rewrite(&|body| body["schema"] = serde_json::json!("some-ui.walks/2"))),
+		("another commit", rewrite(&|body| body["commit"] = serde_json::json!(commit(3)))),
+		("another run", rewrite(&|body| body["run"] = serde_json::json!("302"))),
+		("the run as a number", rewrite(&|body| body["run"] = serde_json::json!(301))),
 		(
 			"an app listed twice",
-			rewrite(body(&|body| {
+			rewrite(&|body| {
 				let first = body["walks"][0].clone();
 				body["walks"].as_array_mut().unwrap().push(first);
-			})),
+			}),
 		),
-		(
-			"a walk of another app",
-			rewrite(body(&|body| body["walks"][0]["walk"]["app"] = serde_json::json!("studio"))),
-		),
+		("a walk of another app", rewrite(&|body| body["walks"][0]["walk"]["app"] = serde_json::json!("studio"))),
 		(
 			"a walk of another schema",
-			rewrite(body(&|body| body["walks"][0]["walk"]["schema"] = serde_json::json!("some-ui.walk/2"))),
+			rewrite(&|body| body["walks"][0]["walk"]["schema"] = serde_json::json!("some-ui.walk/2")),
 		),
 		(
 			"fewer pictures than steps",
-			rewrite(body(&|body| drop(body["walks"][0]["pictures"].as_array_mut().unwrap().pop()))),
+			rewrite(&|body| drop(body["walks"][0]["pictures"].as_array_mut().unwrap().pop())),
 		),
 		(
 			"more steps than pictures",
-			rewrite(body(&|body| {
+			rewrite(&|body| {
 				body["walks"][0]["walk"]["snips"]
 					.as_array_mut()
 					.unwrap()
 					.push(serde_json::json!({ "file": "snips/03.png", "label": "x", "atMs": 1 }));
-			})),
+			}),
 		),
-		(
-			"steps out of order",
-			rewrite(body(&|body| body["walks"][0]["walk"]["snips"].as_array_mut().unwrap().swap(0, 1))),
-		),
-		(
-			"pictures out of order",
-			rewrite(body(&|body| body["walks"][0]["pictures"].as_array_mut().unwrap().swap(0, 1))),
-		),
+		("steps out of order", rewrite(&|body| body["walks"][0]["walk"]["snips"].as_array_mut().unwrap().swap(0, 1))),
+		("pictures out of order", rewrite(&|body| body["walks"][0]["pictures"].as_array_mut().unwrap().swap(0, 1))),
 		(
 			"a step's file not two digits",
-			rewrite(body(&|body| body["walks"][0]["walk"]["snips"][0]["file"] = serde_json::json!("snips/1.png"))),
+			rewrite(&|body| body["walks"][0]["walk"]["snips"][0]["file"] = serde_json::json!("snips/1.png")),
 		),
 		(
 			"a walk of no steps",
-			rewrite(body(&|body| {
+			rewrite(&|body| {
 				body["walks"][1]["walk"]["snips"] = serde_json::json!([]);
 				body["walks"][1]["pictures"] = serde_json::json!([]);
-			})),
+			}),
 		),
 		(
 			"an app that is a path",
-			rewrite(body(&|body| {
+			rewrite(&|body| {
 				body["walks"][1]["app"] = serde_json::json!("..");
 				body["walks"][1]["walk"]["app"] = serde_json::json!("..");
-			})),
+			}),
 		),
 		(
 			"a picture's bytes not its file's",
-			rewrite(body(&|body| body["walks"][0]["pictures"][0]["bytes"] = serde_json::json!(3))),
+			rewrite(&|body| body["walks"][0]["pictures"][0]["bytes"] = serde_json::json!(3)),
 		),
 		(
 			"a picture's sum not its file's",
-			rewrite(body(&|body| body["walks"][0]["pictures"][0]["sha256"] = serde_json::json!(sha(b"other")))),
+			rewrite(&|body| body["walks"][0]["pictures"][0]["sha256"] = serde_json::json!(sha(b"other"))),
 		),
-	];
-	for (case, edit) in cases {
+	]
+}
+
+#[tokio::test]
+async fn a_walks_bundle_that_does_not_check_out_is_refused_whole_and_said_gone() {
+	for (case, edit) in broken_files().into_iter().chain(broken_records()) {
 		let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
 		let scenes = [scene(301, "studio", None)];
 		hold_walk_essay(&pool, "walks-2026-11-24", &scenes).await;
-		fake.walk_run(walk_run(301), Ok(Some(zipped(apps, &body(&|_| {}), edit))));
+		fake.walk_run(walk_run(301), Ok(Some(zipped(APPS, &walks_body(&|_| {}), edit))));
 		let picked = pass(&pool, &fake, &dirs).await;
 		assert_eq!((picked.fetched, picked.gone), (0, 1), "{case}: {picked:?}");
 		assert!(!bundle_of(&dirs.walks, "301").exists(), "{case}: nothing of it is kept, not even the walk that checks out");
@@ -347,7 +355,7 @@ async fn a_walks_bundle_that_does_not_check_out_is_refused_whole_and_said_gone()
 	// And the bundle as the capture writes it checks out.
 	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
 	hold_walk_essay(&pool, "walks-2026-11-24", &[scene(301, "studio", None)]).await;
-	fake.walk_run(walk_run(301), Ok(Some(zipped(apps, &body(&|_| {}), |_| {}))));
+	fake.walk_run(walk_run(301), Ok(Some(zipped(APPS, &walks_body(&|_| {}), |_| {}))));
 	assert_eq!(pass(&pool, &fake, &dirs).await.fetched, 1);
 }
 

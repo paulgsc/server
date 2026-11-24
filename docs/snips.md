@@ -187,7 +187,11 @@ A walk's run is found as a page's is, by `GET /actions/runs/<run>`, here
 with `path` `.github/workflows/snips-capture.yml` and `conclusion` `success`.
 A run not finished is `unfinished` and waited on (C1442). Of several
 unexpired `walks-bundle-<run>` artifacts, the newest is taken, so a re-run
-attempt's bundle wins. The check is whole or nothing. It covers the
+attempt's bundle wins when it is fetched. As for a page's run (C1441), a run
+already cached is not fetched again for a newer attempt: a scene naming an
+app only the re-attempt walked stays `walk-gone`, and the recovery is a new
+dispatch named in the cut list. A newest attempt that failed is no run, even
+while an earlier attempt's bundle is live, as for pages. The check is whole or nothing. It covers the
 schema, the run's own commit (the run's `head_sha`) and id (as a string),
 and each app a slug listed once. Each walk must be a `some-ui.walk/1` of
 that app with 1 to 99 steps, whose step files are `snips/01.png` on in

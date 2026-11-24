@@ -51,7 +51,7 @@ pub fn named(shot: &Value) -> Vec<String> {
 				.as_array()
 				.filter(|pair| pair.len() == 2)
 				.and_then(|pair| Some((pair[0].as_u64()?, pair[1].as_u64()?)));
-			item += &pair.map_or_else(|| String::from(" ?"), |(first, last)| format!(" {first}-{last}"));
+			item += &pair.map_or_else(|| String::from(" ?"), |(first, last)| String::from(" ") + &first.to_string() + "-" + &last.to_string());
 		}
 	}
 	vec![item]
@@ -63,22 +63,41 @@ pub fn id_of(item: &str) -> String {
 	item.splitn(3, ' ').take(2).collect::<Vec<_>>().join(" ")
 }
 
-/// The steps an item names, `Some(None)` for the whole walk, or `None` when
-/// they are no steps a walk has: from 1, first no later than last.
-fn steps_of(steps: Option<&str>) -> Option<Option<(usize, usize)>> {
-	let Some(steps) = steps else {
-		return Some(None);
-	};
-	let (first, last) = steps.split_once('-')?;
-	let (first, last) = (first.parse::<usize>().ok()?, last.parse::<usize>().ok()?);
-	(1 <= first && first <= last).then_some(Some((first, last)))
+/// Which of a walk's steps a scene shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Steps {
+	/// No `steps`: the whole walk.
+	All,
+	/// `first` to `last`, counted from 1.
+	Some(usize, usize),
+}
+
+impl Steps {
+	/// The steps an item names, or `None` when they are no steps a walk
+	/// has: from 1, first no later than last.
+	fn of(steps: Option<&str>) -> Option<Self> {
+		let Some(steps) = steps else {
+			return Some(Self::All);
+		};
+		let (first, last) = steps.split_once('-')?;
+		let (first, last) = (first.parse::<usize>().ok()?, last.parse::<usize>().ok()?);
+		(1 <= first && first <= last).then_some(Self::Some(first, last))
+	}
+
+	/// Whether a walk of `count` steps has them.
+	const fn within(self, count: usize) -> bool {
+		match self {
+			Self::All => true,
+			Self::Some(_, last) => last <= count,
+		}
+	}
 }
 
 /// One walk, `<run> <app>[ <first>-<last>]`, as the module doc says.
 pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: &str) -> Result<Held, Failed> {
 	let mut parts = item.splitn(3, ' ');
 	let (run, app) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
-	let Some(steps) = steps_of(parts.next()) else {
+	let Some(steps) = Steps::of(parts.next()) else {
 		return Ok(Held::Refused(Why::Missing));
 	};
 	if !crate::snips::is_run(run) || !APP.is_match(app) {
@@ -107,7 +126,7 @@ pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: 
 		return Ok(Held::Refused(Why::Gone));
 	};
 	let count = entry.get("walk").and_then(|walk| walk.get("snips")).and_then(Value::as_array).map_or(0, Vec::len);
-	if steps.is_some_and(|(_, last)| last > count) {
+	if !steps.within(count) {
 		return Ok(Held::Refused(Why::Gone));
 	}
 	let listed = entry.get("pictures").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
@@ -156,14 +175,12 @@ pub(super) fn given(walked: Vec<(String, Value, Vec<File>)>) -> Vec<File> {
 		let Some(walk) = record.get("walk").cloned() else {
 			continue;
 		};
-		let at = match runs.iter().position(|(held, _, _)| *held == run) {
-			Some(at) => at,
-			None => {
-				runs.push((run, commit, Vec::new()));
-				runs.len() - 1
-			}
+		if !runs.iter().any(|(held, _, _)| *held == run) {
+			runs.push((run.clone(), commit, Vec::new()));
+		}
+		let Some((_, _, walks)) = runs.iter_mut().find(|(held, _, _)| *held == run) else {
+			continue;
 		};
-		let walks = &mut runs[at].2;
 		if walks.iter().any(|held| held.get("app") == walk.get("app")) {
 			continue;
 		}

@@ -106,9 +106,10 @@ pub const WALKS_WORKFLOW: &str = ".github/workflows/snips-capture.yml";
 /// other is no run of the pages (C1440).
 pub const PAGES_WORKFLOW: &str = ".github/workflows/public-pages-capture.yml";
 
-/// The failure of a run still under way (a page's or walk's run not concluded): only
-/// retried, and a newer attempt under way clears its key's gone mark, so
-/// its essay waits rather than being refused (C1442).
+/// The failure of a run still under way: only retried (C1442).
+///
+/// A page's or walk's run not concluded. A newer attempt under way clears
+/// its key's gone mark, so its essay waits rather than being refused.
 pub const UNFINISHED: &str = "unfinished";
 
 /// The capture's repository on GitHub's API.
