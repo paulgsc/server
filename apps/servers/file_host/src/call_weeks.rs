@@ -156,6 +156,15 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 					};
 					let result = pass::run_once(&db, &context.fetch, folders, &chrono::Utc::now).await;
 					crate::metrics::call_weeks::record_pass(&result);
+					// Whether the week the weekly routine owes has passed its
+					// Friday without coming (paulgsc/some-ui#3478), as the
+					// board's `coming` says it. The call's weeks are no
+					// subject's. A failing read leaves the last value.
+					if let Ok(overdue) = crate::feeds::renders::overdue(&db, &crate::feeds::renders::Folders::server(), "", crate::feeds::Feed::Call, chrono::Utc::now().timestamp()).await {
+						crate::metrics::call_weeks::record_next_overdue(overdue);
+					} else {
+						warn!(error = "storage", "whether the call's next week is overdue was not read");
+					}
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
 						schedule.succeeded(now, INTERVAL);
 					} else {

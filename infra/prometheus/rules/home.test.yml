@@ -1885,3 +1885,68 @@ tests:
       - eval_time: 30m
         alertname: StageBroken
         exp_alerts: []
+
+  # some-ui#3478 (EV3): an owed essay or call week past its day that never
+  # reached home was a quiet week; each says so while it is overdue, and
+  # nothing before its day or once it comes.
+  - name: an essay owed past its Monday and never given fires, and is quiet before and once it comes
+    interval: 10m
+    input_series:
+      - series: 'rust_essays_owed_overdue{job="file_host"}'
+        values: '0x5 1x5 0x5'
+      - series: 'interview_essays_owed_overdue{job="file_host"}'
+        values: '0x5 1x5 0x5'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: RustEssayOverdue
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: InterviewEssayOverdue
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: RustEssayOverdue
+        exp_alerts:
+          - exp_labels:
+              objective: RR16
+              says: "A week's Rust Rounds essay is past its Monday and has not come to home: Studio's Renders page says under Coming what it waits on (a take home couldn't hear, a week not final, a refused essay, or nothing written)."
+      - eval_time: 70m
+        alertname: InterviewEssayOverdue
+        exp_alerts:
+          - exp_labels:
+              objective: IW6
+              says: "A week of mock interview's essay is past its Monday and has not come to home: Studio's Renders page says under Coming what it waits on (a take home couldn't hear, a week not final, a refused essay, or nothing written)."
+      - eval_time: 70m
+        alertname: RustEssayRenderOverdue
+        exp_alerts: []
+      - eval_time: 130m
+        alertname: RustEssayOverdue
+        exp_alerts: []
+      - eval_time: 130m
+        alertname: InterviewEssayOverdue
+        exp_alerts: []
+
+  - name: the call's week owed past its Friday fires, and is quiet before and once it comes
+    interval: 1h
+    input_series:
+      - series: 'call_weeks_next_overdue{job="file_host"}'
+        values: '0x3 1x3 0x3'
+      - series: 'call_weeks_last_attempt_timestamp_seconds{job="file_host"}'
+        values: '0+3600x10'
+      - series: 'call_weeks_pass_failing{job="file_host"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: CallWeekOverdue
+        exp_alerts: []
+      - eval_time: 5h
+        alertname: CallWeekOverdue
+        exp_alerts:
+          - exp_labels:
+              objective: CW2
+              says: "The weekly call's week is past its Friday and has not reached home: the weekly routine wrote none to paulgsc/testing (Studio's Renders page shows it overdue under Coming)."
+      - eval_time: 5h
+        alertname: CallWeeksStale
+        exp_alerts: []
+      - eval_time: 8h
+        alertname: CallWeekOverdue
+        exp_alerts: []
