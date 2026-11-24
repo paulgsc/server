@@ -1187,14 +1187,24 @@ async fn cursor(db: &SqlitePool, subject: &str, folder: Folder) -> Result<i64, s
 /// says, is kept as every `brief` file is, and records nothing.
 async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: ItemIn<'_>, now: &str) -> Result<Change, mailbox_repo::MailboxError> {
 	let in_brief = item.folder == Folder::Brief.as_str();
-	let listed = (in_brief && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX))
-		.then(|| voice_repo::on_drive::listed_in(item.body))
-		.flatten();
-	let week = (in_brief && item.name.starts_with(rust_round_repo::week::MAILBOX_PREFIX))
+	let names_listed = in_brief && item.name.starts_with(voice_repo::on_drive::DRIVE_TAKES_PREFIX);
+	let listed = names_listed.then(|| voice_repo::on_drive::listed_in(item.body)).flatten();
+	let names_week = in_brief && item.name.starts_with(rust_round_repo::week::MAILBOX_PREFIX);
+	let week = names_week
 		.then(|| rust_round_repo::week::read(item.body).ok())
 		.flatten()
 		.filter(|week| rust_round_repo::week::mailbox_name(&week.id) == item.name);
-	let picked = (item.folder == Folder::Picked.as_str()).then(|| picked(item)).flatten();
+	let names_picked = item.folder == Folder::Picked.as_str();
+	let picked = names_picked.then(|| picked(item)).flatten();
+	// Named as one of those, and not reading as it: kept as a plain brief,
+	// counted once, when it is first kept (#1175).
+	let unread = [
+		(names_listed && listed.is_none(), "a Drive takes list"),
+		(names_week && week.is_none(), "a Rust Rounds week"),
+		(names_picked && picked.is_none(), "a pickup's answer"),
+	]
+	.into_iter()
+	.find_map(|(unread, what)| unread.then_some(what));
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let change = mailbox_repo::keep_item(&mut tx, subject, item, now).await?;
@@ -1214,6 +1224,9 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 			})?;
 	}
 	tx.commit().await?;
+	if let (Change::Added, Some(what)) = (change, unread) {
+		Counted::alone(Step::MailboxReadBody, &format_args!("{}: kept as a plain file, as it does not read as {what}", item.folder));
+	}
 	Ok(change)
 }
 
@@ -2178,6 +2191,22 @@ mod tests {
 		assert_eq!(answers(&pool).await.last().unwrap(), &(String::from("decisions-2026-10-23.json"), String::from("added")));
 		pass_at(&pool, &fake, "2026-10-23T18:00:00.000Z").await.unwrap();
 		assert_eq!(decisions(&fake).len(), 3, "once taken, it is final");
+	}
+
+	/// Every `failures_total` step counted above 0, sorted.
+	fn failures(snapshotter: &metrics_util::debugging::Snapshotter) -> Vec<(String, u64)> {
+		let mut counts: Vec<(String, u64)> = snapshotter
+			.snapshot()
+			.into_vec()
+			.into_iter()
+			.filter(|(key, ..)| key.key().name() == "failures_total")
+			.filter_map(|(key, _, _, value)| match value {
+				metrics_util::debugging::DebugValue::Counter(n) if n > 0 => key.key().labels().find(|l| l.key() == "step").map(|l| (l.value().to_owned(), n)),
+				_ => None,
+			})
+			.collect();
+		counts.sort();
+		counts
 	}
 
 	/// #1172: a handing the mailbox did not take is a failure, counted in
@@ -4137,6 +4166,21 @@ mod tests {
 		fake.add(11, &next, &body);
 		assert_eq!(pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap().indexed, ["refused"]);
 		assert_eq!(indexes(&fake).len(), 2);
+	}
+
+	/// #1175: a file named as a Rust week that does not read as one is kept as a
+	/// plain brief, and counted once, when it is first kept; a later pass that
+	/// lists nothing new counts nothing.
+	#[tokio::test]
+	async fn a_week_that_does_not_read_is_counted_once_when_kept() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		fake.add(10, "rust-week-2026-w46.json", r#"{"schema":"some-ui.rust-week/2","id":"2026-w46","tickets":5}"#);
+		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1);
+		pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap();
+		assert_eq!(failures(&snapshotter), [(String::from("read_body"), 1)]);
 	}
 
 	/// Home's memory of its last index lives as long as the poller: after a
