@@ -287,7 +287,8 @@ pub struct Outcome {
 	/// Of `refused`'s files read, those newer than every file kept in their
 	/// folder: the cursor is the newest file kept, so the next pass fetches
 	/// each again. Each is a failure that persists, held as a level
-	/// (`failures_open`, #1201), never counted again.
+	/// (`failures_open`, #1201), never counted; once a newer file kept passes
+	/// one, it is lost, and counted once (`passed_over`).
 	pub open_incoming: usize,
 	/// Files archived home this pass, each by what came of it
 	/// (`metrics::mailbox::ARCHIVE_ANSWERS`).
@@ -560,11 +561,11 @@ async fn read_folder<T: MailboxTransport>(
 ) -> Result<(), Failure> {
 	let mut after = cursor(db, subject, folder).await.map_err(Failure::Storage)?;
 	let mut fetched = 0;
-	// The `seq`s of files refused in this folder this pass, newer than every
-	// file kept so far: `outcome.open_incoming` counts them (#1201). A file
-	// kept after one moves the cursor past it, so it is never listed again
-	// and is no longer open.
-	let mut open: Vec<i64> = Vec::new();
+	// The files refused in this folder this pass, by `seq` and why, newer
+	// than every file kept so far: `outcome.open_incoming` counts them
+	// (#1201). A file kept after one moves the cursor past it, so it is never
+	// listed again: no longer open, and lost, which is counted once, here.
+	let mut open: Vec<(i64, &'static str)> = Vec::new();
 	for _ in 0..PAGES_PER_PASS {
 		let items = mailbox.list(folder, after, ITEMS_PER_PASS).await.map_err(Failure::Mailbox)?;
 		let full = items.len() >= ITEMS_PER_PASS as usize;
@@ -580,13 +581,19 @@ async fn read_folder<T: MailboxTransport>(
 			fetched += 1;
 			let (refused, kept) = (outcome.refused.len(), outcome.kept);
 			let read = read_one(db, (mailbox, folder), subject, deletion, now, outcome, item).await?;
-			if outcome.refused.len() > refused {
-				open.push(item.seq);
+			if let Some(why) = outcome.refused.get(refused) {
+				open.push((item.seq, *why));
 				outcome.open_incoming += 1;
 			} else if outcome.kept > kept {
-				let passed = open.iter().filter(|seq| **seq < item.seq).count();
-				open.retain(|seq| *seq > item.seq);
-				outcome.open_incoming -= passed;
+				for (_, why) in open.iter().filter(|(seq, _)| *seq < item.seq) {
+					// The folder and why, never the file's name or body.
+					Counted::alone(
+						Step::MailboxPassedOver,
+						&format_args!("{}: a file refused as {why} is passed by a newer one kept, and is never read again", folder.as_str()),
+					);
+					outcome.open_incoming -= 1;
+				}
+				open.retain(|(seq, _)| *seq > item.seq);
 			}
 			if !read {
 				return Ok(());
@@ -2000,10 +2007,36 @@ mod tests {
 		crate::failure::open(crate::failure::Step::MailboxReadIncoming, 9);
 		let outcome = pass_at(&pool, &fake, "2026-10-23T15:30:00.000Z").await.unwrap();
 		assert_eq!((outcome.kept, outcome.open_incoming), (1, 0));
-		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(0.0), "a newer file kept passes them");
+		// Passed, each is lost: counted once, by the pass whose keep passed it.
+		assert_eq!(failures(&snapshotter), [(String::from("passed_over"), 2)]);
 		fake.add(12, "digest-2026-10-24.json", "not json");
 		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:45:00.000Z").await.unwrap().open_incoming, 1);
-		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(1.0));
+		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(1.0), "and never counted again");
+	}
+
+	/// #1201: a refused file passed in the same pass by a newer one kept was
+	/// never open, and is lost: counted once, then never again, however many
+	/// passes follow.
+	#[tokio::test]
+	async fn a_refused_file_a_newer_keep_passes_is_counted_once_and_never_again() {
+		let (captured, _capture) = crate::privacy::capture_where(|meta| *meta.level() == tracing::Level::ERROR);
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		fake.add(9, "digest-2026-10-21.json", "not json");
+		let (good, body) = digest("2026-10-22");
+		fake.add(10, &good, &body);
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!((outcome.kept, outcome.refused, outcome.open_incoming), (1, vec!["not_json"], 0));
+		for at in ["2026-10-23T15:15:00.000Z", "2026-10-23T15:30:00.000Z"] {
+			pass_at(&pool, &fake, at).await.unwrap();
+		}
+		assert_eq!(failures(&snapshotter), [(String::from("passed_over"), 1)]);
+		let lines = captured.lines();
+		let cause = "cause=brief: a file refused as not_json is passed by a newer one kept, and is never read again";
+		assert_eq!(lines.iter().filter(|line| *line == cause).count(), 1, "{lines:#?}");
+		assert!(!lines.iter().any(|line| line.contains("digest-2026-10-21")), "never the file's name: {lines:#?}");
 	}
 
 	#[tokio::test]

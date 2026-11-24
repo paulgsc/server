@@ -124,7 +124,10 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    0 at the next pass that looks; a pass that could not look leaves it as it
    stood, and its own failure is its process's `*Failing` alert. Its steps
    are in the same closed `Step` table, marked `open`, and a step is one or
-   the other, never both. Nothing is stored for it and it adds no clock: the
+   the other, never both. A condition that ends in a loss is an event at the
+   end: a refused file a newer kept file passes is never read again, so the
+   pass whose keep passes it counts it once (`passed_over`). Nothing is
+   stored for it and it adds no clock: the
    passes that already run set it. `HomeFailuresOpen`
    (`infra/prometheus/rules/home.yml`) tells the owner while one stays open
    for 2 hours. The owner's choice on #1201 (2026-11-24): a gauge, not a

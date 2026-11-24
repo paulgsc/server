@@ -198,6 +198,11 @@ steps! {
 	/// answer. What it would have queued or moved is not. Counted when it is
 	/// first kept (#1175).
 	MailboxReadBody => MailboxPasses, "read_body";
+	/// A file read from the mailbox and not kept (`read_incoming`) that a
+	/// newer file kept in its folder passes: the cursor moves past it, so it
+	/// is never read again. A final loss, counted once, by the pass whose keep
+	/// passes it (#1201).
+	MailboxPassedOver => MailboxPasses, "passed_over";
 	/// Open: an archived file the routine asked back that home cannot put
 	/// back: it holds no copy (`missing`), or the mailbox would not take the
 	/// one it holds (`conflict`, `refused`). The ask stays open, so every
