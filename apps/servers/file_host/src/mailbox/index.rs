@@ -90,6 +90,7 @@ use mailbox_repo::{HeldFile, HeldTranscript, JobsInputs};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
@@ -788,8 +789,10 @@ impl Computed {
 /// refusal, a conflict, or a body over its ceiling, never put): one is not
 /// put again until what the index counts moves, so it stays open until then,
 /// a level the pass reports in `failures_open` ([`LastIndexes::open`], #1201).
+/// The flag is atomic, apart from the lock, so reading or clearing it never
+/// recovers a poisoned lock (an erasure, #1202).
 #[derive(Debug, Default)]
-pub struct LastIndex(Mutex<Option<(Computed, bool)>>);
+pub struct LastIndex(Mutex<Option<Computed>>, AtomicBool);
 
 impl LastIndex {
 	fn holds(&self, subject: &str, as_of: Option<&str>, within: impl FnOnce(&str) -> bool) -> bool {
@@ -798,25 +801,27 @@ impl LastIndex {
 			.lock()
 			.unwrap_or_else(PoisonError::into_inner)
 			.as_ref()
-			.is_some_and(|(last, _)| last.holds(subject, as_of, within))
+			.is_some_and(|last| last.holds(subject, as_of, within))
 	}
 
 	/// Remembers what the index the mailbox answered was computed from, and
 	/// whether its answer was a failure.
 	fn remember(&self, computed: Computed, failed: bool) {
-		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((computed, failed));
+		self.1.store(failed, Ordering::Relaxed);
+		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(computed);
 	}
 
-	/// Forgets the last index, when the routine has nothing to count and so
-	/// no index: none stands to be open (#1201), and the next one is put.
-	pub(super) fn forget(&self) {
-		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+	/// The routine has nothing to count, so no index stands and none is open
+	/// (#1201). What the last one was computed from stays: the next arrival
+	/// moves what it counts, so a new one is put.
+	pub(super) fn nothing_to_count(&self) {
+		self.1.store(false, Ordering::Relaxed);
 	}
 
 	/// Whether the last index the mailbox answered was refused, conflicted
 	/// on, or too big to put.
 	fn failed(&self) -> bool {
-		self.0.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|(_, failed)| *failed)
+		self.1.load(Ordering::Relaxed)
 	}
 }
 
@@ -832,7 +837,7 @@ pub struct LastIndexes {
 	/// of Rust Rounds home holds (`pass::queue_held_weeks`, RR25): once per
 	/// process, so the first pass after an upgrade queues a week an older
 	/// build kept without reading.
-	pub weeks_queued: std::sync::atomic::AtomicBool,
+	pub weeks_queued: AtomicBool,
 }
 
 impl LastIndexes {
@@ -877,7 +882,7 @@ pub(super) async fn put_jobs_index<T: MailboxTransport>(
 		let as_of = mailbox_repo::jobs_as_of(&mut tx, subject).await.map_err(super::pass::storage)?;
 		// Nothing to count yet: no index, and the routine reads Drive.
 		if as_of.is_none() {
-			last.forget();
+			last.nothing_to_count();
 			return Ok(());
 		}
 		// A new day alone is no reason: the last index still says what a
