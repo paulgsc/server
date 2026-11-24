@@ -307,19 +307,18 @@ async fn pass(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Result<E
 			};
 			// A failing read leaves the last value: the pass still gave what
 			// it gave.
-			match crate::feeds::renders::overdue(db, &crate::feeds::renders::Folders::server(), subject.as_str(), feed, chrono::Utc::now().timestamp()).await {
-				Ok(overdue) => {
-					crate::metrics::rust_essays::record_overdue(kind, overdue);
-					// Said in the log too: a week whose essay never came leaves
-					// every other line of this worker quiet. Never its week.
-					if overdue {
-						warn!(
-							"{}: an essay owed is past its Monday and has not come (the board's Coming says what it waits on)",
-							spec(kind).name
-						);
-					}
+			if let Ok(overdue) = crate::feeds::renders::overdue(db, &crate::feeds::renders::Folders::server(), subject.as_str(), feed, chrono::Utc::now().timestamp()).await {
+				crate::metrics::rust_essays::record_overdue(kind, overdue);
+				// Said in the log too: a week whose essay never came leaves
+				// every other line of this worker quiet. Never its week.
+				if overdue {
+					warn!(
+						"{}: an essay owed is past its Monday and not given to the worker (the board's Coming says what it waits on)",
+						spec(kind).name
+					);
 				}
-				Err(_) => warn!(error = "storage", "{}: whether an essay owed is overdue was not read", spec(kind).name),
+			} else {
+				warn!(error = "storage", "{}: whether an essay owed is overdue was not read", spec(kind).name);
 			}
 			exported
 		}

@@ -348,7 +348,7 @@ fn a_call_week_past_its_friday_stays_overdue_as_its_week_not_come() {
 fn a_call_week_the_routine_made_longer_moves_the_next_on_from_its_last_day() {
 	// A missed run: the week of Oct 16 was written two weeks long, Oct 16 to
 	// Oct 29. The next is due Friday Nov 6, not Oct 30, whenever home took
-	// it: here Thursday evening at home, as a run early by UTC would.
+	// it: here at the start of Thursday at home, as a run early by UTC would.
 	let mut seen = call_seen();
 	seen.newest_week = NaiveDate::from_ymd_opt(2026, 10, 16);
 	seen.newest_week_to = NaiveDate::from_ymd_opt(2026, 10, 29);

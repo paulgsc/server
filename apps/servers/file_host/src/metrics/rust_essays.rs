@@ -103,9 +103,10 @@ pub fn record_renders(kind: Kind, seen: &Seen) {
 	gauge(kind, Gauge::WorkerLastPass).set(seen.renders.worker_last_pass.map_or(0.0, as_f64));
 }
 
-/// Whether an essay home is owed has passed its Monday at home without being
-/// given to the worker (`feeds::renders::overdue`, paulgsc/some-ui#3478):
-/// 1 or 0, set by each pass. The render gauges above count only essays
+/// Whether an essay home is owed has passed its Monday unrendered.
+///
+/// Not given to the worker by its Monday at home (`feeds::renders::overdue`,
+/// paulgsc/some-ui#3478): 1 or 0, set by each pass. The render gauges above count only essays
 /// given, so a week whose essay never came read as quiet.
 pub fn record_overdue(kind: Kind, overdue: bool) {
 	gauge(kind, Gauge::OwedOverdue).set(if overdue { 1.0 } else { 0.0 });

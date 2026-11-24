@@ -421,8 +421,9 @@ pub async fn as_the_routine_reads(conn: &mut SqliteConnection, subject: &str, no
 	kind.map(|kind| Kind::parse(&kind).ok_or(VoiceError::Unreadable)).transpose()
 }
 
-/// Whether a week's routine can read any transcript of `subject`'s take
-/// `note_id`: one filed and taken by the mailbox, as
+/// Whether a week's routine can read any transcript of `subject`'s take.
+///
+/// One of `note_id`'s filed and taken by the mailbox, as
 /// [`as_the_routine_reads`] chooses among. With none, the routine waits on
 /// the take (paulgsc/some-ui's `monday` prepare: "home hasn't heard the take
 /// yet"), so the week's essay is not written. One indexed read.
