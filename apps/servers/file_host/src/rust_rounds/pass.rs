@@ -388,11 +388,6 @@ async fn lose(db: &SqlitePool, toolchain: &str, program: &Waiting, how: Lost, pa
 	let kept = rust_round_repo::keep_drop(&mut tx, toolchain, program.seq, how, &now).await?;
 	if let Kept::Added(attempt) = kept {
 		pass.lost += 1;
-		let why = match how {
-			Lost::Dropped => "the runner dropped the program",
-			Lost::TimedOut => "the runner did not answer in time",
-		};
-		Failure::alone(Step::RustRoundsRunLost, &format_args!("{why} (loss {attempt} of {DROPS})"));
 		if attempt >= DROPS {
 			let ended = Ended::RunnerLost { rustc: stopped_run(toolchain)? };
 			let gave_up = rust_round_repo::keep_run(&mut tx, toolchain, program.seq, &key(toolchain, &program.source), &ended, &now).await?;
@@ -400,6 +395,16 @@ async fn lose(db: &SqlitePool, toolchain: &str, program: &Waiting, how: Lost, pa
 		}
 	}
 	tx.commit().await?;
+	// Counted once the loss is kept: a rolled-back one is asked again and
+	// kept under the same number, so counting before the commit would count
+	// it twice.
+	if let Kept::Added(attempt) = kept {
+		let why = match how {
+			Lost::Dropped => "the runner dropped the program",
+			Lost::TimedOut => "the runner did not answer in time",
+		};
+		Failure::alone(Step::RustRoundsRunLost, &format_args!("{why} (loss {attempt} of {DROPS})"));
+	}
 	Ok(Stop::Lost(how))
 }
 

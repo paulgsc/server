@@ -172,7 +172,8 @@ steps! {
 	RustRoundsRunLost => RustRoundsRuns, "run_lost";
 	/// A study nudge was claimed and sent, no device confirmed it, and a
 	/// delivery timed out: the intervention is spent and kept, never sent
-	/// again (#1180). Counted when it is kept.
+	/// again (#1180). Counted when it is kept; a process that dies between
+	/// the claim and the verdict leaves the claim spent and uncounted.
 	StudyNudgeDeliveryTimedOut => StudyNudge, "delivery_timed_out";
 }
 
