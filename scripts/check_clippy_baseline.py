@@ -59,7 +59,9 @@ The erasure lints (`disallowed_methods` on `Result::ok`/`unwrap_or*`,
 baseline's: they have their own, which only shrinks
 (`scripts/check_erasures.py`, the owner's decision on #1189). This script
 leaves them out, so turning them on did not grow this baseline, and its rule
-(only a toolchain bump grows it) holds as written.
+(only a toolchain bump grows it) holds as written. It reads the ordinary
+clippy pass; `check_erasures.py` reads a second one with the erasure lints
+forced (#1202), whose other `disallowed_methods` findings never come here.
 
 Reads the output of:
 

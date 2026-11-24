@@ -51,15 +51,18 @@ what CI runs, before every push that touches Rust:
 cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \
   -- --cap-lints=warn -A unknown-lints > clippy.json
 python3 scripts/check_clippy_baseline.py clippy.json            # add --update after fixing debt
-python3 scripts/check_erasures.py clippy.json                   # the same, for erasures
+cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \
+  -- $(python3 scripts/check_erasures.py --clippy-args) > erasures.json
+python3 scripts/check_erasures.py erasures.json                 # the same, for erasures
 ```
 
 The erasure lints (`Result::ok`/`unwrap_or*` in `clippy.toml`'s `disallowed-methods`,
 `let_underscore_must_use`, `map_err_ignore`) are not in that baseline: `check_erasures.py`
 holds them to `scripts/erasure_baseline.json`, which only shrinks, with no toolchain exception
-(#1189). A new erasure is counted (`file_host::failure::Failure::record`) or says why it is
-benign in `#[expect(clippy::disallowed_methods, reason = "...")]`, kept to the one statement:
-an `#[allow]`/`#[expect]` of those lints with no `reason` is itself a new erasure finding.
+(#1189). It reads the second pass, which forces those lints (`--force-warn`), so clippy reports
+an erasure through any `#[allow]` or `#[expect]`, with a `reason` or without (#1202, the
+owner's "no excuses"). A new erasure is returned or counted (`file_host::failure::Failure::record`);
+no attribute makes it pass. The second pass reuses the first one's build of the dependencies.
 
 Why those flags, since each one's absence fails silently: `--cap-lints=warn` because under the
 config's `-D warnings` a crate with any finding fails to build and every crate depending on it

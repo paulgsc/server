@@ -54,11 +54,13 @@ disallowed-methods = [
   # A failure is never destroyed (epic #1174): each of these turns a Result's
   # error into an ordinary value, with no count and no error log. Ratcheted by
   # scripts/check_erasures.py against scripts/erasure_baseline.json, which only
-  # shrinks, and never by the clippy baseline (#1189, option (a)).
-  { path = "core::result::Result::ok", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
-  { path = "core::result::Result::unwrap_or", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
-  { path = "core::result::Result::unwrap_or_default", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
-  { path = "core::result::Result::unwrap_or_else", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
+  # shrinks, and never by the clippy baseline (#1189, option (a)). lint.yml
+  # forces this lint (--force-warn), so no #[allow] or #[expect] hides one,
+  # with a reason or without (#1202).
+  { path = "core::result::Result::ok", reason = "a failure is never destroyed: return it or Failure::record it; no allow or expect excuses one (#1174, #1202)" },
+  { path = "core::result::Result::unwrap_or", reason = "a failure is never destroyed: return it or Failure::record it; no allow or expect excuses one (#1174, #1202)" },
+  { path = "core::result::Result::unwrap_or_default", reason = "a failure is never destroyed: return it or Failure::record it; no allow or expect excuses one (#1174, #1202)" },
+  { path = "core::result::Result::unwrap_or_else", reason = "a failure is never destroyed: return it or Failure::record it; no allow or expect excuses one (#1174, #1202)" },
 ]
 
 # Ban std logging macros (enforce tracing-only)

@@ -24,7 +24,9 @@ rustflags = [
     "-A", "clippy::redundant_pub_crate",
     # A Result erased with no count (epic #1174): ratcheted, with the
     # disallowed `Result::ok`/`unwrap_or*` in clippy.toml, by
-    # scripts/check_erasures.py, never by the clippy baseline (#1189).
+    # scripts/check_erasures.py, never by the clippy baseline (#1189). That
+    # check reads its own clippy pass, with these lints under --force-warn
+    # (#1202); warning here shows them in an ordinary local clippy too.
     "-W", "clippy::let_underscore_must_use",
     "-W", "clippy::map_err_ignore",
     "-D", "warnings"

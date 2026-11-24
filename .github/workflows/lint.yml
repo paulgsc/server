@@ -369,22 +369,38 @@ jobs:
           python3 scripts/check_clippy_baseline.py clippy.json "${args[@]}"
 
       # A failure is never destroyed (epic #1174): no new silent erasure of a
-      # Result (`.ok()`, `unwrap_or*`, `let _ =`, `map_err(|_| ...)`, or an
-      # #[allow] of those lints with no reason), read from the same clippy
-      # output. Its own baseline, kept out of the clippy one (#1189, the
-      # owner's option (a)), only shrinks: no toolchain bump lets it grow. It
-      # runs even when the clippy ratchet failed, so a PR hears both at once,
-      # but not when clippy never ran.
-      # The base is fetched here, not borrowed from the step above, and once
-      # the base runs this check a base baseline that cannot be read fails,
+      # Result (`.ok()`, `unwrap_or*` in any form, `let _ =`, `map_err(|_| ...)`).
+      # Clippy itself sees through every exemption (the owner, #1202): a
+      # second pass forces each erasure lint (`--clippy-args`), so a finding
+      # is reported under any #[allow] or #[expect], reason or not, and no
+      # lexical reading of scopes is needed. Its own pass, not the one above,
+      # because forcing `disallowed_methods` also reports that lint's other
+      # policies (`std::env::var`, `Router::route`) under their allows, which
+      # the clippy baseline must not see; this check keeps only erasures from
+      # it, the clippy one leaves them out, so neither counts the other's. Its
+      # own baseline (#1189, the owner's option (a)) only shrinks: no toolchain
+      # bump lets it grow. It runs even when the clippy ratchet failed, so a PR
+      # hears both at once, but not when clippy never ran.
+      - name: Run clippy with the erasure lints forced
+        if: ${{ !cancelled() && hashFiles('clippy.json') != '' }}
+        run: |
+          cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \
+            -- $(python3 scripts/check_erasures.py --clippy-args) > erasures.json || true
+
+      # The probe runs the real clippy on a scratch crate, so the forms a
+      # lexical reading missed (`Result::unwrap_or_default(x)`, a reasoned
+      # expect on an `if` with no `;`) are held against this toolchain. The
+      # base is fetched here, not borrowed from a step above, and once the
+      # base runs this check a base baseline that cannot be read fails,
       # since `--base` is all that stops a PR recording its own growth.
       - name: Check erasures against their baseline
-        if: ${{ !cancelled() && hashFiles('clippy.json') != '' }}
+        if: ${{ !cancelled() && hashFiles('erasures.json') != '' }}
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           python3 scripts/check_erasures.py --self-test
+          python3 scripts/check_erasures.py --probe
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           base=$(git rev-parse FETCH_HEAD)
           args=()
@@ -394,7 +410,7 @@ jobs:
           else
             echo "the base branch does not run the erasure check yet; skipping the shrink-only comparison"
           fi
-          python3 scripts/check_erasures.py clippy.json "${args[@]}"
+          python3 scripts/check_erasures.py erasures.json "${args[@]}"
 
   # GitHub starts no `workflow_run` when a run whose actor is github-actions[bot] finishes (a pull
   # request the image bot pushed), so PR gate (verdict) would never hear this one: tell it here, last,
