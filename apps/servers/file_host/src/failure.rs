@@ -71,11 +71,13 @@ pub enum Process {
 	GameFeed,
 	HomeDeploy,
 	HomeTranscription,
+	JobsNotice,
 	MailboxPasses,
 	PdFills,
 	ReportWeeks,
 	RustEssays,
 	RustRoundsRuns,
+	SnipsPickup,
 	StudioVideoQueue,
 	StudyNudge,
 	TemplatePreview,
@@ -83,7 +85,7 @@ pub enum Process {
 
 impl Process {
 	/// Every process, for tests and for anything that lists them.
-	pub const ALL: [Self; 15] = [
+	pub const ALL: [Self; 17] = [
 		Self::BiteMatched,
 		Self::CallWeeks,
 		Self::CardsEssays,
@@ -91,11 +93,13 @@ impl Process {
 		Self::GameFeed,
 		Self::HomeDeploy,
 		Self::HomeTranscription,
+		Self::JobsNotice,
 		Self::MailboxPasses,
 		Self::PdFills,
 		Self::ReportWeeks,
 		Self::RustEssays,
 		Self::RustRoundsRuns,
+		Self::SnipsPickup,
 		Self::StudioVideoQueue,
 		Self::StudyNudge,
 		Self::TemplatePreview,
@@ -112,11 +116,13 @@ impl Process {
 			Self::GameFeed => "game-feed",
 			Self::HomeDeploy => "home-deploy",
 			Self::HomeTranscription => "home-transcription",
+			Self::JobsNotice => "jobs-notice",
 			Self::MailboxPasses => "mailbox-passes",
 			Self::PdFills => "pd-fills",
 			Self::ReportWeeks => "report-weeks",
 			Self::RustEssays => "rust-essays",
 			Self::RustRoundsRuns => "rust-rounds-runs",
+			Self::SnipsPickup => "snips-pickup",
 			Self::StudioVideoQueue => "studio-video-queue",
 			Self::StudyNudge => "study-nudge",
 			Self::TemplatePreview => "template-preview",
@@ -265,6 +271,28 @@ steps! {
 	/// read. Removed, it is walked again, a new render, so each render
 	/// rejected is counted once (#809, Codex on #1221).
 	ClipsWalkRejected => Clips, "walk_rejected";
+	/// Open: Jobs run records no phone took this pass because every phone
+	/// met a final refusal (a key or JWT home must fix, a token FCM calls
+	/// invalid). Each is tried again every pass until a phone takes it or
+	/// it leaves the window (#1176, #1206).
+	JobsNoticeRefused => JobsNotice, "refused", open;
+	/// Open: Jobs run records no phone took this pass because FCM said to
+	/// try later (a `429`, a `5xx`) or never answered; tried again every
+	/// pass within the window (#1176).
+	JobsNoticeUnanswered => JobsNotice, "unanswered", open;
+	/// A Jobs run record that left the notice's window before any phone was
+	/// told of it, while a phone had asked: a loss, stored `expired` and
+	/// counted once, by the pass that stores it (#1176).
+	JobsNoticeUntold => JobsNotice, "untold";
+	/// A Snips commit or run marked gone (no run, an expired artifact, a
+	/// bundle refused or too big): its essay is refused `snip-gone` until a
+	/// newer run clears the mark. Counted once, when the mark is written
+	/// (#1177).
+	SnipsPickupGone => SnipsPickup, "gone";
+	/// Open: Snips keys an essay waits on whose last fetch failed in a way
+	/// that may clear (a timeout, the drive), each asked again next pass
+	/// (#1177).
+	SnipsPickupRetry => SnipsPickup, "retry", open;
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.

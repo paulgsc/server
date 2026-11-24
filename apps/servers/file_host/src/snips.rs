@@ -75,6 +75,7 @@
 pub mod pages;
 pub mod walks;
 
+use crate::failure::{Failure, Step};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -837,6 +838,8 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 					picked.failures.push("drive");
 					continue;
 				}
+				// Counted once the mark lands: an unmarked key is asked again.
+				Failure::alone(Step::SnipsPickupGone, &"no-run");
 			}
 			// Only once it is marked gone: a mark the drive refused leaves it
 			// at the back, never at the head.
@@ -881,6 +884,7 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 				if mark_gone(folder, key, Some(&run), reason).await.is_err() {
 					picked.failures.push("drive");
 				} else {
+					Failure::alone(Step::SnipsPickupGone, &reason);
 					let _ = tokio::fs::remove_file(retry_of(folder, key)).await;
 				}
 			}
@@ -891,6 +895,16 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		// One bundle a pass, of either family.
 		break;
 	}
+	// Keys an essay waits on whose last fetch failed and may clear, as this
+	// pass leaves them (invariant 9: a level, never a recount).
+	let mut waiting = 0;
+	for (family, key) in &wanted {
+		let folder = folders.of(*family);
+		if !bundle_of(folder, key).is_dir() && retry_of(folder, key).exists() {
+			waiting += 1;
+		}
+	}
+	crate::failure::open(Step::SnipsPickupRetry, waiting);
 	Ok(picked)
 }
 

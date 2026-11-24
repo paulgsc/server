@@ -818,3 +818,40 @@ async fn a_page_run_under_way_is_waited_on_and_a_newer_attempt_under_way_clears_
 }
 
 mod walks;
+
+/// #1177: a gone mark is counted once, when it is written, and not by the
+/// passes that meet it again; a key whose fetch failed and may clear is held
+/// open, a level each pass sets afresh, until a pass fetches it (invariant 9).
+#[tokio::test]
+async fn a_gone_mark_is_counted_once_and_a_retry_held_open_until_fetched() {
+	use crate::failure::{held, Step};
+	let recorder = metrics_util::debugging::DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let _recording = metrics::set_default_local_recorder(&recorder);
+	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
+	let (_, a, _) = record(b"a", "/a");
+	let (_, b, _) = record(b"b", "/b");
+	hold_essay(&pool, "one-2026-11-20", &[(commit(0), a)]).await;
+	hold_essay(&pool, "two-2026-11-21", &[(commit(1), b)]).await;
+	fake.run(run(1, 0), Err("timeout"));
+
+	// The first pass looks at commit(0) only (one bundle a pass): it times out.
+	crate::failure::open(Step::SnipsPickupRetry, 9);
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	let seen = held::seen(&snapshotter);
+	assert_eq!(seen.open(Step::SnipsPickupRetry), Some(1.0), "the timed-out commit waits");
+	assert_eq!(seen.counted(Step::SnipsPickupGone), None, "a failure that may clear is not gone");
+
+	// commit(1) has no run: marked gone, counted once.
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	assert_eq!(held::seen(&snapshotter).counted(Step::SnipsPickupGone), Some(1));
+
+	// commit(0) fetches now; commit(1) is met again, marked as it was.
+	fake.bundles.lock().unwrap().insert(1, Ok(Some(bundle(&commit(0), &[(b"a", "/a")], |_| {}))));
+	crate::failure::open(Step::SnipsPickupRetry, 9);
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	let seen = held::seen(&snapshotter);
+	assert_eq!(seen.open(Step::SnipsPickupRetry), Some(0.0), "fetched: nothing waits");
+	assert_eq!(seen.counted(Step::SnipsPickupGone), None, "met again, never counted again");
+}

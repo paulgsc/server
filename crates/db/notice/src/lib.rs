@@ -36,6 +36,9 @@ pub enum Said {
 	/// A re-run that added nothing, on a morning another record's picks
 	/// already spoke for: nothing sent.
 	Skipped,
+	/// No phone was told before the record left the notice's window: a
+	/// loss, stored so it is counted once (server#1176).
+	Expired,
 }
 
 impl Said {
@@ -46,6 +49,7 @@ impl Said {
 			Self::Picks => "picks",
 			Self::Trouble => "trouble",
 			Self::Skipped => "skipped",
+			Self::Expired => "expired",
 		}
 	}
 }
@@ -91,6 +95,16 @@ pub async fn forget(conn: &mut SqliteConnection, subject: &str, token: &str) -> 
 pub async fn devices(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, sqlx::Error> {
 	sqlx::query_scalar!("SELECT token FROM jobs_notice_device WHERE subject_id = ?1 ORDER BY registered_at, token", subject)
 		.fetch_all(&mut *conn)
+		.await
+}
+
+/// When the first phone `subject` still has asked to be told, if any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn first_registered(conn: &mut SqliteConnection, subject: &str) -> Result<Option<String>, sqlx::Error> {
+	sqlx::query_scalar!("SELECT MIN(registered_at) FROM jobs_notice_device WHERE subject_id = ?1", subject)
+		.fetch_one(&mut *conn)
 		.await
 }
 
