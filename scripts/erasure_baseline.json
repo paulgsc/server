@@ -1,0 +1,2997 @@
+{
+  "apps/envctl/src/caps.rs": {
+    "clippy::disallowed_methods": {
+      "fn bytes": {
+        "let decimal = number.parse::<f64>().ok().filter(|decimal| decimal.is_finite() && *decimal >= 0.0)?;": 1
+      },
+      "fn mem_total": {
+        "let kib = line.trim().strip_suffix(\"kB\")?.trim().parse::<u64>().ok()?;": 1
+      },
+      "fn replicas": {
+        ".map_or(Some(1), |value| whole(value).and_then(|count| u64::try_from(count).ok()))": 1
+      },
+      "fn whole": {
+        "Value::String(text) => text.trim().parse().ok(),": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn warnings": {
+        "let _ = write!(said, \" {} {} ({}),\", cap.service, gib(*bytes), class_name(cap.class));": 1
+      }
+    }
+  },
+  "apps/envctl/src/compose.rs": {
+    "clippy::disallowed_methods": {
+      "fn read": {
+        "let shown = path.strip_prefix(repo).unwrap_or(&path).to_string_lossy().replace(\"/./\", \"/\");": 1
+      }
+    }
+  },
+  "apps/envctl/src/deliver.rs": {
+    "clippy::disallowed_methods": {
+      "fn write": {
+        "for entry in fs::read_dir(base).with_context(|| format!(\"reading {}\", base.display()))?.filter_map(Result::ok) {": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn drop": {
+        "let _ = fs::remove_dir_all(&self.dir);": 1
+      },
+      "fn write": {
+        "let _ = fs::remove_dir_all(&path);": 1,
+        "let _ = fs::remove_file(&path);": 1
+      }
+    }
+  },
+  "apps/envctl/src/deploy.rs": {
+    "clippy::disallowed_methods": {
+      "fn applied_stack": {
+        "let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());": 1
+      },
+      "fn checked_out": {
+        "self.git(&[\"rev-parse\", \"HEAD\"]).ok().map(|commit| commit.trim().to_owned())": 1
+      },
+      "fn digits": {
+        "text.parse().ok()": 1
+      },
+      "fn epoch_of": {
+        ".and_then(|found| found.provides.get(\"contract\").and_then(|epoch| epoch.parse().ok()));": 1,
+        ".and_then(|labels| constraints::Constraints::from_labels(&labels).ok())": 1
+      },
+      "fn labels": {
+        "match serde_json::from_str::<Value>(stdout.trim()).ok()? {": 1
+      },
+      "fn passwd_entry": {
+        "[name, _, uid, gid, _, home, ..] if *name == user => Some((uid.parse().ok()?, gid.parse().ok()?, (*home).to_owned())),": 2
+      },
+      "fn read_json": {
+        "serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()": 2
+      },
+      "fn run": {
+        "let out = command.output().ok()?;": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn clear_marker": {
+        "let _ = std::fs::remove_file(self.marker());": 1
+      },
+      "fn home_starts_the_release_last_applied_from_its_tree": {
+        "let _ = std::fs::remove_dir_all(&dir);": 1
+      },
+      "fn prune_trees": {
+        "let _ = self.git(&[\"worktree\", \"prune\"]);": 1,
+        "let _ = self.git(&[\"worktree\", \"remove\", \"--force\", entry.path().to_str().unwrap_or_default()]);": 1
+      }
+    }
+  },
+  "apps/envctl/src/import.rs": {
+    "clippy::disallowed_methods": {
+      "fn run": {
+        "let env = dotenv::parse(&std::fs::read_to_string(repo.join(\".env\")).unwrap_or_default());": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn next_steps": {
+        "let _ = write!( out, \"Containers disagree on {}: no one value keeps every one as it runs. The file holds the first value\\nno use takes by default; decide each with `sops edit` before `make up`.\\n\\n\", conflicts.join(\", \") );": 1,
+        "let _ = write!(step, \"\\n {name}\");": 1,
+        "let _ = writeln!(out, \" {}. {step}\", number + 1);": 1
+      },
+      "fn report": {
+        "let _ = writeln!(out, \" already in the file, unchanged: {}\", change.kept);": 1,
+        "let _ = writeln!(out, \" {label}: {}\", names.len());": 1
+      }
+    }
+  },
+  "apps/envctl/src/main.rs": {
+    "clippy::disallowed_methods": {
+      "fn check": {
+        ".filter_map(|entry| Some(entry.ok()?.path()))": 2,
+        "let shown = dir.strip_prefix(repo).unwrap_or(&dir).display().to_string();": 1,
+        "let shown = path.strip_prefix(repo).unwrap_or(&path).display().to_string();": 1
+      },
+      "fn compose_on": {
+        "Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))": 1,
+        "if let Some(pid) = i32::try_from(child.id()).ok().and_then(rustix::process::Pid::from_raw) {": 1
+      },
+      "fn files_of": {
+        ".filter_map(|entry| entry.ok()?.file_name().into_string().ok())": 2
+      },
+      "fn listed_release": {
+        ".ok()": 1
+      },
+      "fn nix": {
+        "if std::fs::read_to_string(&path).ok().as_deref() != Some(rendered.as_str()) {": 1,
+        "stale.push(path.strip_prefix(repo).unwrap_or(&path).display().to_string());": 1
+      },
+      "fn run": {
+        "Ok(status.code().map_or(ExitCode::FAILURE, |code| ExitCode::from(u8::try_from(code).unwrap_or(1))))": 1,
+        "let raw = compose::config(&repo).ok();": 1,
+        "let read = |app: &str| std::fs::read_to_string(repo.join(sops::relative(&role, app))).unwrap_or_default();": 1
+      },
+      "fn warn_caps": {
+        "let meminfo = std::fs::read_to_string(\"/proc/meminfo\").ok();": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn compose_on": {
+        "let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);": 1
+      }
+    }
+  },
+  "apps/envctl/src/nix.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn description": {
+        "let _ = write!(text, \" Required while {} is {}.\", condition.variable, condition.value);": 1,
+        "let _ = write!(text, \"\\n\\nUnset (null), the binary's default: `{default}`.\");": 1
+      },
+      "fn string": {
+        "let _ = write!(out, \"\\\\u{:04x}\", u32::from(control));": 1
+      }
+    }
+  },
+  "apps/envctl/src/preflight.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn render": {
+        "let _ = writeln!(out, \" {} [{}] {}\", gap.name, gap.reader, first_line(&gap.help));": 1,
+        "let _ = writeln!(out, \" {} [{}] {}\", gap.name, gap.reader, gap.problem);": 1,
+        "let _ = writeln!(out, \"error: {error}\");": 1,
+        "let _ = writeln!(out, \"preflight: deploy/{role}/ sets every required variable, and every value parses.\");": 1,
+        "let _ = writeln!(out, \"warning: {warning}\");": 1,
+        "let _ = writeln!(out, \"{} required variable(s) missing from deploy/{role}/:\", report.missing.len());": 1,
+        "let _ = writeln!(out, \"{} value(s) their binary would refuse at start:\", report.invalid.len());": 1
+      },
+      "fn render_list": {
+        "let _ = writeln!(out, \" {first}\");": 1,
+        "let _ = writeln!(out, \"{state} {name} [{readers}]{shown}{when}\");": 1
+      }
+    }
+  },
+  "apps/envctl/src/prune.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn drop": {
+        "let _ = execute!(stdout(), terminal::LeaveAlternateScreen, cursor::Show);": 1,
+        "let _ = terminal::disable_raw_mode();": 1
+      },
+      "fn screen": {
+        "let _ = writeln!( out, \"{file} group {}/{}: {group} ({} variable(s)) page {}/{} ticked {}\\n\", self.group + 1, self.groups.len(), members.len(), self.page + 1, self.pages(), self.ticked().len() );": 1,
+        "let _ = writeln!(out, \" {:<36} {what}\", item.name);": 1,
+        "let _ = writeln!(out, \"{cursor} [{tick}] {:<36} {state:<6} {}\", item.name, item.help);": 1,
+        "let _ = writeln!(out, \"{file}: prune {} variable(s)? page {}/{pages}\\n\", ticked.len(), self.review_page + 1);": 1
+      }
+    }
+  },
+  "apps/envctl/src/sops.rs": {
+    "clippy::disallowed_methods": {
+      "fn version": {
+        "Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))": 2
+      }
+    }
+  },
+  "apps/envctl/src/values.rs": {
+    "clippy::disallowed_methods": {
+      "fn bound_refusal": {
+        "let number: f64 = value.trim().parse().ok()?;": 1
+      }
+    }
+  },
+  "apps/envctl/tests/home_runs_no_python.rs": {
+    "clippy::disallowed_methods": {
+      "<file scope>": {
+        "static PYTHON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r\"(?i)\\bpython\").unwrap_or_else(|err| panic!(\"{err}\")));": 1,
+        "static SCRIPT_REF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r\"\\bscripts/[A-Za-z0-9_./-]+\").unwrap_or_else(|err| panic!(\"{err}\")));": 1
+      },
+      "fn scan": {
+        "let shown = path.strip_prefix(repo).unwrap_or(&path).display().to_string();": 1
+      }
+    }
+  },
+  "apps/envctl/tests/stand_ins.rs": {
+    "clippy::disallowed_methods": {
+      "fn log": {
+        "fs::read_to_string(self.bin.join(\"log\")).unwrap_or_default()": 1
+      },
+      "fn tmpfs": {
+        "let mounts = fs::read_to_string(\"/proc/self/mounts\").ok()?;": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn compose_outlives_ctrl_c_passes_sigterm_on_and_removes_the_files": {
+        "let _ = fs::remove_dir_all(&env_dir);": 1
+      },
+      "fn compose_refuses_a_missing_file_and_a_link_off_tmpfs": {
+        "let _ = fs::remove_dir_all(&base);": 1,
+        "let _ = fs::remove_dir_all(&env_dir);": 1,
+        "let _ = fs::remove_file(&link);": 1
+      },
+      "fn drop": {
+        "let _ = fs::remove_dir_all(&self.root);": 1
+      },
+      "fn home_restarts_the_release_last_applied_from_its_tree": {
+        "let _ = fs::remove_dir_all(&env_dir);": 1
+      },
+      "fn new": {
+        "let _ = fs::remove_dir_all(&root);": 1
+      },
+      "fn overlapping_runs_never_touch_each_others_files": {
+        "let _ = fs::remove_dir_all(&env_dir);": 1
+      },
+      "fn up_decrypts_to_tmpfs_for_compose_alone_then_removes_it": {
+        "let _ = fs::remove_dir_all(&env_dir);": 1
+      }
+    }
+  },
+  "apps/orchestrator/src/lib.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn shutdown": {
+        "let _ = handle.await;": 1
+      },
+      "fn spawn_state_publisher": {
+        "let _ = supervisor_tx.send(SupervisorMsg::StreamTerminated(stream_id_clone.clone()));": 1
+      }
+    }
+  },
+  "apps/playoff_delta_job/src/espn.rs": {
+    "clippy::disallowed_methods": {
+      "fn game": {
+        "Ok((t, c[\"score\"].as_str().and_then(|s| s.parse().ok())))": 1,
+        "let week = event[\"week\"][\"number\"].as_u64().and_then(|w| u8::try_from(w).ok()).ok_or_else(|| bad(\"week.number\"))?;": 1
+      },
+      "fn minutes": {
+        "let num = |range: std::ops::Range<usize>| date.get(range)?.parse::<u64>().ok();": 1
+      }
+    }
+  },
+  "apps/playoff_delta_job/src/main.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn main": {
+        "let _ = writeln!(io::stderr().lock(), \"playoff-delta: {e}\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/auth.rs": {
+    "clippy::disallowed_methods": {
+      "fn has_room": {
+        "let used = self.used.lock().unwrap_or_else(PoisonError::into_inner);": 1
+      },
+      "fn take": {
+        "let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn relying_party": {
+        "let mut origins = origins.iter().map(|origin| Url::parse(origin.trim()).map_err(|_| RelyingPartyError::BadOrigin));": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/auth/ceremony.rs": {
+    "clippy::disallowed_methods": {
+      "fn open": {
+        "let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);": 1
+      },
+      "fn take": {
+        "let (expires, ceremony) = self.open.lock().unwrap_or_else(PoisonError::into_inner).remove(id)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/auth/cookie.rs": {
+    "clippy::disallowed_methods": {
+      "fn bearer": {
+        "let value = headers.get(AUTHORIZATION)?.to_str().ok()?;": 1
+      },
+      "fn cookie_header": {
+        "HeaderValue::from_str(&header).unwrap_or_else(|_| HeaderValue::from_static(\"__Host-session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict\"))": 1
+      },
+      "fn decode": {
+        ".and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())": 1,
+        ".ok()": 1
+      },
+      "fn from_headers": {
+        ".filter_map(|value| value.to_str().ok())": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/auth/csrf.rs": {
+    "clippy::disallowed_methods": {
+      "fn header": {
+        "headers.get(name).and_then(|value| value.to_str().ok())": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/auth/pairing.rs": {
+    "clippy::disallowed_methods": {
+      "fn forget": {
+        "self.open.lock().unwrap_or_else(PoisonError::into_inner).retain(|_, (_, owner)| owner != subject);": 1
+      },
+      "fn open": {
+        "let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);": 1
+      },
+      "fn take": {
+        "let (expires, subject) = self.open.lock().unwrap_or_else(PoisonError::into_inner).remove(&code.digest())?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/bin/dump_leetype_snapshot.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn main": {
+        "let _ = writeln!( out, \"{} round(s); {} file(s) {wrote}, {} {removed}\", report.rounds.len(), report.written.len(), report.removed.len() );": 1,
+        "let _ = writeln!(io::stderr(), \"dump-leetype-snapshot: could not open {}: {err}\", args.database_url);": 1,
+        "let _ = writeln!(io::stderr(), \"dump-leetype-snapshot: {err}\");": 1,
+        "let _ = writeln!(out, \"note: {id} has no runs recorded for its current version\");": 1,
+        "let _ = writeln!(out, \"{removed}: {file}\");": 1,
+        "let _ = writeln!(out, \"{wrote}: {file}\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/bin/import_curriculum.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn main": {
+        "let _ = writeln!( out, \"first import into an empty table, and a lesson failed: nothing was written, so the re-run after fixing it is still the baseline\" );": 1,
+        "let _ = writeln!( out, \"first import into an empty table: recorded as the baseline, so none of it will be announced as new material\" );": 1,
+        "let _ = writeln!( out, \"{} new, {} changed, {} renamed only, {} unchanged {verb} imported\", report.inserted.len(), report.content_changed.len(), report.metadata_changed.len(), report.unchanged.len() );": 1,
+        "let _ = writeln!(io::stderr(), \"import-curriculum: could not open {}: {err}\", args.database_url);": 1,
+        "let _ = writeln!(io::stderr(), \"import-curriculum: {err}\");": 1,
+        "let _ = writeln!(out, \"FAILED {what}: {why}\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/bin/import_leetype_rounds.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn main": {
+        "let _ = writeln!( out, \"{} new, {} changed, {} unchanged {verb} imported\", report.inserted.len(), report.content_changed.len(), report.unchanged.len() );": 1,
+        "let _ = writeln!(io::stderr(), \"import-leetype-rounds: could not open {}: {err}\", args.database_url);": 1,
+        "let _ = writeln!(io::stderr(), \"import-leetype-rounds: {err}\");": 1,
+        "let _ = writeln!(out, \"FAILED {what}: {why}\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/bin/record_leetype_runs.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn main": {
+        "let _ = match &run.result { RunResult::Ok { observation, .. } => writeln!(out, \"ok {:>5} ms {}\", observation.elapsed.milliseconds, observation.output), RunResult::Error { error, .. } => writeln!(out, \"error {} {}\", error.error_class.as_str(), error.message.lines().next().unwrap_or_default()), };": 1,
+        "let _ = write!(out, \" {:<3} {:<6} \", run.variant.label(), run.bounds.as_str());": 1,
+        "let _ = writeln!(err, \"record-leetype-runs: could not open {}: {error}\", args.database_url);": 1,
+        "let _ = writeln!(err, \"record-leetype-runs: {error}\");": 2,
+        "let _ = writeln!(out, \"CHANGED {id}: its body changed while it was recorded; not stored, run again\");": 1,
+        "let _ = writeln!(out, \"FAILED {id}: {why}\");": 1,
+        "let _ = writeln!(out, \"note: prlimit is not installed, so runs have no memory ceiling\");": 1,
+        "let _ = writeln!(out, \"{id}: no harness, skipped\");": 1,
+        "let _ = writeln!(out, \"{id}: recorded {} runs\", runs.len());": 1,
+        "let _ = writeln!(out, \"{id}: up to date\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/call_weeks/lane.rs": {
+    "clippy::disallowed_methods": {
+      "fn tick": {
+        "let meminfo = tokio::fs::read_to_string(&paths.meminfo).await.ok();": 1,
+        "let now_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);": 1,
+        "let pressure = tokio::fs::read_to_string(&paths.pressure).await.ok();": 1,
+        "let written_at = write_whole(&paths.status, DECISION, &decision_text(decision, now)).await.ok().map(|()| now);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/call_weeks/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn export": {
+        "if tokio::fs::read(folder.join(String::from(&week.from) + NEXT)).await.ok() != newest {": 1
+      },
+      "fn fetched": {
+        "fetch_capped(fetch, url, MAX_BODY).await.map_err(|kind| pass.failures.push(kind)).ok()": 1
+      },
+      "fn open_weeks": {
+        "if open.contains(week) && folders.renders.join(&name).join(super::render::VIDEO).try_exists().unwrap_or(true) {": 1
+      },
+      "fn read_index": {
+        "let index: Value = serde_json::from_slice(body).ok()?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/call_weeks/render.rs": {
+    "clippy::disallowed_methods": {
+      "fn drive": {
+        "let stat = rustix::fs::statvfs(path).ok()?;": 1
+      },
+      "fn exists": {
+        "tokio::fs::try_exists(path).await.unwrap_or(false)": 1
+      },
+      "fn last_pass": {
+        "let text = tokio::fs::read_to_string(status.join(\"last-pass\")).await.ok()?;": 1,
+        "text.trim().parse().ok()": 1
+      },
+      "fn newest_cache_warning": {
+        "let Some(at) = entry.metadata().await.ok().and_then(|meta| meta.modified().ok()) else {": 2,
+        "let at = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);": 1,
+        "let mut entries = tokio::fs::read_dir(status).await.ok()?;": 1
+      },
+      "fn parts": {
+        "parts_read(renders, week).await.unwrap_or(1)": 1
+      },
+      "fn parts_read": {
+        ".ok()": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/cards_essays.rs": {
+    "clippy::disallowed_methods": {
+      "fn refusal": {
+        "let essay = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/cards_essays/names.rs": {
+    "clippy::disallowed_methods": {
+      "fn card_turn": {
+        "let Some(k) = k.parse::<usize>().ok().filter(|k| *k >= 1) else { continue };": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/cards_essays/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn export": {
+        "let essay = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);": 1,
+        "let size = i64::try_from(crate::call_weeks::render::bytes_under(&given.renders.join(&essay.key)).await).unwrap_or(i64::MAX);": 1
+      },
+      "fn fetched": {
+        "fetch_capped(fetch, url, MAX_BODY).await.map_err(|kind| pass.failures.push(kind)).ok()": 1
+      },
+      "fn read_index": {
+        "let index: Value = serde_json::from_slice(body).ok()?;": 1
+      },
+      "fn spoken_takes": {
+        "essay_media::named(essay_media::Kind::Takes, &serde_json::from_slice(body).unwrap_or(Value::Null))": 1
+      },
+      "fn still_held": {
+        "let essay = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);": 1
+      },
+      "fn tidy": {
+        "let size = i64::try_from(crate::call_weeks::render::bytes_under(&render).await).unwrap_or(i64::MAX);": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn clear_refused": {
+        "let _ = tokio::fs::remove_file(status.join(name)).await;": 1
+      },
+      "fn export": {
+        "let _ = essay_media::remove_dir(&essay_media::folder_of(folder, &essay.key, *kind)).await;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/clips/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn checked_walk": {
+        ".then(|| serde_json::from_slice::<WalkFile>(body).ok())": 1
+      },
+      "fn fetched": {
+        "fetch_capped(fetch, url, MAX_FRAME).await.map_err(|kind| pass.failures.push(kind)).ok()": 1
+      },
+      "fn run_pinned": {
+        "let Some(clip) = serde_json::from_value::<Clip>(raw).ok().filter(|clip| is_plain(&clip.id)) else {": 1,
+        "let Some(index) = serde_json::from_slice::<Index>(&body).ok().filter(|index| INDEX_SCHEMAS.contains(&index.schema.as_str())) else {": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn put": {
+        "let _ = tokio::fs::remove_file(&partial).await;": 2
+      },
+      "fn queue_walk": {
+        "let _ = tokio::fs::remove_dir_all(&partial).await;": 2
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn checked_walk": {
+        "let bytes = tokio::fs::read(&path).await.map_err(|_| \"drive\")?;": 1,
+        "let length = tokio::fs::metadata(&path).await.map_err(|_| \"drive\")?.len();": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/config.rs": {
+    "clippy::map_err_ignore": {
+      "fn parse_timezone": {
+        ".map_err(|_| \"not an IANA zone name, e.g. America/Denver\".into())": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/contention.rs": {
+    "clippy::disallowed_methods": {
+      "fn cpu_some_total": {
+        ".and_then(|total| total.parse().ok())": 1
+      },
+      "fn oom_kills": {
+        "text.lines().find_map(|line| line.strip_prefix(\"oom_kill \")).and_then(|count| count.trim().parse().ok())": 1
+      },
+      "fn read": {
+        "cpu_some_us: std::fs::read_to_string(&self.psi_cpu).ok().as_deref().and_then(cpu_some_total),": 1,
+        "oom_kills: std::fs::read_to_string(&self.vmstat).ok().as_deref().and_then(oom_kills),": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/contract.rs": {
+    "clippy::disallowed_methods": {
+      "fn fingerprint_of": {
+        "let nibble = u8::try_from((hash >> (shift * 4)) & 0xf).unwrap_or(0);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/deploy.rs": {
+    "clippy::disallowed_methods": {
+      "fn decide": {
+        "let since = Duration::from_secs(u64::try_from(now.saturating_sub(pulled_at)).unwrap_or(0));": 1
+      },
+      "fn marker_since": {
+        "i64::try_from(since.as_secs()).ok()": 1,
+        "let modified = std::fs::metadata(folder.join(WANTED)).ok()?.modified().ok()?;": 2,
+        "let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;": 1
+      },
+      "fn read_recorded": {
+        ".and_then(|bytes| serde_json::from_slice(&bytes).ok())": 1,
+        ".ok()": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn request": {
+        "let _ = std::fs::remove_file(&temp);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/essay_media.rs": {
+    "clippy::disallowed_methods": {
+      "fn hand": {
+        "Kind::Pages => pages::given(recorded).map_err(|items| items.iter().for_each(|item| push(&mut gone, item))).ok(),": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/essay_media/clip_frames.rs": {
+    "clippy::disallowed_methods": {
+      "fn still_held": {
+        "let on_drive = sources.frames.join(clip).join(side).join(file).try_exists().unwrap_or(true);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/essay_media/pages.rs": {
+    "clippy::disallowed_methods": {
+      "fn instant": {
+        "chrono::DateTime::parse_from_rfc3339(moment).ok().map(|at| at.timestamp_millis())": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn hold": {
+        "let record: Value = serde_json::from_slice(&record).map_err(|_| Failed::Unreadable)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/essay_media/snips.rs": {
+    "clippy::map_err_ignore": {
+      "fn record_in": {
+        "let manifest: Value = serde_json::from_slice(&manifest).map_err(|_| Failed::Unreadable)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/essay_media/walks.rs": {
+    "clippy::disallowed_methods": {
+      "fn of": {
+        "let (first, last) = (first.parse::<usize>().ok()?, last.parse::<usize>().ok()?);": 2
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn hold": {
+        "let record: Value = serde_json::from_slice(&record).map_err(|_| Failed::Unreadable)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/feeds.rs": {
+    "clippy::disallowed_methods": {
+      "fn day_taken": {
+        "let at = chrono::DateTime::parse_from_rfc3339(taken_at).ok()?;": 1
+      },
+      "fn iso_monday": {
+        "chrono::NaiveDate::from_isoywd_opt(year.parse().ok()?, number.parse().ok()?, chrono::Weekday::Mon)": 2
+      }
+    }
+  },
+  "apps/servers/file_host/src/feeds/mp4.rs": {
+    "clippy::disallowed_methods": {
+      "fn find": {
+        "file.read_exact(&mut header).await.ok()?;": 1,
+        "file.read_exact(&mut large).await.ok()?;": 1,
+        "file.seek(std::io::SeekFrom::Start(at)).await.ok()?;": 1,
+        "let size = u64::from(u32::from_be_bytes(size.try_into().ok()?));": 1
+      },
+      "fn header_millis": {
+        "let duration = u32::from_be_bytes(rest.get(12..16)?.try_into().ok()?);": 1,
+        "let duration = u64::from_be_bytes(rest.get(20..28)?.try_into().ok()?);": 1,
+        "let scale = u32::from_be_bytes(rest.get(16..20)?.try_into().ok()?);": 1,
+        "let scale = u32::from_be_bytes(rest.get(8..12)?.try_into().ok()?);": 1,
+        "u64::try_from(millis).ok()": 1
+      },
+      "fn millis": {
+        "file.read_exact(head.get_mut(..len)?).await.ok()?;": 1,
+        "file.seek(std::io::SeekFrom::Start(mvhd_body)).await.ok()?;": 1,
+        "let end = file.metadata().await.ok()?.len();": 1,
+        "let len = usize::try_from(mvhd_end.checked_sub(mvhd_body)?).ok()?.min(head.len());": 1,
+        "let mut file = tokio::fs::File::open(path).await.ok()?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/feeds/renders.rs": {
+    "clippy::disallowed_methods": {
+      "fn essay_monday": {
+        "let due = DateTime::parse_from_rfc3339(&window.due).ok()?.with_timezone(&HOME_ZONE).date_naive();": 1
+      },
+      "fn fresh": {
+        "let stale = i64::try_from(crate::call_weeks::lane::STALE_AFTER.as_secs()).unwrap_or(i64::MAX);": 1
+      },
+      "fn made_and_size": {
+        "let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;": 2,
+        "return Some((i64::try_from(since.as_secs()).ok()?, Some(meta.len())));": 1
+      },
+      "fn modified": {
+        "i64::try_from(since.as_secs()).ok()": 1,
+        "let at = tokio::fs::metadata(path).await.ok()?.modified().ok()?;": 2,
+        "let since = at.duration_since(std::time::UNIX_EPOCH).ok()?;": 1
+      },
+      "fn name_failures": {
+        "let Some(essay) = body.and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok()) else {": 1
+      },
+      "fn of": {
+        "let item_count = u32::try_from(count).ok()?;": 1
+      },
+      "fn parse": {
+        "at: fields.get(\"at\")?.parse().ok()?,": 1,
+        "count => Some(Some(count.parse::<u32>().ok()?).filter(|count| *count > 0)),": 1,
+        "ran: field(\"ran\").map_or(Some(0), |ran| ran.parse().ok())?,": 1,
+        "since: field(\"since\")?.parse().ok()?,": 1,
+        "since: fields.get(\"since\")?.parse().ok()?,": 1,
+        "state_since: field(\"state_since\")?.parse().ok()?,": 1,
+        "yields: field(\"yields\")?.parse().ok()?,": 1
+      },
+      "fn parse_alive": {
+        "Some(((*fields.get(\"id\")?).to_owned(), fields.get(\"at\")?.parse().ok()?))": 1
+      },
+      "fn preview_life": {
+        "i64::try_from(crate::previews::LIFETIME.as_secs()).unwrap_or(i64::MAX)": 1
+      },
+      "fn previews_asked": {
+        ".and_then(|at| i64::try_from(at).ok())": 1
+      },
+      "fn ran_by": {
+        "u64::try_from(now.saturating_sub(self.state_since)).unwrap_or(0)": 1
+      },
+      "fn read_refused": {
+        "file.take(REFUSED_CEILING + 1).read_to_end(&mut bytes).await.ok()?;": 1,
+        "let file = tokio::fs::File::open(path).await.ok()?;": 1
+      },
+      "fn rounds_of": {
+        "Weeks::Interview => rust_round_repo::interview::read(&held.body).ok().map(|week| (week.id, week.window)),": 1,
+        "Weeks::RustRounds => rust_round_repo::week::read(&held.body).ok().map(|week| (week.id, week.window)),": 1
+      },
+      "fn seen": {
+        "took: small(&status.join(\"took\")).await.and_then(|took| took.trim().parse().ok()),": 1
+      },
+      "fn seen_of": {
+        "seen.newest_week_to = weeks.first().and_then(|week| NaiveDate::parse_from_str(&week.to, \"%Y-%m-%d\").ok());": 1
+      },
+      "fn small": {
+        "tokio::fs::read_to_string(path).await.ok()": 1
+      },
+      "fn tail": {
+        "file.read_to_end(&mut bytes).await.ok()?;": 1,
+        "file.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES))).await.ok()?;": 1,
+        "let len = file.metadata().await.ok()?.len();": 1,
+        "let mut file = tokio::fs::File::open(log).await.ok()?;": 1
+      },
+      "fn whole": {
+        "(!text.is_empty() && text.len() <= 6 && text.bytes().all(|b| b.is_ascii_digit())).then(|| text.parse().ok())?": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/feeds/videos.rs": {
+    "clippy::disallowed_methods": {
+      "fn let_go": {
+        "size: i64::try_from(size).unwrap_or(i64::MAX),": 1
+      },
+      "fn list": {
+        "let of = u32::try_from(keys.len()).unwrap_or(u32::MAX);": 1,
+        "let video_bytes = tokio::fs::metadata(&video).await.ok().filter(std::fs::Metadata::is_file).map(|meta| meta.len());": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/game_feed.rs": {
+    "clippy::disallowed_methods": {
+      "fn spawn": {
+        "crate::metrics::game_feed::record_pass(result.as_ref().ok(), schedule.followed(now, &teams));": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/game_feed/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn span": {
+        "Span::from_std(duration).unwrap_or(Span::MAX)": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/admin_settings.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn value_of": {
+        "(entry.accept)(revision.body.as_bytes()).map_err(|_| unreadable())?;": 1,
+        "serde_json::from_str(&revision.body).map_err(|_| unreadable())": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/aph.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/app_events.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/auth.rs": {
+    "clippy::disallowed_methods": {
+      "fn call_with": {
+        "let body = serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));": 1
+      },
+      "fn take": {
+        ".and_then(|bytes| CeremonyId::try_from(bytes).ok())": 1,
+        ".ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn finish_adding_passkey": {
+        "let verified = relying_party.finish_passkey_registration(&request.credential, &state).map_err(|_| unverified())?;": 1
+      },
+      "fn finish_registration": {
+        "let verified = relying_party.finish_passkey_registration(&request.credential, &state).map_err(|_| unverified())?;": 1
+      },
+      "fn finish_sign_in": {
+        ".map_err(|_| FileHostError::Unauthorized)?;": 2
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/cards_essays.rs": {
+    "clippy::disallowed_methods": {
+      "fn an_essay_s_video_is_its_plain_file_once_made_and_never_once_withdrawn": {
+        "std::fs::create_dir_all(renders.join(\"..\").join(\"x-2026-11-14\")).ok();": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/clips.rs": {
+    "clippy::disallowed_methods": {
+      "fn get_frame": {
+        "if !tokio::fs::try_exists(&path).await.unwrap_or(false) {": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/db/activities.rs": {
+    "clippy::disallowed_methods": {
+      "fn if_none_match_hits": {
+        "let Some(raw) = headers.get(IF_NONE_MATCH).and_then(|value| value.to_str().ok()) else {": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/episode_notes.rs": {
+    "clippy::disallowed_methods": {
+      "fn send": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/feed_videos.rs": {
+    "clippy::disallowed_methods": {
+      "fn send": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn described": {
+        "Ok(Description::Text(bytes)) => String::from_utf8(bytes).map_err(|_| FileHostError::OperationError(\"an episode's description is not UTF-8 text\".to_owned()))?,": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/games.rs": {
+    "clippy::disallowed_methods": {
+      "fn live_after": {
+        ".and_then(|n| n.parse::<i64>().ok())": 1
+      },
+      "fn moment_log": {
+        ".filter_map(|entry| DateTime::parse_from_rfc3339(&entry.seen_at).ok())": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/ideas.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/interview_weeks.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, etag, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn list_weeks": {
+        ".take(usize::try_from(LIST_LIMIT).unwrap_or(usize::MAX))": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn get_week": {
+        "let text = String::from_utf8(held.body).map_err(|_| unreadable())?;": 1,
+        "week: RawValue::from_string(text).map_err(|_| unreadable())?,": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/jobs.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn get_digests": {
+        "let digest = RawValue::from_string(text).map_err(|_| ())?;": 1,
+        "let text = String::from_utf8(held.body).map_err(|_| ())?;": 1
+      },
+      "fn get_runs": {
+        ".and_then(|text| RawValue::from_string(text).map_err(|_| \"json\"));": 1,
+        ".map_err(|_| \"utf8\")": 1
+      },
+      "fn notice_token": {
+        "let device: NoticeDevice = serde_json::from_slice(body).map_err(|_| refused())?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/korean.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/leetype_files.rs": {
+    "clippy::map_err_ignore": {
+      "fn session_file": {
+        "let envelope: Envelope<'_> = serde_json::from_str(text).map_err(|_| \"json\")?;": 1,
+        "let summary: Summary = serde_json::from_str(envelope.file.get()).map_err(|_| \"summary\")?;": 1,
+        "let text = std::str::from_utf8(body).map_err(|_| \"json\")?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/leetype_log.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/outcomes.rs": {
+    "clippy::disallowed_methods": {
+      "fn parse_instant": {
+        "let parsed = DateTime::parse_from_rfc3339(raw).ok().map(|at| at.with_timezone(&Utc));": 1
+      },
+      "fn validate_against_session": {
+        "let block = usize::try_from(record.block_index).ok().and_then(|index| session.activities.get(index));": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/renders.rs": {
+    "clippy::disallowed_methods": {
+      "fn get": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/routine.rs": {
+    "clippy::disallowed_methods": {
+      "fn get": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn put": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn put_prompt": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn put_reflection": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn readable": {
+        ".and_then(|text| RawValue::from_string(text).map_err(|_| \"json\"));": 1,
+        ".map_err(|_| \"utf8\")": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/rust_rounds.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, etag, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn list_weeks": {
+        ".take(usize::try_from(LIST_LIMIT).unwrap_or(usize::MAX))": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn get_round": {
+        "let read = rust_round_repo::round::read(stored.text.as_bytes()).map_err(|_| unreadable())?;": 1,
+        "round: RawValue::from_string(stored.text).map_err(|_| unreadable())?,": 1
+      },
+      "fn runs_of": {
+        "rustc: RawValue::from_string(run.rustc).map_err(|_| unreadable())?,": 1
+      },
+      "fn week_with_runs": {
+        "let text = String::from_utf8(held.body).map_err(|_| unreadable())?;": 1,
+        "week: RawValue::from_string(text).map_err(|_| unreadable())?,": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/rust_week_record.rs": {
+    "clippy::disallowed_methods": {
+      "fn stored_instant": {
+        "let at = DateTime::parse_from_rfc3339(at).ok()?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/rust_work_spans.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/studio_log.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/studio_videos.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/study_note.rs": {
+    "clippy::disallowed_methods": {
+      "fn put": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/subjects.rs": {
+    "clippy::disallowed_methods": {
+      "fn get": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/sync.rs": {
+    "clippy::disallowed_methods": {
+      "fn call": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn write": {
+        "let batch: Batch = serde_json::from_slice(body).map_err(|_| FileHostError::unprocessable_entity([(\"body\", \"is { \\\"items\\\": [{ \\\"id\\\", \\\"body\\\" }] }\")]))?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/voice.rs": {
+    "clippy::disallowed_methods": {
+      "fn a_paired_phone_deletes_a_take_and_home_keeps_every_other_kind": {
+        "(status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn get": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn post": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn post_attention": {
+        "let said = serde_json::from_slice::<AttentionBody>(&body).ok();": 1
+      },
+      "fn post_fast_track": {
+        "let Some(FastTrackBody { fast }) = serde_json::from_slice::<FastTrackBody>(&body).ok() else {": 1
+      },
+      "fn put": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      },
+      "fn put_note": {
+        "content_type: headers.get(CONTENT_TYPE).and_then(|value| value.to_str().ok()),": 1
+      },
+      "fn remove": {
+        "(status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/health.rs": {
+    "clippy::disallowed_methods": {
+      "fn perform_health_check": {
+        "let body = response.text().await.unwrap_or_default();": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn perform_health_check": {
+        "let _ = writeln!(io::stderr(), \"{line}\");": 1,
+        "let _ = writeln!(io::stdout(), \"{line}\");": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn ready_url": {
+        ".map_err(|_| \"Readiness check refused: --health-check-host must be a loopback address, not \".to_string() + host)?": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/jobs_notice.rs": {
+    "clippy::disallowed_methods": {
+      "fn run_once": {
+        "let run: Run = serde_json::from_slice(&file.body).ok()?;": 1,
+        "let started = DateTime::parse_from_rfc3339(&run.started_at).ok()?.with_timezone(&Utc);": 1,
+        "let unix = u64::try_from(now.timestamp()).unwrap_or(0);": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn load": {
+        "let text = std::fs::read_to_string(path).map_err(|_| anyhow::anyhow!(\"FCM_SERVICE_ACCOUNT_FILE: the file can't be read\"))?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/lifecycle.rs": {
+    "clippy::disallowed_methods": {
+      "fn production_rewrites": {
+        "let relative = file.strip_prefix(repo).unwrap_or(&file).to_string_lossy().replace('\\\\', \"/\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/listen.rs": {
+    "clippy::disallowed_methods": {
+      "fn drop": {
+        ".and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())": 1,
+        ".ok()": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn drop": {
+        "let _ = std::fs::remove_file(&self.path);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/mailbox/bell.rs": {
+    "clippy::disallowed_methods": {
+      "fn on_request": {
+        "*self.0.lock().unwrap() = request.headers().get(AUTHORIZATION).and_then(|value| value.to_str().ok()).map(str::to_owned);": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn a_bell_that_falls_silent_is_dropped_and_reconnected": {
+        "let _ = seen.send(());": 1
+      },
+      "fn a_mailbox_with_no_bell_is_asked_again_at_the_backstops_pace": {
+        "let _ = seen.send(Instant::now());": 1,
+        "let _ = stream.read(&mut buffer).await;": 1,
+        "let _ = stream.write_all(b\"HTTP/1.1 404 Not Found\\r\\ncontent-length: 0\\r\\nconnection: close\\r\\n\\r\\n\").await;": 1
+      },
+      "fn connect_once": {
+        "let _ = tokio::time::timeout(Duration::from_secs(1), socket.close(None)).await;": 1
+      },
+      "fn fake_bell": {
+        "let _ = seen.send(Seen::Connected(authorization));": 1,
+        "let _ = seen.send(Seen::Text(text));": 1,
+        "let _ = socket.close(None).await;": 1,
+        "let _ = socket.send(Message::text(\"pong\")).await;": 1
+      },
+      "fn recording_failing": {
+        "let _ = ran.send(cause);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/mailbox/index.rs": {
+    "clippy::disallowed_methods": {
+      "fn add_days": {
+        "let date = NaiveDate::parse_from_str(day, \"%Y-%m-%d\").ok()?;": 1
+      },
+      "fn decisions_of": {
+        "let decisions: DecisionsFile = serde_json::from_slice(&file.body).ok()?;": 1
+      },
+      "fn digest_of": {
+        "let digest: DigestFile = serde_json::from_slice(&file.body).ok()?;": 1
+      },
+      "fn holds": {
+        ".unwrap_or_else(PoisonError::into_inner)": 1
+      },
+      "fn jobs_day": {
+        "let now = DateTime::parse_from_rfc3339(now).ok()?.with_timezone(&Utc);": 1
+      },
+      "fn remember": {
+        "*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(computed);": 1
+      },
+      "fn scouts_of": {
+        "let scouts: ScoutsFile = serde_json::from_slice(&file.body).ok()?;": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn computed_index": {
+        "let _ = serde_json::to_writer(&mut body, &index);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/mailbox/index/call.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn call_index": {
+        "let _ = serde_json::to_writer(&mut body, &index);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/mailbox/index/interview.rs": {
+    "clippy::disallowed_methods": {
+      "fn as_of": {
+        ".filter_map(|at| chrono::DateTime::parse_from_rfc3339(at).ok())": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn interview_index": {
+        "let _ = serde_json::to_writer(&mut body, &index);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/mailbox/index/reflections.rs": {
+    "clippy::disallowed_methods": {
+      "fn drama_of": {
+        "let drama: DramaFile = serde_json::from_slice(&lesson.body).ok()?;": 1
+      },
+      "fn instant": {
+        "Some(DateTime::parse_from_rfc3339(text).ok()?.with_timezone(&Utc))": 1
+      },
+      "fn notes_named": {
+        ".and_then(|n| n.parse().ok())": 1,
+        "let named: BTreeMap<String, String> = serde_json::from_str(json).ok()?;": 1
+      },
+      "fn opened_of": {
+        "let opened: OpenedFile = serde_json::from_slice(&file.body).ok()?;": 1
+      },
+      "fn prompt_of": {
+        "let prompt: PromptFile = serde_json::from_slice(&file.body).ok()?;": 1
+      },
+      "fn recent_of": {
+        "let level = parts.next().and_then(|topik| topik.strip_prefix(\"TOPIK \")).and_then(|level| level.parse().ok());": 1
+      },
+      "fn reflection_of": {
+        "let reflection: ReflectionFile = serde_json::from_slice(&file.body).ok()?;": 1
+      },
+      "fn scene_of": {
+        "let scene: SceneFile = serde_json::from_slice(&lesson.body).ok()?;": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn computed_index": {
+        "let _ = serde_json::to_writer(&mut body, &index);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/mailbox/index/rust.rs": {
+    "clippy::disallowed_methods": {
+      "fn utc": {
+        "chrono::DateTime::parse_from_rfc3339(at).ok().map(|at| at.with_timezone(&chrono::Utc))": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn rust_index": {
+        "let _ = serde_json::to_writer(&mut body, &index);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/mailbox/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn archive_old": {
+        "let limit = i64::try_from(budget).unwrap_or(i64::MAX);": 1,
+        "size: u64::try_from(file.size).unwrap_or_default(),": 1
+      },
+      "fn before": {
+        "let back = chrono::Duration::from_std(back).ok()?;": 1,
+        "let now = DateTime::parse_from_rfc3339(now).ok()?.with_timezone(&Utc);": 1
+      },
+      "fn days_before": {
+        "let back = chrono::Duration::try_days(i64::try_from(days).ok()?)?;": 1,
+        "let now = DateTime::parse_from_rfc3339(now).ok()?.with_timezone(&Utc);": 1
+      },
+      "fn keep": {
+        ".then(|| rust_round_repo::week::read(item.body).ok())": 1
+      },
+      "fn picked": {
+        ".ok()": 1
+      },
+      "fn queue_held_weeks": {
+        ".filter_map(|file| rust_round_repo::week::read(&file.body).ok().filter(|week| week.id == file.id))": 1
+      },
+      "fn send": {
+        "let query = |key: &str| -> Option<i64> { path.split(['?', '&']).find_map(|pair| pair.strip_prefix(key)?.strip_prefix('=')?.parse().ok()) };": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/main.rs": {
+    "clippy::disallowed_methods": {
+      "fn main": {
+        "app_state.realtime.transport.client().flush().await.ok();": 1,
+        "held.unwrap_or_else(|err| err.exit());": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn exit_if_asked_for_contract_epoch": {
+        "let _ = writeln!(std::io::stdout(), \"{}\", file_host::contract::CONTRACT_EPOCH);": 1
+      },
+      "fn migrate_on_start": {
+        "let _ = writeln!(out, \"migrate: {line}\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/meaning.rs": {
+    "clippy::disallowed_methods": {
+      "fn embed": {
+        "let ids = self.tokenizer.encode_fast(text, false).map(|encoding| encoding.get_ids().to_vec()).unwrap_or_default();": 1
+      },
+      "fn from_parts": {
+        "config.get(\"hidden_dim\").and_then(serde_json::Value::as_u64) == u64::try_from(DIMENSIONS).ok(),": 1
+      },
+      "fn row": {
+        "let start = usize::try_from(id).ok()?.checked_mul(width)?;": 1
+      },
+      "fn unknown": {
+        "return u32::try_from(id).ok();": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn from_parts": {
+        "let (header, metadata) = SafeTensors::read_metadata(&matrix).map_err(|_| anyhow::anyhow!(\"model.safetensors does not read as safetensors\"))?;": 1,
+        "let tokenizer = Tokenizer::from_bytes(tokenizer).map_err(|_| anyhow::anyhow!(\"tokenizer.json does not read as a tokenizer\"))?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/build_info.rs": {
+    "clippy::disallowed_methods": {
+      "fn record": {
+        "let start = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/call_weeks.rs": {
+    "clippy::disallowed_methods": {
+      "fn bytes": {
+        "as_f64(i64::try_from(value).unwrap_or(i64::MAX))": 1
+      },
+      "fn count": {
+        "as_f64(i64::try_from(value).unwrap_or(i64::MAX))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/cards_essays.rs": {
+    "clippy::disallowed_methods": {
+      "fn count": {
+        "as_f64(i64::try_from(value).unwrap_or(i64::MAX))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/contention.rs": {
+    "clippy::disallowed_methods": {
+      "fn record": {
+        "metrics::counter!(\"contention_outcomes_total\", \"worker\" => worker, \"what\" => what).increment(u64::try_from(count).unwrap_or(u64::MAX));": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/game_feed.rs": {
+    "clippy::disallowed_methods": {
+      "fn record_pass": {
+        "metrics::counter!(\"game_feed_plays_added_total\").increment(u64::try_from(pass.added).unwrap_or(u64::MAX));": 1,
+        "metrics::gauge!(\"game_feed_games_followed\").set(f64::from(u32::try_from(followed).unwrap_or(u32::MAX)));": 1
+      },
+      "fn record_watch": {
+        "metrics::gauge!(\"game_feed_teams_chosen\").set(f64::from(u32::try_from(teams).unwrap_or(u32::MAX)));": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/lane.rs": {
+    "clippy::disallowed_methods": {
+      "fn signed": {
+        "as_f64(u64::try_from(value).unwrap_or(0))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/pd_fills.rs": {
+    "clippy::disallowed_methods": {
+      "fn count": {
+        "as_f64(i64::try_from(value).unwrap_or(i64::MAX))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/metrics/rust_essays.rs": {
+    "clippy::disallowed_methods": {
+      "fn count": {
+        "as_f64(i64::try_from(value).unwrap_or(i64::MAX))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/migrate.rs": {
+    "clippy::disallowed_methods": {
+      "fn backups": {
+        ".unwrap_or_default();": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn back_up": {
+        "let _ = std::fs::remove_file(&path);": 2
+      },
+      "fn backup_name": {
+        "let _ = write!(name, \"-{}-before-{first_pending}.db\", now.format(\"%Y%m%dT%H%M%SZ\"));": 1
+      },
+      "fn lines": {
+        "let _ = write!(line, \"{} ({})\", applied.len(), applied.join(\", \"));": 1
+      },
+      "fn migrate": {
+        "let _ = prune(&backup_dir, &stem, options.keep);": 2
+      },
+      "fn verify": {
+        "let _ = write!(reason, \"{copy_count} applied migrations and the database {live_count}\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/net.rs": {
+    "clippy::disallowed_methods": {
+      "fn default_gateway": {
+        "let gateway = u32::from_str_radix(gateway, 16).ok().filter(|word| *word != 0)?;": 1
+      },
+      "fn forwarded_peer_key": {
+        "first_hop.parse::<IpAddr>().ok().map(key_for)": 1,
+        "let first_hop = headers.get(\"x-forwarded-for\")?.to_str().ok()?.split(',').next()?.trim();": 1
+      },
+      "fn from_config": {
+        "let routes = std::fs::read_to_string(\"/proc/net/route\").ok();": 1
+      },
+      "fn from_request_parts": {
+        "let addr = axum::extract::ConnectInfo::<SocketAddr>::from_request_parts(parts, state).await.ok().map(|info| info.0);": 1
+      },
+      "fn key_for": {
+        "let mut keyer = KEYER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);": 1
+      },
+      "fn resolve": {
+        "parse_trusted_proxy(entry).ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn parse_trusted_proxy": {
+        ".map_err(|_| entry.to_owned() + \" is neither an address nor a CIDR range\")": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/nudge/clock.rs": {
+    "clippy::disallowed_methods": {
+      "fn parse_timestamp": {
+        "DateTime::parse_from_rfc3339(raw).ok().map(|parsed| parsed.with_timezone(&Utc))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/nudge/deadline.rs": {
+    "clippy::disallowed_methods": {
+      "fn timeout": {
+        "tokio::time::timeout(budget, work).await.ok()": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/nudge/propose.rs": {
+    "clippy::disallowed_methods": {
+      "fn materialize_provisioned_session": {
+        ".map(|activity| serde_json::to_value(activity).unwrap_or(serde_json::Value::Null))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/nudge/waker.rs": {
+    "clippy::disallowed_methods": {
+      "fn classify_pass_error": {
+        "match db.code().and_then(|code| code.parse::<i32>().ok()).map(|code| code & 0xff) {": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/nudge/waker/tests.rs": {
+    "clippy::disallowed_methods": {
+      "fn echoing_push_service": {
+        ".and_then(|value| value.trim().parse::<usize>().ok())": 1
+      },
+      "fn loopback_push_service": {
+        ".and_then(|value| value.trim().parse::<usize>().ok())": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn echoing_push_service": {
+        "let _ = stream.flush();": 1,
+        "let _ = stream.write_all(response.as_bytes());": 1
+      },
+      "fn lines_for_one_connection": {
+        "let _ = listener.accept();": 1,
+        "let _ = outbound::client(outbound::Caller::Nudge).no_proxy().build().unwrap().get(&url).send().await;": 1
+      },
+      "fn loopback_push_service": {
+        "let _ = stream.flush();": 1,
+        "let _ = stream.write_all(b\"HTTP/1.1 201 Created\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\");": 1
+      },
+      "fn numbered": {
+        "let _ = write!(s, \"{i}\");": 1
+      },
+      "fn one_pass_reads_at_most_one_row_per_due_subject": {
+        "let _ = write!(id, \"{i}-{j}\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/pd_fills/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn fetched": {
+        ".ok()": 1
+      },
+      "fn fill_version": {
+        "let fill: Value = serde_json::from_slice(body).ok()?;": 1
+      },
+      "fn read_index": {
+        "let index: Value = serde_json::from_slice(body).ok()?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/previews.rs": {
+    "clippy::disallowed_methods": {
+      "fn asked_at": {
+        "let at = chrono::NaiveDateTime::parse_from_str(stamp, \"%Y%m%dT%H%M%SZ\").ok()?;": 1,
+        "u64::try_from(at.and_utc().timestamp()).ok()": 1
+      },
+      "fn failed_at": {
+        "Err(_) => tokio::fs::metadata(folders.status.join(String::from(id) + \".failed.log\")).await.ok()?,": 1,
+        "meta.modified().ok().map(unix)": 1
+      },
+      "fn job_in_progress": {
+        "Some((\"yields\", value)) => yields = value.parse().unwrap_or(0),": 1,
+        "let text = String::from_utf8(text).ok()?;": 1
+      },
+      "fn named_version": {
+        ".and_then(|version| u32::try_from(version).ok())": 1,
+        "let sample: serde_json::Value = serde_json::from_slice(&bytes).ok()?;": 1
+      },
+      "fn read_small": {
+        "file.take(ceiling).read_to_end(&mut bytes).await.ok()?;": 1,
+        "let file = tokio::fs::File::open(path).await.ok()?;": 1,
+        "let meta = tokio::fs::symlink_metadata(path).await.ok()?;": 1
+      },
+      "fn sweep": {
+        ".and_then(|meta| meta.modified().ok())": 1,
+        ".ok()": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/privacy.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn record_debug": {
+        "let _ = write!(line, \"{}={value:?}\", field.name());": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/rate_limiter/middleware.rs": {
+    "clippy::disallowed_methods": {
+      "fn retry_after_seconds": {
+        "u64::try_from(wait.as_nanos().div_ceil(1_000_000_000)).unwrap_or(u64::MAX).max(1)": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/reconcile.rs": {
+    "clippy::disallowed_methods": {
+      "fn live_through": {
+        ".and_then(|n| n.parse::<i64>().ok())": 1
+      },
+      "fn started_at_home": {
+        "let phone = DateTime::parse_from_rfc3339(&bite.bite.started).ok()?.with_timezone(&Utc);": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/renders_again.rs": {
+    "clippy::disallowed_methods": {
+      "fn burnt": {
+        ".unwrap_or_else(|err| Err(std::io::Error::other(err)));": 1,
+        "let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(now).unwrap_or(0));": 1
+      },
+      "fn recheck": {
+        "if let Some(essay) = body.and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok()) {": 1
+      },
+      "fn written": {
+        "i64::try_from(at.as_secs()).ok()": 1,
+        "let at = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;": 2,
+        "let meta = tokio::fs::symlink_metadata(path).await.ok()?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/report_weeks.rs": {
+    "clippy::disallowed_methods": {
+      "fn export": {
+        "if tokio::fs::try_exists(&into).await.unwrap_or(false) {": 1
+      },
+      "fn last_ended": {
+        "let asked = now - chrono::Duration::from_std(GRACE).unwrap_or_else(|_| chrono::Duration::days(1));": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn ask": {
+        "let body = String::from_utf8(body).map_err(|_| sqlx::Error::Protocol(String::from(\"the weekly read is not UTF-8\")))?;": 1,
+        "serde_json::to_writer(&mut body, &weekly).map_err(|_| sqlx::Error::Protocol(String::from(\"the weekly read does not serialise\")))?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/routes/cors.rs": {
+    "clippy::disallowed_methods": {
+      "fn origins": {
+        "AllowOrigin::list(config.allowed_origins.iter().filter_map(|origin| origin.parse::<HeaderValue>().ok()))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/routes/ts_emitter.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn render_ts": {
+        "let _ = writeln!(out, \"/** The lowest epoch that server still serves (`contract::OLDEST_SUPPORTED`). */\");": 1,
+        "let _ = writeln!(out, \"/** The server contract epoch this snapshot is (file_host's `contract::CONTRACT_EPOCH`). */\");": 1,
+        "let _ = writeln!(out, \"export const API_BASE_PATH = \\\"{}\\\";\\n\", inventory.api_base_path);": 1,
+        "let _ = writeln!(out, \"export const SERVER_CONTRACT_EPOCH = {};\", inventory.contract_epoch);": 1,
+        "let _ = writeln!(out, \"export const SERVER_OLDEST_SUPPORTED = {};\\n\", inventory.oldest_supported);": 1
+      },
+      "fn render_union": {
+        "let _ = writeln!(out, \" | \\\"{member}\\\"{terminator}\");": 1,
+        "let _ = writeln!(out, \"export type {name} = never;\");": 1,
+        "let _ = writeln!(out, \"export type {name} =\");": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/routine_watch.rs": {
+    "clippy::disallowed_methods": {
+      "fn started_at": {
+        "DateTime::parse_from_rfc3339(at).ok().map(|at| at.with_timezone(&Utc))": 1,
+        "let record: serde_json::Value = serde_json::from_slice(body).ok()?;": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn parse_schedules": {
+        "let at = NaiveTime::parse_from_str(at, \"%H:%M\").map_err(|_| String::from(\"\\\"\") + at + \"\\\" is not HH:MM\")?;": 1,
+        "let zone = zone.parse::<Tz>().map_err(|_| String::from(\"\\\"\") + zone + \"\\\" is not a time zone\")?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/rust_essays.rs": {
+    "clippy::disallowed_methods": {
+      "fn given_revision": {
+        "let text = tokio::fs::read_to_string(input.join(REVISION_FILE)).await.ok()?;": 1,
+        "text.trim().parse().ok()": 1
+      },
+      "fn held": {
+        "let taken_at = meta.modified().ok().map(|at| chrono::DateTime::<chrono::Utc>::from(at).to_rfc3339()).unwrap_or_default();": 1
+      },
+      "fn observe": {
+        ".and_then(|meta| meta.modified().ok())": 1,
+        ".ok()": 1
+      },
+      "fn plays": {
+        "(of == week).then(|| (revision, essay::read_of(kind, &file.body).ok()))": 1
+      },
+      "fn tidy": {
+        "let size = i64::try_from(crate::call_weeks::render::bytes_under(&render).await).unwrap_or(i64::MAX);": 1
+      },
+      "fn waits_on": {
+        "let refused = tokio::fs::try_exists(status.join(String::from(week) + \".refused.log\")).await.unwrap_or(false);": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn a_week_let_go_is_never_given_again": {
+        "let _ = std::fs::remove_dir_all(&folders.renders);": 1
+      },
+      "fn export": {
+        "let _ = stale_refusal().await;": 2,
+        "let _ = tokio::fs::remove_file(folders.status.join(week.clone() + \".refused.log\")).await;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/rust_rounds.rs": {
+    "clippy::disallowed_methods": {
+      "fn spawn": {
+        "if let Some(change) = result.as_ref().ok().and_then(|done| seen.runner(done.stopped)) {": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/rust_rounds/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn ask": {
+        ".unwrap_or_else(|_| Err(AskError::NotSent(std::io::Error::other(\"the client's thread ended\"))))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/settings.rs": {
+    "clippy::disallowed_methods": {
+      "fn default_json": {
+        "serde_json::to_value(N::default()).unwrap_or(Value::Null)": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/snips.rs": {
+    "clippy::disallowed_methods": {
+      "fn marked": {
+        "let text = tokio::fs::read_to_string(gone_of(folder, key)).await.ok()?;": 1
+      },
+      "fn run_once": {
+        "let retried = tokio::fs::metadata(retry_of(folder, key)).await.and_then(|meta| meta.modified()).ok();": 1
+      },
+      "fn wanted": {
+        "let essay = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn run_once": {
+        "let _ = mark_retry(folder, key).await;": 1,
+        "let _ = tokio::fs::remove_dir_all(&stage).await;": 2,
+        "let _ = tokio::fs::remove_file(&zip).await;": 1,
+        "let _ = tokio::fs::remove_file(gone_of(folder, key)).await;": 2,
+        "let _ = tokio::fs::remove_file(retry_of(folder, key)).await;": 4
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn bundle": {
+        "let mut file = tokio::fs::File::create(into).await.map_err(|_| \"drive\")?;": 1,
+        "tokio::io::AsyncWriteExt::flush(&mut file).await.map_err(|_| \"drive\")?;": 1,
+        "tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await.map_err(|_| \"drive\")?;": 1
+      },
+      "fn json_or_none": {
+        "serde_json::from_slice(&body).map(Some).map_err(|_| \"unreadable\")": 1
+      },
+      "fn open": {
+        "let file = std::fs::File::open(zip).map_err(|_| Why::Drive)?;": 1,
+        "let held: BTreeSet<String> = listed.map_err(|_| Why::Refused)?.into_iter().filter(|name| !name.ends_with('/')).collect();": 1,
+        "let manifest: Manifest<'_> = serde_json::from_slice(&manifest_bytes).map_err(|_| Why::Refused)?;": 1,
+        "let record: Record = serde_json::from_str(raw.get()).map_err(|_| Why::Refused)?;": 1,
+        "let sums = sums(std::str::from_utf8(&read(&mut archive, \"SHA256SUMS\")?).map_err(|_| Why::Refused)?).ok_or(Why::Refused)?;": 1
+      },
+      "fn read": {
+        "entry.take(MAX_FILE + 1).read_to_end(&mut bytes).map_err(|_| Why::Drive)?;": 1
+      },
+      "fn stage_file": {
+        "std::fs::create_dir_all(parent).map_err(|_| Why::Drive)?;": 1,
+        "std::fs::write(to, bytes).map_err(|_| Why::Drive)": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/snips/pages.rs": {
+    "clippy::map_err_ignore": {
+      "fn open": {
+        "let bundle: Bundle<'_> = serde_json::from_slice(&record_bytes).map_err(|_| Why::Refused)?;": 1,
+        "let file = std::fs::File::open(zip).map_err(|_| Why::Drive)?;": 1,
+        "let held: BTreeSet<String> = listed.map_err(|_| Why::Refused)?.into_iter().filter(|name| !name.ends_with('/')).collect();": 1,
+        "let record: Record = serde_json::from_str(raw.get()).map_err(|_| Why::Refused)?;": 1,
+        "let sums = sums(std::str::from_utf8(&read(&mut archive, \"SHA256SUMS\")?).map_err(|_| Why::Refused)?).ok_or(Why::Refused)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/snips/tests.rs": {
+    "clippy::map_err_ignore": {
+      "fn bundle": {
+        "std::fs::write(into, bytes).map_err(|_| \"drive\")?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/snips/walks.rs": {
+    "clippy::map_err_ignore": {
+      "fn open": {
+        "let bundle: Bundle = serde_json::from_slice(&record_bytes).map_err(|_| Why::Refused)?;": 1,
+        "let file = std::fs::File::open(zip).map_err(|_| Why::Drive)?;": 1,
+        "let held: BTreeSet<String> = listed.map_err(|_| Why::Refused)?.into_iter().filter(|name| !name.ends_with('/')).collect();": 1,
+        "let sums = sums(std::str::from_utf8(&read(&mut archive, \"SHA256SUMS\")?).map_err(|_| Why::Refused)?).ok_or(Why::Refused)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/storage.rs": {
+    "clippy::disallowed_methods": {
+      "fn saturating": {
+        "i64::try_from(bytes).unwrap_or(i64::MAX)": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/transcribe.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn start": {
+        "let _ = RUNS.set(state.transcribe.is_some());": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/transcribe/engine.rs": {
+    "clippy::disallowed_methods": {
+      "fn hear": {
+        "let duration_ms = i64::try_from(pcm.len() * 1000 / SAMPLE_RATE).ok();": 1,
+        "speech_ms: i64::try_from(speech.len() * 1000 / SAMPLE_RATE).ok(),": 1
+      },
+      "fn in_note": {
+        "let ms = |into: usize| i64::try_from((cut.note_at + into) / per_ms).unwrap_or(i64::MAX);": 1,
+        "let sample = |ms: i64| from.saturating_add(usize::try_from(ms).unwrap_or(0).saturating_mul(per_ms));": 1
+      },
+      "fn leaves_the_decode_its_time": {
+        "let extra_runs = u32::try_from(runs).unwrap_or(u32::MAX);": 1,
+        "let windows = u32::try_from(windows(speech_len)).unwrap_or(u32::MAX);": 1
+      },
+      "fn of": {
+        "speech_ms: i64::try_from(speech.len() * 1000 / SAMPLE_RATE).unwrap_or(i64::MAX),": 1
+      },
+      "fn plan": {
+        "let (id, probabilities) = state.lang_detect(0, self.threads).ok()?;": 1,
+        "let detected = state.pcm_to_mel(&pcm, self.threads).ok().and_then(|()| {": 1,
+        "let probability = usize::try_from(id).ok().and_then(|id| probabilities.get(id).copied())?;": 1
+      },
+      "fn speech": {
+        "let mut vad = WhisperVadContext::new(&self.vad_model, vad_context(self.threads).ok()?).ok()?;": 2,
+        "let segments = vad.segments_from_samples(WhisperVadParams::new(), pcm).ok()?;": 1
+      },
+      "fn tokens_of": {
+        "let bytes = token.to_bytes().ok()?;": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn finish": {
+        "let _ = child.kill();": 2,
+        "let _ = child.wait();": 2
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn load": {
+        ".map_err(|_| anyhow::anyhow!(\"transcribe::verbatim::PROMPT does not tokenize in transcribe::MODEL's vocabulary\"))?;": 1,
+        "WhisperVadContext::new(vad_path, vad_context(threads)?).map_err(|_| anyhow::anyhow!(\"transcribe::VAD_MODEL does not load as a whisper.cpp VAD model\"))?;": 1,
+        "let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!(\"transcribe::MODEL does not load as a whisper.cpp model\"))?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/transcribe/pass.rs": {
+    "clippy::disallowed_methods": {
+      "fn run_once_telling": {
+        "took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/websocket/broadcast/handlers.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn spawn_event_forwarder": {
+        "let _ = ws_sender.send(Message::Close(None)).await;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/websocket/connection.rs": {
+    "clippy::disallowed_methods": {
+      "fn remove_connection": {
+        "let state = handle.get_state().await.ok();": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/websocket/game_live.rs": {
+    "clippy::disallowed_methods": {
+      "fn could_have_sent": {
+        "let now = u64::try_from(self.now().timestamp_millis()).unwrap_or(0);": 1
+      },
+      "fn offered_bearer": {
+        ".filter_map(|value| value.to_str().ok())": 1,
+        "let mut value = HeaderValue::from_str(&(String::from(\"Bearer \") + token)).ok()?;": 1
+      },
+      "fn serve": {
+        "let home_at = u64::try_from(live.now().timestamp_millis()).unwrap_or(0);": 1
+      },
+      "fn with_clock": {
+        "let boot = u64::try_from(clock().timestamp_millis()).unwrap_or(0);": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn serve": {
+        "let _ = outgoing.send(Message::Close(Some(frame))).await;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/websocket/game_live/tests.rs": {
+    "clippy::disallowed_methods": {
+      "fn live_after": {
+        ".and_then(|n| n.parse::<i64>().ok())": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/websocket/game_live/wire.rs": {
+    "clippy::map_err_ignore": {
+      "fn read": {
+        "let envelope: Envelope = serde_json::from_str(text).map_err(|_| Close::Unreadable)?;": 1,
+        "let fields: HelloFields = serde_json::from_str(text).map_err(|_| Close::Unreadable)?;": 1,
+        "let fields: PingFields = serde_json::from_str(text).map_err(|_| Close::Unreadable)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/websocket/message/handlers.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn server_view_of": {
+        "let _ = sender.send(verdict);": 1
+      }
+    }
+  },
+  "apps/some-obs/src/service.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn run": {
+        "let _ = timeout(shutdown_timeout, async { let _ = tokio::join!(command_handler, event_bridge, health_checker); }) .await;": 1,
+        "let _ = tokio::join!(command_handler, event_bridge, health_checker);": 1
+      }
+    }
+  },
+  "crates/app-config/src/schema.rs": {
+    "clippy::disallowed_methods": {
+      "fn parse": {
+        "held.unwrap_or_else(|err| err.exit());": 1
+      },
+      "fn parse_then_hold": {
+        "let config = C::from_arg_matches(&matches).unwrap_or_else(|err| err.format(&mut cmd).exit());": 1
+      },
+      "fn unmet": {
+        "let Some(number) = value(bound.variable).and_then(|current| current.parse::<f64>().ok()) else {": 1
+      }
+    }
+  },
+  "crates/cursorium/src/core/engine.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn run": {
+        "let _ = response.send(result);": 1
+      }
+    }
+  },
+  "crates/cursorium/src/core/orchestrator.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn shutdown": {
+        "let _ = handle.await;": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn force_scene": {
+        ".map_err(|_| OrchestratorError::Internal(\"Failed to send command\".into()))": 1
+      },
+      "fn send_fsm": {
+        "rx.await.map_err(|_| OrchestratorError::Internal(\"Engine dropped\".into()))?": 1,
+        "self.command_tx.send(cmd).map_err(|_| OrchestratorError::Internal(\"Failed to send command\".into()))?;": 1
+      },
+      "fn skip_current_scene": {
+        ".map_err(|_| OrchestratorError::Internal(\"Failed to send command\".into()))": 1
+      }
+    }
+  },
+  "crates/db/activity/src/naming.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn default_session_name": {
+        "let _ = write!(name, \" \u00d7{count}\");": 1
+      }
+    }
+  },
+  "crates/db/activity/src/recommender.rs": {
+    "clippy::disallowed_methods": {
+      "fn published_at": {
+        "DateTime::parse_from_rfc3339(&activity.published_at).ok().map(|dt| dt.with_timezone(&Utc))": 1
+      }
+    }
+  },
+  "crates/db/activity/src/repository.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn fingerprint": {
+        "let _ = write!(out, \"{:016x}\", hasher.finish());": 1
+      },
+      "fn seed_past_the_ceiling": {
+        "let _ = write!(id, \"{n}\");": 1,
+        "let _ = write!(registry_key, \"{n}\");": 1
+      }
+    }
+  },
+  "crates/db/activity/tests/session_activity_shape.rs": {
+    "clippy::disallowed_methods": {
+      "fn every_seeded_default_config_is_shaped_like_activityconfigvalues": {
+        "let parsed: Value = serde_json::from_str(&row.default_config).unwrap_or_else(|error| panic!(\"`{}`.default_config is not valid JSON: {error}\", row.id));": 1
+      }
+    }
+  },
+  "crates/db/aph/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn body_of": {
+        "serde_json::to_value(value).map(|json| json.to_string()).map_err(|_| AphError::Unreadable)": 1
+      },
+      "fn read_body": {
+        "serde_json::from_str(body).map_err(|_| AphError::Unreadable)": 1
+      }
+    }
+  },
+  "crates/db/aph/src/model.rs": {
+    "clippy::disallowed_methods": {
+      "fn is_day": {
+        "let number = |range: std::ops::Range<usize>| text[range].parse::<u32>().unwrap_or(0);": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn read": {
+        "serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape this record holds\")])": 1
+      }
+    }
+  },
+  "crates/db/app_event/src/friction.rs": {
+    "clippy::disallowed_methods": {
+      "fn friction": {
+        "measured_days: i64::try_from(measured_days).unwrap_or(i64::MAX),": 1,
+        "said: i64::try_from(frictions.len()).unwrap_or(i64::MAX),": 1
+      },
+      "fn places": {
+        "let partial = i64::try_from(rows.len()).unwrap_or(i64::MAX) > crate::WINDOW_READ;": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn friction": {
+        "let days = serde_json::to_value(&edges).map(|json| json.to_string()).map_err(|_| EventError::Unreadable)?;": 1
+      }
+    }
+  },
+  "crates/db/app_event/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn summary": {
+        "for body in bodies.iter().take(usize::try_from(WINDOW_READ).unwrap_or(usize::MAX)) {": 1,
+        "let partial = i64::try_from(bodies.len()).unwrap_or(i64::MAX) > WINDOW_READ;": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn put_event": {
+        "let text = serde_json::to_value(&event).map(|json| json.to_string()).map_err(|_| EventError::Unreadable)?;": 1
+      },
+      "fn read_body": {
+        "serde_json::from_str(body).map_err(|_| EventError::Unreadable)": 1
+      }
+    }
+  },
+  "crates/db/app_event/src/model.rs": {
+    "clippy::disallowed_methods": {
+      "fn a_left_may_name_the_screen_it_went_to": {
+        "let parsed = parse_event(\"g1\", onward.to_string().as_bytes()).unwrap_or_else(|problems| panic!(\"{problems:?}\"));": 1
+      },
+      "fn an_outcome_reads_and_writes_back_as_it_came": {
+        "let parsed = parse_event(\"e1\", sent.to_string().as_bytes()).unwrap_or_else(|problems| panic!(\"{sent}: {problems:?}\"));": 1
+      },
+      "fn each_engagement_kind_reads_and_writes_back_as_it_came": {
+        "let parsed = parse_event(\"g1\", sent.to_string().as_bytes()).unwrap_or_else(|problems| panic!(\"{sent}: {problems:?}\"));": 1
+      },
+      "fn instant": {
+        ".ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn parse_event": {
+        "let event: Event = serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape an app event has\")])?;": 1
+      }
+    }
+  },
+  "crates/db/app_event/src/weeks.rs": {
+    "clippy::disallowed_methods": {
+      "fn parse": {
+        "Self::of(year.parse().ok()?, week.parse().ok()?)": 2
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn day_of": {
+        "let at = DateTime::parse_from_rfc3339(at).map_err(|_| EventError::Unreadable)?;": 1
+      }
+    }
+  },
+  "crates/db/call_week/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn keep": {
+        "let size = i64::try_from(week.body.len()).unwrap_or(i64::MAX);": 1
+      },
+      "fn revise": {
+        "let size = i64::try_from(week.body.len()).unwrap_or(i64::MAX);": 1
+      }
+    }
+  },
+  "crates/db/call_week/src/video.rs": {
+    "clippy::disallowed_methods": {
+      "fn split_key": {
+        "let part: u32 = if digits { part.parse().ok()? } else { return None };": 1
+      }
+    }
+  },
+  "crates/db/cards_essay/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn keep": {
+        "let size = i64::try_from(essay.body.len()).unwrap_or(i64::MAX);": 1
+      }
+    }
+  },
+  "crates/db/clip_frame/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn keep": {
+        "let size = i64::try_from(frame.bytes.len()).unwrap_or(i64::MAX);": 1
+      }
+    }
+  },
+  "crates/db/drama_prompt/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn parse": {
+        "let prompt: Prompt = serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape a prompt has: { stamp, text }\")])?;": 1
+      }
+    }
+  },
+  "crates/db/episode_note/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn instant": {
+        ".ok()": 1
+      },
+      "fn notes": {
+        "categories: serde_json::from_str(&row.categories).unwrap_or_default(),": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn parse": {
+        "let wire: Wire = serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape a note has\")])?;": 1
+      }
+    }
+  },
+  "crates/db/game_feed/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn keep": {
+        "let size = i64::try_from(response.body.len()).unwrap_or(i64::MAX);": 1
+      },
+      "fn read": {
+        "parsed.unwrap_or_else(Read::Unreadable)": 1
+      },
+      "fn replay": {
+        "let status = u16::try_from(response.status).unwrap_or(0);": 1
+      }
+    }
+  },
+  "crates/db/idea/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn held_content": {
+        "keywords: serde_json::from_str(&row.keywords).map_err(|_| IdeaError::Unreadable)?,": 1
+      }
+    }
+  },
+  "crates/db/idea/src/model.rs": {
+    "clippy::map_err_ignore": {
+      "fn parse_bundle": {
+        "let wire: Wire = serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape an idea's send holds\")])?;": 1
+      }
+    }
+  },
+  "crates/db/jobs/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn put_event": {
+        "let text = serde_json::to_value(&event).map(|json| json.to_string()).map_err(|_| JobsError::Unreadable)?;": 1
+      },
+      "fn read_body": {
+        "serde_json::from_str(body).map_err(|_| JobsError::Unreadable)": 1
+      }
+    }
+  },
+  "crates/db/jobs/src/model.rs": {
+    "clippy::disallowed_methods": {
+      "fn every_phone_event_type_reads_and_writes_back_as_it_came": {
+        "let parsed = parse_event(\"e1\", event.to_string().as_bytes()).unwrap_or_else(|problems| panic!(\"{event}: {problems:?}\"));": 1
+      },
+      "fn instant": {
+        ".ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn parse_event": {
+        "let event: Event = serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape this record holds\")])?;": 1
+      }
+    }
+  },
+  "crates/db/korean/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn check_body": {
+        "let text = std::str::from_utf8(body).map_err(|_| \"is not UTF-8\")?;": 1,
+        "serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| \"is not JSON\")?;": 1
+      },
+      "fn put": {
+        ".map_err(|_| KoreanError::Invalid(vec![(\"body\", \"is not UTF-8\")]))?": 1
+      },
+      "fn raw": {
+        "body.map(|body| RawValue::from_string(body).map_err(|_| KoreanError::Unreadable)).transpose()": 1
+      }
+    }
+  },
+  "crates/db/learner_shelf/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn check_body": {
+        "let text = std::str::from_utf8(body).map_err(|_| \"is not UTF-8\")?;": 1,
+        "serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| \"is not JSON\")?;": 1
+      }
+    }
+  },
+  "crates/db/leetype_log/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn put_event": {
+        "let text = serde_json::to_value(&event).map(|json| json.to_string()).map_err(|_| LogError::Unreadable)?;": 1
+      },
+      "fn read_body": {
+        "serde_json::from_str(body).map_err(|_| LogError::Unreadable)": 1
+      }
+    }
+  },
+  "crates/db/leetype_log/src/model.rs": {
+    "clippy::disallowed_methods": {
+      "fn every_phone_event_type_reads_and_writes_back_as_it_came": {
+        "let parsed = parse_event(S, \"e1\", event.to_string().as_bytes()).unwrap_or_else(|problems| panic!(\"{event}: {problems:?}\"));": 1
+      },
+      "fn instant": {
+        ".ok()": 1
+      }
+    }
+  },
+  "crates/db/leetype_round/src/runs.rs": {
+    "clippy::disallowed_methods": {
+      "fn parse": {
+        "digits.parse().ok().map(Self::Diff)": 1
+      }
+    }
+  },
+  "crates/db/mailbox/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn keep_archived": {
+        "let size = i64::try_from(file.body.len()).unwrap_or(i64::MAX);": 1
+      },
+      "fn keep_item": {
+        "let size = i64::try_from(item.body.len()).unwrap_or(i64::MAX);": 1
+      },
+      "fn weeks_named": {
+        "let first = i64::try_from(prefix.len()).unwrap_or(i64::MAX).saturating_add(1);": 1
+      }
+    }
+  },
+  "crates/db/outcome/src/repository.rs": {
+    "clippy::disallowed_methods": {
+      "fn stats": {
+        "if i64::try_from(rows.len()).unwrap_or(i64::MAX) > STATS_CEILING {": 1
+      }
+    }
+  },
+  "crates/db/pd_fill/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn keep": {
+        "let season_size = i64::try_from(fill.season_body.len()).unwrap_or(i64::MAX);": 1,
+        "let size = i64::try_from(fill.body.len()).unwrap_or(i64::MAX);": 1
+      },
+      "fn parse_key": {
+        "Some((season.to_owned(), team.to_owned(), week.parse().ok()?))": 1
+      }
+    }
+  },
+  "crates/db/push/src/repository/subscription.rs": {
+    "clippy::disallowed_methods": {
+      "fn from": {
+        ".unwrap_or_default()": 1
+      }
+    }
+  },
+  "crates/db/reflection/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn instant": {
+        ".ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn parse": {
+        "let wire: Wire = serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape a reflection has\")])?;": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/essay.rs": {
+    "clippy::disallowed_methods": {
+      "fn opening_exchanges": {
+        ".and_then(|n| u8::try_from(n).ok())": 1
+      },
+      "fn parse_name_of": {
+        "let n: u32 = n.parse().ok()?;": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/interview.rs": {
+    "clippy::map_err_ignore": {
+      "fn read_sent": {
+        "let sent: Sent = serde_json::from_value(value).map_err(|_| {": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn instant_order": {
+        "let a = chrono::DateTime::parse_from_rfc3339(a).ok()?;": 1,
+        "let b = chrono::DateTime::parse_from_rfc3339(b).ok()?;": 1
+      },
+      "fn time_order_key": {
+        "let at = chrono::DateTime::parse_from_rfc3339(at).ok();": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/round.rs": {
+    "clippy::disallowed_methods": {
+      "fn variant": {
+        ".ok()": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/sent.rs": {
+    "clippy::disallowed_methods": {
+      "fn verdict_of": {
+        "let fork: u8 = fork.parse().ok()?;": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn read_paste": {
+        "let paste: Paste = serde_json::from_value(value).map_err(|_| vec![(String::from(\"body\"), \"must be a paste: at, text and note, and nothing else\")])?;": 1
+      },
+      "fn read_sent": {
+        "let sent: Sent = serde_json::from_value(value).map_err(|_| {": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/week.rs": {
+    "clippy::disallowed_methods": {
+      "fn read_opening": {
+        ".and_then(|exchanges| u8::try_from(exchanges.len()).ok())": 1,
+        ".and_then(|version| u32::try_from(version).ok())": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/work_span.rs": {
+    "clippy::disallowed_methods": {
+      "fn whole_seconds": {
+        "let from = chrono::DateTime::parse_from_rfc3339(from).ok()?;": 1,
+        "let to = chrono::DateTime::parse_from_rfc3339(to).ok()?;": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn read_close": {
+        "serde_json::from_value(value).map_err(|_| vec![(String::from(\"body\"), \"must be a close: id, at, stoppedBy, answer and countedSeconds, and nothing else\")])?;": 1
+      },
+      "fn read_start": {
+        "let start: Start = serde_json::from_value(value).map_err(|_| {": 1
+      }
+    }
+  },
+  "crates/db/studio_log/src/lib.rs": {
+    "clippy::map_err_ignore": {
+      "fn read_body": {
+        "serde_json::from_str(body).map_err(|_| LogError::Unreadable)": 1
+      },
+      "fn text": {
+        "serde_json::to_value(value).map(|json| json.to_string()).map_err(|_| LogError::Unreadable)": 1
+      }
+    }
+  },
+  "crates/db/studio_log/src/model.rs": {
+    "clippy::disallowed_methods": {
+      "fn every_event_reads_and_writes_back_as_it_came": {
+        "let parsed = parse_event(S, \"e1\", sent.to_string().as_bytes()).unwrap_or_else(|problems| panic!(\"{sent}: {problems:?}\"));": 1
+      },
+      "fn every_report_reads_and_writes_back_as_it_came": {
+        "let parsed = parse_report(\"f1\", sent.to_string().as_bytes()).unwrap_or_else(|problems| panic!(\"{sent}: {problems:?}\"));": 1
+      },
+      "fn instant": {
+        ".ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn read": {
+        "serde_json::from_slice::<T>(body).map_err(|_| vec![OFF_SHAPE])": 1
+      }
+    }
+  },
+  "crates/db/studio_video/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "struct Takes": {
+        "let takes: Takes = serde_json::from_str(text).ok()?;": 1
+      }
+    }
+  },
+  "crates/db/studio_video/src/model.rs": {
+    "clippy::disallowed_methods": {
+      "fn revision": {
+        "text.parse().ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn parse_dna": {
+        "let text = std::str::from_utf8(body).map_err(|_| off_shape())?.to_owned();": 1,
+        "let wire: Wire = serde_json::from_slice(body).map_err(|_| off_shape())?;": 1
+      }
+    }
+  },
+  "crates/db/study_note/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn put": {
+        "size: i64::try_from(text.len()).unwrap_or(i64::MAX),": 1
+      },
+      "fn validate": {
+        "let text = check_body(body).map_err(|why| problems.push((\"body\", why))).ok();": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn check_body": {
+        "let text = std::str::from_utf8(body).map_err(|_| \"is not UTF-8\")?;": 1,
+        "serde_json::from_str::<serde::de::IgnoredAny>(value).map_err(|_| \"is not JSON\")?;": 1
+      }
+    }
+  },
+  "crates/db/voice/src/about.rs": {
+    "clippy::disallowed_methods": {
+      "fn bite": {
+        ".ok()": 1
+      },
+      "fn label": {
+        "Ok(body.and_then(|body| nfl_feed::summary::matchup(&body).ok().flatten()).map(|matchup| matchup.label()))": 1
+      },
+      "fn rust_round": {
+        "(true, Some(ticket), Some(n)) if is_ticket_key(ticket) && is_point(n) => (owned(first), owned(ticket), n.parse().ok(), None, None, None),": 1
+      }
+    }
+  },
+  "crates/db/voice/src/attention.rs": {
+    "clippy::disallowed_methods": {
+      "fn needing": {
+        "let limit = i64::try_from(LISTED).unwrap_or(i64::MAX);": 1
+      },
+      "fn snoozed_until": {
+        "let asked = chrono::DateTime::parse_from_rfc3339(asked_at).ok()?;": 1,
+        "let now = chrono::DateTime::parse_from_rfc3339(now).ok()?;": 1
+      }
+    }
+  },
+  "crates/db/voice/src/conveyor.rs": {
+    "clippy::disallowed_methods": {
+      "fn ask": {
+        "let latest = chrono::DateTime::parse_from_rfc3339(now).ok().map(|now| now + CLOCK_ALLOWANCE);": 1,
+        "match (chrono::DateTime::parse_from_rfc3339(said.at).ok(), latest) {": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn labels_of": {
+        "stored.map(|text| serde_json::from_str::<Vec<String>>(text).map_err(|_| VoiceError::Unreadable)).transpose()": 1
+      }
+    }
+  },
+  "crates/db/voice/src/delete.rs": {
+    "clippy::map_err_ignore": {
+      "fn receipt": {
+        "let list = |text: &str| serde_json::from_str::<Vec<String>>(text).map_err(|_| VoiceError::Unreadable);": 1
+      },
+      "fn receipts": {
+        "let list = |text: &str| serde_json::from_str::<Vec<String>>(text).map_err(|_| VoiceError::Unreadable);": 1
+      }
+    }
+  },
+  "crates/db/voice/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn describe": {
+        "let size = i64::try_from(body.len()).ok();": 1
+      },
+      "fn instant": {
+        ".ok()": 1
+      },
+      "fn whole": {
+        "let value: i64 = text.parse().ok()?;": 1
+      }
+    }
+  },
+  "crates/db/voice/src/on_drive.rs": {
+    "clippy::disallowed_methods": {
+      "fn match_take": {
+        ".ok()": 1
+      },
+      "struct List": {
+        "let list: List = serde_json::from_slice(body).ok()?;": 1
+      }
+    }
+  },
+  "crates/db/voice/src/takes.rs": {
+    "clippy::map_err_ignore": {
+      "fn chosen": {
+        "let list = |text: &str| serde_json::from_str::<Vec<String>>(text).map_err(|_| VoiceError::Unreadable);": 1
+      }
+    }
+  },
+  "crates/fcm_kit/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "struct Scope": {
+        "self.key.sign(claims).ok()": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn bearer": {
+        "let answer: TokenAnswer = serde_json::from_slice(&response.body).map_err(|_| SendOutcome::Refused(response.status))?;": 1
+      },
+      "fn from_json": {
+        "let file: KeyFile = serde_json::from_str(text).map_err(|_| KeyError::NotAKeyFile)?;": 1,
+        "let key = RS256KeyPair::from_pem(&file.private_key).map_err(|_| KeyError::PrivateKey)?;": 1
+      }
+    }
+  },
+  "crates/fcm_kit/src/transport.rs": {
+    "clippy::map_err_ignore": {
+      "fn send": {
+        "let url = reqwest::Url::parse(&request.url).map_err(|_| TransportError::NotHttps)?;": 1
+      }
+    }
+  },
+  "crates/game_scenarios/src/tests.rs": {
+    "clippy::disallowed_methods": {
+      "fn released": {
+        "let version = name.strip_prefix(\"catalog.v\")?.strip_suffix(\".json\")?.parse().ok()?;": 1
+      }
+    }
+  },
+  "crates/lane/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn mem_available_bytes": {
+        "let value: u64 = words.next()?.parse().ok()?;": 1
+      },
+      "fn pressure_some_avg10": {
+        "value.parse().ok().filter(|pct: &f64| pct.is_finite() && *pct >= 0.0)": 1
+      }
+    }
+  },
+  "crates/leetype_runner/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn compile": {
+        "note_truncation(&mut message, \"rustc's output\", head.len(), u64::try_from(compiled.rendered.len()).unwrap_or(u64::MAX));": 1
+      },
+      "fn run": {
+        "milliseconds: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),": 1
+      }
+    }
+  },
+  "crates/leetype_runner/src/round.rs": {
+    "clippy::disallowed_methods": {
+      "fn programs": {
+        ".ok()": 1
+      }
+    }
+  },
+  "crates/leetype_runner/tests/runner.rs": {
+    "clippy::disallowed_methods": {
+      "fn runner": {
+        "Runner::new(limits).unwrap_or_else(|err| panic!(\"the runner tests need rustc on PATH: {err}\"))": 1
+      }
+    }
+  },
+  "crates/mailbox_kit/src/client.rs": {
+    "clippy::disallowed_methods": {
+      "fn get": {
+        "if u64::try_from(response.body.len()).ok() != Some(item.size) || digest != item.sha256.to_ascii_lowercase() {": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "struct Answer": {
+        "let answer: Answer = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode(\"a put's answer is not { change, seq }\"))?;": 1,
+        "let answer: Answer = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode(\"a restore's answer is not { change, seq }\"))?;": 1,
+        "let answer: Answer = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode(\"an archive's answer is not { change }\"))?;": 1
+      },
+      "struct Listing": {
+        "let listing: Listing = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode(\"a listing is not { items }\"))?;": 1,
+        "let listing: Listing = serde_json::from_slice(&response.body).map_err(|_| MailboxError::Decode(\"the asks are not { items }\"))?;": 1
+      }
+    }
+  },
+  "crates/nfl_feed/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn int": {
+        "value.as_i64().or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))": 1
+      }
+    }
+  },
+  "crates/nfl_feed/src/scoreboard.rs": {
+    "clippy::disallowed_methods": {
+      "fn kickoff": {
+        ".ok()": 1,
+        ".or_else(|| NaiveDateTime::parse_from_str(date, \"%Y-%m-%dT%H:%MZ\").ok().map(|at| at.and_utc()))": 1
+      }
+    }
+  },
+  "crates/obs-websocket/src/commands.rs": {
+    "clippy::disallowed_methods": {
+      "fn run": {
+        "Ok(serde_json::to_value(snapshot).ok())": 1,
+        "let millis = i64::try_from(millis).unwrap_or(i64::MAX);": 1
+      }
+    }
+  },
+  "crates/obs-websocket/src/events.rs": {
+    "clippy::disallowed_methods": {
+      "fn to_obs_event": {
+        "item_id: u32::try_from(item_id).unwrap_or(u32::MAX),": 1
+      },
+      "fn unknown_event": {
+        "let data = serde_json::to_value(event).ok()?;": 1
+      }
+    }
+  },
+  "crates/obs-websocket/src/polling.rs": {
+    "clippy::disallowed_methods": {
+      "fn poll": {
+        "timecode: timecode(Duration::try_from(status.timecode).unwrap_or_default()),": 2,
+        "transition_duration: transition.duration.map_or(0, |d| u32::try_from(d.whole_milliseconds()).unwrap_or(u32::MAX)),": 1
+      },
+      "fn scene_list": {
+        "index: u32::try_from(scene.index).ok(),": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn timecode": {
+        "let _ = write!(out, \"{:02}:{:02}:{:02}.{:03}\", secs / 3600, secs / 60 % 60, secs % 60, elapsed.subsec_millis());": 1
+      }
+    }
+  },
+  "crates/obs-websocket/src/studio.rs": {
+    "clippy::disallowed_methods": {
+      "fn snapshot": {
+        "timecode: timecode(Duration::try_from(recording.timecode).unwrap_or_default()),": 1,
+        "timecode: timecode(Duration::try_from(stream.timecode).unwrap_or_default()),": 1
+      }
+    }
+  },
+  "crates/outbound/src/lib.rs": {
+    "clippy::disallowed_methods": {
+      "fn record": {
+        "metrics::counter!(SENT_METRIC, \"caller\" => caller_label, \"host\" => host_label).increment(u64::try_from(sent).unwrap_or(u64::MAX));": 1
+      }
+    }
+  },
+  "crates/outbound/tests/records.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn answering": {
+        "let _ = stream.read(&mut buf).await;": 1,
+        "let _ = stream.write_all(answer.as_bytes()).await;": 1
+      }
+    }
+  },
+  "crates/playoff_delta/src/evaluate.rs": {
+    "clippy::disallowed_methods": {
+      "fn evaluate": {
+        "let left = |t: &Table| u16::try_from(t.pending().len()).unwrap_or(u16::MAX);": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn evaluate": {
+        "let season_length = u8::try_from(season.length()).map_err(|_| EvaluateError::SeasonTooLong)?;": 1
+      }
+    }
+  },
+  "crates/playoff_delta/src/flow.rs": {
+    "clippy::disallowed_methods": {
+      "fn place": {
+        "let need = u32::try_from(games.len()).unwrap_or(u32::MAX) * unit;": 1
+      }
+    }
+  },
+  "crates/playoff_delta/src/poles.rs": {
+    "clippy::disallowed_methods": {
+      "fn all_above": {
+        "let ours = u16::try_from(games.iter().filter(|&&(a, b)| a == i || b == i).count()).unwrap_or(u16::MAX);": 1
+      },
+      "fn between": {
+        "u16::try_from(self.games.iter().filter(|&&(x, y)| (x, y) == (a, b) || (x, y) == (b, a)).count()).unwrap_or(u16::MAX)": 1
+      },
+      "fn floor": {
+        "let games = u16::try_from(self.inside(&bloc).len()).unwrap_or(u16::MAX);": 1
+      },
+      "fn floor_held": {
+        "let mut hi = lo + 2 * u16::try_from(self.inside(group).len()).unwrap_or(u16::MAX);": 1
+      },
+      "fn left": {
+        "u16::try_from(self.games.iter().filter(|&&(a, b)| a == e || b == e).count()).unwrap_or(u16::MAX)": 1
+      }
+    }
+  },
+  "crates/playoff_delta/src/rank.rs": {
+    "clippy::disallowed_methods": {
+      "fn from_above": {
+        "return Some(1 + u8::try_from(ahead).unwrap_or(u8::MAX));": 1
+      }
+    }
+  },
+  "crates/playoff_delta/src/solver.rs": {
+    "clippy::disallowed_methods": {
+      "fn as_division_winner": {
+        "let seed = 1 + u8::try_from(subset.count_ones()).unwrap_or(u8::MAX);": 1
+      },
+      "fn frees_still_needed": {
+        "let g = i64::try_from(g).unwrap_or(i64::MAX);": 1
+      },
+      "fn wild_card_seed": {
+        "5u8.saturating_add(u8::try_from(extra_teams).unwrap_or(u8::MAX))": 1
+      }
+    }
+  },
+  "crates/playoff_delta/src/table.rs": {
+    "clippy::disallowed_methods": {
+      "fn remaining": {
+        "u8::try_from(self.pending.iter().filter(|p| p.home == team || p.away == team).count()).unwrap_or(u8::MAX)": 1
+      }
+    }
+  },
+  "crates/playoff_delta/tests/common/mod.rs": {
+    "clippy::disallowed_methods": {
+      "fn invented_games": {
+        "away: u16::try_from(v).unwrap_or_default(),": 1,
+        "home: u16::try_from(h).unwrap_or_default(),": 1,
+        "kickoff: Some(u64::from(week) * 100 + u64::try_from(15 - i).unwrap_or_default() / 4),": 1
+      }
+    }
+  },
+  "crates/push_kit/src/identity.rs": {
+    "clippy::map_err_ignore": {
+      "fn from_config": {
+        "let signer = VapidSignatureBuilder::from_base64_no_sub(private_key).map_err(|_| VapidError::UnreadablePrivateKey)?;": 1
+      }
+    }
+  },
+  "crates/push_kit/src/outcome.rs": {
+    "clippy::disallowed_methods": {
+      "fn log_detail": {
+        ".and_then(|value| value.trim().parse::<u64>().ok())": 1
+      }
+    }
+  },
+  "crates/push_kit/src/transport.rs": {
+    "clippy::disallowed_methods": {
+      "fn deliver": {
+        ".and_then(|value| value.to_str().ok())": 1,
+        "body: response.text().await.unwrap_or_default(),": 1
+      }
+    }
+  },
+  "crates/rust_rounds_wire/src/protocol.rs": {
+    "clippy::disallowed_methods": {
+      "fn read_answer": {
+        "if u64::try_from(line.len()).unwrap_or(u64::MAX) > ANSWER_CEILING {": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn exchange": {
+        "read_answer(&stream, timeout.min(CLIENT_TIMEOUT)).map_err(|_| AskError::NotSent(err))": 1
+      }
+    }
+  },
+  "crates/rust_runner/src/bin/rust_runner.rs": {
+    "clippy::disallowed_methods": {
+      "fn arm": {
+        "let budget = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX);": 1
+      },
+      "fn now": {
+        "u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn main": {
+        "let _ = writeln!(io::stderr(), \"rust-runner ask: {error}\");": 1,
+        "let _ = writeln!(io::stderr(), \"rust-runner clean: {error}\");": 1,
+        "let _ = writeln!(io::stderr(), \"rust-runner: {error}\");": 1,
+        "let _ = writeln!(stdout);": 1
+      },
+      "fn run": {
+        "let _ = writeln!(io::stderr(), \"rust-runner: {line}\");": 1,
+        "let _ = writeln!(io::stderr(), \"rust-runner: {} listening on {}\", recorder.toolchain(), serve.socket.display());": 1
+      },
+      "fn start": {
+        "let _ = writeln!(io::stderr(), \"rust-runner: a job outlived its deadline; exiting, so the restart clears it\");": 1
+      }
+    }
+  },
+  "crates/rust_runner/src/process.rs": {
+    "clippy::disallowed_methods": {
+      "fn alive_and_owned_by": {
+        "owned = ids.split_whitespace().next().and_then(|real| real.parse::<u32>().ok()) == Some(uid);": 1
+      },
+      "fn drain": {
+        "captured.total += u64::try_from(read).unwrap_or(u64::MAX);": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn kill_group": {
+        "let _ = child.kill();": 1,
+        "let _ = kill_process_group(Pid::from_child(child), Signal::KILL);": 1
+      },
+      "fn supervise": {
+        "let _ = child.wait();": 1,
+        "let _ = stop(&mut child, sweep);": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn joined": {
+        "handle.join().map_err(|_| std::io::Error::other(\"an output reader panicked\"))?": 1
+      }
+    }
+  },
+  "crates/rust_runner/src/recording.rs": {
+    "clippy::disallowed_methods": {
+      "fn record_in": {
+        "milliseconds: u64::try_from(finished.elapsed.as_millis()).unwrap_or(u64::MAX),": 1,
+        "rendered_bytes: u64::try_from(compiled.rendered.len()).unwrap_or(u64::MAX),": 1,
+        "stderr_bytes: finished.stderr.total.saturating_sub(u64::try_from(dropped).unwrap_or(u64::MAX)),": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn record": {
+        "let _ = dir.close();": 1
+      }
+    }
+  },
+  "crates/rust_runner/src/service.rs": {
+    "clippy::disallowed_methods": {
+      "fn answer": {
+        "let response = if u64::try_from(line.len()).unwrap_or(u64::MAX) > REQUEST_CEILING {": 1,
+        "match read.ok().and_then(|_| serde_json::from_slice::<Request>(&line).ok()) {": 2
+      },
+      "fn peer_uid": {
+        "if usize::try_from(len).ok() != Some(size) {": 1
+      }
+    },
+    "clippy::let_underscore_must_use": {
+      "fn send": {
+        "let _ = Deadline::new(stream).write_all(&body);": 1
+      }
+    }
+  },
+  "crates/rust_runner/tests/peer_namespace.rs": {
+    "clippy::disallowed_methods": {
+      "fn a_client_in_another_pid_namespace_is_served_by_its_uid_alone": {
+        ".unwrap_or_else(|err| panic!(\"this test needs rustc on PATH: {err}\"))": 1
+      },
+      "fn ask_across": {
+        ".arg(std::env::current_exe().unwrap_or_else(|err| panic!(\"no path to this test binary: {err}\")))": 1,
+        ".unwrap_or_else(|err| panic!(\"could not start {:?}: {err}\", self.command));": 1,
+        "answered.unwrap_or_else(|err| panic!(\"no answer from the service in its own PID namespace: {err:?}\"))": 1,
+        "let output = service.wait_with_output().unwrap_or_else(|err| panic!(\"the service was lost: {err}\"));": 1
+      },
+      "fn peer_pid": {
+        "let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).unwrap_or_else(|err| panic!(\"{err}\"));": 1
+      },
+      "fn the_service_side": {
+        "let client = client.to_str().and_then(|client| client.parse::<u32>().ok()).unwrap();": 1
+      }
+    }
+  },
+  "crates/rust_runner/tests/recording.rs": {
+    "clippy::disallowed_methods": {
+      "fn recorder": {
+        "Recorder::new(limits, work.to_path_buf()).unwrap_or_else(|err| panic!(\"these tests need rustc on PATH: {err}\"))": 1
+      }
+    }
+  },
+  "crates/scenario_engine/src/read.rs": {
+    "clippy::disallowed_methods": {
+      "fn clock_seconds": {
+        "Some(minutes.trim().parse::<i64>().ok()? * 60 + seconds.trim().parse::<i64>().ok()?)": 2
+      },
+      "fn field_goal": {
+        "let distance = text[..at].trim_end().rsplit(' ').next().and_then(|word| word.parse().ok());": 1
+      },
+      "fn gain_in": {
+        "rest[digits.len()..].starts_with(\" yard\").then(|| digits.parse().ok()).flatten()": 1
+      },
+      "fn time": {
+        "DateTime::parse_from_rfc3339(at).ok().map(|at| at.with_timezone(&Utc))": 1
+      },
+      "fn timeouts_left": {
+        "(allowed - i64::try_from(used).unwrap_or(allowed)).max(0)": 1
+      }
+    }
+  },
+  "crates/some-cache/src/store.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn get_binary": {
+        "let _ = self.touch_entry(&cache_key, entry.ttl).await.map_err(|e| { warn!(\"touch failed for {}: {}\", key, e); e });": 1
+      },
+      "fn get_with_age": {
+        "let _ = self.touch_entry(&cache_key, entry.ttl).await.map_err(|e| { warn!(\"touch failed for {}: {}\", key, e); e });": 1
+      }
+    }
+  },
+  "crates/some-services/src/rate_limiter/clock.rs": {
+    "clippy::disallowed_methods": {
+      "fn advance": {
+        "let by = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);": 1
+      },
+      "fn now": {
+        "u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX)": 1
+      }
+    }
+  },
+  "crates/some-services/src/rate_limiter/gcra.rs": {
+    "clippy::disallowed_methods": {
+      "fn available": {
+        "u32::try_from(quota.tolerance().saturating_sub(owed) / u128::from(quota.interval)).unwrap_or(u32::MAX)": 1
+      },
+      "fn decide": {
+        "let remaining = u32::try_from((tolerance - ahead) / u128::from(quota.interval)).unwrap_or(u32::MAX);": 1,
+        "let wait = u64::try_from(ahead - tolerance).unwrap_or(u64::MAX);": 1
+      },
+      "fn per_period": {
+        "interval: u64::try_from(interval).unwrap_or(u64::MAX),": 1
+      }
+    }
+  },
+  "crates/some-services/src/rate_limiter/keyed.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn run": {
+        "let _ = limiter.snapshot();": 1
+      }
+    }
+  },
+  "crates/some-transport/src/inmem/receiver.rs": {
+    "clippy::disallowed_methods": {
+      "fn test_inmem_receiver_recv": {
+        "tx.broadcast(\"test message\".to_string()).await.ok();": 1
+      },
+      "fn test_inmem_receiver_try_recv": {
+        "tx.broadcast(42).await.ok();": 1
+      }
+    }
+  },
+  "crates/some-transport/src/inmem/transport.rs": {
+    "clippy::disallowed_methods": {
+      "fn test_active_channels": {
+        "transport.close_channel(\"conn1\").await.ok();": 1
+      }
+    }
+  },
+  "crates/some-transport/src/nats/pool.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn test_clear": {
+        "let _ = pool.get_or_connect(\"nats://localhost:4222\").await;": 1,
+        "let _ = pool.get_or_connect(\"nats://localhost:4223\").await;": 1
+      },
+      "fn test_has_connection": {
+        "let _ = pool.get_or_connect(\"nats://localhost:4222\").await;": 1
+      },
+      "fn test_remove_connection": {
+        "let _ = pool.get_or_connect(\"nats://localhost:4222\").await;": 1
+      }
+    }
+  },
+  "crates/some-transport/src/nats/receiver.rs": {
+    "clippy::disallowed_methods": {
+      "fn test_nats_receiver_deserialization_error": {
+        "client.publish(\"test.subject.bad\", \"invalid data\".into()).await.ok();": 1
+      },
+      "fn test_nats_receiver_recv": {
+        "client.publish(\"test.subject\", bytes.into()).await.ok();": 1
+      }
+    }
+  },
+  "crates/study_domain/src/signal.rs": {
+    "clippy::disallowed_methods": {
+      "fn delta": {
+        "let minutes = f64::from(u32::try_from((*elapsed_ms).clamp(0, 3_600_000)).unwrap_or(0)) / 60_000.0;": 1
+      }
+    }
+  },
+  "crates/ws-conn-manager/benches/connection_guard.rs": {
+    "clippy::disallowed_methods": {
+      "fn bench_different_clients_concurrent": {
+        "handles.push(tokio::spawn(async move { g.acquire(format!(\"client-{}\", i)).await.ok() }));": 1,
+        "let results: Vec<_> = futures::future::join_all(handles).await.into_iter().filter_map(|r| r.ok().flatten()).collect();": 1
+      },
+      "fn bench_queue_full_rejection": {
+        "let results: Vec<_> = futures::future::join_all(handles).await.into_iter().filter_map(|r| r.ok()).collect();": 1
+      },
+      "fn bench_same_client_concurrent": {
+        "handles.push(tokio::spawn(async move { g.acquire(\"same-client\".to_string()).await.ok() }));": 1,
+        "let results: Vec<_> = futures::future::join_all(handles).await.into_iter().filter_map(|r| r.ok().flatten()).collect();": 1
+      }
+    }
+  },
+  "crates/ws-conn-manager/src/lib.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn acquire": {
+        "let _ = rx.await;": 1
+      },
+      "fn cleanup": {
+        "let _ = waiter.send(());": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn acquire": {
+        "let global_permit = self.inner.global.clone().acquire_owned().await.map_err(|_| AcquireError {": 1
+      }
+    }
+  },
+  "crates/ws-connection/src/actor.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn run": {
+        "let _ = reply.send(result);": 1,
+        "let _ = reply.send(self.state.clone());": 1,
+        "let _ = reply.send(subs);": 1
+      }
+    }
+  },
+  "crates/ws-connection/src/actor/handle.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn shutdown": {
+        "let _ = self .sender .send(ConnectionCommand::Shutdown) .await .map_err(|e| ConnectionError::ActorUnavailable(Box::new(e)));": 1
+      }
+    }
+  },
+  "crates/ws-connection/src/core/store.rs": {
+    "clippy::let_underscore_must_use": {
+      "fn remove": {
+        "let _ = handle.shutdown().await;": 1
+      }
+    }
+  },
+  "crates/ws-connection/src/core/subscription.rs": {
+    "clippy::disallowed_methods": {
+      "fn net_change": {
+        "i32::try_from(net).unwrap_or_else(|_| if net.is_negative() { i32::MIN } else { i32::MAX })": 1,
+        "let added = i64::try_from(self.added).unwrap_or(i64::MAX);": 1,
+        "let removed = i64::try_from(self.removed).unwrap_or(i64::MAX);": 1
+      }
+    }
+  },
+  "crates/ws-events/src/events/common/message.rs": {
+    "clippy::disallowed_methods": {
+      "fn from_str": {
+        "s.strip_prefix(\"msg-\").and_then(|n| n.parse::<u64>().ok()).map(Self)": 1
+      }
+    }
+  },
+  "crates/ws-events/src/events/unified.rs": {
+    "clippy::disallowed_methods": {
+      "fn from": {
+        "Event::ObsCmd { cmd } => ObsCommandMessage::new(uuid::Uuid::new_v4().to_string(), cmd).ok().map(|msg| UnifiedEvent {": 1,
+        "Event::ObsStatus { status } => ObsStatusMessage::new(status).ok().map(|msg| UnifiedEvent {": 1,
+        "Event::OrchestratorCommandData { stream_id, command } => TickCommandMessage::from_tick_command(stream_id, command).ok().map(|msg| UnifiedEvent {": 1,
+        "Event::OrchestratorState { stream_id, state } => OrchestratorStateMessage::from_orchestrator_state(stream_id, &state).ok().map(|msg| UnifiedEvent {": 1,
+        "Event::System(sys_event) => serde_json::to_vec(&sys_event).ok().map(|payload| {": 1,
+        "Event::Utterance { text, metadata } => UtteranceMessage::new(text, metadata).ok().map(|msg| UnifiedEvent {": 1
+      }
+    }
+  },
+  "crates/ws-events/src/events/unified/orchestrator.rs": {
+    "clippy::disallowed_methods": {
+      "fn to_tick_command": {
+        "#[derive(Clone, PartialEq, Message)]": 1
+      }
+    },
+    "clippy::map_err_ignore": {
+      "fn to_orchestrator_state": {
+        "let mode = OrchestratorModeProto::try_from(self.mode).map_err(|_| format!(\"Invalid mode value: {}\", self.mode))?;": 1
+      }
+    }
+  }
+}

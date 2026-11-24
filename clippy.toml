@@ -51,6 +51,14 @@ disallowed-methods = [
   # (`ClientBuilder::default()` is a trait method no path can name).
   { path = "reqwest::ClientBuilder::build", reason = "build it with outbound::client(Caller::...) so its requests are recorded (some-ui#3330)" },
   { path = "reqwest::get", reason = "send it on an outbound::Client so it is recorded (some-ui#3330)" },
+  # A failure is never destroyed (epic #1174): each of these turns a Result's
+  # error into an ordinary value, with no count and no error log. Ratcheted by
+  # scripts/check_erasures.py against scripts/erasure_baseline.json, which only
+  # shrinks, and never by the clippy baseline (#1189, option (a)).
+  { path = "core::result::Result::ok", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
+  { path = "core::result::Result::unwrap_or", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
+  { path = "core::result::Result::unwrap_or_default", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
+  { path = "core::result::Result::unwrap_or_else", reason = "a failure is never destroyed: return it or Failure::record it; a benign erasure says why in #[expect(clippy::disallowed_methods, reason = \"...\")] (#1174)" },
 ]
 
 # Ban std logging macros (enforce tracing-only)
