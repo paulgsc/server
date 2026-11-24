@@ -345,12 +345,16 @@ fn a_call_week_past_its_friday_stays_overdue_as_its_week_not_come() {
 }
 
 #[test]
-fn a_call_week_the_routine_made_longer_moves_the_next_on_from_when_it_came() {
+fn a_call_week_the_routine_made_longer_moves_the_next_on_from_its_last_day() {
 	// A missed run: the week of Oct 16 was written two weeks long, Oct 16 to
-	// Oct 29, on Friday Oct 30. The next is due Friday Nov 6, not Oct 30.
+	// Oct 29. The next is due Friday Nov 6, not Oct 30, whenever home took
+	// it: here Thursday evening at home, as a run early by UTC would.
 	let mut seen = call_seen();
 	seen.newest_week = NaiveDate::from_ymd_opt(2026, 10, 16);
-	seen.newest_taken = Some(NOW - 9 * 86_400);
+	seen.newest_week_to = NaiveDate::from_ymd_opt(2026, 10, 29);
+	seen.newest_taken = Some(NOW - 10 * 86_400 - 5 * 3_600);
+	let coming = &board(&[(Feed::Call, seen.clone())], None, None, NOW - 3 * 86_400).coming[0];
+	assert_eq!((coming.on.as_str(), coming.overdue), ("2026-11-06", false), "not overdue the week it was not due");
 	let coming = &board(&[(Feed::Call, seen)], None, None, NOW).coming[0];
 	assert_eq!((coming.on.as_str(), coming.overdue), ("2026-11-06", true));
 }
@@ -1037,7 +1041,8 @@ async fn the_read_promises_the_interview_essay_from_the_caller_s_open_week() {
 		!overdue(&db, &folders, "me", Feed::RustEssay, tuesday).await.unwrap(),
 		"a shelf with no folders owes nothing"
 	);
-	// An essay that came and waits on a take is said as such.
+	// An essay that came and is not given yet (no pass has read it) is said
+	// as such, not as nothing written.
 	let essay = serde_json::json!({ "schema": "some-ui.interview-essay/1" }).to_string();
 	let item = mailbox_repo::ItemIn {
 		folder: "brief",
