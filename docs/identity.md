@@ -1075,9 +1075,11 @@ nowhere is marked as such and belongs to review.
       `leetype_session_event`: only the mailbox copy is skipped, until an
       event of it arrives and it is decided again.
     - `mailbox_handed`, written only by the poller: one row each time it
-      handed a filed file over and heard an answer, final but for `refused`,
-      which is handed again (`mailbox_repo::REFUSED_TRIES`,
-      paulgsc/some-ui#3508).
+      handed a filed file over and heard an answer, final but for `refused`
+      (the mailbox's own words), which is handed again
+      (`mailbox_repo::REFUSED_TRIES`, paulgsc/some-ui#3508). A file that can
+      never be taken as it is (a bad name, a body over the ceiling) is
+      `unfit`, and final (server#1172).
     - `mailbox_archive`, written only by the poller with the archive token
       (invariant 21): each file it archived from any folder, its bytes as the
       mailbox held them (they must match the listing's SHA-256), its hash,

@@ -39,7 +39,7 @@ pub const REFUSALS: [&str; 7] = ["mismatch", "bad_name", "not_json", "rewritten"
 
 /// Every value `mailbox_poll_items_handed_total`'s `answer` label can take:
 /// `mailbox_repo::Answer`.
-pub const ANSWERS: [&str; 4] = ["added", "unchanged", "conflict", "refused"];
+pub const ANSWERS: [&str; 5] = ["added", "unchanged", "conflict", "refused", "unfit"];
 
 /// Every value `mailbox_poll_items_archived_total`'s `answer` label can take.
 ///
