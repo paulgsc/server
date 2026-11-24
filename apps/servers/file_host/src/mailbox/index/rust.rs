@@ -158,6 +158,7 @@ pub(in crate::mailbox) async fn put_rust_index<T: MailboxTransport>(
 		.collect();
 	// No week is past its deadline yet: no index, and the routine writes none.
 	if closed.is_empty() {
+		last.nothing_to_count();
 		return Ok(());
 	}
 	let drafted: HashSet<String> = rust_round_repo::sent::drafted_weeks(&mut conn, subject)
