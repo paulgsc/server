@@ -424,8 +424,13 @@ pub enum Answer {
 	Unchanged,
 	/// It holds other bytes under the name, which it never replaces.
 	Conflict,
-	/// It refused the file (a `422` or a `413`).
+	/// It refused the file, in its own words (a `422`). A mailbox put right
+	/// may take it, so it is handed again.
 	Refused,
+	/// The file can never be taken as it is: a name that cannot be put in a
+	/// URL, or a body over the mailbox's ceiling (a `413`). Final, as the same
+	/// file would be refused the same way (server#1172).
+	Unfit,
 }
 
 impl Answer {
@@ -437,6 +442,7 @@ impl Answer {
 			Self::Unchanged => "unchanged",
 			Self::Conflict => "conflict",
 			Self::Refused => "refused",
+			Self::Unfit => "unfit",
 		}
 	}
 }

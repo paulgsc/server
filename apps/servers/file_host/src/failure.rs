@@ -8,7 +8,8 @@
 //! nothing having gone wrong (#1172).
 //!
 //! [`Failure`] is the proof that one was counted. Only [`Failure::record`]
-//! makes one, and it does three things at once:
+//! makes one, and it does three things at once ([`Failure::alone`] does the
+//! first two, for a failure whose only outcome is its count and its log):
 //!
 //! - increments `failures_total{process, step}`;
 //! - logs at `error!`, naming the process, the step, the cause and the line
@@ -17,9 +18,9 @@
 //!   process, step and line say where it came from;
 //! - returns the token.
 //!
-//! An outcome that is a failure is meant to carry the token (#1172 makes the
-//! mailbox's `Answer::Refused` the first), so storing the outcome needs the
-//! count first. The type is `#[must_use]` and
+//! An outcome that is a failure carries the token (the mailbox pass's
+//! `Handing`, #1172, is the first), so storing the outcome needs the count
+//! first. The type is `#[must_use]` and
 //! has no other constructor, no `Default`, no `Clone` and no `From`, so it can
 //! be neither forged nor copied into a second outcome, and nothing converts
 //! into it: a yield (the lane's pause, stop or give) is a different type and
@@ -27,10 +28,13 @@
 //! the token has done its work and is dropped there. `#[must_use]` does not
 //! see `let _ =`; the erasure ratchet (#1189) is what will.
 //!
-//! What it does not change: what is stored, and the shape of any function.
-//! The database still stores `"refused"`. The count is event-driven and adds
-//! no schedule, and a deterministic refusal is counted once and held, never
-//! retried on a clock (docs/home-compute.md, invariants 6 and 7).
+//! What it does not change: the shape of any function, or what is stored for
+//! an outcome stored truly. The mailbox still stores `"refused"` for its own
+//! refusal; the one new stored value is `unfit`, for a file it can never take,
+//! which was stored as `refused` and so handed again (#1172, the coordinator's
+//! call on #1192's review). The count is event-driven and adds no schedule,
+//! and a deterministic refusal is counted once and held, never retried on a
+//! clock (docs/home-compute.md, invariants 6 and 7).
 //!
 //! The labels are bounded: [`Step`] is a closed table, and each step names
 //! its [`Process`], so no value a person or a request supplies becomes a
@@ -160,8 +164,20 @@ macro_rules! steps {
 }
 
 steps! {
-	/// The Jobs mailbox refused a file home handed in (#1172).
+	/// The Jobs mailbox refused a file home handed in, in its own words (a
+	/// `422`); it is handed again (#1172, MI8).
 	MailboxHandOver => MailboxPasses, "hand_over";
+	/// A file home handed in can never be taken as it is: a name that cannot
+	/// be put in a URL, or a body over the mailbox's ceiling (#1172).
+	MailboxHandOverUnfit => MailboxPasses, "hand_over_unfit";
+	/// The Jobs mailbox holds other bytes under a file's name, which it never
+	/// replaces, so the file home handed in is never taken (#1172).
+	MailboxHandOverConflict => MailboxPasses, "hand_over_conflict";
+	/// A file kept as a plain brief because its body does not read as its
+	/// name says: a Drive takes list, a Rust Rounds week, or a pickup's
+	/// answer. What it would have queued or moved is not. Counted when it is
+	/// first kept (#1175).
+	MailboxReadBody => MailboxPasses, "read_body";
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
@@ -191,23 +207,38 @@ impl Failure {
 	/// proof. `cause` is why, and must be loggable (see the module).
 	#[track_caller]
 	pub fn record(step: Step, cause: &dyn fmt::Display) -> Self {
-		let at = Location::caller();
-		let (process, name) = (step.process().as_str(), step.as_str());
-		counter!("failures_total", "process" => process, "step" => name).increment(1);
-		tracing::error!(
-			process,
-			step = name,
-			at = %format_args!("{}:{}", at.file(), at.line()),
-			cause = %cause,
-			"{process} failed at {name}: {cause}"
-		);
+		count(step, cause, Location::caller());
 		Self { step }
+	}
+
+	/// As [`Failure::record`], for a failure whose only outcome is its count
+	/// and its log: nothing stores it (a file kept as a plain brief because
+	/// its body does not read as its name says, say). Where an outcome is
+	/// stored, `record` it and carry the token there instead. Either way, one
+	/// event is one count: a condition that persists is not counted again
+	/// each time it is seen.
+	#[track_caller]
+	pub fn alone(step: Step, cause: &dyn fmt::Display) {
+		count(step, cause, Location::caller());
 	}
 
 	#[must_use]
 	pub const fn step(&self) -> Step {
 		self.step
 	}
+}
+
+/// The count and the log both makers share; `at` is their caller's line.
+fn count(step: Step, cause: &dyn fmt::Display, at: &Location<'_>) {
+	let (process, name) = (step.process().as_str(), step.as_str());
+	counter!("failures_total", "process" => process, "step" => name).increment(1);
+	tracing::error!(
+		process,
+		step = name,
+		at = %format_args!("{}:{}", at.file(), at.line()),
+		cause = %cause,
+		"{process} failed at {name}: {cause}"
+	);
 }
 
 #[cfg(test)]
