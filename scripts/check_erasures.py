@@ -149,7 +149,8 @@ def _scope_end(text: str, start: int, inner: bool) -> int:
 
 def suppressions(files: list[str]) -> Counter:
 	"""Each `#[allow]`/`#[expect]` (or one inside `cfg_attr`) of an erasure lint, or a group
-	holding one, that gives no reason, keyed as a finding."""
+	holding one, that gives no reason, keyed as a finding; and each erasure in the scope
+	such a suppression hides that no suppression with a reason covers."""
 	found: Counter = Counter()
 	for file in files:
 		path = clippy.REPO_ROOT / file
@@ -157,22 +158,32 @@ def suppressions(files: list[str]) -> Counter:
 			continue
 		source = path.read_text(encoding="utf-8")
 		text, lines = _mask(source), source.splitlines()
+		# (attribute, where its scope starts and ends, what it hides, whether it says why)
+		scopes = []
 		for match in ATTRIBUTE.finditer(text):
 			inner = match.group("inner")
-			if not SUPPRESSES.search(inner) or not ERASURE_LINT.search(inner) or REASON.search(inner):
+			if not SUPPRESSES.search(inner) or not ERASURE_LINT.search(inner):
 				continue
-			# Key it to what it decorates: past any attributes stacked under it,
-			# the enclosing item of the first line that is not one (the item
-			# itself, or the statement inside a fn).
+			# Past any attributes stacked under it, to what it decorates.
 			end = SPACE.match(text, match.end()).end()
 			while (stacked := ATTRIBUTE.match(text, end)) is not None:
 				end = SPACE.match(text, stacked.end()).end()
-			after = text.count("\n", 0, end) + 1
+			scope_end = _scope_end(text, end, match.group(0).startswith("#!"))
+			scopes.append((match, end, scope_end, _hidden_shapes(inner), REASON.search(inner) is not None))
+		explained = [(start, stop, shapes) for _, start, stop, shapes, reasoned in scopes if reasoned]
+		for match, start, stop, shapes, reasoned in scopes:
+			if reasoned:
+				continue
+			# Keyed to the enclosing item of the first line it decorates (the
+			# item itself, or the statement inside a fn).
+			after = text.count("\n", 0, start) + 1
 			found[(file, SUPPRESSED, clippy.enclosing_item(file, after), clippy.WHITESPACE.sub(" ", match.group(0)).strip())] += 1
 			# Clippy reports nothing in that scope, so each erasure in it is
-			# read here, and a new one is new however old the attribute is.
-			scope_end = _scope_end(text, end, match.group(0).startswith("#!"))
-			for call in _hidden_shapes(inner).finditer(text, end, scope_end):
+			# read here, and a new one is new however old the attribute is,
+			# unless a suppression that says why covers it.
+			for call in shapes.finditer(text, start, stop):
+				if any(begin <= call.start() < end and covers.fullmatch(call.group(0)) for begin, end, covers in explained):
+					continue
 				line = text.count("\n", 0, call.start()) + 1
 				found[(file, HIDDEN, clippy.enclosing_item(file, line), clippy.WHITESPACE.sub(" ", lines[line - 1]).strip())] += 1
 	return found
@@ -317,6 +328,8 @@ SOURCE = "\n".join(
 		"fn hides() {",
 		"    let n = s.parse::<u8>().ok();",
 		"    let _ = send();",
+		'    #[expect(clippy::disallowed_methods, reason = "a probe; its failure is the answer")]',
+		"    let said = s.parse::<u8>().ok();",
 		"}",
 		"fn outside() { let m = s.parse::<u8>().ok(); }",
 		"fn c() {}",
