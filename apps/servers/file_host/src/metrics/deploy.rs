@@ -74,8 +74,13 @@ pub fn record_state(recorded: Option<&Recorded>, marker_since: &std::io::Result<
 	}
 	metrics::gauge!("home_deploy_pulls").set(total(|counts| counts.pulls));
 	metrics::gauge!("home_deploy_pulled_bytes").set(total(|counts| counts.pulled_bytes));
-	match recorded {
-		Some(recorded) => {
+	recorded.map_or_else(
+		|| {
+			metrics::gauge!("home_deploy_last_run_timestamp_seconds").set(f64::NAN);
+			metrics::gauge!("home_deploy_last_exit_code").set(f64::NAN);
+			metrics::gauge!("home_deploy_latest_seen_epoch").set(f64::NAN);
+		},
+		|recorded| {
 			if let Some(last) = &recorded.last_run {
 				metrics::gauge!("home_deploy_last_run_timestamp_seconds").set(seconds(last.at));
 				metrics::gauge!("home_deploy_last_exit_code").set(f64::from(last.exit));
@@ -83,17 +88,11 @@ pub fn record_state(recorded: Option<&Recorded>, marker_since: &std::io::Result<
 			if let Some(latest) = recorded.latest_seen_epoch {
 				metrics::gauge!("home_deploy_latest_seen_epoch").set(f64::from(latest));
 			}
-		}
-		None => {
-			metrics::gauge!("home_deploy_last_run_timestamp_seconds").set(f64::NAN);
-			metrics::gauge!("home_deploy_last_exit_code").set(f64::NAN);
-			metrics::gauge!("home_deploy_latest_seen_epoch").set(f64::NAN);
-		}
-	}
-	let waiting = match marker_since {
-		Ok(since) => seconds(since.map_or(0, |since| now.saturating_sub(since).max(0))),
-		Err(_) => f64::NAN,
-	};
+		},
+	);
+	let waiting = marker_since
+		.as_ref()
+		.map_or(f64::NAN, |since| seconds(since.map_or(0, |since| now.saturating_sub(since).max(0))));
 	metrics::gauge!("home_deploy_wanted_age_seconds").set(waiting);
 	metrics::gauge!("migration_backups").set(as_f64(backups.0));
 	metrics::gauge!("migration_backup_bytes").set(as_f64(backups.1));
@@ -106,10 +105,10 @@ mod tests {
 	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 	/// Every gauge `record_state` set, by name and `outcome` label.
-	fn gauges(recorded: Option<&Recorded>, marker: &std::io::Result<Option<i64>>) -> Vec<(String, f64)> {
+	fn gauges(state: Option<&Recorded>, marker: &std::io::Result<Option<i64>>) -> Vec<(String, f64)> {
 		let recorder = DebuggingRecorder::new();
 		let snapshotter = recorder.snapshotter();
-		metrics::with_local_recorder(&recorder, || record_state(recorded, marker, 1_000, (0, 0)));
+		metrics::with_local_recorder(&recorder, || record_state(state, marker, 1_000, (0, 0)));
 		snapshotter
 			.snapshot()
 			.into_vec()
