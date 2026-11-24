@@ -148,9 +148,6 @@ pub struct PassReport {
 	pub considered: usize,
 	/// Of those, how many ended with a notification accepted somewhere.
 	pub intervened: usize,
-	/// Of those, how many were claimed, refused by every device tried and
-	/// handed back ([`Considered::Unaccepted`]).
-	pub unaccepted: usize,
 	/// Due subjects this pass fetched and never considered, because
 	/// `NudgeContext::pass_deadline` ran out first. Still due — at most one was
 	/// caught up to the curriculum epoch before the deadline struck, and at
@@ -300,10 +297,6 @@ pub(crate) async fn run_pass<C: PassClock>(db: &SqlitePool, nudge: &NudgeContext
 				report.intervened += 1;
 			}
 			Ok(Considered::NotSent) => report.considered += 1,
-			Ok(Considered::Unaccepted) => {
-				report.considered += 1;
-				report.unaccepted += 1;
-			}
 			// Handed back before anything was sent: as if never reached, and
 			// the loop's next check ends the pass.
 			Ok(Considered::Deferred) => report.deferred += 1,
@@ -327,9 +320,6 @@ pub(crate) async fn run_pass<C: PassClock>(db: &SqlitePool, nudge: &NudgeContext
 		// pass still has time: a pass that ran out has already left due
 		// subjects for the next one, and the sweep can wait with them.
 		report.pruned = sweep_history(&engagement, &OutcomeRepository::new(db.clone()), now).await;
-		// Only a pass that reached every subject it fetched sets it: one cut
-		// short has not looked at the rest, and leaves it as it stands.
-		crate::failure::open(crate::failure::Step::StudyNudgeNoDeviceAccepted, report.unaccepted);
 	}
 
 	Ok(report)
@@ -384,13 +374,9 @@ pub(super) enum Considered {
 	/// A notification was accepted somewhere.
 	Sent,
 	/// Decided and done for this pass, with nothing accepted: not eligible,
-	/// suppressed, the claim lost, no device to try, or a delivery timed out
-	/// and none was accepted.
+	/// suppressed, the claim lost, or every delivery tried and refused or
+	/// timed out.
 	NotSent,
-	/// Claimed, each device tried refused it, none timed out, and the claim
-	/// was handed back, so the next pass meets the subject again: a failure
-	/// that persists, held open by the pass (#1180).
-	Unaccepted,
 	/// Claimed, then the pass deadline came before any device was tried
 	/// (#575): nothing was sent, the claim is handed back, and the subject is
 	/// due next pass exactly as if this one never reached it.

@@ -124,10 +124,14 @@ pub(super) async fn send<C: PassClock>(
 		warn!(subject = %subject_id, "no device accepted the intervention; releasing the claim");
 		crate::metrics::waker::record_verdict("no_device_accepted", "n/a");
 		engagement.release(subject_id, log_id, &now.to_rfc3339()).await?;
-		// Handed back, so the next pass meets it again: held open by the
-		// pass, never counted here (#1180). With no device tried, nothing
-		// refused it.
-		return Ok(if tried > 0 { Considered::Unaccepted } else { Considered::NotSent });
+		// One attempt every device tried refused (#1180). The claim is handed
+		// back, but the subject is due again only at its next eligibility,
+		// which is a new attempt, so no later pass meets this one: an event,
+		// counted once. With no device tried, nothing refused it.
+		if tried > 0 {
+			Failure::alone(Step::StudyNudgeNoDeviceAccepted, &format_args!("{tried} devices tried and none accepted"));
+		}
+		return Ok(Considered::NotSent);
 	}
 
 	engagement.mark_actuated(log_id, &Utc::now().to_rfc3339()).await?;

@@ -128,12 +128,15 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    end: a refused file a newer kept file passes is never read again, so the
    pass whose keep passes it counts it once (`passed_over`); a study nudge
    one device accepted is spent, so each device that did not take it is
-   counted once (`device_missed`). The open steps beyond the mailbox's
-   (#1179, #1180, #809): the call's and Playoff Delta's render signals a tick
-   could not read, the call's next-week answer, subjects every device
-   refused (handed back, so met again; a pass cut short by its deadline
-   leaves the level, having not looked at all of them), and what a clips
-   pass could not take, a walk drawn otherwise than its index apart. Nothing is
+   counted once (`device_missed`). So is what no later pass meets again,
+   though it was never kept: a nudge attempt every device refused, whose
+   subject is tried again only at its next eligibility (`no_device_accepted`),
+   and a walk render the clips pass rejected and removed (`walk_rejected`);
+   a level for either would read 0 at the next pass while nothing was fixed
+   (Codex on #1221). The open steps beyond the mailbox's (#1179, #809): the
+   call's and Playoff Delta's render signals a tick could not read, the
+   call's next-week answer, and what a clips pass could not take and asks
+   again. Nothing is
    stored for it and it adds no clock: the
    passes that already run set it. `HomeFailuresOpen`
    (`infra/prometheus/rules/home.yml`) tells the owner while one stays open

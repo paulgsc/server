@@ -231,24 +231,27 @@ steps! {
 	/// which a tick could not read (a storage error), so the `pd_render_*`
 	/// gauges are not what the drive holds (#1179).
 	PdFillsObserve => PdFills, "observe", open;
-	/// Open: subjects a waker pass claimed, whose devices were each tried and
-	/// none accepted, with none timing out. The claim is handed back, so the
-	/// next pass meets them again until a device accepts (#1180).
-	StudyNudgeNoDeviceAccepted => StudyNudge, "no_device_accepted", open;
+	/// A study nudge claimed and tried on its subject's devices, refused by
+	/// each, none timing out. The claim is handed back, and the subject is
+	/// tried again only at its next eligibility, a new attempt, so each
+	/// attempt is counted once (#1180, Codex on #1221).
+	StudyNudgeNoDeviceAccepted => StudyNudge, "no_device_accepted";
 	/// A device that did not take an intervention another device accepted:
 	/// its push service refused it or did not answer in time. The
 	/// intervention is spent, so that device never gets it. Counted once per
 	/// device, when the intervention is marked sent (#1180).
 	StudyNudgeDeviceMissed => StudyNudge, "device_missed";
-	/// Open: clip frames and walk sides a clips pass could not take, of any
-	/// kind but `mismatch` (an index or frame that does not read, a frame
-	/// whose bytes are not its digest, the drive). Each is asked again on the
-	/// next pass (#809).
+	/// Open: clip frames and walk sides a clips pass could not take (an
+	/// index or frame that does not read, a frame whose bytes are not its
+	/// digest, the drive), each asked again by the next pass, except a walk
+	/// the pass rejected (#809).
 	ClipsTake => Clips, "take", open;
-	/// Open: walk sides the render worker drew otherwise than the index says
-	/// (`mismatch`). Never kept, and drawn the same way until the render
-	/// image moves (#809).
-	ClipsWalkMismatch => Clips, "walk_mismatch", open;
+	/// A walk side the render worker drew that the pass rejected and removed:
+	/// it names other snips than the index (`mismatch`, drawn the same way
+	/// until the render image moves), or its `walk.json` or snips do not
+	/// read. Removed, it is walked again, a new render, so each render
+	/// rejected is counted once (#809, Codex on #1221).
+	ClipsWalkRejected => Clips, "walk_rejected";
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
