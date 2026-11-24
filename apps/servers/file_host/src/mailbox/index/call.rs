@@ -97,6 +97,7 @@ pub(in crate::mailbox) async fn put_call_index<T: MailboxTransport>(
 		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
 		// Nothing held yet: no index, and the routine prunes nothing.
 		let Some((count, as_of)) = call_week_repo::as_of(&mut conn).await.map_err(Failure::Storage)? else {
+			last.nothing_to_count();
 			return Ok(());
 		};
 		// What the index was computed from is how many weeks and revisions
