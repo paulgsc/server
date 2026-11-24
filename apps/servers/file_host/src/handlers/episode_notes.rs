@@ -259,7 +259,7 @@ mod tests {
 		assert_eq!(status, StatusCode::CONFLICT, "a different note under a held id");
 
 		let mut conn = state.pool.acquire().await.unwrap();
-		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap();
 		assert_eq!(pending.len(), 1, "filed once");
 		assert_eq!((pending[0].folder.as_str(), pending[0].name.as_str()), ("feedback", "feedback-n1.json"));
 		let file: Value = serde_json::from_slice(&pending[0].body).unwrap();
@@ -276,7 +276,7 @@ mod tests {
 				"writtenAt": "2026-11-08T08:15:00.000Z",
 			})
 		);
-		assert!(mailbox_repo::pending_outgoing(&mut conn, B, 10).await.unwrap().is_empty(), "only the caller's");
+		assert!(mailbox_repo::pending_outgoing(&mut conn, B, "", 10).await.unwrap().is_empty(), "only the caller's");
 	}
 
 	#[tokio::test]
@@ -341,7 +341,7 @@ mod tests {
 			assert_eq!(body["notes"].as_array().unwrap().len(), 1, "{name}: its own feed's only");
 		}
 		let mut conn = state.pool.acquire().await.unwrap();
-		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap();
 		assert_eq!(
 			pending.iter().map(|file| (file.folder.as_str(), file.name.as_str())).collect::<Vec<_>>(),
 			[("feedback", "feedback-n-call.json"), ("feedback", "feedback-n-playoff-delta.json")],
@@ -391,7 +391,7 @@ mod tests {
 			"the feed the path names"
 		);
 		let mut conn = state.pool.acquire().await.unwrap();
-		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
+		assert!(mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap().is_empty());
 		drop(conn);
 		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM episode_note").fetch_one(&state.pool).await.unwrap();
 		assert_eq!(held, 0);
