@@ -87,8 +87,10 @@ pub struct Pass {
 	/// Weeks written to the render worker's folder this pass.
 	pub exported: usize,
 	/// Each failure, by kind: `timeout`, `connect`, `transport`, `refused`
-	/// (a status other than 200), `too_big`, `unreadable`, and `export`
-	/// for a week that could not be written to the folder.
+	/// (a status other than 200), `too_big`, `unreadable`, `export`
+	/// for a week that could not be written to the folder, and `drive` for
+	/// a renders folder that could not be read, which closes every open
+	/// week for the pass (#1179).
 	pub failures: Vec<&'static str>,
 }
 
@@ -157,7 +159,7 @@ async fn fetched<F: Fetch>(fetch: &F, url: &str, pass: &mut Pass) -> Option<Vec<
 /// A storage failure, which ends the pass.
 pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folders: Folders<'_>, clock: &(dyn Fn() -> DateTime<Utc> + Sync)) -> Result<Pass, sqlx::Error> {
 	let mut pass = Pass::default();
-	let open = open_weeks(db, folders).await?;
+	let open = open_weeks(db, folders, &mut pass).await?;
 	take_new(db, fetch, clock, &open, &mut pass).await?;
 	export(db, folders, &open, &mut pass).await?;
 	Ok(pass)
@@ -171,7 +173,7 @@ pub async fn run_once<F: Fetch>(db: &SqlitePool, fetch: &F, folders: Folders<'_>
 /// A folder or a file that cannot be read closes every week it may hold, as
 /// a video that cannot be seen must not be taken for none; one that is not
 /// there yet has no video in it.
-async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<HashSet<String>, sqlx::Error> {
+async fn open_weeks(db: &SqlitePool, folders: Folders<'_>, pass: &mut Pass) -> Result<HashSet<String>, sqlx::Error> {
 	let (held, links) = {
 		let mut conn = db.acquire().await?;
 		(call_week_repo::held(&mut conn).await?, call_week_repo::video::links(&mut conn).await?)
@@ -186,6 +188,7 @@ async fn open_weeks(db: &SqlitePool, folders: Folders<'_>) -> Result<HashSet<Str
 		return Ok(open);
 	}
 	let Some(made) = names_in(folders.renders).await else {
+		pass.failures.push("drive");
 		return Ok(HashSet::new());
 	};
 	for name in made {
@@ -480,6 +483,24 @@ mod tests {
 			"a week with no video yet is asked again, for a re-stamp"
 		);
 		assert_eq!(std::fs::read(dir.path().join("2026-10-30.json")).unwrap(), older, "kept as served");
+	}
+
+	/// #1179: a renders folder that can't be read closes every open week for
+	/// the pass, and the pass says so as a failure, `drive`, so
+	/// `CallWeeksFailing` hears of it; it is never taken for no videos.
+	#[tokio::test]
+	async fn a_renders_folder_that_cannot_be_read_is_a_failure_of_the_pass() {
+		let (pool, dir) = (pool().await, Dirs::new());
+		let fake = Fake::default();
+		fake.ok("index.json", &index(&[("2026-11-06", "2026-11-12")]));
+		fake.ok("2026-11-06.json", &week("2026-11-06", "2026-11-12"));
+		assert!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().failures.is_empty());
+
+		std::fs::write(&dir.renders, b"not a folder").unwrap();
+		let pass = run_once(&pool, &fake, dir.folders(), &clock).await.unwrap();
+		assert_eq!(pass.failures, ["drive"]);
+		std::fs::remove_file(&dir.renders).unwrap();
+		assert!(run_once(&pool, &fake, dir.folders(), &clock).await.unwrap().failures.is_empty(), "read again, it is not");
 	}
 
 	#[tokio::test]

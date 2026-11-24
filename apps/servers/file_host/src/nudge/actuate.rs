@@ -4,6 +4,7 @@
 use super::deadline::{Deadline, PassClock};
 use super::propose::refresh_stale_proposal;
 use super::waker::Considered;
+use crate::failure::{Failure, Step};
 use crate::nudge::payload::NudgePayload;
 use crate::{auth::DeletionLock, NudgeContext};
 use chrono::{DateTime, Utc};
@@ -89,7 +90,13 @@ pub(super) async fn send<C: PassClock>(
 		refresh_stale_proposal(db, nudge, &SessionRepository::new(db.clone()), subject_id, session_id, now).await;
 	}
 
-	let Delivery { accepted, timed_out, tried, cut } = actuate(db, nudge, &action, subject_id, deadline).await?;
+	let Delivery {
+		accepted,
+		timed_out,
+		refused,
+		tried,
+		cut,
+	} = actuate(db, nudge, &action, subject_id, deadline).await?;
 	if cut && tried == 0 {
 		// #575: the deadline came between the claim and the first delivery.
 		// Nothing went out, so handing the claim back cannot cause a
@@ -111,16 +118,29 @@ pub(super) async fn send<C: PassClock>(
 		// because nothing confirmed acceptance.
 		warn!(subject = %subject_id, timed_out, "no device confirmed the intervention and at least one delivery timed out; keeping the claim rather than risking a duplicate");
 		crate::metrics::waker::record_verdict("delivery_timed_out", "n/a");
+		Failure::alone(Step::StudyNudgeDeliveryTimedOut, &format_args!("{timed_out} deliveries timed out and none was accepted"));
 		return Ok(Considered::NotSent);
 	}
 	if accepted == 0 {
 		warn!(subject = %subject_id, "no device accepted the intervention; releasing the claim");
 		crate::metrics::waker::record_verdict("no_device_accepted", "n/a");
 		engagement.release(subject_id, log_id, &now.to_rfc3339()).await?;
+		// One attempt every device tried refused (#1180). The claim is handed
+		// back, but the subject is due again only at its next eligibility,
+		// which is a new attempt, so no later pass meets this one: an event,
+		// counted once. With no device tried, nothing refused it.
+		if tried > 0 {
+			Failure::alone(Step::StudyNudgeNoDeviceAccepted, &format_args!("{tried} devices tried and none accepted"));
+		}
 		return Ok(Considered::NotSent);
 	}
 
 	engagement.mark_actuated(log_id, &Utc::now().to_rfc3339()).await?;
+	// Spent once it is marked sent: a device that did not take it never
+	// will, so each is one count, here (#1180).
+	for _ in 0..refused.saturating_add(timed_out) {
+		Failure::alone(Step::StudyNudgeDeviceMissed, &"a device did not take an intervention another device accepted");
+	}
 	info!(subject = %subject_id, action = action.kind(), devices = accepted, "intervened");
 	crate::metrics::waker::record_verdict("sent", "n/a");
 	Ok(Considered::Sent)
@@ -256,6 +276,7 @@ pub(super) async fn actuate<C: PassClock>(
 		if outcome.is_failure() {
 			warn!(service, outcome = outcome.label(), detail = %outcome.log_detail(), "push was not accepted");
 			subscriptions_repo.record_failure(endpoint, &stamp).await?;
+			delivery.refused += 1;
 			continue;
 		}
 
@@ -277,6 +298,9 @@ pub(super) struct Delivery {
 	/// Push services that did not answer within their budget — the delivery
 	/// timeout, or what was left of the pass.
 	timed_out: usize,
+	/// Push services that answered, and did not accept it (and the
+	/// subscription is not gone).
+	refused: usize,
 	/// Deliveries begun, whatever came of them.
 	tried: usize,
 	/// Whether the pass deadline stopped the devices before the last was

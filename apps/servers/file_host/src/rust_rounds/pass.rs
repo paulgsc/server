@@ -26,6 +26,7 @@
 //! `milliseconds` measured then is marked `contended`.
 
 use crate::contention::{Excuse, Guard, Window};
+use crate::failure::{Failure, Step};
 use rust_round_repo::{Ended, Kept, Lost, Waiting};
 use rust_rounds_wire::protocol::{exchange, AskError, Refusal, Request, Response, ASK_TIMEOUT, CLIENT_TIMEOUT};
 use rust_rounds_wire::recording::{key, release, Recording, RustcRun, Why};
@@ -314,7 +315,10 @@ pub async fn run_once<R: Runner>(
 					reason: reason.as_str().to_owned(),
 					rustc: stopped_run(&toolchain)?,
 				};
-				pass.refused += usize::from(keep(db, &toolchain, &program, &ended, now).await?);
+				if keep(db, &toolchain, &program, &ended, now).await? {
+					pass.refused += 1;
+					Failure::alone(Step::RustRoundsRunnerRefused, &reason.as_str());
+				}
 				continue;
 			}
 			Ok(Response::Refused {
@@ -391,6 +395,16 @@ async fn lose(db: &SqlitePool, toolchain: &str, program: &Waiting, how: Lost, pa
 		}
 	}
 	tx.commit().await?;
+	// Counted once the loss is kept: a rolled-back one is asked again and
+	// kept under the same number, so counting before the commit would count
+	// it twice.
+	if let Kept::Added(attempt) = kept {
+		let why = match how {
+			Lost::Dropped => "the runner dropped the program",
+			Lost::TimedOut => "the runner did not answer in time",
+		};
+		Failure::alone(Step::RustRoundsRunLost, &format_args!("{why} (loss {attempt} of {DROPS})"));
+	}
 	Ok(Stop::Lost(how))
 }
 
@@ -398,6 +412,8 @@ async fn lose(db: &SqlitePool, toolchain: &str, program: &Waiting, how: Lost, pa
 mod tests {
 	use super::{run_once, Pass, Runner, Stop, Waits, BATCH, DROPS};
 	use crate::contention::{self, fake, fake::State, Guard};
+	use crate::failure::{counted::failures, Step};
+	use metrics_util::debugging::DebuggingRecorder;
 	use rust_round_repo::round::read;
 	use rust_round_repo::Lost;
 	use rust_rounds_wire::protocol::{AskError, Refusal, Request, Response};
@@ -741,6 +757,9 @@ mod tests {
 	/// and the programs behind it are recorded in the same pass.
 	#[tokio::test]
 	async fn a_refused_program_is_kept_as_that_and_the_queue_moves_on() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
 		let pool = pool().await;
 		round(&pool, "r-01", &["huge", "after"]).await;
 		let fake = Fake::new(|source| if source == "huge" { Act::Refuse } else { Act::Record });
@@ -753,6 +772,7 @@ mod tests {
 		assert_eq!(rustc["outcome"], "stopped");
 		assert_eq!(kept[1].1, "recorded");
 		assert_eq!(pass(&pool, &fake).await, Pass::default(), "a refused program is not asked again");
+		assert_eq!(failures(&snapshotter, Step::RustRoundsRunnerRefused), Some(1), "one refusal kept, one count (#1182)");
 	}
 
 	/// An outage keeps nothing and marks nothing: a runner that cannot be
@@ -817,6 +837,9 @@ mod tests {
 	/// `runner-lost`. The programs behind it are then recorded.
 	#[tokio::test]
 	async fn a_program_that_loses_the_runner_is_kept_as_that() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
 		let pool = pool().await;
 		round(&pool, "r-01", &["fn main() { boom }", "fn main() { hang }", "after"]).await;
 		let fake = Fake::new(|source| match source {
@@ -849,6 +872,11 @@ mod tests {
 		assert_eq!(runs(&pool).await[1].1, "runner-lost");
 		let kinds: Vec<String> = losses(&pool).await.into_iter().map(|loss| loss.1).collect();
 		assert_eq!(kinds, ["dropped", "dropped", "timed-out", "timed-out"]);
+		assert_eq!(
+			failures(&snapshotter, Step::RustRoundsRunLost),
+			Some(4),
+			"each loss kept is one count, and a give-up is not a second"
+		);
 
 		assert_eq!(pass_within(&pool, &fake, deadline, SHORT).await.recorded, 1, "the program behind them is recorded");
 		assert_eq!(

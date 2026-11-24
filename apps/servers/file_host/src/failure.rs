@@ -194,9 +194,10 @@ steps! {
 	/// replaces, so the file home handed in is never taken (#1172).
 	MailboxHandOverConflict => MailboxPasses, "hand_over_conflict";
 	/// A file kept as a plain brief because its body does not read as its
-	/// name says: a Drive takes list, a Rust Rounds week, or a pickup's
-	/// answer. What it would have queued or moved is not. Counted when it is
-	/// first kept (#1175).
+	/// name says: a Drive takes list, a Rust Rounds week, a mock interview's
+	/// week, or a pickup's answer. What it would have queued or moved is not,
+	/// and a week's essay is never owed (#1178). Counted when it is first
+	/// kept (#1175): nothing rewrites a kept file, so it never clears.
 	MailboxReadBody => MailboxPasses, "read_body";
 	/// A file read from the mailbox and not kept (`read_incoming`) that a
 	/// newer file kept in its folder passes: the cursor moves past it, so it
@@ -218,6 +219,52 @@ steps! {
 	/// conflicted on, which is not put again until what it counts moves.
 	/// Held in memory, so a restart puts it again (#1201).
 	MailboxPutIndex => MailboxPasses, "put_index", open;
+	/// The Rust Rounds runner refused a program as malformed or too large,
+	/// and the refusal is kept as the program's run, never asked again
+	/// (#1182). Counted when it is kept.
+	RustRoundsRunnerRefused => RustRoundsRuns, "runner_refused";
+	/// A Rust Rounds program's run was lost (the runner dropped it or did not
+	/// answer in time), kept as one loss; the last loss it is allowed keeps it
+	/// as `runner-lost`. Counted once per loss kept.
+	RustRoundsRunLost => RustRoundsRuns, "run_lost";
+	/// A study nudge was claimed and sent, no device confirmed it, and a
+	/// delivery timed out: the intervention is spent and kept, never sent
+	/// again (#1180). Counted when it is kept; a process that dies between
+	/// the claim and the verdict leaves the claim spent and uncounted.
+	StudyNudgeDeliveryTimedOut => StudyNudge, "delivery_timed_out";
+	/// Open: the call's render signals a tick of the call weeks worker could
+	/// not read: what the worker made of the weeks held (a storage error),
+	/// and the drive's free and total bytes (`statvfs`). Each one's gauges
+	/// are not what the drive holds while it is open (#1179).
+	CallWeeksObserve => CallWeeks, "observe", open;
+	/// Open: whether the call's next week is overdue, which a pass could not
+	/// read, so `CallWeekOverdue` reads an old answer (#1179).
+	CallWeeksNextOverdue => CallWeeks, "next_overdue", open;
+	/// Open: what the render worker made of the Playoff Delta fills held,
+	/// which a tick could not read (a storage error), so the `pd_render_*`
+	/// gauges are not what the drive holds (#1179).
+	PdFillsObserve => PdFills, "observe", open;
+	/// A study nudge claimed and tried on its subject's devices, refused by
+	/// each, none timing out. The claim is handed back, and the subject is
+	/// tried again only at its next eligibility, a new attempt, so each
+	/// attempt is counted once (#1180, Codex on #1221).
+	StudyNudgeNoDeviceAccepted => StudyNudge, "no_device_accepted";
+	/// A device that did not take an intervention another device accepted:
+	/// its push service refused it or did not answer in time. The
+	/// intervention is spent, so that device never gets it. Counted once per
+	/// device, when the intervention is marked sent (#1180).
+	StudyNudgeDeviceMissed => StudyNudge, "device_missed";
+	/// Open: clip frames and walk sides a clips pass could not take (an
+	/// index or frame that does not read, a frame whose bytes are not its
+	/// digest, the drive), each asked again by the next pass, except a walk
+	/// the pass rejected (#809).
+	ClipsTake => Clips, "take", open;
+	/// A walk side the render worker drew that the pass rejected and removed:
+	/// it names other snips than the index (`mismatch`, drawn the same way
+	/// until the render image moves), or its `walk.json` or snips do not
+	/// read. Removed, it is walked again, a new render, so each render
+	/// rejected is counted once (#809, Codex on #1221).
+	ClipsWalkRejected => Clips, "walk_rejected";
 	/// Open: home's deploy record (`state.json`) is there and can't be read
 	/// or parsed. Every sweep meets it again until a deploy writes it anew or
 	/// someone repairs it; one envctl can't replace either (a directory in
@@ -433,5 +480,85 @@ mod tests {
 		for (_, name) in steps {
 			assert!(name.split('_').all(|word| !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase())), "{name}");
 		}
+	}
+}
+
+/// What other modules' tests read back: how many times a step was counted.
+#[cfg(test)]
+pub(crate) mod counted {
+	use super::Step;
+	use metrics_util::debugging::{DebugValue, Snapshotter};
+
+	/// `failures_total` for `step` in `snapshotter`'s recorder, or `None` if
+	/// the series was never touched.
+	pub(crate) fn failures(snapshotter: &Snapshotter, step: Step) -> Option<u64> {
+		snapshotter.snapshot().into_vec().into_iter().find_map(|(key, _, _, value)| {
+			let key = key.key();
+			let is_it = key.name() == "failures_total"
+				&& key.labels().any(|l| l.key() == "process" && l.value() == step.process().as_str())
+				&& key.labels().any(|l| l.key() == "step" && l.value() == step.as_str());
+			match (is_it, value) {
+				(true, DebugValue::Counter(n)) => Some(n),
+				_ => None,
+			}
+		})
+	}
+}
+
+/// What other modules' tests read back: steps' levels and counts, all from
+/// one snapshot, since a snapshot drains every gauge and counter it reads.
+#[cfg(test)]
+pub(crate) mod held {
+	use super::Step;
+	use metrics_util::debugging::{DebugValue, Snapshotter};
+
+	/// One snapshot of `failures_open` and `failures_total`.
+	pub(crate) struct Seen(Vec<(String, String, String, DebugValue)>);
+
+	/// Everything `snapshotter`'s recorder holds now.
+	pub(crate) fn seen(snapshotter: &Snapshotter) -> Seen {
+		Seen(
+			snapshotter
+				.snapshot()
+				.into_vec()
+				.into_iter()
+				.map(|(key, _, _, value)| {
+					let key = key.key();
+					let label = |name: &str| key.labels().find(|l| l.key() == name).map_or_else(String::new, |l| l.value().to_owned());
+					(key.name().to_owned(), label("process"), label("step"), value)
+				})
+				.collect(),
+		)
+	}
+
+	impl Seen {
+		fn find(&self, name: &str, step: Step) -> Option<&DebugValue> {
+			self
+				.0
+				.iter()
+				.find(|(n, process, label, _)| n == name && process == step.process().as_str() && label == step.as_str())
+				.map(|(.., value)| value)
+		}
+
+		/// `failures_open` for `step`, if it was set since the last snapshot.
+		pub(crate) fn open(&self, step: Step) -> Option<f64> {
+			match self.find("failures_open", step)? {
+				DebugValue::Gauge(n) => Some(n.into_inner()),
+				_ => None,
+			}
+		}
+
+		/// `failures_total` for `step` since the last snapshot, if touched.
+		pub(crate) fn counted(&self, step: Step) -> Option<u64> {
+			match self.find("failures_total", step)? {
+				DebugValue::Counter(n) => Some(*n),
+				_ => None,
+			}
+		}
+	}
+
+	/// `failures_open` for `step` alone (the snapshot drains the rest).
+	pub(crate) fn open(snapshotter: &Snapshotter, step: Step) -> Option<f64> {
+		seen(snapshotter).open(step)
 	}
 }
