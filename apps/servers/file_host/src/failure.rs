@@ -162,6 +162,18 @@ macro_rules! steps {
 steps! {
 	/// The Jobs mailbox refused a file home handed in (#1172).
 	MailboxHandOver => MailboxPasses, "hand_over";
+	/// The Rust Rounds runner refused a program as malformed or too large,
+	/// and the refusal is kept as the program's run, never asked again
+	/// (#1182). Counted when it is kept.
+	RustRoundsRunnerRefused => RustRoundsRuns, "runner_refused";
+	/// A Rust Rounds program's run was lost (the runner dropped it or did not
+	/// answer in time), kept as one loss; the last loss it is allowed keeps it
+	/// as `runner-lost`. Counted once per loss kept.
+	RustRoundsRunLost => RustRoundsRuns, "run_lost";
+	/// A study nudge was claimed and sent, no device confirmed it, and a
+	/// delivery timed out: the intervention is spent and kept, never sent
+	/// again (#1180). Counted when it is kept.
+	StudyNudgeDeliveryTimedOut => StudyNudge, "delivery_timed_out";
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
@@ -191,23 +203,38 @@ impl Failure {
 	/// proof. `cause` is why, and must be loggable (see the module).
 	#[track_caller]
 	pub fn record(step: Step, cause: &dyn fmt::Display) -> Self {
-		let at = Location::caller();
-		let (process, name) = (step.process().as_str(), step.as_str());
-		counter!("failures_total", "process" => process, "step" => name).increment(1);
-		tracing::error!(
-			process,
-			step = name,
-			at = %format_args!("{}:{}", at.file(), at.line()),
-			cause = %cause,
-			"{process} failed at {name}: {cause}"
-		);
+		count(step, cause, Location::caller());
 		Self { step }
+	}
+
+	/// As [`Failure::record`], for a failure whose only outcome is its count
+	/// and its log: nothing stores it (a file kept as a plain brief because
+	/// its body does not read as its name says, say). Where an outcome is
+	/// stored, `record` it and carry the token there instead. Either way, one
+	/// event is one count: a condition that persists is not counted again
+	/// each time it is seen.
+	#[track_caller]
+	pub fn alone(step: Step, cause: &dyn fmt::Display) {
+		count(step, cause, Location::caller());
 	}
 
 	#[must_use]
 	pub const fn step(&self) -> Step {
 		self.step
 	}
+}
+
+/// The count and the log both makers share; `at` is their caller's line.
+fn count(step: Step, cause: &dyn fmt::Display, at: &Location<'_>) {
+	let (process, name) = (step.process().as_str(), step.as_str());
+	counter!("failures_total", "process" => process, "step" => name).increment(1);
+	tracing::error!(
+		process,
+		step = name,
+		at = %format_args!("{}:{}", at.file(), at.line()),
+		cause = %cause,
+		"{process} failed at {name}: {cause}"
+	);
 }
 
 #[cfg(test)]
@@ -289,5 +316,27 @@ mod tests {
 		for (_, name) in steps {
 			assert!(name.split('_').all(|word| !word.is_empty() && word.chars().all(|c| c.is_ascii_lowercase())), "{name}");
 		}
+	}
+}
+
+/// What other modules' tests read back: how many times a step was counted.
+#[cfg(test)]
+pub(crate) mod counted {
+	use super::Step;
+	use metrics_util::debugging::{DebugValue, Snapshotter};
+
+	/// `failures_total` for `step` in `snapshotter`'s recorder, or `None` if
+	/// the series was never touched.
+	pub(crate) fn failures(snapshotter: &Snapshotter, step: Step) -> Option<u64> {
+		snapshotter.snapshot().into_vec().into_iter().find_map(|(key, _, _, value)| {
+			let key = key.key();
+			let is_it = key.name() == "failures_total"
+				&& key.labels().any(|l| l.key() == "process" && l.value() == step.process().as_str())
+				&& key.labels().any(|l| l.key() == "step" && l.value() == step.as_str());
+			match (is_it, value) {
+				(true, DebugValue::Counter(n)) => Some(n),
+				_ => None,
+			}
+		})
 	}
 }
