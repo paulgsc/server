@@ -656,8 +656,15 @@ groups:
         # (or nothing, which FileHostDown says); the client that asked stays
         # unserved until someone looks. home_deploy_runs only rises (the
         # deploy's own totals), so increase() over the hour sees each one;
-        # resolved an hour after the last.
-        expr: sum(increase(home_deploy_runs{outcome=~"rolled_back|failed"}[1h])) > 0
+        # resolved an hour after the last. A record file_host can't read is
+        # NaN (HD3, #1208), and increase() over a window starting at a NaN is
+        # NaN, which hides a real failure; `x == x` drops those samples, so
+        # the subquery reads the gap as absent and still sees the totals the
+        # healing deploy writes anew (a reset, then its own outcome).
+        expr: |
+          sum(increase(
+            (home_deploy_runs{outcome=~"rolled_back|failed"} == home_deploy_runs{outcome=~"rolled_back|failed"})[1h:1m]
+          )) > 0
         labels:
           objective: HD2
           says: "Home's on-demand deploy rolled back or failed in the last hour: `journalctl -u home-deploy` says why. If it names a missing or refused variable, the image needs a newer checkout on home."
