@@ -56,8 +56,8 @@
 //! 18's; [`file_leetype_logs`] files them.
 //!
 //! Handing over: the mailbox's answer is recorded, and final but for its own
-//! refusal (a `422`), which is handed again hourly up to
-//! `mailbox_repo::REFUSED_TRIES` (MI8); a file it can never take is `unfit`,
+//! refusal (a `422`), which is handed again hourly until it has had
+//! `mailbox_repo::REFUSED_TRIES` answers (MI8); a file it can never take is `unfit`,
 //! final. A failure to reach it leaves the file to be handed again. Every
 //! answer but `added` and `unchanged` is a failure, counted in
 //! `failures_total` and logged at error (#1172).
@@ -722,8 +722,8 @@ async fn hand_over<T: MailboxTransport>(
 /// or a name the mailbox holds other bytes under. None is stored without being
 /// counted first, since only `Counted::record` makes the token each holds.
 /// The count is made when the mailbox answers, one per handing: if storing
-/// the answer then fails, the file is handed again and that handing is
-/// counted too.
+/// the answer then fails with a storage error, the file is handed again and
+/// that handing is counted too (with no account, the file has gone with it).
 #[derive(Debug)]
 enum Handing {
 	Added,
@@ -2244,6 +2244,12 @@ mod tests {
 		let handed = decisions(&fake);
 		assert_eq!(handed.len(), 4, "an hour on, the refused file alone is handed again, not the unfit ones: {handed:?}");
 		assert!(handed[3].ends_with("/decisions-2026-10-22.json"), "{handed:?}");
+		// The bad name never reaches the mailbox, so its finality shows in what
+		// is stored: one answer each for the unfit files, two for the refused.
+		let stored = answers(&pool).await;
+		for (name, answers) in [("decisions 2026-10-24.json", 1), ("decisions-2026-10-23.json", 1), ("decisions-2026-10-22.json", 2)] {
+			assert_eq!(stored.iter().filter(|(stored, _)| stored == name).count(), answers, "{name}: {stored:?}");
+		}
 	}
 
 	/// A voice note of the owner's, and what `model` heard in it.
