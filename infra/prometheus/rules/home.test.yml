@@ -2000,9 +2000,33 @@ tests:
               objective: OA8
               says: "Home's mailbox-passes failed at hand_over in the last 15 minutes; each failure is logged at error with its cause."
 
+  - name: a failure before a restart's first scrape is told, back at the same count (OA8)
+    interval: 1m
+    input_series:
+      - series: 'process_start_time_seconds{job="file_host"}'
+        values: '0x20 _ 1260x20'
+      - series: 'failures_total{job="file_host",process="mailbox-passes",step="hand_over"}'
+        values: '1x20 _ 1x20'
+      - series: 'failures_total{job="file_host",process="clips",step="walk"}'
+        values: '0x20 _ 0x20'
+    alert_rule_test:
+      - eval_time: 23m
+        alertname: HomeFailures
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: hand_over
+              objective: OA8
+              says: "Home's mailbox-passes failed at hand_over in the last 15 minutes; each failure is logged at error with its cause."
+      - eval_time: 37m
+        alertname: HomeFailures
+        exp_alerts: []
+
   - name: a gap in Prometheus's own samples is no failure (OA8)
     interval: 1m
     input_series:
+      - series: 'process_start_time_seconds{job="file_host"}'
+        values: '0x10 _x20 0x20'
       - series: 'failures_total{job="file_host",process="mailbox-passes",step="hand_over"}'
         values: '2x10 _x20 2x20'
     alert_rule_test:

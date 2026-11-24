@@ -39,9 +39,6 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 	response
 }
 
-/// `file_host::migrate::bring_current` on this start's database, each line
-/// of what it did said on stdout as `migrate: …` (the deploy's log reads
-/// them), and a refusal returned as the process's error.
 /// The counters whose alerts fire on any increase, each series at 0 from the
 /// start: a counter the `metrics` facade has never incremented does not
 /// exist, and `increase()` never sees a series' first sample.
@@ -54,6 +51,9 @@ fn register_zero_series() {
 	file_host::failure::register_all();
 }
 
+/// `file_host::migrate::bring_current` on this start's database, each line
+/// of what it did said on stdout as `migrate: …` (the deploy's log reads
+/// them), and a refusal returned as the process's error.
 async fn migrate_on_start(config: &Config) -> Result<()> {
 	use file_host::migrate::{bring_current, Options, DEFAULT_KEEP_BACKUPS};
 	use std::io::Write as _;

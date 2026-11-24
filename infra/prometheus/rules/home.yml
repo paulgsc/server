@@ -877,10 +877,19 @@ groups:
         # says any one step failed. Over 15 minutes, as HomeShedding is, so a
         # burst is one alert per process and step, resolved after a quiet
         # quarter hour (Grafana's route may send several in one message).
-        # Every series exists at 0 from boot (failure::register_all), so the
-        # first failure after a restart is an increase too, and a gap in
-        # Prometheus's own samples is no increase.
-        expr: max by (process, step) (increase(failures_total[15m])) > 0
+        # Every series exists at 0 from boot (failure::register_all), so a
+        # failure after a restart's first scrape is an increase, and a gap in
+        # Prometheus's own samples is no increase. A failure before that
+        # scrape (a step that fails as the workers start, before file_host
+        # listens) can land back at the count from before the restart, which
+        # increase() reads as no change: so for a quarter hour after a boot,
+        # any step above 0 is told, since a count after a boot is that boot's.
+        expr: |
+          max by (process, step) (
+            increase(failures_total[15m]) > 0
+            or
+            (failures_total > 0 and on () (time() - max(process_start_time_seconds{job="file_host"}) < 900))
+          )
         labels:
           objective: OA8
           says: "Home's {{ $labels.process }} failed at {{ $labels.step }} in the last 15 minutes; each failure is logged at error with its cause."

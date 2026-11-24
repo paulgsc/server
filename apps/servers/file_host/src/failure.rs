@@ -168,7 +168,9 @@ steps! {
 ///
 /// `increase()` never sees a series' first sample, so a series born at its
 /// first failure would hide that failure from `HomeFailures`, and a restart
-/// that dropped the series would hide the next one. The repo's other counters
+/// that dropped the series would hide the next one. (A failure before the
+/// first scrape after a boot is `HomeFailures`' second arm, on
+/// `process_start_time_seconds`.) The repo's other counters
 /// that page on any increase do the same (`refusals::register_all`).
 pub fn register_all() {
 	for step in Step::ALL {
