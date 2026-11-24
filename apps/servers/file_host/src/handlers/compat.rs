@@ -87,8 +87,25 @@ pub async fn compat(State(state): State<AppState>, Query(query): Query<CompatQue
 
 /// The answer for `needs` at `now`, against the deploy folder `folder`.
 fn answer(folder: &Path, needs: u32, now: i64, rate_limit: Option<RateLimit>) -> CompatResponse {
-	let recorded = deploy::read_recorded(folder);
-	let mut decision = deploy::decide(needs, now, &recorded, deploy::marker_since(folder).is_some());
+	// HD3 (#1208): a record or marker that can't be read is said, and then
+	// decided on as if absent. The deploy that answers writes the record
+	// anew, and a marker that is there after all fails the write, which is
+	// `in_flight` or, if it can't be written, `cannot_request`, which alerts.
+	let recorded = match deploy::read_recorded(folder) {
+		Some(recorded) => recorded,
+		None => {
+			tracing::error!(needs, "home's deploy record can't be read: deciding as if nothing were recorded");
+			deploy::Recorded::default()
+		}
+	};
+	let marker_waiting = match deploy::marker_since(folder) {
+		Ok(since) => since.is_some(),
+		Err(err) => {
+			tracing::error!(needs, kind = %err.kind(), "home's deploy marker can't be read: deciding as if none were waiting");
+			false
+		}
+	};
+	let mut decision = deploy::decide(needs, now, &recorded, marker_waiting);
 	if decision.deploy == Deploy::Wanted {
 		decision.deploy = match deploy::request(folder, needs, now) {
 			Ok(true) => {
@@ -171,5 +188,33 @@ mod tests {
 			assert_eq!(quota.interval() * rate_limit, std::time::Duration::from_secs(60));
 		}
 		assert_eq!(RateLimit::of(0), None);
+	}
+
+	/// HD3 (#1208): a garbled `state.json` is said at error, and a newer
+	/// client still asks for the deploy, which writes the record anew: an
+	/// unreadable record heals rather than stalling every deploy.
+	#[test]
+	fn an_unreadable_deploy_record_is_said_and_still_asks_for_the_deploy() {
+		let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() == tracing::Level::ERROR);
+		let dir = tempfile::tempdir().unwrap();
+		std::fs::write(dir.path().join(deploy::STATE), b"{ not json").unwrap();
+		let answered = answer(dir.path(), CONTRACT_EPOCH + 1, 1_800_000_000, RateLimit::of(60));
+		assert_eq!(answered.deploy, Deploy::Wanted);
+		assert!(dir.path().join(deploy::WANTED).exists(), "the deploy is asked for");
+		assert!(captured.lines().iter().any(|line| line.contains("deploy record can't be read")), "{:#?}", captured.lines());
+	}
+
+	/// HD3: a marker that can't be read is said, and the ask that follows
+	/// can't write one either, which is `cannot_request` (DeployCannotRequest
+	/// alerts on it), never a silent `in_flight`.
+	#[test]
+	fn an_unreadable_marker_is_said_and_reaches_an_alert() {
+		let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() == tracing::Level::ERROR);
+		let dir = tempfile::tempdir().unwrap();
+		let not_a_folder = dir.path().join("deploy");
+		std::fs::write(&not_a_folder, b"").unwrap();
+		let answered = answer(&not_a_folder, CONTRACT_EPOCH + 1, 1_800_000_000, RateLimit::of(60));
+		assert_eq!(answered.deploy, Deploy::CannotRequest);
+		assert!(captured.lines().iter().any(|line| line.contains("deploy marker can't be read")), "{:#?}", captured.lines());
 	}
 }

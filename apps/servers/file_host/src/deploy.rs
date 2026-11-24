@@ -177,23 +177,36 @@ pub(crate) fn decide(needs: u32, now: i64, recorded: &Recorded, marker_waiting: 
 	answer(false, Deploy::Wanted, None)
 }
 
-/// What [`FOLDER`]'s `state.json` says, or nothing recorded when it is
-/// missing or unreadable.
+/// What [`FOLDER`]'s `state.json` says: nothing recorded when it is
+/// missing, and `None` when it is there and can't be read or parsed (HD3,
+/// #1208). Unreadable is not "nothing recorded": the sweep reads it as
+/// unknown, never as totals of 0, and `/compat` says it at error. `/compat`
+/// still decides as if nothing were recorded, so the deploy it asks for runs
+/// and writes the record anew: an unreadable record heals, never stalls.
 #[must_use]
-pub(crate) fn read_recorded(folder: &Path) -> Recorded {
-	std::fs::read(folder.join(STATE))
-		.ok()
-		.and_then(|bytes| serde_json::from_slice(&bytes).ok())
-		.unwrap_or_default()
+pub(crate) fn read_recorded(folder: &Path) -> Option<Recorded> {
+	match std::fs::read(folder.join(STATE)) {
+		Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(Recorded::default()),
+		Err(_) => None,
+	}
 }
 
 /// Whether a marker is waiting in `folder`, and since when (seconds since
-/// the epoch, from its modification time).
-#[must_use]
-pub(crate) fn marker_since(folder: &Path) -> Option<i64> {
-	let modified = std::fs::metadata(folder.join(WANTED)).ok()?.modified().ok()?;
-	let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-	i64::try_from(since.as_secs()).ok()
+/// the epoch, from its modification time). `Ok(None)` only when there is
+/// none; a marker whose time can't be read is an error, never "no marker"
+/// (HD3, #1208).
+///
+/// # Errors
+/// The marker's metadata or time can't be read.
+pub(crate) fn marker_since(folder: &Path) -> std::io::Result<Option<i64>> {
+	let modified = match std::fs::metadata(folder.join(WANTED)) {
+		Ok(metadata) => metadata.modified()?,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(err) => return Err(err),
+	};
+	let since = modified.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?;
+	i64::try_from(since.as_secs()).map(Some).map_err(std::io::Error::other)
 }
 
 /// The marker's contents: what was needed, what ran, and when.
@@ -331,7 +344,7 @@ mod tests {
 		let written: serde_json::Value = serde_json::from_slice(&std::fs::read(folder.join(WANTED)).unwrap()).unwrap();
 		assert_eq!(written["needs"], CONTRACT_EPOCH + 1);
 		assert_eq!(written["running"], CONTRACT_EPOCH);
-		assert!(marker_since(&folder).is_some());
+		assert!(marker_since(&folder).unwrap().is_some());
 		let names: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name()).collect();
 		assert_eq!(names, [std::ffi::OsString::from(WANTED)], "no temporary file is left");
 	}
@@ -355,17 +368,44 @@ mod tests {
 	#[test]
 	fn the_deploys_state_reads_and_tolerates_absence() {
 		let dir = tempfile::tempdir().unwrap();
-		assert_eq!(read_recorded(dir.path()), Recorded::default());
+		assert_eq!(read_recorded(dir.path()), Some(Recorded::default()));
 		std::fs::write(
 			dir.path().join(STATE),
 			r#"{"last_pull_at": 5, "latest_seen_epoch": 3, "last_run": {"at": 6, "exit": 2, "outcome": "rolled_back"}, "counts": {"pulls": 4, "rolled_back": 1}, "later": true}"#,
 		)
 		.unwrap();
-		let recorded = read_recorded(dir.path());
+		let recorded = read_recorded(dir.path()).unwrap();
 		assert_eq!(recorded.last_pull_at, Some(5));
 		assert_eq!(recorded.latest_seen_epoch, Some(3));
 		assert_eq!(recorded.last_run.unwrap().outcome, "rolled_back");
 		assert_eq!(recorded.counts.pulls, 4);
 		assert_eq!(recorded.counts.rolled_back, 1);
+	}
+
+	/// HD3 (#1208): only a missing record is "nothing recorded". One that is
+	/// there and can't be parsed, or can't be read (a directory in its
+	/// place), is `None`. Family: missing, garbled, truncated, unreadable.
+	#[test]
+	fn only_a_missing_state_is_nothing_recorded() {
+		let dir = tempfile::tempdir().unwrap();
+		assert_eq!(read_recorded(dir.path()), Some(Recorded::default()), "missing");
+		for garbled in ["{", "not json", r#"{"counts": {"pulls": "many"}}"#] {
+			std::fs::write(dir.path().join(STATE), garbled).unwrap();
+			assert_eq!(read_recorded(dir.path()), None, "{garbled}");
+		}
+		std::fs::remove_file(dir.path().join(STATE)).unwrap();
+		std::fs::create_dir(dir.path().join(STATE)).unwrap();
+		assert_eq!(read_recorded(dir.path()), None, "unreadable");
+	}
+
+	/// HD3: no marker is `Ok(None)`; a marker that can't be read is an
+	/// error, never "no marker".
+	#[test]
+	fn a_marker_reads_as_there_absent_or_an_error() {
+		let dir = tempfile::tempdir().unwrap();
+		assert_eq!(marker_since(dir.path()).unwrap(), None, "absent");
+		let not_a_folder = dir.path().join("file");
+		std::fs::write(&not_a_folder, b"").unwrap();
+		assert!(marker_since(&not_a_folder).is_err(), "a path that can't hold a marker is unreadable");
 	}
 }
