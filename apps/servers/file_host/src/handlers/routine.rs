@@ -580,7 +580,7 @@ mod tests {
 		let (status, answer) = put(state.clone(), Some(&phone), &names).await;
 		assert_eq!((status, answer), (StatusCode::OK, json!({ "change": "added" })));
 		let mut conn = state.pool.acquire().await.unwrap();
-		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap();
 		assert_eq!(pending.len(), 1);
 		assert_eq!(pending[0].folder, "opened");
 		assert!(pending[0].name.starts_with("opened-") && pending[0].name.ends_with("Z.json"), "{}", pending[0].name);
@@ -605,7 +605,7 @@ mod tests {
 			assert!(status.is_client_error() && status != StatusCode::UNAUTHORIZED, "{body}: {status}");
 		}
 		let mut conn = state.pool.acquire().await.unwrap();
-		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
+		assert!(mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap().is_empty());
 	}
 
 	async fn put_reflection(state: TestState, auth: Option<&str>, id: &str, body: &Value) -> (StatusCode, Value) {
@@ -647,7 +647,7 @@ mod tests {
 		assert_eq!(status, StatusCode::CONFLICT, "a different reflection under a held id");
 
 		let mut conn = state.pool.acquire().await.unwrap();
-		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap();
 		assert_eq!(pending.len(), 1, "filed once");
 		assert_eq!((pending[0].folder.as_str(), pending[0].name.as_str()), ("reflection", "reflection-r1.json"));
 		let file: Value = serde_json::from_slice(&pending[0].body).unwrap();
@@ -655,7 +655,7 @@ mod tests {
 			file,
 			json!({ "schema": "some-ui.reflection/1", "reflection": "r1", "session": "s-7f3a91c2", "at": "2026-11-01T08:15:00.000Z", "text": "The second scene felt slow." })
 		);
-		assert!(mailbox_repo::pending_outgoing(&mut conn, B, 10).await.unwrap().is_empty(), "only the caller's");
+		assert!(mailbox_repo::pending_outgoing(&mut conn, B, "", 10).await.unwrap().is_empty(), "only the caller's");
 	}
 
 	#[tokio::test]
@@ -670,7 +670,7 @@ mod tests {
 			assert_eq!(put_reflection(state.clone(), Some(&phone), id, &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 		}
 		let mut conn = state.pool.acquire().await.unwrap();
-		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
+		assert!(mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap().is_empty());
 		drop(conn);
 		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM written_reflection").fetch_one(&state.pool).await.unwrap();
 		assert_eq!(held, 0);
@@ -713,7 +713,7 @@ mod tests {
 		assert_eq!(status, StatusCode::CONFLICT, "a different prompt under a held stamp");
 
 		let mut conn = state.pool.acquire().await.unwrap();
-		let pending = mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap();
+		let pending = mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap();
 		assert_eq!(pending.len(), 1, "filed once");
 		assert_eq!((pending[0].folder.as_str(), pending[0].name.as_str()), ("prompt", "drama-20261101T081500000Z.prompt.json"));
 		let file: Value = serde_json::from_slice(&pending[0].body).unwrap();
@@ -721,7 +721,7 @@ mod tests {
 			file,
 			json!({ "schema": "some-ui.drama-prompt/1", "prompt": STAMP, "text": "> **For an agent:** follow the prompt below.\n\nWrite the next scene." })
 		);
-		assert!(mailbox_repo::pending_outgoing(&mut conn, B, 10).await.unwrap().is_empty(), "only the caller's");
+		assert!(mailbox_repo::pending_outgoing(&mut conn, B, "", 10).await.unwrap().is_empty(), "only the caller's");
 	}
 
 	#[tokio::test]
@@ -741,7 +741,7 @@ mod tests {
 			assert_eq!(put_prompt(state.clone(), Some(&phone), stamp, &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 		}
 		let mut conn = state.pool.acquire().await.unwrap();
-		assert!(mailbox_repo::pending_outgoing(&mut conn, A, 10).await.unwrap().is_empty());
+		assert!(mailbox_repo::pending_outgoing(&mut conn, A, "", 10).await.unwrap().is_empty());
 		drop(conn);
 		let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drama_prompt").fetch_one(&state.pool).await.unwrap();
 		assert_eq!(held, 0);
