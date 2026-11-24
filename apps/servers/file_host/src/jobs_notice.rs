@@ -25,9 +25,10 @@
 //!
 //! **Delivery.** A phone FCM no longer knows ([`SendOutcome::Unregistered`])
 //! is forgotten. A record is recorded once any phone took it, or every phone
-//! answered for good; when none took it and one never got an answer, or FCM
-//! said to try later (a `429` or a `5xx`), nothing is recorded and the next
-//! pass tries again within the window. A token
+//! FCM still knows is gone; when none took it and one never got an answer,
+//! FCM said to try later (a `429` or a `5xx`), or FCM refused it (a bad key,
+//! a JWT home could not sign: fixed on home's side, #1206), nothing is
+//! recorded and the next pass tries again within the window. A token
 //! never reaches a log line (docs/identity.md invariant 24): outcomes are
 //! logged as counts.
 //!
@@ -189,18 +190,24 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 		};
 		let mut took = 0_i64;
 		let mut unanswered = false;
+		let mut refused = false;
 		let mut gone = Vec::new();
 		for token in &devices {
 			match sender.send(&DeviceToken::new(token.clone()), &notice, unix).await {
 				SendOutcome::Delivered => took += 1,
 				SendOutcome::Unregistered => gone.push(token.clone()),
 				// Throttling and FCM's own failures pass (FCM's error codes say
-				// to retry them); any other refusal is final for this record.
+				// to retry them). Any other refusal (a key FCM won't take, a
+				// token it won't sign for) is not a delivery either: the cause
+				// is fixed on home's side, so the record waits for it (#1206).
 				SendOutcome::Refused(status) if status == 429 || status >= 500 => {
 					tracing::warn!(status, "FCM could not take a Jobs arrival notice now");
 					unanswered = true;
 				}
-				SendOutcome::Refused(status) => tracing::warn!(status, "FCM refused a Jobs arrival notice"),
+				SendOutcome::Refused(status) => {
+					tracing::warn!(status, "FCM refused a Jobs arrival notice");
+					refused = true;
+				}
 				SendOutcome::Transport(why) => {
 					tracing::warn!(error = %why, "a Jobs arrival notice got no answer from FCM");
 					unanswered = true;
@@ -212,7 +219,7 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 			outcome.forgotten += 1;
 		}
 		devices.retain(|token| !gone.contains(token));
-		if took == 0 && unanswered {
+		if took == 0 && (unanswered || refused) {
 			outcome.unsent += 1;
 			continue;
 		}
@@ -261,6 +268,9 @@ mod tests {
 	struct Fake {
 		answers: Arc<Mutex<HashMap<String, Result<u16, String>>>>,
 		took: Arc<Mutex<Vec<(String, String, String)>>>,
+		/// What Google's token endpoint answers, when not 200: a key it
+		/// won't take.
+		token: Arc<Mutex<Option<u16>>>,
 	}
 
 	impl Fake {
@@ -278,6 +288,9 @@ mod tests {
 
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
 			if request.url.ends_with("/token") {
+				if let Some(status) = *self.token.lock().unwrap() {
+					return Ok(Response { status, body: b"{}".to_vec() });
+				}
 				let body = br#"{"access_token":"ya29.test","expires_in":3600}"#.to_vec();
 				return Ok(Response { status: 200, body });
 			}
@@ -528,15 +541,58 @@ mod tests {
 		assert_eq!(pass(&pool, &sender, now()).await, Outcome { noticed: 1, ..Outcome::default() });
 	}
 
+	/// JN1 (#1206): a notice every phone refused was not delivered, so it is
+	/// not recorded as told. It waits, and once the cause is fixed (a key FCM
+	/// takes again) the next pass within the window tells the phone. Family:
+	/// every final refusal status, with and without a phone that took it.
 	#[tokio::test]
-	async fn a_refusal_is_final_for_that_record() {
+	async fn a_notice_every_phone_refused_is_tried_again() {
 		let pool = pool().await;
 		let fake = Fake::default();
+		let sender = sender(&fake);
 		phone(&pool, "phone-1").await;
-		fake.answer("phone-1", Ok(400));
+		let name = run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		for status in [400, 401, 403] {
+			fake.answer("phone-1", Ok(status));
+			assert_eq!(pass(&pool, &sender, now()).await, Outcome { unsent: 1, ..Outcome::default() }, "{status}");
+			assert!(sent(&pool).await.is_empty(), "{status} is not a delivery");
+			assert_eq!(devices(&pool).await, ["phone-1"], "a refusal keeps the phone");
+		}
+		fake.answer("phone-1", Ok(200));
+		assert_eq!(pass(&pool, &sender, now() + Duration::minutes(15)).await, Outcome { noticed: 1, ..Outcome::default() });
+		assert_eq!(fake.took().len(), 1);
+		assert_eq!(sent(&pool).await, [(name, String::from("picks"), 1)]);
+	}
+
+	/// JN1: a key Google won't take (its token endpoint refuses home's
+	/// assertion) is fixed on home's side too, so the notice waits for it.
+	#[tokio::test]
+	async fn a_notice_home_could_not_get_a_token_for_is_tried_again() {
+		let pool = pool().await;
+		let fake = Fake::default();
+		let sender = sender(&fake);
+		phone(&pool, "phone-1").await;
+		*fake.token.lock().unwrap() = Some(401);
+		run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		assert_eq!(pass(&pool, &sender, now()).await, Outcome { unsent: 1, ..Outcome::default() });
+		assert!(sent(&pool).await.is_empty());
+
+		*fake.token.lock().unwrap() = None;
+		assert_eq!(pass(&pool, &sender, now() + Duration::minutes(15)).await, Outcome { noticed: 1, ..Outcome::default() });
+		assert_eq!(fake.took().len(), 1);
+	}
+
+	/// JN1: one phone took it, so it was told: another phone's refusal does
+	/// not hold the record back.
+	#[tokio::test]
+	async fn a_notice_one_phone_took_is_recorded_whatever_the_others_said() {
+		let pool = pool().await;
+		let fake = Fake::default();
+		phone(&pool, "refusing").await;
+		phone(&pool, "taking").await;
+		fake.answer("refusing", Ok(401));
 		let name = run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
 		assert_eq!(pass(&pool, &sender(&fake), now()).await, Outcome { noticed: 1, ..Outcome::default() });
-		assert_eq!(sent(&pool).await, [(name, String::from("picks"), 0)]);
-		assert_eq!(devices(&pool).await, ["phone-1"], "a refusal keeps the phone");
+		assert_eq!(sent(&pool).await, [(name, String::from("picks"), 1)]);
 	}
 }
