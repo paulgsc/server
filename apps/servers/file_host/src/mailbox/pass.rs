@@ -255,6 +255,10 @@ pub const MAILBOX_BODY_CEILING: usize = 1_048_576;
 /// digest hold it back until they are archived again.
 const PAGES_PER_PASS: usize = 10;
 
+/// How long after the mailbox refused a file home hands it again, up to
+/// [`mailbox_repo::REFUSED_TRIES`] answers (paulgsc/some-ui#3508).
+const REFUSED_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_secs(3_600);
+
 /// What a pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcome {
@@ -640,9 +644,12 @@ async fn held_sha256(db: &SqlitePool, subject: &str, folder: &str, name: &str) -
 }
 
 /// Hands each filed file the mailbox has not answered, oldest first, at most
-/// [`ITEMS_PER_PASS`]. Every answer is final and recorded: taken, already
-/// held, held with other bytes (`conflict`), or refused. A failure to reach
-/// the mailbox records nothing, so the next pass hands that file again.
+/// [`ITEMS_PER_PASS`]. Every answer is recorded: taken, already held, held
+/// with other bytes (`conflict`), or refused. Each is final but a refusal: a
+/// refused file is handed again [`REFUSED_AGAIN_AFTER`] its last refusal, after
+/// the files never answered, until it has had [`mailbox_repo::REFUSED_TRIES`]
+/// answers. A failure to reach the mailbox records nothing, so the next pass
+/// hands that file again.
 async fn hand_over<T: MailboxTransport>(
 	db: &SqlitePool,
 	mailbox: &Mailbox<T>,
@@ -653,7 +660,11 @@ async fn hand_over<T: MailboxTransport>(
 ) -> Result<(), Failure> {
 	let pending = {
 		let mut conn = db.acquire().await.map_err(Failure::Storage)?;
-		mailbox_repo::pending_outgoing(&mut conn, subject, i64::from(ITEMS_PER_PASS)).await.map_err(storage)?
+		// A clock that does not read hands no refused file again.
+		let refused_before = before(&now(), REFUSED_AGAIN_AFTER).unwrap_or_default();
+		mailbox_repo::pending_outgoing(&mut conn, subject, &refused_before, i64::from(ITEMS_PER_PASS))
+			.await
+			.map_err(storage)?
 	};
 	outcome.more |= pending.len() >= ITEMS_PER_PASS as usize;
 	for file in pending {
@@ -2089,7 +2100,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_conflict_or_a_refusal_is_final_and_not_handed_again() {
+	async fn a_conflict_is_final_and_a_refusal_is_handed_again_an_hour_on() {
 		let (pool, fake) = (pool().await, Fake::default());
 		filed(&pool, "decisions-2026-10-22.json").await;
 		filed(&pool, "decisions-2026-10-23.json").await;
@@ -2102,8 +2113,16 @@ mod tests {
 				(String::from("decisions-2026-10-23.json"), String::from("refused")),
 			]
 		);
-		pass(&pool, &fake).await.unwrap();
-		assert_eq!(fake.puts.lock().unwrap().len(), 2, "neither is handed again");
+		let decisions = |fake: &Fake| fake.puts.lock().unwrap().iter().filter(|put| put.contains("/v1/decisions/")).cloned().collect::<Vec<_>>();
+		pass_at(&pool, &fake, "2026-10-23T15:59:59.999Z").await.unwrap();
+		assert_eq!(decisions(&fake).len(), 2, "a refusal younger than an hour is not handed again");
+		pass_at(&pool, &fake, "2026-10-23T16:00:00.000Z").await.unwrap();
+		let handed = decisions(&fake);
+		assert_eq!(handed.len(), 3, "an hour on, the refused file alone is handed again: {handed:?}");
+		assert!(handed[2].ends_with("/decisions-2026-10-23.json"), "{handed:?}");
+		assert_eq!(answers(&pool).await.last().unwrap(), &(String::from("decisions-2026-10-23.json"), String::from("added")));
+		pass_at(&pool, &fake, "2026-10-23T18:00:00.000Z").await.unwrap();
+		assert_eq!(decisions(&fake).len(), 3, "once taken, it is final");
 	}
 
 	/// A voice note of the owner's, and what `model` heard in it.
