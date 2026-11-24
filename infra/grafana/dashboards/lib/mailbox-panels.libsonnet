@@ -118,7 +118,7 @@ local series(title, description, targets, unit) = {
 
   keptAndRefused: series(
     'Files kept, refused, handed over, archived and put back',
-    'Per hour. Kept and refused: digests read from the mailbox. Handed: the phone\'s voice-free decisions and scouts given to the mailbox, by its answer; a conflict or refusal is final and goes by the share sheet instead. Archived: files live in the mailbox for MAILBOX_ARCHIVE_DAYS, stored home and then dropped there, or why one stayed live. Put back: archived files the routine asked for again; missing means home holds nothing for the ask. Both stay at 0 without MAILBOX_ARCHIVE_TOKEN.',
+    'Per hour. Kept and refused: digests read from the mailbox. Handed: the phone\'s voice-free decisions and scouts given to the mailbox, by its answer; a conflict or an unfit file is final and goes by the share sheet instead, and a refusal is handed again hourly up to 7 times. Each but added and unchanged is a failure, in failures_total. Archived: files live in the mailbox for MAILBOX_ARCHIVE_DAYS, stored home and then dropped there, or why one stayed live. Put back: archived files the routine asked for again; missing means home holds nothing for the ask. Both stay at 0 without MAILBOX_ARCHIVE_TOKEN.',
     [
       { expr: 'sum(increase(mailbox_poll_items_kept_total[1h]))', legendFormat: 'kept', refId: 'A' },
       { expr: 'sum by (why) (increase(mailbox_poll_items_refused_total[1h]))', legendFormat: 'refused: {{why}}', refId: 'B' },

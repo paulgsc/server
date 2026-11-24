@@ -27,10 +27,13 @@
 //! the token has done its work and is dropped there. `#[must_use]` does not
 //! see `let _ =`; the erasure ratchet (#1189) is what will.
 //!
-//! What it does not change: what is stored, and the shape of any function.
-//! The database still stores `"refused"`. The count is event-driven and adds
-//! no schedule, and a deterministic refusal is counted once and held, never
-//! retried on a clock (docs/home-compute.md, invariants 6 and 7).
+//! What it does not change: the shape of any function, or what is stored for
+//! an outcome stored truly. The mailbox still stores `"refused"` for its own
+//! refusal; the one new stored value is `unfit`, for a file it can never take,
+//! which was stored as `refused` and so handed again (#1172, the coordinator's
+//! call on #1192's review). The count is event-driven and adds no schedule,
+//! and a deterministic refusal is counted once and held, never retried on a
+//! clock (docs/home-compute.md, invariants 6 and 7).
 //!
 //! The labels are bounded: [`Step`] is a closed table, and each step names
 //! its [`Process`], so no value a person or a request supplies becomes a

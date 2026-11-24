@@ -96,10 +96,11 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    `failures_total{process,step}` and one `error!` line, made together by
    `file_host::failure::Failure::record`, the only maker of the `Failure`
    token. An outcome that is a failure carries the token, so it cannot be
-   stored uncounted (the mailbox's `Answer::Refused` first, #1172,
-   **Planned**). `HomeFailures` (`infra/prometheus/rules/home.yml`) sends any
-   increase to Slack. Counting changes no function's shape and no stored
-   value, and adds no clock: a deterministic refusal is counted once and held
+   stored uncounted (the mailbox pass's `Handing`, #1172, first). `HomeFailures` (`infra/prometheus/rules/home.yml`) sends any
+   increase to Slack. Counting changes no function's shape and no outcome
+   stored truly, and adds no clock (one outcome stored falsely was corrected
+   with it: a file the mailbox can never take is now `unfit`, final, not
+   `refused` and handed again; the coordinator's call on #1192's review): a deterministic refusal is counted once and held
    (invariant 7), and a yield is not a failure (invariant 3), so nothing
    converts one into a `Failure`. The labels are closed sets (`Process`, the
    ledger's process ids, and `Step`), started at 0 at boot. The cause is
