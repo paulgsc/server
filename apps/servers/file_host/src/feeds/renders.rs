@@ -549,8 +549,9 @@ pub async fn seen_of(db: &SqlitePool, folders: &Folders, subject: &str, shelf: S
 	}))
 }
 
-/// Whether the episode `feed` is owed has passed its day without coming, as
-/// the board's `coming` row says it (`overdue`), for the alerts that say so
+/// Whether the episode `feed` is owed has passed its day without coming.
+///
+/// As the board's `coming` row says it (`overdue`), for the alerts that say so
 /// while nobody is looking at the board (paulgsc/some-ui#3478): an essay's,
 /// for `subject`, and the call's week, which is no subject's (its read takes
 /// none, so any `subject` reads the same). Playoff Delta
