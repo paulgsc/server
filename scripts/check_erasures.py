@@ -14,8 +14,10 @@ this makes the wrong thing visible where it is written:
   * `.cargo/config.toml` warns `clippy::let_underscore_must_use` (`let _ =`
     of anything `#[must_use]`: a `Result`, a `Failure`, and also iterators
     and futures) and `clippy::map_err_ignore` (`.map_err(|_| ...)`);
-  * and, read here from the source: an `#[allow]` or `#[expect]` of any of
-    those lints that gives no `reason = "..."`. Such an attribute silences the
+  * and, read here from the source with comments blanked: an `#[allow]` or
+    `#[expect]` (or one inside `cfg_attr`) of any of those lints, or of a
+    group holding one (`clippy::style`, `clippy::all`,
+    `clippy::restriction`), that gives no non-empty `reason = "..."`. Such an attribute silences the
     erasures in its whole scope, and the 45 bare `#[allow(clippy::disallowed_methods)]`
     already here for other policies (`serde_json::to_*`, `std::env::var`,
     `Router::route`) would otherwise hide erasures from this check entirely.
@@ -74,25 +76,42 @@ import check_clippy_baseline as clippy  # noqa: E402
 
 BASELINE = clippy.REPO_ROOT / "scripts" / "erasure_baseline.json"
 SUPPRESSED = "erasure::suppressed_without_reason"
-ERASURE_LINT_NAMES = ("disallowed_methods", "let_underscore_must_use", "map_err_ignore")
-SUPPRESSION = re.compile(r"#!?\[\s*(?:allow|expect)\s*\((?P<inner>[^\]]*)\)\s*\]", re.DOTALL)
-REASON = re.compile(r"\breason\s*=")
+# The erasure lints, and the groups that hold them: `disallowed_methods` is in
+# `clippy::style` (so `clippy::all`), the other two in `clippy::restriction`.
+ERASURE_LINT = re.compile(r"\bclippy::(?:disallowed_methods|let_underscore_must_use|map_err_ignore|style|all|restriction)\b")
+ATTRIBUTE = re.compile(r"#!?\[(?P<inner>(?:[^\[\]]|\[[^\[\]]*\])*)\]", re.DOTALL)
+SUPPRESSES = re.compile(r"\b(?:allow|expect)\s*\(")
+# A reason that says something: a non-empty string.
+REASON = re.compile(r'\breason\s*=\s*"[^"]*\S[^"]*"')
+COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
+STACKED = re.compile(r"^\s*(?:#!?\[.*)?$")
+
+
+def _blank_comments(text: str) -> str:
+	"""Comments as spaces, newlines kept, so a doc comment showing an attribute is no finding."""
+	return COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
 
 
 def suppressions(files: list[str]) -> Counter:
-	"""Each `#[allow]`/`#[expect]` of an erasure lint with no reason, keyed as a finding."""
+	"""Each `#[allow]`/`#[expect]` (or one inside `cfg_attr`) of an erasure lint, or a group
+	holding one, that gives no reason, keyed as a finding."""
 	found: Counter = Counter()
 	for file in files:
 		path = clippy.REPO_ROOT / file
 		if not path.is_file():
 			continue
-		text = path.read_text(encoding="utf-8")
-		for match in SUPPRESSION.finditer(text):
+		text = _blank_comments(path.read_text(encoding="utf-8"))
+		lines = text.splitlines()
+		for match in ATTRIBUTE.finditer(text):
 			inner = match.group("inner")
-			if not any(re.search(rf"\bclippy::{name}\b", inner) for name in ERASURE_LINT_NAMES) or REASON.search(inner):
+			if not SUPPRESSES.search(inner) or not ERASURE_LINT.search(inner) or REASON.search(inner):
 				continue
-			# The item it decorates: the first header at or below the line after it.
+			# Key it to what it decorates: past any attributes stacked under it,
+			# the enclosing item of the first line that is not one (the item
+			# itself, or the statement inside a fn).
 			after = text.count("\n", 0, match.end()) + 2
+			while after <= len(lines) and STACKED.match(lines[after - 1]):
+				after += 1
 			found[(file, SUPPRESSED, clippy.enclosing_item(file, after), clippy.WHITESPACE.sub(" ", match.group(0)).strip())] += 1
 	return found
 
@@ -213,6 +232,14 @@ SOURCE = "\n".join(
 		"    clippy::map_err_ignore",
 		")]",
 		"fn b() {}",
+		"/// #[allow(clippy::disallowed_methods)] in a comment is no finding",
+		"#[cfg_attr(test, allow(clippy::disallowed_methods))]",
+		"#[tokio::test]",
+		"async fn stacked() {}",
+		'#[allow(clippy::disallowed_methods, reason = "")]',
+		"fn empty_reason() {}",
+		"#[allow(clippy::all)]",
+		"fn grouped() {}",
 		"fn c() {}",
 	]
 )
@@ -249,14 +276,14 @@ def self_test() -> int:
 			found, errors, succeeded = read(_stream(*everything), files)
 			assert not errors and succeeded
 			lints = Counter(key[1] for key in found for _ in range(found[key]))
-			assert lints == Counter({"clippy::disallowed_methods": 2, "clippy::let_underscore_must_use": 1, "clippy::map_err_ignore": 1, SUPPRESSED: 2}), lints
+			assert lints == Counter({"clippy::disallowed_methods": 2, "clippy::let_underscore_must_use": 1, "clippy::map_err_ignore": 1, SUPPRESSED: 5}), lints
 			rest, _, _ = clippy.read(_stream(*everything))
 			assert sum(rest.values()) == 2, "the clippy ratchet keeps the env read and the doc lint, and only those"
 			assert not set(rest) & set(found), "no finding is in both ratchets"
 
 			# A suppression with no reason is a finding; one with a reason, or of another lint, is not.
 			hidden = {key[2]: key[3] for key in found if key[1] == SUPPRESSED}
-			assert set(hidden) == {"fn hidden", "fn b"}, hidden
+			assert set(hidden) == {"fn hidden", "fn b", "fn stacked", "fn empty_reason", "fn grouped"}, hidden
 
 			# A message clippy reworded stops both ratchets.
 			for reader in (lambda s: clippy.read(s), lambda s: read(s, files)):

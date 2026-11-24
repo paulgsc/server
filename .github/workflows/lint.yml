@@ -373,12 +373,13 @@ jobs:
       # #[allow] of those lints with no reason), read from the same clippy
       # output. Its own baseline, kept out of the clippy one (#1189, the
       # owner's option (a)), only shrinks: no toolchain bump lets it grow. It
-      # runs even when the clippy ratchet failed, so a PR hears both at once.
+      # runs even when the clippy ratchet failed, so a PR hears both at once,
+      # but not when clippy never ran.
       # The base is fetched here, not borrowed from the step above, and once
       # the base runs this check a base baseline that cannot be read fails,
       # since `--base` is all that stops a PR recording its own growth.
       - name: Check erasures against their baseline
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('clippy.json') != '' }}
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
