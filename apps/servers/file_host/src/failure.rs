@@ -17,9 +17,9 @@
 //!   process, step and line say where it came from;
 //! - returns the token.
 //!
-//! An outcome that is a failure is meant to carry the token (#1172 makes the
-//! mailbox's `Answer::Refused` the first), so storing the outcome needs the
-//! count first. The type is `#[must_use]` and
+//! An outcome that is a failure carries the token (the mailbox pass's
+//! `Handing`, #1172, is the first), so storing the outcome needs the count
+//! first. The type is `#[must_use]` and
 //! has no other constructor, no `Default`, no `Clone` and no `From`, so it can
 //! be neither forged nor copied into a second outcome, and nothing converts
 //! into it: a yield (the lane's pause, stop or give) is a different type and
@@ -160,8 +160,15 @@ macro_rules! steps {
 }
 
 steps! {
-	/// The Jobs mailbox refused a file home handed in (#1172).
+	/// The Jobs mailbox refused a file home handed in, in its own words (a
+	/// `422`); it is handed again (#1172, MI8).
 	MailboxHandOver => MailboxPasses, "hand_over";
+	/// A file home handed in can never be taken as it is: a name that cannot
+	/// be put in a URL, or a body over the mailbox's ceiling (#1172).
+	MailboxHandOverUnfit => MailboxPasses, "hand_over_unfit";
+	/// The Jobs mailbox holds other bytes under a file's name, which it never
+	/// replaces, so the file home handed in is never taken (#1172).
+	MailboxHandOverConflict => MailboxPasses, "hand_over_conflict";
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
