@@ -897,9 +897,9 @@ groups:
 
       - alert: HomeFailuresOpen
         # OA8, #1201 (epic #1174): a failure that persists (an ask home cannot
-        # answer, a refused file newest in its folder, a held week that does
-        # not read, an index the mailbox did not take) is met again by every
-        # pass or every restart, so it is not counted in failures_total, where
+        # answer, a refused file newest in its folder, an index the mailbox
+        # did not take) is met again by every pass or every restart, so it is
+        # not counted in failures_total, where
         # each meeting would be one more failure. failures_open{process,step}
         # is how many are open now, set afresh by each pass that looks
         # (apps/servers/file_host/src/failure.rs, open), never added to: a

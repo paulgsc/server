@@ -115,8 +115,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    bookkeeping must reconcile.
 9. **A failure that persists is a level, never a recount.** A condition
    every pass or every restart meets again until it is fixed (an ask home
-   cannot answer, a refused file newest in its folder, a held week that does
-   not read, an index the mailbox did not take) is not counted each time it
+   cannot answer, a refused file newest in its folder, an index the mailbox
+   did not take) is not counted each time it
    is met, since one condition would be many failures (invariant 8: one
    event, one count). It is `failures_open{process,step}`, how many are open
    now, set by `file_host::failure::open` afresh by each pass that looks and
@@ -132,7 +132,15 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    (`infra/prometheus/rules/home.yml`) tells the owner while one stays open
    for about 2 hours (1h45m and the 15 minutes its window holds a cleared
    level). One that clears sooner with nothing lost (an ask the routine
-   withdrew, an index a newer one replaced) never tells; that is the bound. The owner's choice on #1201 (2026-11-24): a gauge, not a
+   withdrew, an index a newer one replaced) never tells; that is the bound.
+   A condition nothing can fix is not a level, since it would page for good
+   with no action behind it: a held Rust Rounds week that does not read
+   stays held (nothing rewrites `mailbox_item`), so it is counted once, as
+   `read_body`, when it is kept, and the once-per-process sweep that meets it
+   again counts nothing. The bound there: weeks kept before #1198 were never
+   counted, since process memory cannot tell the first boot after a deploy
+   from any other restart, and a record of it would be a new store
+   (the coordinator's call on #1201, 2026-11-24). The owner's choice on #1201 (2026-11-24): a gauge, not a
    counted-once table. Held by `failure`'s and the mailbox pass's tests and
    `HomeFailuresOpen`'s promtool cases.
 

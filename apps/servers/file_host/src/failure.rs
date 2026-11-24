@@ -214,11 +214,6 @@ steps! {
 	/// folder. The cursor is the newest file kept, so every pass fetches it
 	/// again until a newer one is kept (#1201).
 	MailboxReadIncoming => MailboxPasses, "read_incoming", open;
-	/// Open: a Rust Rounds week home holds that does not read as the week its
-	/// name says, as the once-per-process sweep finds it at the process's
-	/// first pass. Held weeks never leave, so every restart meets it again;
-	/// its first keep is counted once, as `read_body` (#1201).
-	MailboxHeldWeek => MailboxPasses, "held_week", open;
 	/// Open: a routine's index the mailbox refused, was too big for, or
 	/// conflicted on, which is not put again until what it counts moves.
 	/// Held in memory, so a restart puts it again (#1201).

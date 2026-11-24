@@ -477,12 +477,10 @@ pub async fn run_once<T: MailboxTransport>(
 		failure::open(Step::MailboxReadIncoming, outcome.open_incoming);
 	}
 	if inbound.is_ok() && !outcome.no_account && !last_index.weeks_queued.load(Ordering::Relaxed) {
-		inbound = queue_held_weeks(db, subject, deletion, now).await.map(|unreadable| {
-			// Held weeks never leave, so this stands until the next process
-			// sweeps again.
-			failure::open(Step::MailboxHeldWeek, unreadable);
+		inbound = queue_held_weeks(db, subject, deletion, now).await;
+		if inbound.is_ok() {
 			last_index.weeks_queued.store(true, Ordering::Relaxed);
-		});
+		}
 	}
 	let filing = if outcome.no_account {
 		Ok(())
@@ -667,13 +665,8 @@ async fn read_one<T: MailboxTransport>(
 /// it queues what the older build left. Queueing is idempotent, so a week
 /// queued already writes nothing, and the log counts only programs written.
 /// A year holds 52 weeks, each read once per process.
-///
-/// Returns how many weeks it held that do not read as the week their name
-/// says: failures that persist, held as a level by the caller (#1201). One
-/// kept since #1175 was counted once, as `read_body`, when it was first kept;
-/// one kept later in this process is in the level from the next process's
-/// sweep.
-async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync)) -> Result<usize, Failure> {
+
+async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync)) -> Result<(), Failure> {
 	let at = now();
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
@@ -690,7 +683,7 @@ async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	if written > 0 {
 		tracing::info!(written, "queued programs of weeks home held before it could read them");
 	}
-	Ok(held.len() - weeks.len())
+	Ok(())
 }
 
 /// The SHA-256 `mailbox_item` holds for `subject`'s (`folder`, `name`), if any.
@@ -1890,29 +1883,6 @@ mod tests {
 		hold_unqueued(&pool, 3, "rust-week-2026-w49.json", &rust_week("2026-w49", &["fn main() { 3; }\n"])).await;
 		pass(&pool, &fake).await.unwrap();
 		assert_eq!(queued(&pool).await, ["fn main() { 3; }\n"]);
-	}
-
-	/// #1201: a held week that does not read is met again by every process's
-	/// sweep, so it is held as a level the sweep sets, never counted: the same
-	/// process holds it, and a restart sets it afresh rather than adding.
-	#[tokio::test]
-	async fn a_held_week_that_does_not_read_is_held_open_and_never_counted() {
-		let recorder = metrics_util::debugging::DebuggingRecorder::new();
-		let snapshotter = recorder.snapshotter();
-		let _recorder = metrics::set_default_local_recorder(&recorder);
-		let (pool, fake) = (pool().await, Fake::default());
-		hold_unqueued(&pool, 1, "rust-week-2026-w46.json", r#"{"schema":"some-ui.rust-week/2","id":"2026-w46","tickets":"#).await;
-		hold_unqueued(&pool, 2, "rust-week-2026-w49.json", &rust_week("2026-w49", &["fn main() { 3; }\n"])).await;
-		pass(&pool, &fake).await.unwrap();
-		assert_eq!(open_level(&snapshotter, "held_week"), Some(1.0));
-		// A level only a sweep sets: a later pass of the same process leaves
-		// whatever stands.
-		crate::failure::open(crate::failure::Step::MailboxHeldWeek, 7);
-		pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap();
-		assert_eq!(open_level(&snapshotter, "held_week"), Some(7.0), "the same process does not sweep or set it again");
-		crate::failure::open(crate::failure::Step::MailboxHeldWeek, 9);
-		pass_at(&pool, &Fake::default(), "2026-10-25T15:00:00.000Z").await.unwrap();
-		assert_eq!(open_level(&snapshotter, "held_week"), Some(1.0), "a restart sets it afresh: still one");
 	}
 
 	/// The sweep reads the held weeks under the deletion hold, so a deletion
