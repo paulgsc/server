@@ -58,7 +58,8 @@ The erasure lints (`Result::ok`/`unwrap_or*` in `clippy.toml`'s `disallowed-meth
 `let_underscore_must_use`, `map_err_ignore`) are not in that baseline: `check_erasures.py`
 holds them to `scripts/erasure_baseline.json`, which only shrinks, with no toolchain exception
 (#1189). A new erasure is counted (`file_host::failure::Failure::record`) or says why it is
-benign in `#[expect(clippy::disallowed_methods, reason = "...")]`.
+benign in `#[expect(clippy::disallowed_methods, reason = "...")]`, kept to the one statement:
+an `#[allow]`/`#[expect]` of those lints with no `reason` is itself a new erasure finding.
 
 Why those flags, since each one's absence fails silently: `--cap-lints=warn` because under the
 config's `-D warnings` a crate with any finding fails to build and every crate depending on it

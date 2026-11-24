@@ -369,21 +369,29 @@ jobs:
           python3 scripts/check_clippy_baseline.py clippy.json "${args[@]}"
 
       # A failure is never destroyed (epic #1174): no new silent erasure of a
-      # Result (`.ok()`, `unwrap_or*`, `let _ =`, `map_err(|_| ...)`), read from
-      # the same clippy output. Its own baseline, kept out of the clippy one
-      # (#1189, the owner's option (a)), only shrinks: no toolchain bump lets
-      # it grow, so a clippy release that sees more names each new one here.
+      # Result (`.ok()`, `unwrap_or*`, `let _ =`, `map_err(|_| ...)`, or an
+      # #[allow] of those lints with no reason), read from the same clippy
+      # output. Its own baseline, kept out of the clippy one (#1189, the
+      # owner's option (a)), only shrinks: no toolchain bump lets it grow. It
+      # runs even when the clippy ratchet failed, so a PR hears both at once.
+      # The base is fetched here, not borrowed from the step above, and once
+      # the base runs this check a base baseline that cannot be read fails,
+      # since `--base` is all that stops a PR recording its own growth.
       - name: Check erasures against their baseline
+        if: ${{ !cancelled() }}
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           python3 scripts/check_erasures.py --self-test
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          base=$(git rev-parse FETCH_HEAD)
           args=()
-          if git show FETCH_HEAD:scripts/erasure_baseline.json > base_erasures.json 2>/dev/null; then
+          if git cat-file -e "$base:scripts/check_erasures.py" 2>/dev/null; then
+            git show "$base:scripts/erasure_baseline.json" > base_erasures.json
             args+=(--base base_erasures.json)
           else
-            echo "the base branch has no erasure baseline yet; skipping the shrink-only comparison"
+            echo "the base branch does not run the erasure check yet; skipping the shrink-only comparison"
           fi
           python3 scripts/check_erasures.py clippy.json "${args[@]}"
 
