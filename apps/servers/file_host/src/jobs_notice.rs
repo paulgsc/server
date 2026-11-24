@@ -202,8 +202,10 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 				// home could not sign, a token FCM calls invalid) is not a
 				// delivery either: the record waits, and is tried again each
 				// pass until a phone takes it or it leaves the window (#1206).
-				// A phone whose own token FCM refuses for good is never
-				// forgotten for it, and its records go untold.
+				// Bound: a phone whose own token FCM refuses for good is never
+				// forgotten or set aside for it, so it is sent to each pass for
+				// the window of every record, and if it is the only phone its
+				// records go untold. Setting it aside is #1222.
 				SendOutcome::Refused(status) if status == 429 || status >= 500 => {
 					tracing::warn!(status, "FCM could not take a Jobs arrival notice now");
 					unanswered = true;
@@ -591,7 +593,8 @@ mod tests {
 	}
 
 	/// JN1: a phone FCM forgot is forgotten, and the refusing one keeps the
-	/// record waiting.
+	/// record waiting. Bound: the refusing phone is kept and sent to again
+	/// next pass, however often it refuses (#1222).
 	#[tokio::test]
 	async fn a_gone_phone_beside_a_refusing_one_is_forgotten_and_the_notice_waits() {
 		let pool = pool().await;
