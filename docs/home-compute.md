@@ -130,7 +130,9 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    stored for it and it adds no clock: the
    passes that already run set it. `HomeFailuresOpen`
    (`infra/prometheus/rules/home.yml`) tells the owner while one stays open
-   for 2 hours. The owner's choice on #1201 (2026-11-24): a gauge, not a
+   for about 2 hours (1h45m and the 15 minutes its window holds a cleared
+   level). One that clears sooner with nothing lost (an ask the routine
+   withdrew, an index a newer one replaced) never tells; that is the bound. The owner's choice on #1201 (2026-11-24): a gauge, not a
    counted-once table. Held by `failure`'s and the mailbox pass's tests and
    `HomeFailuresOpen`'s promtool cases.
 

@@ -2053,7 +2053,7 @@ tests:
               process: mailbox-passes
               step: restore
               objective: OA8
-              says: "Home's mailbox-passes has had a failure open at restore for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+              says: "Home's mailbox-passes has had a failure open at restore for about 2 hours, met again each time home looks and not counted again; what each step means is its line in file_host's failure.rs Step table, and failures_open says how many."
       - eval_time: 160m
         alertname: HomeFailuresOpen
         exp_alerts:
@@ -2061,7 +2061,7 @@ tests:
               process: mailbox-passes
               step: restore
               objective: OA8
-              says: "Home's mailbox-passes has had a failure open at restore for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+              says: "Home's mailbox-passes has had a failure open at restore for about 2 hours, met again each time home looks and not counted again; what each step means is its line in file_host's failure.rs Step table, and failures_open says how many."
       - eval_time: 170m
         alertname: HomeFailuresOpen
         exp_alerts: []
@@ -2092,7 +2092,7 @@ tests:
               process: mailbox-passes
               step: restore
               objective: OA8
-              says: "Home's mailbox-passes has had a failure open at restore for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+              says: "Home's mailbox-passes has had a failure open at restore for about 2 hours, met again each time home looks and not counted again; what each step means is its line in file_host's failure.rs Step table, and failures_open says how many."
 
   - name: a level of 0 never tells, and each step is its own (#1201)
     interval: 1m
@@ -2109,4 +2109,4 @@ tests:
               process: mailbox-passes
               step: put_index
               objective: OA8
-              says: "Home's mailbox-passes has had a failure open at put_index for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+              says: "Home's mailbox-passes has had a failure open at put_index for about 2 hours, met again each time home looks and not counted again; what each step means is its line in file_host's failure.rs Step table, and failures_open says how many."

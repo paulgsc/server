@@ -402,7 +402,11 @@ mod tests {
 			super::open(Step::MailboxRestore, 2);
 		});
 		assert_eq!(level(&snapshotter, Step::MailboxRestore), Some(2.0));
-		metrics::with_local_recorder(&recorder, || super::open(Step::MailboxRestore, 2));
+		// Twice between reads, since a read drains: set, not added to.
+		metrics::with_local_recorder(&recorder, || {
+			super::open(Step::MailboxRestore, 2);
+			super::open(Step::MailboxRestore, 2);
+		});
 		assert_eq!(level(&snapshotter, Step::MailboxRestore), Some(2.0), "the same two, met again, are still two");
 		metrics::with_local_recorder(&recorder, || super::open(Step::MailboxRestore, 0));
 		assert_eq!(level(&snapshotter, Step::MailboxRestore), Some(0.0), "fixed, it clears");

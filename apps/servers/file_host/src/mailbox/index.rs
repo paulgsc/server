@@ -807,6 +807,12 @@ impl LastIndex {
 		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((computed, failed));
 	}
 
+	/// Forgets the last index, when the routine has nothing to count and so
+	/// no index: none stands to be open (#1201), and the next one is put.
+	pub(super) fn forget(&self) {
+		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+	}
+
 	/// Whether the last index the mailbox answered was refused, conflicted
 	/// on, or too big to put.
 	fn failed(&self) -> bool {
@@ -871,6 +877,7 @@ pub(super) async fn put_jobs_index<T: MailboxTransport>(
 		let as_of = mailbox_repo::jobs_as_of(&mut tx, subject).await.map_err(super::pass::storage)?;
 		// Nothing to count yet: no index, and the routine reads Drive.
 		if as_of.is_none() {
+			last.forget();
 			return Ok(());
 		}
 		// A new day alone is no reason: the last index still says what a

@@ -905,14 +905,18 @@ groups:
         # (apps/servers/file_host/src/failure.rs, open), never added to: a
         # restart cannot count one twice, and a fixed one reads 0 at the next
         # pass. For 2 hours, so it has held through at least one more hourly
-        # backstop pass than the one that found it; a refused file a newer one
-        # passes within that never tells. max_over_time bridges a restart, when
-        # the series is gone until the new process's first pass sets it, so a
-        # deploy does not start the 2 hours again; it also holds a cleared level
-        # 15 minutes longer.
+        # backstop pass than the one that found it. max_over_time bridges a
+        # restart, when the series is gone until the new process's first pass
+        # sets it, so a deploy does not start the 2 hours again (a first pass
+        # that fails for longer than 15 minutes does; its *Failing alert says
+        # so). It also holds a cleared level 15 minutes longer, so a condition
+        # open for 1h45m can tell. One cleared sooner without a loss never
+        # tells: an ask the routine withdrew, an index a newer one replaced. A
+        # refused file a newer keep passes is a loss, counted once in
+        # failures_total as passed_over, so HomeFailures tells it.
         expr: |
           max by (process, step) (max_over_time(failures_open[15m])) > 0
         for: 2h
         labels:
           objective: OA8
-          says: "Home's {{ $labels.process }} has had a failure open at {{ $labels.step }} for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+          says: "Home's {{ $labels.process }} has had a failure open at {{ $labels.step }} for about 2 hours, met again each time home looks and not counted again; what each step means is its line in file_host's failure.rs Step table, and failures_open says how many."

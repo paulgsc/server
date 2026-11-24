@@ -132,6 +132,7 @@ pub(in crate::mailbox) async fn put_interview_index<T: MailboxTransport>(
 		.collect();
 	// No week is past its deadline yet: no index, and the routine writes none.
 	if closed.is_empty() {
+		last.forget();
 		return Ok(());
 	}
 	let drafted: HashSet<String> = draft::drafted_weeks(&mut conn, Kind::Interview, subject)

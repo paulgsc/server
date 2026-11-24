@@ -471,8 +471,9 @@ pub async fn run_once<T: MailboxTransport>(
 		inbound = read_folder(db, mailbox, folder, subject, deletion, now, &mut outcome).await;
 	}
 	if inbound.is_ok() && !outcome.no_account {
-		// Every folder read to its end: what is refused now is all that is
-		// open (#1201).
+		// What this pass refused and no newer keep passed is what is open
+		// (#1201). A folder that stopped at `ITEMS_PER_PASS` saw only its
+		// first files, and the next pass sees the rest.
 		failure::open(Step::MailboxReadIncoming, outcome.open_incoming);
 	}
 	if inbound.is_ok() && !outcome.no_account && !last_index.weeks_queued.load(Ordering::Relaxed) {
@@ -520,7 +521,8 @@ pub async fn run_once<T: MailboxTransport>(
 	};
 	let asks = match archiving {
 		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await.inspect(|()| {
-			// Every ask listed was answered or found open: what is open now.
+			// Every ask listed was answered or found open: what is open now,
+			// up to the one page of asks a folder lists (`PAGE_LIMIT`).
 			failure::open(
 				Step::MailboxRestore,
 				outcome.restored.iter().filter(|answer| !matches!(**answer, "restored" | "unchanged")).count(),
@@ -1908,6 +1910,7 @@ mod tests {
 		crate::failure::open(crate::failure::Step::MailboxHeldWeek, 7);
 		pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap();
 		assert_eq!(open_level(&snapshotter, "held_week"), Some(7.0), "the same process does not sweep or set it again");
+		crate::failure::open(crate::failure::Step::MailboxHeldWeek, 9);
 		pass_at(&pool, &Fake::default(), "2026-10-25T15:00:00.000Z").await.unwrap();
 		assert_eq!(open_level(&snapshotter, "held_week"), Some(1.0), "a restart sets it afresh: still one");
 	}
@@ -1998,6 +2001,8 @@ mod tests {
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert_eq!((outcome.refused, outcome.open_incoming), (vec!["not_json", "mismatch"], 2));
 		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(2.0));
+		// Set apart from what a pass sets: the pass replaces it, never adds.
+		crate::failure::open(crate::failure::Step::MailboxReadIncoming, 9);
 		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().open_incoming, 2);
 		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(2.0), "the same two, met again, are two");
 
@@ -3425,6 +3430,8 @@ mod tests {
 		*vault.wanted.lock().unwrap() = vec![(String::from("brief"), String::from("digest-2026-06-01.json"))];
 		assert_eq!(archive_pass(&pool, &vault).await.restored, ["missing"]);
 		assert_eq!(open_level(&snapshotter, "restore"), Some(1.0));
+		// Set apart from what a pass sets: the pass replaces it, never adds.
+		crate::failure::open(crate::failure::Step::MailboxRestore, 9);
 		assert_eq!(archive_pass(&pool, &vault).await.restored, ["missing"]);
 		assert_eq!(open_level(&snapshotter, "restore"), Some(1.0), "the same ask, met again, is one");
 		vault.wanted.lock().unwrap().clear();
@@ -4356,6 +4363,8 @@ mod tests {
 		*fake.index_answer.lock().unwrap() = Some((422, r#"{"error":"the jobs index carries picked"}"#));
 		pass(&pool, &fake).await.unwrap();
 		assert_eq!(open_level(&snapshotter, "put_index"), Some(1.0));
+		// Set apart from what a pass sets: the pass replaces it, never adds.
+		crate::failure::open(crate::failure::Step::MailboxPutIndex, 9);
 		assert!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().indexed.is_empty());
 		assert_eq!(open_level(&snapshotter, "put_index"), Some(1.0), "not put again, still open");
 
@@ -4370,6 +4379,26 @@ mod tests {
 		// Set apart from what a pass sets, so a 0 read is the pass's own.
 		crate::failure::open(crate::failure::Step::MailboxPutIndex, 9);
 		assert_eq!(pass_at(&pool, &restarted, "2026-10-24T15:00:00.000Z").await.unwrap().indexed, ["added"]);
+		assert_eq!(open_level(&snapshotter, "put_index"), Some(0.0));
+	}
+
+	/// #1201: a routine with nothing left to count has no index, so a refusal
+	/// remembered from before is open no more.
+	#[tokio::test]
+	async fn a_refused_index_is_open_no_more_once_nothing_is_left_to_count() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = digest("2026-10-23");
+		fake.add(10, &name, &body);
+		*fake.index_answer.lock().unwrap() = Some((422, r#"{"error":"the jobs index carries picked"}"#));
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(open_level(&snapshotter, "put_index"), Some(1.0));
+		sqlx::query("DELETE FROM mailbox_item").execute(&pool).await.unwrap();
+		fake.items.lock().unwrap().clear();
+		crate::failure::open(crate::failure::Step::MailboxPutIndex, 9);
+		pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap();
 		assert_eq!(open_level(&snapshotter, "put_index"), Some(0.0));
 	}
 
