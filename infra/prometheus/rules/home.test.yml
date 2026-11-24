@@ -1950,3 +1950,65 @@ tests:
       - eval_time: 8h
         alertname: CallWeekOverdue
         exp_alerts: []
+
+  - name: a failure is told for a quarter hour, and quiet steps are not (OA8)
+    interval: 1m
+    input_series:
+      - series: 'failures_total{job="file_host",process="mailbox-passes",step="hand_over"}'
+        values: '0x10 1x30'
+      - series: 'failures_total{job="file_host",process="clips",step="walk"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HomeFailures
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HomeFailures
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: hand_over
+              objective: OA8
+              says: "Home's mailbox-passes failed at hand_over in the last 15 minutes; each failure is logged at error with its cause."
+      - eval_time: 24m
+        alertname: HomeFailures
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: hand_over
+              objective: OA8
+              says: "Home's mailbox-passes failed at hand_over in the last 15 minutes; each failure is logged at error with its cause."
+      - eval_time: 27m
+        alertname: HomeFailures
+        exp_alerts: []
+
+  - name: a failure after a restart is told, even back at the same count (OA8)
+    interval: 1m
+    input_series:
+      - series: 'failures_total{job="file_host",process="mailbox-passes",step="hand_over"}'
+        values: '1x20 0 1x20'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: HomeFailures
+        exp_alerts: []
+      - eval_time: 23m
+        alertname: HomeFailures
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: hand_over
+              objective: OA8
+              says: "Home's mailbox-passes failed at hand_over in the last 15 minutes; each failure is logged at error with its cause."
+
+  - name: a gap in Prometheus's own samples is no failure (OA8)
+    interval: 1m
+    input_series:
+      - series: 'failures_total{job="file_host",process="mailbox-passes",step="hand_over"}'
+        values: '2x10 _x20 2x20'
+    alert_rule_test:
+      - eval_time: 33m
+        alertname: HomeFailures
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: HomeFailures
+        exp_alerts: []

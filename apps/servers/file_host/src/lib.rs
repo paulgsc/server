@@ -20,6 +20,7 @@ pub mod db;
 pub(crate) mod deploy;
 pub(crate) mod error;
 pub mod essay_media;
+pub mod failure;
 pub mod feeds;
 pub mod game_feed;
 pub mod handlers;
