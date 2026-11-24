@@ -5,6 +5,27 @@ use sqlx::sqlite::SqlitePoolOptions;
 /// 2026-11-08 12:00 UTC, a Sunday (04:00 at home).
 const NOW: i64 = 1_794_139_200;
 
+/// A coming row as most feeds say it: a day not yet passed, no week, no wait.
+fn expected(feed: &str, on: &str) -> Coming {
+	Coming {
+		feed: String::from(feed),
+		on: String::from(on),
+		key: None,
+		overdue: false,
+		waits_on: None,
+	}
+}
+
+/// An essay's coming row: its week, and whether it is overdue and on what.
+fn essay_row(feed: &str, on: &str, week: &str, overdue: bool, waits_on: Option<WaitsOn>) -> Coming {
+	Coming {
+		key: Some(String::from(week)),
+		overdue,
+		waits_on,
+		..expected(feed, on)
+	}
+}
+
 /// What `render-calls.sh`'s `job_state` writes.
 fn worker_text(state: &str, state_since: i64, ran: u64) -> String {
 	let mut text = String::from("id=1794000000000000000\nkind=call\nkey=2026-11-06\nsince=1794130000\nstate=");
@@ -289,35 +310,60 @@ fn only_the_last_few_finished_are_shown_newest_first() {
 }
 
 #[test]
-fn the_call_s_next_week_is_a_week_after_its_newest() {
+fn the_call_s_next_week_comes_two_fridays_after_its_newest_began() {
+	// The weekly routine writes the week of Friday F on F + 7, so the week
+	// after it on F + 14 (paulgsc/some-ui's CALL-ROUTINE.md).
 	let read = board(&[(Feed::Call, call_seen())], None, None, NOW);
-	assert_eq!(
-		read.coming,
-		[Coming {
-			feed: String::from("call"),
-			on: String::from("2026-11-13")
-		}]
-	);
+	assert_eq!(read.coming, [expected("call", "2026-11-20")]);
 }
 
 #[test]
-fn a_call_week_long_past_comes_on_its_next_friday() {
+fn a_call_week_past_its_friday_stays_overdue_as_its_week_not_come() {
+	// The week of Oct 23 came on Friday Oct 30, as the routine writes it: the
+	// next was due Friday Nov 6, and by Sunday Nov 8 has not come.
 	let mut seen = call_seen();
 	seen.newest_week = NaiveDate::from_ymd_opt(2026, 10, 23);
-	assert_eq!(board(&[(Feed::Call, seen)], None, None, NOW).coming[0].on, "2026-11-13");
+	seen.newest_taken = Some(NOW - 9 * 86_400);
+	assert_eq!(
+		board(&[(Feed::Call, seen.clone())], None, None, NOW).coming,
+		[Coming {
+			overdue: true,
+			waits_on: Some(WaitsOn::WeekMissing),
+			..expected("call", "2026-11-06")
+		}],
+		"never moved on to the next Friday without a word"
+	);
+	// On its Friday it is expected, not yet overdue: Friday Nov 6, 12:00 at home.
+	let friday = NOW - 2 * 86_400 + 8 * 3_600;
+	assert_eq!(board(&[(Feed::Call, seen.clone())], None, None, friday).coming, [expected("call", "2026-11-06")]);
+	// Saturday 00:30 at home is Saturday 08:30 UTC: overdue by home's day.
+	let saturday = NOW - 86_400 - 3 * 3_600 - 1_800;
+	assert!(board(&[(Feed::Call, seen.clone())], None, None, saturday).coming[0].overdue);
+	// Friday 20:00 at home is already Saturday in UTC: still expected.
+	let friday_night = NOW - 2 * 86_400 + 16 * 3_600;
+	assert!(!board(&[(Feed::Call, seen)], None, None, friday_night).coming[0].overdue);
+}
+
+#[test]
+fn a_call_week_the_routine_made_longer_moves_the_next_on_from_its_last_day() {
+	// A missed run: the week of Oct 16 was written two weeks long, Oct 16 to
+	// Oct 29. The next is due Friday Nov 6, not Oct 30, whenever home took
+	// it: here at the start of Thursday at home, as a run early by UTC would.
+	let mut seen = call_seen();
+	seen.newest_week = NaiveDate::from_ymd_opt(2026, 10, 16);
+	seen.newest_week_to = NaiveDate::from_ymd_opt(2026, 10, 29);
+	seen.newest_taken = Some(NOW - 10 * 86_400 - 5 * 3_600);
+	let coming = &board(&[(Feed::Call, seen.clone())], None, None, NOW - 3 * 86_400).coming[0];
+	assert_eq!((coming.on.as_str(), coming.overdue), ("2026-11-06", false), "not overdue the week it was not due");
+	let coming = &board(&[(Feed::Call, seen)], None, None, NOW).coming[0];
+	assert_eq!((coming.on.as_str(), coming.overdue), ("2026-11-06", true));
 }
 
 #[test]
 fn playoff_delta_comes_on_the_tuesday_after_its_newest_fill() {
 	// Taken Saturday Nov 7 at home: next Tuesday is Nov 10.
 	let read = board(&[(Feed::PlayoffDelta, pd_seen(NOW - 86_400))], None, None, NOW);
-	assert_eq!(
-		read.coming,
-		[Coming {
-			feed: String::from("playoff-delta"),
-			on: String::from("2026-11-10")
-		}]
-	);
+	assert_eq!(read.coming, [expected("playoff-delta", "2026-11-10")]);
 }
 
 /// A week of Rust Rounds held, its essay's Monday (paulgsc/server#890).
@@ -347,17 +393,11 @@ fn the_rust_essay_comes_the_monday_after_its_round_even_before_any_essay() {
 	};
 	assert_eq!(seen.newest_taken, None, "no essay was ever taken: the round alone promises it");
 	let read = board(&[(Feed::RustEssay, seen)], None, None, NOW);
-	assert_eq!(
-		read.coming,
-		[Coming {
-			feed: String::from("rust-essay"),
-			on: String::from("2026-11-09")
-		}]
-	);
+	assert_eq!(read.coming, [essay_row("rust-essay", "2026-11-09", "2026-w45", false, None)]);
 }
 
 #[test]
-fn the_rust_essay_taken_promises_the_next_round_s_monday_and_a_past_one_none() {
+fn the_rust_essay_taken_promises_the_next_round_s_monday_and_a_past_one_overdue() {
 	let mut seen = FeedSeen {
 		held: vec![(String::from("2026-w45"), NOW - 3_600)],
 		newest_taken: Some(NOW - 3_600),
@@ -369,9 +409,14 @@ fn the_rust_essay_taken_promises_the_next_round_s_monday_and_a_past_one_none() {
 	seen.held.clear();
 	seen.let_go.insert(String::from("2026-w45"));
 	assert_eq!(board(&[(Feed::RustEssay, seen.clone())], None, None, NOW).coming[0].on, "2026-11-16");
-	// A Monday gone by with no newer round open: nothing is owed on a day.
+	// A Monday gone by and its essay never taken: it stays, overdue, and
+	// with nothing home holds to say why, nothing was written
+	// (paulgsc/some-ui#3478; it used to drop off the board).
 	seen.rounds = vec![round("2026-w44", (2026, 11, 2))];
-	assert_eq!(board(&[(Feed::RustEssay, seen)], None, None, NOW).coming, []);
+	assert_eq!(
+		board(&[(Feed::RustEssay, seen)], None, None, NOW).coming,
+		[essay_row("rust-essay", "2026-11-02", "2026-w44", true, Some(WaitsOn::NotWritten))]
+	);
 }
 
 #[test]
@@ -382,13 +427,7 @@ fn the_interview_essay_comes_the_monday_after_its_week_even_before_any_essay() {
 		..FeedSeen::default()
 	};
 	let read = board(&[(Feed::InterviewEssay, seen.clone())], None, None, NOW);
-	assert_eq!(
-		read.coming,
-		[Coming {
-			feed: String::from("interview-essay"),
-			on: String::from("2026-11-09")
-		}]
-	);
+	assert_eq!(read.coming, [essay_row("interview-essay", "2026-11-09", "2026-w45", false, None)]);
 	// Once its essay is taken, nothing newer is owed on a day.
 	let taken = FeedSeen {
 		held: vec![(String::from("2026-w45"), NOW - 3_600)],
@@ -396,6 +435,91 @@ fn the_interview_essay_comes_the_monday_after_its_week_even_before_any_essay() {
 		..seen
 	};
 	assert_eq!(board(&[(Feed::InterviewEssay, taken)], None, None, NOW).coming, []);
+}
+
+#[test]
+fn an_owed_essay_says_what_it_waits_on_on_its_monday_and_after() {
+	// paulgsc/some-ui#3478: on its Monday the row said "Expected Monday"
+	// while a take home couldn't hear kept the routine from writing, and
+	// from Tuesday it was gone.
+	let seen = FeedSeen {
+		rounds: vec![round("2026-w45", (2026, 11, 9))],
+		waits: BTreeMap::from([(String::from("2026-w45"), WaitsOn::TakeUnheard)]),
+		..FeedSeen::default()
+	};
+	let monday = NOW + 86_400;
+	assert_eq!(
+		board(&[(Feed::RustEssay, seen.clone())], None, None, monday).coming,
+		[essay_row("rust-essay", "2026-11-09", "2026-w45", false, Some(WaitsOn::TakeUnheard))]
+	);
+	for later in [NOW + 2 * 86_400, NOW + 9 * 86_400] {
+		assert_eq!(
+			board(&[(Feed::InterviewEssay, seen.clone())], None, None, later).coming,
+			[essay_row("interview-essay", "2026-11-09", "2026-w45", true, Some(WaitsOn::TakeUnheard))]
+		);
+	}
+	// Sunday night at home, already Monday in UTC: not yet its Monday.
+	let sunday_night = NOW + 16 * 3_600;
+	assert!(!board(&[(Feed::RustEssay, seen.clone())], None, None, sunday_night).coming[0].overdue);
+	// Monday night at home, Tuesday in UTC: still its Monday, not overdue.
+	let monday_night = NOW + 86_400 + 18 * 3_600;
+	assert!(!board(&[(Feed::RustEssay, seen.clone())], None, None, monday_night).coming[0].overdue);
+	// Made late: once taken, the row is gone, whenever it came.
+	let made = FeedSeen {
+		held: vec![(String::from("2026-w45"), NOW + 3 * 86_400)],
+		..seen
+	};
+	assert_eq!(board(&[(Feed::RustEssay, made)], None, None, NOW + 4 * 86_400).coming, []);
+}
+
+#[test]
+fn the_oldest_owed_essay_is_the_row_while_the_next_is_still_ahead() {
+	// The routine writes oldest first: w45 overdue stands in front of w46's
+	// Monday, which would otherwise read as all that waits.
+	let seen = FeedSeen {
+		rounds: vec![round("2026-w46", (2026, 11, 16)), round("2026-w45", (2026, 11, 9))],
+		..FeedSeen::default()
+	};
+	let tuesday = NOW + 2 * 86_400;
+	assert_eq!(
+		board(&[(Feed::RustEssay, seen)], None, None, tuesday).coming,
+		[essay_row("rust-essay", "2026-11-09", "2026-w45", true, Some(WaitsOn::NotWritten))]
+	);
+}
+
+#[test]
+fn a_coming_row_says_only_what_it_knows() {
+	assert_eq!(
+		serde_json::to_value(expected("playoff-delta", "2026-11-10")).unwrap(),
+		serde_json::json!({ "feed": "playoff-delta", "on": "2026-11-10", "overdue": false })
+	);
+	assert_eq!(
+		serde_json::to_value(essay_row("rust-essay", "2026-11-09", "2026-w45", true, Some(WaitsOn::TakeUnheard))).unwrap(),
+		serde_json::json!({ "feed": "rust-essay", "on": "2026-11-09", "key": "2026-w45", "overdue": true, "waitsOn": "take-unheard" })
+	);
+	let classes: Vec<serde_json::Value> = [
+		WaitsOn::EssayRefused,
+		WaitsOn::EssayWaiting,
+		WaitsOn::NotFinal,
+		WaitsOn::TakeUnheard,
+		WaitsOn::TakeHearing,
+		WaitsOn::NotWritten,
+		WaitsOn::WeekMissing,
+	]
+	.into_iter()
+	.map(|waits| serde_json::to_value(waits).unwrap())
+	.collect();
+	assert_eq!(
+		classes,
+		["essay-refused", "essay-waiting", "not-final", "take-unheard", "take-hearing", "not-written", "week-missing"]
+	);
+}
+
+#[test]
+fn playoff_delta_is_never_owed_so_never_overdue() {
+	// Its day is the owner's next fill: today at the soonest.
+	let coming = &board(&[(Feed::PlayoffDelta, pd_seen(NOW - 20 * 86_400))], None, None, NOW).coming[0];
+	assert!(!coming.overdue);
 }
 
 #[test]
@@ -558,7 +682,7 @@ fn the_cadence_counts_episodes_let_go() {
 		newest_taken: Some(NOW - 2 * 86_400),
 		..FeedSeen::default()
 	};
-	assert_eq!(board(&[(Feed::Call, seen)], None, None, NOW).coming[0].on, "2026-11-13");
+	assert_eq!(board(&[(Feed::Call, seen)], None, None, NOW).coming[0].on, "2026-11-20");
 }
 
 #[test]
@@ -586,13 +710,7 @@ fn home_s_day_is_home_s_near_midnight() {
 		..FeedSeen::default()
 	};
 	let read = board(&[(Feed::PlayoffDelta, pd)], None, None, late);
-	assert_eq!(
-		read.coming,
-		[Coming {
-			feed: String::from("playoff-delta"),
-			on: String::from("2026-11-10")
-		}]
-	);
+	assert_eq!(read.coming, [expected("playoff-delta", "2026-11-10")]);
 }
 
 async fn pool() -> SqlitePool {
@@ -661,13 +779,7 @@ async fn the_read_is_what_the_worker_and_the_lane_left() {
 	std::os::unix::fs::symlink(&elsewhere, &video).unwrap();
 	assert_eq!(read_now().await.done[0].bytes, Some(16), "a linked call video's size is what the download serves");
 	assert_eq!(read.waiting, []);
-	assert_eq!(
-		read.coming,
-		[Coming {
-			feed: String::from("call"),
-			on: String::from("2026-11-13")
-		}]
-	);
+	assert_eq!(read.coming, [expected("call", "2026-11-20")]);
 }
 
 #[tokio::test]
@@ -867,10 +979,7 @@ async fn the_read_promises_the_rust_essay_from_the_caller_s_open_round() {
 	hold_as("me", 4, "2026-w46", "2026-w46", Some("2026-11-15T23:59:00-08:00")).await;
 	assert_eq!(
 		read(&db, &folders, "me", NOW).await.unwrap().coming,
-		[Coming {
-			feed: String::from("rust-essay"),
-			on: String::from("2026-11-16")
-		}]
+		[essay_row("rust-essay", "2026-11-16", "2026-w46", false, None)]
 	);
 }
 
@@ -917,11 +1026,35 @@ async fn the_read_promises_the_interview_essay_from_the_caller_s_open_week() {
 		.unwrap();
 	assert_eq!(
 		read(&db, &folders, "me", NOW).await.unwrap().coming,
-		[Coming {
-			feed: String::from("interview-essay"),
-			on: String::from("2026-11-09")
-		}]
+		[essay_row("interview-essay", "2026-11-09", "2026-w45", false, None)]
 	);
+	assert!(!overdue(&db, &folders, "me", Feed::InterviewEssay, NOW).await.unwrap());
+	// Tuesday, nothing sent and no essay: it stays, overdue, nothing written,
+	// and the pass's alert reads the same (paulgsc/some-ui#3478).
+	let tuesday = NOW + 2 * 86_400;
+	assert_eq!(
+		read(&db, &folders, "me", tuesday).await.unwrap().coming,
+		[essay_row("interview-essay", "2026-11-09", "2026-w45", true, Some(WaitsOn::NotWritten))]
+	);
+	assert!(overdue(&db, &folders, "me", Feed::InterviewEssay, tuesday).await.unwrap());
+	assert!(
+		!overdue(&db, &folders, "me", Feed::RustEssay, tuesday).await.unwrap(),
+		"a shelf with no folders owes nothing"
+	);
+	// An essay that came and is not given yet (no pass has read it) is said
+	// as such, not as nothing written.
+	let essay = serde_json::json!({ "schema": "some-ui.interview-essay/1" }).to_string();
+	let item = mailbox_repo::ItemIn {
+		folder: "brief",
+		name: "interview-essay-2026-w45.json",
+		seq: 2,
+		sha256: &rust_round_repo::content_hash(essay.as_bytes()),
+		body: essay.as_bytes(),
+	};
+	mailbox_repo::keep_item(&mut db.acquire().await.unwrap(), "me", item, "2026-11-09T12:00:00.000Z")
+		.await
+		.unwrap();
+	assert_eq!(read(&db, &folders, "me", tuesday).await.unwrap().coming[0].waits_on, Some(WaitsOn::EssayWaiting));
 }
 
 #[tokio::test]

@@ -231,6 +231,19 @@ groups:
           objective: CW2
           says: "Every pass reading the weekly call's weeks has failed for 3 hours; file-host-server's log names what failed."
 
+      - alert: CallWeekOverdue
+        # CW2 (some-ui#3478): the week the weekly routine owes has passed its
+        # Friday at home and home holds none: the routine wrote none to
+        # paulgsc/testing, or home has not read it (CallWeeks* say the
+        # latter). The call weeks pass sets it hourly from the board's own
+        # `coming` read (feeds::renders::overdue). A call quiet for
+        # ACTIVE_DAYS (three weeks) expects nothing, so it ends there.
+        expr: |
+          max(call_weeks_next_overdue) == 1
+        labels:
+          objective: CW2
+          says: "The weekly call's week is past its Friday and has not reached home: the weekly routine wrote none to paulgsc/testing (Studio's Renders page shows it overdue under Coming)."
+
       - alert: PlayoffDeltaFillsStale
         # PK2 (some-ui#2647): the Playoff Delta fills worker reads
         # paulgsc/testing's index every hour (pd_fills::INTERVAL), sooner
@@ -350,6 +363,20 @@ groups:
           objective: RR16
           says: "Every pass giving Rust Rounds essays to the render worker has failed for 3 hours; file-host-server's log names what failed."
 
+      - alert: RustEssayOverdue
+        # RR16, EV3 (some-ui#3478): the essay home is owed for a week of Rust
+        # Rounds has passed its Monday at home and was never given to the
+        # worker: the routine wrote none, or it waits (refused, a take home
+        # couldn't hear or hasn't heard, a week not final). RustEssayRender*
+        # read only an essay already given, so this one read as a quiet week.
+        # The rust_essays pass sets it every 10 minutes from the board's own
+        # `coming` read (feeds::renders::overdue), which says what it waits on.
+        expr: |
+          max(rust_essays_owed_overdue) == 1
+        labels:
+          objective: RR16
+          says: "A week's Rust Rounds essay is past its Monday and has not come to home: Studio's Renders page says under Coming what it waits on (a take home couldn't hear, a week not final, a refused essay, or nothing written)."
+
       - alert: InterviewEssayRenderFailed
         # IW6 (some-ui#2937, #899): RustEssayRenderFailed's rule for a week
         # of mock interview's essay, by the same export (essays, its
@@ -397,6 +424,16 @@ groups:
         labels:
           objective: IW6
           says: "Every pass giving mock interview essays to the render worker has failed for 3 hours; file-host-server's log names what failed."
+
+      - alert: InterviewEssayOverdue
+        # IW6, as RustEssayOverdue (some-ui#3478): the essay home is owed for a
+        # week of mock interview has passed its Monday at home and was never
+        # given to the worker.
+        expr: |
+          max(interview_essays_owed_overdue) == 1
+        labels:
+          objective: IW6
+          says: "A week of mock interview's essay is past its Monday and has not come to home: Studio's Renders page says under Coming what it waits on (a take home couldn't hear, a week not final, a refused essay, or nothing written)."
 
       - alert: ReportRenderFailed
         # RW1 (some-ui#2700, #821): a week's engagement report home gave the

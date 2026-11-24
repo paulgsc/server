@@ -67,9 +67,16 @@
 //! and one `BEGIN IMMEDIATE` transaction; per Rust Rounds essay given, once,
 //! its week again and one indexed read of each of its programs' runs (the
 //! route's [`WEEK_FILE`]); one `stat` per essay each minute.
+//!
+//! **An essay owed and overdue** (paulgsc/some-ui#3478): each pass also
+//! says whether an essay home is owed has passed its Monday without being
+//! given to the worker (`feeds::renders::overdue`), for the `RustEssayOverdue`
+//! and `InterviewEssayOverdue` alerts: the alerts above read only an essay
+//! already given, so a week whose essay never came read as a quiet week.
 
 use crate::auth::owner::Owner;
 use crate::call_weeks::render::{tally, Held, Renders};
+use crate::feeds::renders::WaitsOn;
 use crate::AppState;
 pub use rust_round_repo::draft::Kind;
 use rust_round_repo::essay::{self, Played};
@@ -291,9 +298,34 @@ async fn pass(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Result<E
 	match crate::mailbox::pass_subject(db, configured).await? {
 		Owner::Subject(subject) => {
 			let now = crate::handlers::rust_rounds::now();
-			export(db, kind, subject.as_str(), &Folders::server(kind), &now).await
+			// Read whether export went or not, so a failing export leaves no
+			// stale answer behind it.
+			let exported = export(db, kind, subject.as_str(), &Folders::server(kind), &now).await;
+			let feed = match kind {
+				Kind::RustRounds => crate::feeds::Feed::RustEssay,
+				Kind::Interview => crate::feeds::Feed::InterviewEssay,
+			};
+			// A failing read leaves the last value: the pass still gave what
+			// it gave.
+			if let Ok(overdue) = crate::feeds::renders::overdue(db, &crate::feeds::renders::Folders::server(), subject.as_str(), feed, chrono::Utc::now().timestamp()).await {
+				crate::metrics::rust_essays::record_overdue(kind, overdue);
+				// Said in the log too: a week whose essay never came leaves
+				// every other line of this worker quiet. Never its week.
+				if overdue {
+					warn!(
+						"{}: an essay owed is past its Monday and not given to the worker (the board's Coming says what it waits on)",
+						spec(kind).name
+					);
+				}
+			} else {
+				warn!(error = "storage", "{}: whether an essay owed is overdue was not read", spec(kind).name);
+			}
+			exported
 		}
-		Owner::NoAccount | Owner::Several => Ok(Exported::default()),
+		Owner::NoAccount | Owner::Several => {
+			crate::metrics::rust_essays::record_overdue(kind, false);
+			Ok(Exported::default())
+		}
 	}
 }
 
@@ -367,8 +399,15 @@ pub async fn export(db: &SqlitePool, kind: Kind, subject: &str, folders: &Folder
 		if let_go.contains(&week) || folders.renders.join(&week).join(VIDEO).exists() || given_revision(&input).await.is_some_and(|given| given >= revision) {
 			continue;
 		}
+		// A refusal is of the revision it read: a newer one that waits is
+		// not refused, so its log goes (the board's `waitsOn` and the
+		// `*EssayRefused` alerts read it).
+		let stale_refusal = || tokio::fs::remove_file(folders.status.join(week.clone() + ".refused.log"));
 		match given(db, kind, subject, &week, &held, now).await? {
-			Given::Waiting => done.waiting += 1,
+			Given::Waiting => {
+				done.waiting += 1;
+				let _ = stale_refusal().await;
+			}
 			Given::Refused(problems) => {
 				done.refused += 1;
 				if keep_refusal(&folders.status, &week, &problems).await.is_err() {
@@ -376,7 +415,10 @@ pub async fn export(db: &SqlitePool, kind: Kind, subject: &str, folders: &Folder
 				}
 			}
 			Given::Final(played) => match takes(db, kind, subject, &played).await? {
-				Takes::Waiting => done.waiting += 1,
+				Takes::Waiting => {
+					done.waiting += 1;
+					let _ = stale_refusal().await;
+				}
 				Takes::Deleted(note) => {
 					let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 					rust_round_repo::essay_video::withdraw(&mut tx, kind, subject, &week, &note, 0, now).await?;
@@ -1099,6 +1141,69 @@ pub(crate) async fn held(db: &SqlitePool, kind: Kind, subject: &str, essays: &Pa
 	Ok((held, let_go))
 }
 
+/// What an essay `subject` is owed for `week` waits on, as home can know it
+/// (paulgsc/some-ui#3478), or `None` when nothing home holds blocks it.
+/// The first of these that holds:
+///
+/// - its essay came and home refused it (`<week>.refused.log` in `status`,
+///   as [`export`] keeps one): [`WaitsOn::EssayRefused`];
+/// - its essay came and is not given yet, for a take that has not reached
+///   home ([`export`]'s waiting): [`WaitsOn::EssayWaiting`];
+/// - the week's send is still a draft, never made final:
+///   [`WaitsOn::NotFinal`];
+/// - a take the week's send names (an answer, a card read, or for Rust
+///   Rounds an opening's answer) has no transcript the routine can read, and
+///   home judged it could not hear it: [`WaitsOn::TakeUnheard`], one the
+///   owner answers under Needs your attention; or one home has not judged
+///   yet: [`WaitsOn::TakeHearing`]. The routine writes no essay while a take
+///   waits so (paulgsc/some-ui's `monday` prepare, "waiting").
+///
+/// It only reads: a draft past its deadline is left for [`export`] and the
+/// routine's read to make final. A few indexed reads per take the week
+/// names, for each owed week the board or the pass reads.
+///
+/// # Errors
+/// A storage failure.
+pub(crate) async fn waits_on(db: &SqlitePool, kind: Kind, subject: &str, status: &Path, week: &str) -> Result<Option<WaitsOn>, sqlx::Error> {
+	let mut conn = db.acquire().await?;
+	if essay_weeks(&mut conn, kind, subject).await?.iter().any(|held| held == week) {
+		let refused = tokio::fs::try_exists(status.join(String::from(week) + ".refused.log")).await.unwrap_or(false);
+		return Ok(Some(if refused { WaitsOn::EssayRefused } else { WaitsOn::EssayWaiting }));
+	}
+	// Nothing sent of the week: every item is a silence, but its opening may
+	// still play a take sent in an earlier week, which the routine waits on
+	// as any.
+	let mut takes: Vec<String> = Vec::new();
+	if let Some(standing) = standing(&mut conn, kind, subject, week).await? {
+		if standing.draft {
+			return Ok(Some(WaitsOn::NotFinal));
+		}
+		takes.extend(standing.answers.into_iter().chain(standing.reads).map(|(_, take)| take));
+	}
+	if kind == Kind::RustRounds {
+		if let Some(held) = held_rust_week(&mut conn, subject, week).await? {
+			takes.extend(
+				crate::handlers::rust_week_record::opening(&mut conn, subject, &held)
+					.await?
+					.into_iter()
+					.map(|take| take.take),
+			);
+		}
+	}
+	let mut hearing = false;
+	for take in &takes {
+		if voice_repo::verdict::routine_reads_any(&mut conn, subject, take).await.map_err(voice)? {
+			continue;
+		}
+		let judged = voice_repo::verdict::of_note(&mut conn, subject, take).await.map_err(voice)?;
+		if judged.is_some_and(|verdict| verdict.kind.may_be_silent()) {
+			return Ok(Some(WaitsOn::TakeUnheard));
+		}
+		hearing = true;
+	}
+	Ok(hearing.then_some(WaitsOn::TakeHearing))
+}
+
 async fn observe_renders(kind: Kind) {
 	let spec = spec(kind);
 	let seen = observe(Path::new(spec.essays), Path::new(spec.renders), Path::new(spec.status)).await;
@@ -1458,6 +1563,112 @@ mod tests {
 				assert!(takes.is_empty(), "{verdict}: a silence plays nothing");
 			}
 		}
+	}
+
+	/// paulgsc/some-ui#3478: what an essay owed waits on, in the routine's own
+	/// order of reasons, as the board and its alert say it. Read only: it
+	/// never makes a week final.
+	#[tokio::test]
+	async fn what_an_owed_essay_waits_on_is_what_keeps_the_routine_from_writing_it() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let status = dir.path().join("status");
+		std::fs::create_dir_all(&status).unwrap();
+		let waits = || async { waits_on(&pool, Kind::RustRounds, ME, &status, "2026-w46").await.unwrap() };
+		hold_week(&pool, 1, "2026-w46").await;
+		assert_eq!(waits().await, None, "nothing sent: every ticket a silence, nothing to hear");
+
+		send(&pool, "2026-w46").await;
+		assert_eq!(waits().await, Some(WaitsOn::NotFinal));
+		assert_eq!(waits().await, Some(WaitsOn::NotFinal), "a re-read is the same read: it made nothing final");
+		{
+			let mut tx = pool.begin().await.unwrap();
+			rust_round_repo::draft::finalize(&mut tx, Kind::RustRounds, ME, "2026-w46", DUE, AFTER).await.unwrap();
+			tx.commit().await.unwrap();
+		}
+		assert_eq!(waits().await, Some(WaitsOn::TakeHearing), "its take has no transcript the routine reads, and no verdict");
+
+		for statement in [
+			"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+			 VALUES (?1, 'note-311', 'rust-round', '2026-w46:QM-311', 'then', 'audio/ogg', 4, 's', 'now')",
+			"INSERT INTO voice_transcript (subject_id, note_id, model, engine, attempt, outcome, language, language_p, duration_ms, text, took_ms, heard_at)
+			 VALUES (?1, 'note-311', 'm', 'e', 1, 'heard', 'en', 1.0, 900, 'qqq qqq qqq', 1, 'now')",
+			"INSERT INTO voice_transcript_verdict (subject_id, note_id, model, attempt, rule, verdict, reasons, speech_ms, judged_at)
+			 VALUES (?1, 'note-311', 'm', 1, 'heard-1', 'garbled', 'low_confidence', 900, 'now')",
+		] {
+			sqlx::query(statement).bind(ME).execute(&pool).await.unwrap();
+		}
+		assert_eq!(waits().await, Some(WaitsOn::TakeUnheard), "home couldn't hear it, and filed nothing yet");
+
+		sqlx::query("INSERT INTO mailbox_transcript (subject_id, note_id, model, n, filed_at) VALUES (?1, 'note-311', 'm', 1, 'now')")
+			.bind(ME)
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(waits().await, Some(WaitsOn::TakeUnheard), "filed but not taken by the mailbox: the routine can't read it");
+		sqlx::query("INSERT INTO mailbox_handed (subject_id, folder, name, answer, handed_at) VALUES (?1, 'transcript', 'transcript-note-311-1.json', 'added', 'now')")
+			.bind(ME)
+			.execute(&pool)
+			.await
+			.unwrap();
+		assert_eq!(waits().await, None, "the routine reads it as unheard and writes the essay");
+
+		hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
+		assert_eq!(waits().await, Some(WaitsOn::EssayWaiting), "it came, not given yet");
+		std::fs::write(status.join("2026-w46.refused.log"), "tickets[0]: ...\n").unwrap();
+		assert_eq!(waits().await, Some(WaitsOn::EssayRefused));
+		assert_eq!(
+			waits_on(&pool, Kind::Interview, ME, &status, "2026-w46").await.unwrap(),
+			None,
+			"another kind's week is not this one's"
+		);
+	}
+
+	/// A week nothing was sent of may still open with a take sent in an
+	/// earlier week (paulgsc/some-ui#3269): the routine waits on it as on any,
+	/// so the board says so, not that nothing was written.
+	#[tokio::test]
+	async fn an_unsent_week_still_waits_on_an_opening_take_from_an_earlier_week() {
+		let pool = pool().await;
+		let week = json!({
+			"schema": "some-ui.rust-week/1", "id": "2026-w46", "opens": "2026-11-09T00:00:00.000-08:00", "due": DUE,
+			"opening": { "version": 1, "exchanges": [{ "ask": "Why?", "script": "paulgsc here." }] },
+			"tickets": [{ "id": "QM-311", "program": "fn main() {}\n" }],
+		});
+		hold(&pool, 1, &rust_round_repo::week::mailbox_name("2026-w46"), &week.to_string()).await;
+		let w45 = json!({ "week": "2026-w45", "at": "2026-11-08T10:00:00.000Z", "answers": [], "passed": [], "opening": [
+			opening_json(1, "note-o1", "2026-11-07T10:00:00.000Z"),
+		] });
+		sqlx::query("INSERT INTO rust_week_final (subject_id, week_id, sent_at, body, received_at) VALUES (?1, '2026-w45', 'then', ?2, 'then')")
+			.bind(ME)
+			.bind(w45.to_string())
+			.execute(&pool)
+			.await
+			.unwrap();
+		let status = tempfile::tempdir().unwrap();
+		assert_eq!(waits_on(&pool, Kind::RustRounds, ME, status.path(), "2026-w46").await.unwrap(), Some(WaitsOn::TakeHearing));
+	}
+
+	/// A refusal is of the revision it read: a corrected revision that waits
+	/// on its take is not refused, so the log goes and the board says it
+	/// waits (paulgsc/some-ui#3478).
+	#[tokio::test]
+	async fn a_refusal_goes_once_a_newer_revision_waits_instead() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		std::fs::create_dir_all(&folders.status).unwrap();
+		hold_week(&pool, 1, "2026-w46").await;
+		send(&pool, "2026-w46").await;
+		hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
+		let refused = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
+		assert_eq!(refused.refused, 1);
+		let waits = || async { waits_on(&pool, Kind::RustRounds, ME, &folders.status, "2026-w46").await.unwrap() };
+		assert_eq!(waits().await, Some(WaitsOn::EssayRefused));
+
+		hold(&pool, 3, "rust-essay-2026-w46-r2.json", &essay("2026-w46", ["take", "silence"])).await;
+		let waiting = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
+		assert_eq!((waiting.refused, waiting.waiting), (0, 1), "its take has not reached home");
+		assert!(!folders.status.join("2026-w46.refused.log").exists());
+		assert_eq!(waits().await, Some(WaitsOn::EssayWaiting));
 	}
 
 	/// Invariant 23's exception, (b): the takes are in the render's input
