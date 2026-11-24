@@ -40,6 +40,13 @@ pub fn record_pass(result: &Result<Pass, sqlx::Error>) {
 	metrics::gauge!("call_weeks_pass_failing").set(if failing { 1.0 } else { 0.0 });
 }
 
+/// Whether the week the weekly routine owes has passed its Friday at home
+/// without reaching home (`feeds::renders::overdue`, paulgsc/some-ui#3478):
+/// 1 or 0, set by each pass.
+pub fn record_next_overdue(overdue: bool) {
+	metrics::gauge!("call_weeks_next_overdue").set(if overdue { 1.0 } else { 0.0 });
+}
+
 /// What the render worker has made of the weeks home holds. A time that is
 /// not there reads 0.
 pub fn record_renders(seen: &Renders) {
