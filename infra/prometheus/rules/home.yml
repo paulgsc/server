@@ -865,3 +865,31 @@ groups:
         for: 5m
         labels:
           says: "Home's {{ $labels.stage }} is broken: it made more attempts in the last hour than one item gets, and almost none ended. The file_host dashboard's SHARED STAGES row shows it; its own dashboard says how each attempt ended."
+
+  - name: home-failures
+    rules:
+      - alert: HomeFailures
+        # OA8 (#1189, epic #1174): every failure home counts is one increase
+        # of failures_total{process,step}, made only by
+        # apps/servers/file_host/src/failure.rs's Failure::record, which also
+        # logs it at error with its cause. Beside the per-process *Failing
+        # alerts, not instead of them: those say a pass keeps failing, this
+        # says any one step failed. Over 15 minutes, as HomeShedding is, so a
+        # burst is one alert per process and step, resolved after a quiet
+        # quarter hour (Grafana's route may send several in one message).
+        # Every series exists at 0 from boot (failure::register_all), so a
+        # failure after a restart's first scrape is an increase, and a gap in
+        # Prometheus's own samples is no increase. A failure before that
+        # scrape (a step that fails as the workers start, before file_host
+        # listens) can land back at the count from before the restart, which
+        # increase() reads as no change: so for a quarter hour after a boot,
+        # any step above 0 is told, since a count after a boot is that boot's.
+        expr: |
+          max by (process, step) (
+            increase(failures_total[15m]) > 0
+            or
+            (failures_total > 0 and on () (time() - max(process_start_time_seconds{job="file_host"}) < 900))
+          )
+        labels:
+          objective: OA8
+          says: "Home's {{ $labels.process }} failed at {{ $labels.step }} in the last 15 minutes; each failure is logged at error with its cause."

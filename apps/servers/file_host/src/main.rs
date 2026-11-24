@@ -39,6 +39,18 @@ async fn track_body_limit_refusals(req: AxumRequest, next: Next) -> Response {
 	response
 }
 
+/// The counters whose alerts fire on any increase, each series at 0 from the
+/// start: a counter the `metrics` facade has never incremented does not
+/// exist, and `increase()` never sees a series' first sample.
+fn register_zero_series() {
+	// So "never refused" reads as zero rather than as a missing family; see
+	// `refusals::register_all`.
+	file_host::metrics::refusals::register_all();
+	// So a failure's first count after boot is an increase HomeFailures sees
+	// (#1189).
+	file_host::failure::register_all();
+}
+
 /// `file_host::migrate::bring_current` on this start's database, each line
 /// of what it did said on stdout as `migrate: …` (the deploy's log reads
 /// them), and a refusal returned as the process's error.
@@ -135,9 +147,7 @@ async fn main() -> Result<()> {
 	file_host::metrics::build_info::record();
 	file_host::metrics::stage::record_started();
 
-	// Every refusal series at 0 from the start, so "never refused" reads as
-	// zero rather than as a missing family — see `refusals::register_all`.
-	file_host::metrics::refusals::register_all();
+	register_zero_series();
 
 	// #227 (C2): the configured ceiling `ws_connection_guard_occupancy` is
 	// measured against, stamped once for the same reason build info is —

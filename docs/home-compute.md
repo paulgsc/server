@@ -91,6 +91,25 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    one failed of. Every other
    failure may clear on its own and is tried again an hour after it.
    Held by `render-calls.test.sh`'s refusal cases (RF1, #928; #975).
+8. **Every failure is counted, once, where it happens, and reaches the
+   owner.** However deep the step, a failure is one increase of
+   `failures_total{process,step}` and one `error!` line, made together by
+   `file_host::failure::Failure::record`, the only maker of the `Failure`
+   token. An outcome that is a failure carries the token, so it cannot be
+   stored uncounted (the mailbox's `Answer::Refused` first, #1172,
+   **Planned**). `HomeFailures` (`infra/prometheus/rules/home.yml`) sends any
+   increase to Slack. Counting changes no function's shape and no stored
+   value, and adds no clock: a deterministic refusal is counted once and held
+   (invariant 7), and a yield is not a failure (invariant 3), so nothing
+   converts one into a `Failure`. The labels are closed sets (`Process`, the
+   ledger's process ids, and `Step`), started at 0 at boot. The cause is
+   logged, so keeping what docs/identity.md keeps out of logs out of it is
+   the caller's duty. Held by `failure`'s tests and `HomeFailures`' promtool
+   cases. Not yet held everywhere: about 140 sites still absorb a failure
+   into an ordinary value, each in a child of epic #1174, and nothing yet
+   stops a new one (the erasure ratchet, #1189, **Planned**). The owner's
+   rule (2026-11-24): a failure is like energy, never destroyed, and the
+   bookkeeping must reconcile.
 
 ## Classes: who is low priority, and what that means
 
