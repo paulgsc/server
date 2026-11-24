@@ -1241,8 +1241,7 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 	// here only so one that does not read as its name says is counted, as
 	// its essay is then never owed (#1178).
 	let names_interview = in_brief && item.name.starts_with(rust_round_repo::interview::MAILBOX_PREFIX);
-	let interview_reads = names_interview
-		&& rust_round_repo::interview::read(item.body).is_ok_and(|week| rust_round_repo::interview::mailbox_name(&week.id) == item.name);
+	let interview_reads = names_interview && rust_round_repo::interview::read(item.body).is_ok_and(|week| rust_round_repo::interview::mailbox_name(&week.id) == item.name);
 	let names_picked = item.folder == Folder::Picked.as_str();
 	let picked = names_picked.then(|| picked(item)).flatten();
 	// Named as one of those, and not reading as it: kept as a plain brief,
