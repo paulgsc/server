@@ -54,6 +54,15 @@ normalised away — and so does renaming the item that contains it.
 Real compiler errors (`E0xxx`) and a build that did not finish always fail,
 baseline or not.
 
+The erasure lints (`disallowed_methods` on `Result::ok`/`unwrap_or*`,
+`let_underscore_must_use`, `map_err_ignore`; see `is_erasure`) are not this
+baseline's: they have their own, which only shrinks
+(`scripts/check_erasures.py`, the owner's decision on #1189). This script
+leaves them out, so turning them on did not grow this baseline, and its rule
+(only a toolchain bump grows it) holds as written. It reads the ordinary
+clippy pass; `check_erasures.py` reads a second one with the erasure lints
+forced (#1202), whose other `disallowed_methods` findings never come here.
+
 Reads the output of:
 
     cargo clippy --workspace --all-targets --all-features --keep-going --message-format=json \\
@@ -87,6 +96,40 @@ ITEM_HEADER = re.compile(
 )
 
 Key = tuple[str, str, str, str]  # (file, lint, enclosing item, source text)
+
+# The silent erasures (epic #1174, #1189): `scripts/check_erasures.py`
+# ratchets these, and this script never does. `Result::ok` and the rest are
+# named in clippy.toml's `disallowed-methods`, beside methods disallowed for
+# other reasons, so the lint alone does not say which ratchet a finding is
+# for; the method clippy names in its message does. That message's wording
+# is clippy's, so one this does not recognise stops both scripts rather than
+# letting a reworded release move erasures into this baseline on the
+# toolchain bump that may grow it.
+ERASURE_LINTS = frozenset({"clippy::let_underscore_must_use", "clippy::map_err_ignore"})
+ERASURE_METHODS = frozenset(f"core::result::Result::{method}" for method in ("ok", "unwrap_or", "unwrap_or_default", "unwrap_or_else"))
+DISALLOWED_METHOD = re.compile(r"^use of a disallowed method `([^`]+)`$")
+
+
+class UnknownMessage(ValueError):
+	"""A `disallowed_methods` message in a shape these scripts do not read."""
+
+
+def is_erasure(code: str, message: dict) -> bool:
+	if code in ERASURE_LINTS:
+		return True
+	if code != "clippy::disallowed_methods":
+		return False
+	named = DISALLOWED_METHOD.match(message.get("message", ""))
+	if named is None:
+		raise UnknownMessage(
+			f"clippy::disallowed_methods said {message.get('message')!r}, which is not "
+			"'use of a disallowed method `<path>`': update DISALLOWED_METHOD in scripts/check_clippy_baseline.py"
+		)
+	return named.group(1) in ERASURE_METHODS
+
+
+def not_erasure(code: str, message: dict) -> bool:
+	return not is_erasure(code, message)
 
 _sources: dict[str, list[str] | None] = {}
 
@@ -138,8 +181,11 @@ def source_text(span: dict, message: dict) -> str:
 	return text or message.get("message", "")
 
 
-def read(stream) -> tuple[Counter, list[str], bool]:
-	"""Findings per key, hard compiler errors, and whether the build finished."""
+def read(stream, keep=not_erasure, site=None) -> tuple[Counter, list[str], bool]:
+	"""Findings per key that `keep` passes, hard compiler errors, and whether the build finished.
+
+	`site(message)`, if given, joins what tells two reports of one span apart
+	(check_erasures.py passes each macro call site, so a macro's erasure counts once per use)."""
 	seen: set[tuple] = set()
 	findings: Counter = Counter()
 	errors: list[str] = []
@@ -168,11 +214,14 @@ def read(stream) -> tuple[Counter, list[str], bool]:
 			errors.append(message.get("rendered") or message.get("message", ""))
 			continue
 
+		if not keep(code, message):
+			continue
+
 		span = primary_span(message)
 		file = relative_file(span)
 		# `--all-targets` compiles a lib's sources twice (lib and lib test),
 		# and each reports the same finding; count it once.
-		occurrence = (file, span.get("line_start"), span.get("column_start"), code, message.get("message"))
+		occurrence = (file, span.get("line_start"), span.get("column_start"), code, message.get("message"), site(message) if site else None)
 		if occurrence in seen:
 			continue
 		seen.add(occurrence)
@@ -203,10 +252,14 @@ def exceeding(current: Counter, allowed: Counter) -> list[tuple[Key, int, int]]:
 	return sorted((key, allowed.get(key, 0), count) for key, count in current.items() if count > allowed.get(key, 0))
 
 
-def report(heading: str, rows: list[tuple[Key, int, int]]) -> None:
+def rows(found: list[tuple[Key, int, int]]) -> list[str]:
+	return [f"  {file} [{item or 'file scope'}]: {code} {before} -> {after}: {text[:120]}" for (file, code, item, text), before, after in found]
+
+
+def report(heading: str, found: list[tuple[Key, int, int]]) -> None:
 	print(heading)
-	for (file, code, item, text), before, after in rows:
-		print(f"  {file} [{item or 'file scope'}]: {code} {before} -> {after}: {text[:120]}")
+	for row in rows(found):
+		print(row)
 
 
 def main() -> int:
