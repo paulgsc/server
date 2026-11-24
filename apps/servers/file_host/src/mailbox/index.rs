@@ -93,6 +93,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
 use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
+use crate::failure::{Failure as Counted, Step};
 
 pub mod call;
 pub mod interview;
@@ -881,6 +882,10 @@ async fn put_index<T: MailboxTransport>(
 	outcome: &mut Outcome,
 ) -> Result<(), Failure> {
 	if body.len() > MAILBOX_BODY_CEILING {
+		Counted::alone(
+			Step::MailboxIndexPut,
+			&format_args!("{name}: the index is over the mailbox's ceiling, so the routine reads the last one"),
+		);
 		outcome.refused.push("too_big");
 		last.remember(computed);
 		return Ok(());
@@ -888,8 +893,14 @@ async fn put_index<T: MailboxTransport>(
 	let answer = match mailbox.put(Folder::Index, name, body).await {
 		Ok(Put::Added { .. }) => "added",
 		Ok(Put::Unchanged { .. }) => "unchanged",
-		Ok(Put::Conflict) => "conflict",
-		Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => "refused",
+		Ok(Put::Conflict) => {
+			Counted::alone(Step::MailboxIndexPut, &format_args!("{name}: the mailbox holds other bytes under the name"));
+			"conflict"
+		}
+		Err(err @ (MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName)) => {
+			Counted::alone(Step::MailboxIndexPut, &format_args!("{name}: {err}"));
+			"refused"
+		}
 		Err(err) => return Err(Failure::Mailbox(err)),
 	};
 	outcome.indexed.push(answer);

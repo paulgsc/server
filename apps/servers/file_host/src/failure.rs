@@ -172,6 +172,24 @@ steps! {
 	/// The Jobs mailbox holds other bytes under a file's name, which it never
 	/// replaces, so the file home handed in is never taken (#1172).
 	MailboxHandOverConflict => MailboxPasses, "hand_over_conflict";
+	/// A file read from the mailbox was not kept: its bytes were not what the
+	/// listing said, its name could not be asked for, it was not JSON, or home
+	/// holds other bytes under its name (#1175).
+	MailboxRead => MailboxPasses, "read";
+	/// A file kept as a plain brief because its body does not read as its
+	/// name says: a Drive takes list, a Rust Rounds week, or a pickup's
+	/// answer. What it would have queued or moved is not (#1175).
+	MailboxReadBody => MailboxPasses, "read_body";
+	/// A `LeetType` session's log home could not file (#1175).
+	MailboxFileLeetypeLog => MailboxPasses, "file_leetype_log";
+	/// An archived file the routine asked for was not put back: the mailbox
+	/// holds other bytes, refused it, or home holds nothing for it (#1175).
+	MailboxRestore => MailboxPasses, "restore";
+	/// A file to be archived was not what its listing said (#1175).
+	MailboxArchive => MailboxPasses, "archive";
+	/// An index was not put: over the mailbox's ceiling, refused, or held
+	/// with other bytes, so the routine reads a stale one (#1175).
+	MailboxIndexPut => MailboxPasses, "index_put";
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
@@ -201,23 +219,36 @@ impl Failure {
 	/// proof. `cause` is why, and must be loggable (see the module).
 	#[track_caller]
 	pub fn record(step: Step, cause: &dyn fmt::Display) -> Self {
-		let at = Location::caller();
-		let (process, name) = (step.process().as_str(), step.as_str());
-		counter!("failures_total", "process" => process, "step" => name).increment(1);
-		tracing::error!(
-			process,
-			step = name,
-			at = %format_args!("{}:{}", at.file(), at.line()),
-			cause = %cause,
-			"{process} failed at {name}: {cause}"
-		);
+		count(step, cause, Location::caller());
 		Self { step }
+	}
+
+	/// As [`Failure::record`], for a failure whose only outcome is its count
+	/// and its log: nothing stores it (a file kept as a plain brief because
+	/// its body does not read as its name says, say). Where an outcome is
+	/// stored, `record` it and carry the token there instead.
+	#[track_caller]
+	pub fn alone(step: Step, cause: &dyn fmt::Display) {
+		count(step, cause, Location::caller());
 	}
 
 	#[must_use]
 	pub const fn step(&self) -> Step {
 		self.step
 	}
+}
+
+/// The count and the log both makers share; `at` is their caller's line.
+fn count(step: Step, cause: &dyn fmt::Display, at: &Location<'_>) {
+	let (process, name) = (step.process().as_str(), step.as_str());
+	counter!("failures_total", "process" => process, "step" => name).increment(1);
+	tracing::error!(
+			process,
+			step = name,
+			at = %format_args!("{}:{}", at.file(), at.line()),
+			cause = %cause,
+			"{process} failed at {name}: {cause}"
+	);
 }
 
 #[cfg(test)]
