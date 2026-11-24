@@ -63,3 +63,28 @@ pub fn record_renders_unknown() {
 		metrics::gauge!(name).set(f64::NAN);
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+	/// #1207 (OA6): fills the tick could not read are `NaN` on every gauge
+	/// `record_renders` sets, a gap, never their last values.
+	#[test]
+	fn renders_not_read_are_unknown() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		metrics::with_local_recorder(&recorder, super::record_renders_unknown);
+		let set: Vec<_> = snapshotter
+			.snapshot()
+			.into_vec()
+			.into_iter()
+			.filter_map(|(key, _, _, value)| match value {
+				DebugValue::Gauge(value) => Some((key.key().name().to_owned(), value.into_inner())),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(set.len(), 6, "{set:?}");
+		assert!(set.iter().all(|(_, value)| value.is_nan()), "{set:?}");
+	}
+}
