@@ -2100,7 +2100,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_conflict_or_a_refusal_is_final_and_not_handed_again() {
+	async fn a_conflict_is_final_and_a_refusal_is_handed_again_an_hour_on() {
 		let (pool, fake) = (pool().await, Fake::default());
 		filed(&pool, "decisions-2026-10-22.json").await;
 		filed(&pool, "decisions-2026-10-23.json").await;
@@ -2113,8 +2113,16 @@ mod tests {
 				(String::from("decisions-2026-10-23.json"), String::from("refused")),
 			]
 		);
-		pass(&pool, &fake).await.unwrap();
-		assert_eq!(fake.puts.lock().unwrap().len(), 2, "neither is handed again");
+		let decisions = |fake: &Fake| fake.puts.lock().unwrap().iter().filter(|put| put.contains("/v1/decisions/")).cloned().collect::<Vec<_>>();
+		pass_at(&pool, &fake, "2026-10-23T15:59:59.999Z").await.unwrap();
+		assert_eq!(decisions(&fake).len(), 2, "a refusal younger than an hour is not handed again");
+		pass_at(&pool, &fake, "2026-10-23T16:00:00.000Z").await.unwrap();
+		let handed = decisions(&fake);
+		assert_eq!(handed.len(), 3, "an hour on, the refused file alone is handed again: {handed:?}");
+		assert!(handed[2].ends_with("/decisions-2026-10-23.json"), "{handed:?}");
+		assert_eq!(answers(&pool).await.last().unwrap(), &(String::from("decisions-2026-10-23.json"), String::from("added")));
+		pass_at(&pool, &fake, "2026-10-23T18:00:00.000Z").await.unwrap();
+		assert_eq!(decisions(&fake).len(), 3, "once taken, it is final");
 	}
 
 	/// A voice note of the owner's, and what `model` heard in it.
