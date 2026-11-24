@@ -1237,6 +1237,11 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 		.then(|| rust_round_repo::week::read(item.body).ok())
 		.flatten()
 		.filter(|week| rust_round_repo::week::mailbox_name(&week.id) == item.name);
+	// A mock interview's week records nothing when it is kept: it is read
+	// here only so one that does not read as its name says is counted, as
+	// its essay is then never owed (#1178).
+	let names_interview = in_brief && item.name.starts_with(rust_round_repo::interview::MAILBOX_PREFIX);
+	let interview_reads = names_interview && rust_round_repo::interview::read(item.body).is_ok_and(|week| rust_round_repo::interview::mailbox_name(&week.id) == item.name);
 	let names_picked = item.folder == Folder::Picked.as_str();
 	let picked = names_picked.then(|| picked(item)).flatten();
 	// Named as one of those, and not reading as it: kept as a plain brief,
@@ -1244,6 +1249,7 @@ async fn keep(db: &SqlitePool, deletion: &DeletionLock, subject: &str, item: Ite
 	let unread = [
 		(names_listed && listed.is_none(), "a Drive takes list"),
 		(names_week && week.is_none(), "a Rust Rounds week"),
+		(names_interview && !interview_reads, "a mock interview's week"),
 		(names_picked && picked.is_none(), "a pickup's answer"),
 	]
 	.into_iter()
@@ -4381,6 +4387,21 @@ mod tests {
 		let _recorder = metrics::set_default_local_recorder(&recorder);
 		let (pool, fake) = (pool().await, Fake::default());
 		fake.add(10, "rust-week-2026-w46.json", r#"{"schema":"some-ui.rust-week/2","id":"2026-w46","tickets":5}"#);
+		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1);
+		pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap();
+		assert_eq!(failures(&snapshotter), [(String::from("read_body"), 1)]);
+	}
+
+	/// #1178: a mock interview's week that does not read as its name says is
+	/// never owed an essay, so it is counted the same way, once, when kept. One
+	/// that reads is not counted.
+	#[tokio::test]
+	async fn an_interview_week_that_does_not_read_is_counted_once_when_kept() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		fake.add(10, "interview-week-2026-w46.json", r#"{"schema":"some-ui.interview-week/1","id":"2026-w46"}"#);
 		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1);
 		pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap();
 		assert_eq!(failures(&snapshotter), [(String::from("read_body"), 1)]);

@@ -76,7 +76,7 @@ pub fn start(state: &AppState) {
 					return;
 				}
 				_ = ticker.tick() => {
-					observe_renders(&db).await;
+					observe_renders(&db, std::path::Path::new(render::RENDERS_FOLDER), std::path::Path::new(render::STATUS_FOLDER)).await;
 					let now = chrono::Utc::now();
 					if !schedule.due(now) {
 						continue;
@@ -108,13 +108,15 @@ async fn run_once(db: &sqlx::SqlitePool, fetch: &crate::game_feed::pass::Reqwest
 }
 
 /// What the render worker has made of the fills held, as metrics. A failing
-/// read leaves the last values and logs.
-async fn observe_renders(db: &sqlx::SqlitePool) {
-	let (renders, status) = (std::path::Path::new(render::RENDERS_FOLDER), std::path::Path::new(render::STATUS_FOLDER));
+/// read leaves the last values and logs, and is held open until a tick reads
+/// it (#1179).
+async fn observe_renders(db: &sqlx::SqlitePool, renders: &std::path::Path, status: &std::path::Path) {
 	if let Ok(seen) = render::observe(db, renders, status).await {
 		crate::metrics::pd_fills::record_renders(&seen);
+		crate::failure::open(crate::failure::Step::PdFillsObserve, 0);
 	} else {
 		warn!(error = "storage", "playoff delta render observation failed");
+		crate::failure::open(crate::failure::Step::PdFillsObserve, 1);
 	}
 }
 
@@ -125,5 +127,35 @@ fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 		Ok(done) if done.failures.is_empty() => info!(added = done.added, held = done.held, exported = done.exported, "playoff delta fills pass"),
 		Ok(done) => warn!(added = done.added, held = done.held, exported = done.exported, failures = ?done.failures, "playoff delta fills pass"),
 		Err(_) => error!(error = "storage", "playoff delta fills pass failed"),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::observe_renders;
+	use crate::failure::{held, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+	use sqlx::sqlite::SqlitePoolOptions;
+
+	/// #1179: a tick that cannot read what the worker made of the fills holds
+	/// it open, and a tick that reads it clears it.
+	#[tokio::test]
+	async fn an_observation_not_read_is_held_open_until_one_is() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
+		let dir = tempfile::tempdir().unwrap();
+		let (renders, status) = (dir.path().join("pd"), dir.path().join("pd-worker"));
+
+		let bare = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		crate::failure::open(Step::PdFillsObserve, 9);
+		observe_renders(&bare, &renders, &status).await;
+		assert_eq!(held::open(&snapshotter, Step::PdFillsObserve), Some(1.0));
+
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		crate::schema::MIGRATOR.run(&pool).await.unwrap();
+		crate::failure::open(Step::PdFillsObserve, 9);
+		observe_renders(&pool, &renders, &status).await;
+		assert_eq!(held::open(&snapshotter, Step::PdFillsObserve), Some(0.0));
 	}
 }

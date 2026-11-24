@@ -140,10 +140,22 @@ pub fn start(state: &AppState) {
 						schedule.failed(now, RETRY, INTERVAL);
 					}
 					log_pass(&result);
+					hold_open(&result);
 				}
 			}
 		}
 	});
+}
+
+/// What a pass could not take, held open until a pass takes it (#809): every
+/// failure but a rejected walk is asked again by the next pass, so it is a
+/// level, never a count. A rejected walk was removed and counted when it was
+/// (`pass::take_walk`). A pass that ended on a storage failure looked at
+/// nothing whole, and leaves it as it stands; `log_pass` says it at error.
+fn hold_open(result: &Result<pass::Pass, sqlx::Error>) {
+	if let Ok(done) = result {
+		crate::failure::open(crate::failure::Step::ClipsTake, done.failures.len().saturating_sub(done.rejected));
+	}
 }
 
 /// The pass's one log line, when it did something or something went wrong.
@@ -153,5 +165,42 @@ fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 		Ok(done) if done.failures.is_empty() => info!(kept = done.kept, held = done.held, queued = done.queued, "clips pass"),
 		Ok(done) => warn!(kept = done.kept, held = done.held, queued = done.queued, failures = ?done.failures, "clips pass"),
 		Err(_) => error!(error = "storage", "clips pass failed"),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{hold_open, pass::Pass};
+	use crate::failure::{held, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+
+	/// #809: what a pass could not take is held open, less the walks it
+	/// rejected and counted; a pass with none clears it; a pass that ended
+	/// on storage leaves it.
+	#[test]
+	fn what_a_pass_could_not_take_is_held_open() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		metrics::with_local_recorder(&recorder, || {
+			let failed = Pass {
+				failures: vec!["mismatch", "digest", "timeout"],
+				rejected: 1,
+				..Pass::default()
+			};
+			hold_open(&Ok(failed));
+		});
+		assert_eq!(held::open(&snapshotter, Step::ClipsTake), Some(2.0));
+
+		metrics::with_local_recorder(&recorder, || {
+			crate::failure::open(Step::ClipsTake, 9);
+			hold_open(&Err(sqlx::Error::PoolClosed));
+		});
+		assert_eq!(held::open(&snapshotter, Step::ClipsTake), Some(9.0), "a storage failure leaves it");
+
+		metrics::with_local_recorder(&recorder, || {
+			crate::failure::open(Step::ClipsTake, 9);
+			hold_open(&Ok(Pass::default()));
+		});
+		assert_eq!(held::open(&snapshotter, Step::ClipsTake), Some(0.0));
 	}
 }

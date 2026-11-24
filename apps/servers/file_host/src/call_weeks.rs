@@ -144,7 +144,7 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 					return;
 				}
 				_ = ticker.tick() => {
-					observe_renders(&db).await;
+					observe_renders(&db, &Seen::server()).await;
 					let now = chrono::Utc::now();
 					if !schedule.due(now) {
 						continue;
@@ -160,10 +160,13 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 					// Friday without coming (paulgsc/some-ui#3478), as the
 					// board's `coming` says it. The call's weeks are no
 					// subject's. A failing read leaves the last value.
+					// Held open while it is not read (#1179).
 					if let Ok(overdue) = crate::feeds::renders::overdue(&db, &crate::feeds::renders::Folders::server(), "", crate::feeds::Feed::Call, chrono::Utc::now().timestamp()).await {
 						crate::metrics::call_weeks::record_next_overdue(overdue);
+						crate::failure::open(crate::failure::Step::CallWeeksNextOverdue, 0);
 					} else {
 						warn!(error = "storage", "whether the call's next week is overdue was not read");
+						crate::failure::open(crate::failure::Step::CallWeeksNextOverdue, 1);
 					}
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
 						schedule.succeeded(now, INTERVAL);
@@ -177,16 +180,37 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 	});
 }
 
+/// The folders [`observe_renders`] reads.
+#[derive(Clone, Copy)]
+struct Seen<'a> {
+	renders: &'a std::path::Path,
+	status: &'a std::path::Path,
+	work: &'a std::path::Path,
+}
+
+impl Seen<'static> {
+	/// Where this server sees them.
+	fn server() -> Self {
+		Self {
+			renders: std::path::Path::new(render::RENDERS_FOLDER),
+			status: std::path::Path::new(render::STATUS_FOLDER),
+			work: std::path::Path::new(render::WORK_FOLDER),
+		}
+	}
+}
+
 /// What the render worker has made of the weeks held, as metrics. A
-/// failing read leaves the last values and logs.
-async fn observe_renders(db: &sqlx::SqlitePool) {
-	let (renders, status) = (std::path::Path::new(render::RENDERS_FOLDER), std::path::Path::new(render::STATUS_FOLDER));
+/// failing read leaves the last values and logs, and each signal not read
+/// (the renders, the drive) is held open until a tick reads it (#1179).
+async fn observe_renders(db: &sqlx::SqlitePool, seen: &Seen<'_>) {
+	let Seen { renders, status, work } = *seen;
+	let mut unread = 0;
 	if let Ok(seen) = render::observe(db, renders, status).await {
 		crate::metrics::call_weeks::record_renders(&seen);
 	} else {
 		warn!(error = "storage", "call render observation failed");
+		unread += 1;
 	}
-	let work = std::path::Path::new(render::WORK_FOLDER);
 	// The worker's Playoff Delta job keeps its videos, work and cache
 	// warnings on the same drive, so the drive's numbers, and
 	// CallRenderCacheFull, count both jobs.
@@ -195,7 +219,10 @@ async fn observe_renders(db: &sqlx::SqlitePool) {
 	let interview = crate::rust_essays::disk(crate::rust_essays::Kind::Interview).await;
 	let cards = crate::cards_essays::disk().await;
 	let report = crate::report_weeks::disk().await;
-	crate::metrics::call_weeks::record_disk(&render::disk(renders, work, status).await.and(&pd).and(&essays).and(&interview).and(&cards).and(&report));
+	let disk = render::disk(renders, work, status).await.and(&pd).and(&essays).and(&interview).and(&cards).and(&report);
+	crate::metrics::call_weeks::record_disk(&disk);
+	unread += usize::from(disk.drive.is_none());
+	crate::failure::open(crate::failure::Step::CallWeeksObserve, unread);
 }
 
 /// The pass's one log line, when it added a week or a revision, or something
@@ -213,5 +240,44 @@ fn log_pass(result: &Result<pass::Pass, sqlx::Error>) {
 			"call weeks pass"
 		),
 		Err(_) => error!(error = "storage", "call weeks pass failed"),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{observe_renders, Seen};
+	use crate::failure::{held, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+	use sqlx::sqlite::SqlitePoolOptions;
+
+	/// #1179: a tick that cannot read what the worker made of the weeks
+	/// holds it open, and a tick that reads it and the drive clears it.
+	#[tokio::test]
+	async fn an_observation_not_read_is_held_open_until_one_is() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
+		let dir = tempfile::tempdir().unwrap();
+		let (renders, status, work) = (dir.path().join("call"), dir.path().join("call-worker"), dir.path().join("call-work"));
+		for folder in [&renders, &status, &work] {
+			std::fs::create_dir(folder).unwrap();
+		}
+		let seen = Seen {
+			renders: &renders,
+			status: &status,
+			work: &work,
+		};
+
+		// No tables: the storage read fails.
+		let bare = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		crate::failure::open(Step::CallWeeksObserve, 9);
+		observe_renders(&bare, &seen).await;
+		assert_eq!(held::open(&snapshotter, Step::CallWeeksObserve), Some(1.0), "the renders, not the drive");
+
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		crate::schema::MIGRATOR.run(&pool).await.unwrap();
+		crate::failure::open(Step::CallWeeksObserve, 9);
+		observe_renders(&pool, &seen).await;
+		assert_eq!(held::open(&snapshotter, Step::CallWeeksObserve), Some(0.0), "read, it clears");
 	}
 }
