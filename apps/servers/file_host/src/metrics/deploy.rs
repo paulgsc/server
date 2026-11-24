@@ -50,9 +50,11 @@ const fn seconds(value: i64) -> f64 {
 	value as f64
 }
 
-/// What the gauge sweep remembers between ticks: the deploy's totals as it
-/// last read them, and whether each file was unreadable at the last tick.
-/// Held by the sweep's task, in memory only, so a restart starts it empty.
+/// What the gauge sweep remembers between ticks.
+///
+/// The deploy's totals as it last read them, and whether each file was
+/// unreadable at the last tick. Held by the sweep's task, in memory only,
+/// so a restart starts it empty.
 #[derive(Debug, Default)]
 pub struct Last {
 	totals: Option<crate::deploy::Counts>,
@@ -76,7 +78,7 @@ pub struct Last {
 ///   coordinator's call C1511, after `NaN` on the totals hid that reset
 ///   from `increase()`). Two bounds, where `DeployFailed` does not tell the
 ///   healing run's failure: its outcome's held total is exactly 1, so it
-///   reads 1 then 1; or file_host restarted while the record was
+///   reads 1 then 1; or `file_host` restarted while the record was
 ///   unreadable, which leaves the totals absent until a tick reads them,
 ///   more than an hour before the healing run. `HomeFailuresOpen` tells
 ///   the unreadable record only once it has stayed so about 2 hours, so a
