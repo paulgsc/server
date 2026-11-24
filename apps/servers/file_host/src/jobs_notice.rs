@@ -288,7 +288,8 @@ mod tests {
 
 		async fn send(&self, request: Request) -> Result<Response, Self::Error> {
 			if request.url.ends_with("/token") {
-				if let Some(status) = *self.token.lock().unwrap() {
+				let refused = *self.token.lock().unwrap();
+				if let Some(status) = refused {
 					return Ok(Response { status, body: b"{}".to_vec() });
 				}
 				let body = br#"{"access_token":"ya29.test","expires_in":3600}"#.to_vec();
