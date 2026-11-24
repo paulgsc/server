@@ -14,10 +14,15 @@ this makes the wrong thing visible where it is written:
   * `.cargo/config.toml` warns `clippy::let_underscore_must_use` (`let _ =`
     of anything `#[must_use]`: a `Result`, a `Failure`, and also iterators
     and futures) and `clippy::map_err_ignore` (`.map_err(|_| ...)`);
-  * and, read here from the source with comments blanked: an `#[allow]` or
+  * and, read here from the source with comments and literals masked: an `#[allow]` or
     `#[expect]` (or one inside `cfg_attr`) of any of those lints, or of a
     group holding one (`clippy::style`, `clippy::all`,
-    `clippy::restriction`, `warnings`), that gives no non-empty `reason = "..."`. Such an attribute silences the
+    `clippy::restriction`, `warnings`), that gives no non-empty `reason = "..."`.
+    Clippy reports nothing in such a scope, so each erasure-shaped call in it
+    (`.ok(`, `.unwrap_or*(`, `Result::ok`, `let _ =`, `.map_err(|_|`) is a
+    finding here too, read lexically to the end of the statement, the item's
+    braces, or the file for `#![...]`: a new one inside an old bare `#[allow]`
+    is new. Such an attribute silences the
     erasures in its whole scope, and the 45 bare `#[allow(clippy::disallowed_methods)]`
     already here for other policies (`serde_json::to_*`, `std::env::var`,
     `Router::route`) would otherwise hide erasures from this check entirely.
@@ -90,9 +95,56 @@ LITERAL_OR_COMMENT = re.compile(r"""(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])')|
 SPACE = re.compile(r"\s*")
 
 
-def _blank_comments(text: str) -> str:
-	"""Comments as spaces, newlines kept, so a doc comment showing an attribute is no finding."""
-	return LITERAL_OR_COMMENT.sub(lambda m: m.group(0) if m.group("lit") else re.sub(r"[^\n]", " ", m.group(0)), text)
+HIDDEN = "erasure::in_unexplained_scope"
+# What each lint's erasure looks like in source, for the scopes clippy is told
+# not to look in; a group, or `warnings`, hides all three.
+ERASURE_SHAPES = {
+	"disallowed_methods": r"\.(?:ok|unwrap_or|unwrap_or_default|unwrap_or_else)\s*\(|\bResult::ok\b",
+	"let_underscore_must_use": r"\blet\s+_\s*=",
+	"map_err_ignore": r"\.map_err\s*\(\s*\|_\|",
+}
+NAMED = re.compile(r"\bclippy::(disallowed_methods|let_underscore_must_use|map_err_ignore)\b")
+
+
+def _hidden_shapes(inner: str) -> re.Pattern[str]:
+	"""The erasures a suppression with these arguments hides."""
+	names = set(NAMED.findall(inner))
+	if not names or re.search(r"\bclippy::(?:style|all|restriction)\b|\bwarnings\b", inner):
+		names = set(ERASURE_SHAPES)
+	return re.compile("|".join(ERASURE_SHAPES[name] for name in sorted(names)))
+
+
+def _mask(text: str) -> str:
+	"""Comments as spaces, and each literal's contents as `x`s (its whitespace and quotes
+	kept), newlines kept throughout: an attribute shown in a comment, a string or a
+	`#[doc = "..."]` is no finding, and an empty `reason = ""` still reads as empty."""
+
+	def masked(match: re.Match[str]) -> str:
+		if not match.group("lit"):
+			return re.sub(r"[^\n]", " ", match.group(0))
+		quoted = match.group(0)
+		return quoted[0] + re.sub(r"\S", "x", quoted[1:-1]) + quoted[-1]
+
+	return LITERAL_OR_COMMENT.sub(masked, text)
+
+
+def _scope_end(text: str, start: int, inner: bool) -> int:
+	"""Where the scope a suppression covers ends: the file, for `#![...]`; else the
+	statement (its `;`) or the item (its closing brace), whichever opens first."""
+	if inner:
+		return len(text)
+	depth = 0
+	for index in range(start, len(text)):
+		char = text[index]
+		if char == ";" and depth == 0:
+			return index + 1
+		if char == "{":
+			depth += 1
+		elif char == "}":
+			depth -= 1
+			if depth <= 0:
+				return index + 1
+	return len(text)
 
 
 def suppressions(files: list[str]) -> Counter:
@@ -103,7 +155,8 @@ def suppressions(files: list[str]) -> Counter:
 		path = clippy.REPO_ROOT / file
 		if not path.is_file():
 			continue
-		text = _blank_comments(path.read_text(encoding="utf-8"))
+		source = path.read_text(encoding="utf-8")
+		text, lines = _mask(source), source.splitlines()
 		for match in ATTRIBUTE.finditer(text):
 			inner = match.group("inner")
 			if not SUPPRESSES.search(inner) or not ERASURE_LINT.search(inner) or REASON.search(inner):
@@ -116,6 +169,12 @@ def suppressions(files: list[str]) -> Counter:
 				end = SPACE.match(text, stacked.end()).end()
 			after = text.count("\n", 0, end) + 1
 			found[(file, SUPPRESSED, clippy.enclosing_item(file, after), clippy.WHITESPACE.sub(" ", match.group(0)).strip())] += 1
+			# Clippy reports nothing in that scope, so each erasure in it is
+			# read here, and a new one is new however old the attribute is.
+			scope_end = _scope_end(text, end, match.group(0).startswith("#!"))
+			for call in _hidden_shapes(inner).finditer(text, end, scope_end):
+				line = text.count("\n", 0, call.start()) + 1
+				found[(file, HIDDEN, clippy.enclosing_item(file, line), clippy.WHITESPACE.sub(" ", lines[line - 1]).strip())] += 1
 	return found
 
 
@@ -251,6 +310,15 @@ SOURCE = "\n".join(
 		")]",
 		"struct Warned;",
 		"/* note */",
+		'const SHOWN: &str = "#[allow(clippy::disallowed_methods)]";',
+		'#[doc = "#[allow(clippy::disallowed_methods)] in a doc attribute"]',
+		"fn documented() {}",
+		"#[allow(clippy::disallowed_methods)]",
+		"fn hides() {",
+		"    let n = s.parse::<u8>().ok();",
+		"    let _ = send();",
+		"}",
+		"fn outside() { let m = s.parse::<u8>().ok(); }",
 		"fn c() {}",
 	]
 )
@@ -287,14 +355,16 @@ def self_test() -> int:
 			found, errors, succeeded = read(_stream(*everything), files)
 			assert not errors and succeeded
 			lints = Counter(key[1] for key in found for _ in range(found[key]))
-			assert lints == Counter({"clippy::disallowed_methods": 2, "clippy::let_underscore_must_use": 1, "clippy::map_err_ignore": 1, SUPPRESSED: 6}), lints
+			assert lints == Counter({"clippy::disallowed_methods": 2, "clippy::let_underscore_must_use": 1, "clippy::map_err_ignore": 1, SUPPRESSED: 7, HIDDEN: 1}), lints
 			rest, _, _ = clippy.read(_stream(*everything))
 			assert sum(rest.values()) == 2, "the clippy ratchet keeps the env read and the doc lint, and only those"
 			assert not set(rest) & set(found), "no finding is in both ratchets"
 
 			# A suppression with no reason is a finding; one with a reason, or of another lint, is not.
 			hidden = {key[2]: key[3] for key in found if key[1] == SUPPRESSED}
-			assert set(hidden) == {"fn hidden", "fn b", "fn stacked", "fn empty_reason", "fn grouped", "struct Warned"}, hidden
+			scoped = sorted(key[3] for key in found if key[1] == HIDDEN)
+			assert scoped == ["let n = s.parse::<u8>().ok();"], "the erasure the bare allow hides; not its `let _ =`, which clippy still sees, nor the one outside it: " + repr(scoped)
+			assert set(hidden) == {"fn hidden", "fn b", "fn stacked", "fn empty_reason", "fn grouped", "struct Warned", "fn hides"}, hidden
 
 			# A message clippy reworded stops both ratchets.
 			for reader in (lambda s: clippy.read(s), lambda s: read(s, files)):
