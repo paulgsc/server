@@ -57,10 +57,24 @@ const fn seconds(value: i64) -> f64 {
 /// `marker_since` an error when the marker can't be read (`Ok(None)`: no
 /// marker). Either unknown is `NaN`, a gap on the graph, never 0 (HD3,
 /// #1208): a total read as 0 and then as itself again would be a reset and
-/// an increase `DeployFailed` reads as a failure. A gap fires no alert
-/// either; saying it is unreadable is the open-failures gauge's (#1201), and
-/// `/compat` says it at error on each ask.
+/// an increase `DeployFailed` reads as a failure. `DeployFailed` drops the
+/// `NaN` samples before `increase()`, so the gap is absent to it and the
+/// totals the healing deploy writes anew still read as a reset it sees.
+///
+/// This sweep is the pass that looks, so it holds each unreadable file open
+/// at `home-deploy`'s `read_state` and `read_marker` (docs/home-compute.md,
+/// invariant 9: a level, never a recount) and logs why at `warn`.
+/// `HomeFailuresOpen` tells the owner while one stays unreadable; `/compat`
+/// decides on it without saying it again on every ask.
 pub fn record_state(recorded: &std::io::Result<Recorded>, marker_since: &std::io::Result<Option<i64>>, now: i64, backups: (u64, u64)) {
+	if let Err(err) = recorded {
+		tracing::warn!(error = %err, "home's deploy record can't be read: its gauges are unknown");
+	}
+	if let Err(err) = marker_since {
+		tracing::warn!(error = %err, "home's deploy marker can't be read: its age is unknown");
+	}
+	crate::failure::open(crate::failure::Step::HomeDeployReadState, usize::from(recorded.is_err()));
+	crate::failure::open(crate::failure::Step::HomeDeployReadMarker, usize::from(marker_since.is_err()));
 	let counts = recorded.as_ref().map(|recorded| &recorded.counts);
 	let total = |value: fn(&crate::deploy::Counts) -> u64| counts.as_ref().map_or(f64::NAN, |counts| as_f64(value(counts)));
 	for (outcome, value) in [
@@ -104,7 +118,7 @@ mod tests {
 	use crate::deploy::{Counts, Recorded};
 	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
-	/// Every gauge `record_state` set, by name and `outcome` label.
+	/// Every gauge `record_state` set, by name and `outcome` or `step` label.
 	fn gauges(state: &std::io::Result<Recorded>, marker: &std::io::Result<Option<i64>>) -> Vec<(String, f64)> {
 		let recorder = DebuggingRecorder::new();
 		let snapshotter = recorder.snapshotter();
@@ -115,14 +129,23 @@ mod tests {
 			.into_iter()
 			.filter_map(|(key, _, _, value)| {
 				let key = key.key();
-				let outcome = key.labels().find(|l| l.key() == "outcome").map(|l| String::from("/") + l.value()).unwrap_or_default();
+				let outcome = key
+					.labels()
+					.find(|l| l.key() == "outcome" || l.key() == "step")
+					.map(|l| String::from("/") + l.value())
+					.unwrap_or_default();
 				match value {
 					DebugValue::Gauge(value) => Some((key.name().to_owned() + &outcome, value.into_inner())),
 					_ => None,
 				}
 			})
-			.filter(|(name, _)| name.starts_with("home_deploy"))
+			.filter(|(name, _)| name.starts_with("home_deploy") || name.starts_with("failures_open"))
 			.collect()
+	}
+
+	/// The `failures_open` level at `step`.
+	fn open(gauges: &[(String, f64)], step: &str) -> Option<f64> {
+		gauges.iter().find(|(name, _)| *name == format!("failures_open/{step}")).map(|(_, value)| *value)
 	}
 
 	/// HD3 (#1208): a record that can't be read is a gap on every deploy
@@ -133,7 +156,7 @@ mod tests {
 	fn an_unreadable_record_or_marker_is_a_gap_never_zero() {
 		let unreadable = gauges(&Err(std::io::Error::other("garbled")), &Err(std::io::Error::other("unreadable")));
 		assert!(unreadable.len() >= 10, "{unreadable:?}");
-		for (name, value) in &unreadable {
+		for (name, value) in unreadable.iter().filter(|(name, _)| name.starts_with("home_deploy")) {
 			assert!(value.is_nan(), "{name} = {value}");
 		}
 
@@ -150,11 +173,29 @@ mod tests {
 		assert_eq!(value("home_deploy_runs/failed"), Some(0.0));
 		assert_eq!(value("home_deploy_wanted_age_seconds"), Some(0.0), "no marker is an age of 0");
 		assert_eq!(
-			gauges(&Ok(recorded), &Ok(Some(400)))
+			gauges(&Ok(recorded.clone()), &Ok(Some(400)))
 				.iter()
 				.find(|(n, _)| n == "home_deploy_wanted_age_seconds")
 				.map(|(_, v)| *v),
 			Some(600.0)
 		);
+	}
+
+	/// HD3 (#1208), invariant 9: each unreadable file is held open, as a
+	/// level set afresh by each sweep, and a sweep that reads it clears it.
+	/// Family: record unreadable, marker unreadable, both, neither.
+	#[test]
+	fn an_unreadable_record_or_marker_is_held_open_until_read() {
+		let garbled = || Err(std::io::Error::other("garbled"));
+		for (recorded, marker, state_open, marker_open) in [
+			(garbled(), Ok(None), 1.0, 0.0),
+			(Ok(Recorded::default()), garbled(), 0.0, 1.0),
+			(garbled(), garbled(), 1.0, 1.0),
+			(Ok(Recorded::default()), Ok(Some(400)), 0.0, 0.0),
+		] {
+			let set = gauges(&recorded, &marker);
+			assert_eq!(open(&set, "read_state"), Some(state_open), "{set:?}");
+			assert_eq!(open(&set, "read_marker"), Some(marker_open), "{set:?}");
+		}
 	}
 }

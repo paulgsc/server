@@ -218,6 +218,14 @@ steps! {
 	/// conflicted on, which is not put again until what it counts moves.
 	/// Held in memory, so a restart puts it again (#1201).
 	MailboxPutIndex => MailboxPasses, "put_index", open;
+	/// Open: home's deploy record (`state.json`) is there and can't be read
+	/// or parsed. Every sweep meets it again until a deploy writes it anew or
+	/// someone repairs it; one envctl can't replace either (a directory in
+	/// its place, no permission) never heals by itself (HD3, #1208).
+	HomeDeployReadState => HomeDeploy, "read_state", open;
+	/// Open: home's deploy marker is there and its time can't be read, so
+	/// how long a deploy has waited is unknown (HD3, #1208).
+	HomeDeployReadMarker => HomeDeploy, "read_marker", open;
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
