@@ -116,7 +116,9 @@ pub enum Request {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Refusal {
-	/// Not one JSON request line.
+	/// Read whole, and not one JSON request line. A request that could not be
+	/// read whole in time is [`Refusal::Unavailable`] instead (#1209): a
+	/// client keeps `Malformed` against the program for good.
 	Malformed,
 	/// Past [`REQUEST_CEILING`].
 	TooLarge,
@@ -128,7 +130,9 @@ pub enum Refusal {
 	/// The runner could not prepare or compile the program for a reason of
 	/// its own machine (rustc missing or failing to run, no directory or file
 	/// for the program), before the program ran: not the program's doing.
-	/// The runner exits after answering, and restarts. A fault once the
+	/// The runner exits after answering, and restarts. Also the answer, with
+	/// no exit, to a request it could not read whole within the client
+	/// timeout (#1209): not the program's doing either, so it is asked again. A fault once the
 	/// program ran (a run or sweep it could not supervise to its end, which a
 	/// program's survivors can cause) is answered with nothing: the client
 	/// sees its connection dropped (RX2, RX3).

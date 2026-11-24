@@ -443,7 +443,10 @@ fn a_spans_columns_count_characters_and_its_end_is_exclusive() {
 }
 
 /// One deadline for the whole request, not one per read: a client that
-/// trickles a byte at a time loses the slot at the client timeout.
+/// trickles a byte at a time loses the slot at the client timeout. A request
+/// not read whole in time says nothing about the program, so it is answered
+/// `unavailable`, which the client asks again, never `malformed`, which it
+/// keeps against the program for good (#1209; RC1).
 #[test]
 fn a_trickling_client_is_refused_at_the_client_timeout() {
 	let work = tempfile::tempdir().unwrap();
@@ -467,9 +470,35 @@ fn a_trickling_client_is_refused_at_the_client_timeout() {
 		}
 	});
 	let (response, took) = server.join().unwrap();
-	assert!(matches!(response, Response::Refused { reason: Refusal::Malformed, .. }), "{response:?}");
+	assert!(matches!(response, Response::Refused { reason: Refusal::Unavailable, .. }), "{response:?}");
 	assert!(took >= CLIENT_TIMEOUT && took < CLIENT_TIMEOUT + Duration::from_secs(2), "{took:?}");
 	trickle.join().unwrap();
+}
+
+/// A line read whole that is not one request is `malformed`, the program's
+/// own verdict, and answered at once (#1209: only a request that could not
+/// be read in time is `unavailable`).
+#[test]
+fn a_line_read_whole_that_is_not_a_request_is_malformed() {
+	let work = tempfile::tempdir().unwrap();
+	let socket = work.path().join("runner.sock");
+	let programs = tempfile::tempdir().unwrap();
+	let recorder = recorder(Limits::default(), programs.path());
+	let listener = UnixListener::bind(&socket).unwrap();
+	let server = std::thread::spawn(move || {
+		let (stream, _) = listener.accept().unwrap();
+		let started = Instant::now();
+		(answer(&recorder, &stream, None).unwrap(), started.elapsed())
+	});
+	let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+	{
+		use std::io::Write;
+		(&stream).write_all(b"{\"ask\":\"nonsense\"}\n").unwrap();
+	}
+	let (response, took) = server.join().unwrap();
+	assert!(matches!(response, Response::Refused { reason: Refusal::Malformed, .. }), "{response:?}");
+	assert!(took < CLIENT_TIMEOUT, "{took:?}");
+	drop(stream);
 }
 
 /// What the phone reads when nothing ran: only a compile rustc refused is a
