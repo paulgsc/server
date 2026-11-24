@@ -708,10 +708,10 @@ tests:
         alertname: DeployFailed
         exp_alerts: []
 
-  - name: a rollback by the deploy that heals a record unreadable for 2 hours is DeployFailed (#1208)
+  - name: a rollback by the deploy that heals a record held for 2.5 hours is DeployFailed (#1208)
     # The record read 3 rollbacks, then could not be read for 2.5 hours, which
-    # file_host holds at 3 (C1511); the deploy that rewrote it from nothing
-    # rolled back: 1.
+    # file_host exports held at 3 (C1511); the deploy that rewrote it from
+    # nothing rolled back: 1, a reset increase() sees.
     interval: 1m
     input_series:
       - series: 'home_deploy_runs{job="file_host",outcome="rolled_back"}'
@@ -727,7 +727,7 @@ tests:
               objective: HD2
               says: "Home's on-demand deploy rolled back or failed in the last hour: `journalctl -u home-deploy` says why. If it names a missing or refused variable, the image needs a newer checkout on home."
 
-  - name: a record unreadable for 2 hours that reads again unchanged is not DeployFailed (#1208)
+  - name: a held record that reads again unchanged is not DeployFailed (#1208)
     interval: 1m
     input_series:
       - series: 'home_deploy_runs{job="file_host",outcome="rolled_back"}'

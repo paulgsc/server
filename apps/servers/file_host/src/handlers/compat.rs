@@ -199,11 +199,11 @@ mod tests {
 
 	/// HD3 (#1208): a garbled `state.json` never holds a newer client back:
 	/// it still asks for the deploy, which writes the record anew, and an
-	/// ordinary ask is answered as before. Neither logs at error: the sweep
-	/// holds it open once, not once per ask (invariant 9).
+	/// ordinary ask is answered as before. Neither logs at warn or error: the
+	/// sweep holds it open once, not once per ask (invariant 9).
 	#[test]
 	fn an_unreadable_deploy_record_still_asks_for_the_deploy_and_is_not_said_per_ask() {
-		let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() == tracing::Level::ERROR);
+		let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() <= tracing::Level::WARN);
 		let dir = tempfile::tempdir().unwrap();
 		std::fs::write(dir.path().join(deploy::STATE), b"{ not json").unwrap();
 		let ordinary = answer(dir.path(), CONTRACT_EPOCH, 1_800_000_000, RateLimit::of(60));

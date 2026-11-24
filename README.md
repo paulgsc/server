@@ -544,11 +544,17 @@ home, home sends no request anywhere (the owner's ask, 2026-11-10):
    hours, so a client nothing published can serve costs at most 4 requests
    to Docker Hub in 6 hours; `needs` more than 1000 above the running epoch
    is refused, so a forged or mistyped one starts no pull at all; and no
-   epoch at or below the running one is ever a reason to pull.
+   epoch at or below the running one is ever a reason to pull. While
+   `state.json` can't be read there is no last pull to read, so the pull
+   gap and the 6 hours hold nothing back until a deploy writes it anew;
+   one envctl can't replace either keeps every newer ask pulling until
+   someone repairs it (#1208).
 5. **Loud.** `DeployFailed` (a deploy rolled back or failed in the last
    hour), `DeployStuck` (a marker 30 minutes unanswered) and
    `DeployCannotRequest` (an ask whose marker could not be written, in the
-   last hour) reach the owner like home's other alerts (`infra/prometheus/rules/home.yml`). The STORAGE
+   last hour), and `HomeFailuresOpen` on `home-deploy`'s `read_state` or
+   `read_marker` (the record or marker unreadable for about 2 hours) reach
+   the owner like home's other alerts (`infra/prometheus/rules/home.yml`). The STORAGE
    dashboard's Deploy row draws the pattern's footprint: asks by answer,
    runs by outcome, pulls per 6 hours against Docker Hub's limit and their
    projection, bytes pulled, and the backups against the disk.

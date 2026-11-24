@@ -71,10 +71,15 @@ pub struct Last {
 ///
 /// - the run totals stay as `last` last read them, since a running total that
 ///   was read is still true as a lower bound, and the deploy that rewrites
-///   the record anew then reads as a reset `DeployFailed` sees, however long
-///   it was unreadable. After a restart nothing was read, so they are
-///   absent until a tick reads them (the coordinator's call C1511, after
-///   `NaN` on the totals hid that reset from `increase()`);
+///   the record anew (envctl starts it from nothing) then reads as a reset
+///   `DeployFailed` sees, however long it was unreadable (the
+///   coordinator's call C1511, after `NaN` on the totals hid that reset
+///   from `increase()`). Two bounds, where `HomeFailuresOpen` has told the
+///   unreadable record but `DeployFailed` does not tell the healing run's
+///   failure: its outcome's held total is exactly 1, so it reads 1 then 1;
+///   or file_host restarted while it was unreadable, which leaves the
+///   totals absent until a tick reads them, more than an hour before the
+///   healing run;
 /// - the last run's time and exit code and the newest epoch seen, which
 ///   state a current value, are `NaN`, a gap, as is the marker's age when it
 ///   can't be read.
@@ -169,7 +174,7 @@ mod tests {
 
 	/// The `failures_open` level at `step`.
 	fn open(gauges: &[(String, f64)], step: &str) -> Option<f64> {
-		gauges.iter().find(|(name, _)| *name == format!("failures_open/{step}")).map(|(_, value)| *value)
+		gauges.iter().find(|(name, _)| name.strip_prefix("failures_open/") == Some(step)).map(|(_, value)| *value)
 	}
 
 	fn value(gauges: &[(String, f64)], name: &str) -> Option<f64> {
@@ -240,5 +245,22 @@ mod tests {
 			assert_eq!(open(&set, "read_state"), Some(state_open), "{set:?}");
 			assert_eq!(open(&set, "read_marker"), Some(marker_open), "{set:?}");
 		}
+	}
+
+	/// Invariant 9: an unreadable file is said at `warn` when it turns
+	/// unreadable, not on every tick, and again when it turns unreadable
+	/// after a tick read it.
+	#[test]
+	fn an_unreadable_file_is_said_when_it_turns_unreadable_not_each_tick() {
+		let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() <= tracing::Level::WARN);
+		let mut last = Last::default();
+		let said = |captured: &crate::privacy::Captured| captured.lines().iter().filter(|line| line.contains("deploy record can't be read")).count();
+		record_state(&mut last, &garbled(), &Ok(None), 1_000, (0, 0));
+		assert_eq!(said(&captured), 1, "the first unreadable tick");
+		record_state(&mut last, &garbled(), &Ok(None), 1_000, (0, 0));
+		assert_eq!(said(&captured), 1, "not again while it stays unreadable");
+		record_state(&mut last, &Ok(Recorded::default()), &Ok(None), 1_000, (0, 0));
+		record_state(&mut last, &garbled(), &Ok(None), 1_000, (0, 0));
+		assert_eq!(said(&captured), 2, "again once it turns unreadable after a read");
 	}
 }

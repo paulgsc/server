@@ -658,8 +658,11 @@ groups:
         # deploy's own totals), so increase() over the hour sees each one;
         # resolved an hour after the last. While file_host can't read the
         # record it holds the totals as last read (HD3, #1208, C1511), so the
-        # deploy that writes the record anew reads as a reset increase()
-        # sees, however long it was unreadable.
+        # deploy that writes the record anew (from nothing) reads as a reset
+        # increase() sees, however long it was unreadable. Not when the held
+        # total is exactly 1 (1 then 1), or when file_host restarted while
+        # it was unreadable more than an hour before: HomeFailuresOpen has
+        # told the unreadable record, not that run.
         expr: sum(increase(home_deploy_runs{outcome=~"rolled_back|failed"}[1h])) > 0
         labels:
           objective: HD2
