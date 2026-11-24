@@ -95,16 +95,21 @@ ITEM_HEADER = re.compile(
 
 Key = tuple[str, str, str, str]  # (file, lint, enclosing item, source text)
 
-# The silent erasures of a `Result` (epic #1174, #1189): `scripts/check_erasures.py`
+# The silent erasures (epic #1174, #1189): `scripts/check_erasures.py`
 # ratchets these, and this script never does. `Result::ok` and the rest are
 # named in clippy.toml's `disallowed-methods`, beside methods disallowed for
 # other reasons, so the lint alone does not say which ratchet a finding is
-# for; the method clippy names in its message does.
+# for; the method clippy names in its message does. That message's wording
+# is clippy's, so one this does not recognise stops both scripts rather than
+# letting a reworded release move erasures into this baseline on the
+# toolchain bump that may grow it.
 ERASURE_LINTS = frozenset({"clippy::let_underscore_must_use", "clippy::map_err_ignore"})
-ERASURE_METHODS = frozenset(
-	f"{crate}::result::Result::{method}" for crate in ("core", "std") for method in ("ok", "unwrap_or", "unwrap_or_default", "unwrap_or_else")
-)
-DISALLOWED_METHOD = re.compile(r"`([^`]+)`")
+ERASURE_METHODS = frozenset(f"core::result::Result::{method}" for method in ("ok", "unwrap_or", "unwrap_or_default", "unwrap_or_else"))
+DISALLOWED_METHOD = re.compile(r"^use of a disallowed method `([^`]+)`$")
+
+
+class UnknownMessage(ValueError):
+	"""A `disallowed_methods` message in a shape these scripts do not read."""
 
 
 def is_erasure(code: str, message: dict) -> bool:
@@ -112,8 +117,13 @@ def is_erasure(code: str, message: dict) -> bool:
 		return True
 	if code != "clippy::disallowed_methods":
 		return False
-	named = DISALLOWED_METHOD.search(message.get("message", ""))
-	return bool(named) and named.group(1) in ERASURE_METHODS
+	named = DISALLOWED_METHOD.match(message.get("message", ""))
+	if named is None:
+		raise UnknownMessage(
+			f"clippy::disallowed_methods said {message.get('message')!r}, which is not "
+			"'use of a disallowed method `<path>`': update DISALLOWED_METHOD in scripts/check_clippy_baseline.py"
+		)
+	return named.group(1) in ERASURE_METHODS
 
 
 def not_erasure(code: str, message: dict) -> bool:

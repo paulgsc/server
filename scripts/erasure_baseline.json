@@ -136,6 +136,11 @@
       "fn compose_on": {
         "let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);": 1
       }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn shell": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
     }
   },
   "apps/envctl/src/nix.rs": {
@@ -268,6 +273,13 @@
       }
     }
   },
+  "apps/servers/file_host/build.rs": {
+    "erasure::suppressed_without_reason": {
+      "<file scope>": {
+        "#![allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "apps/servers/file_host/src/auth.rs": {
     "clippy::disallowed_methods": {
       "fn has_room": {
@@ -327,6 +339,13 @@
       },
       "fn take": {
         "let (expires, subject) = self.open.lock().unwrap_or_else(PoisonError::into_inner).remove(&code.digest())?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/auth/passkey.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn for_storage": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -509,6 +528,11 @@
       "fn parse_timezone": {
         ".map_err(|_| \"not an IANA zone name, e.g. America/Denver\".into())": 1
       }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn retired_variables_set": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
     }
   },
   "apps/servers/file_host/src/contention.rs": {
@@ -583,6 +607,13 @@
     "clippy::map_err_ignore": {
       "fn record_in": {
         "let manifest: Value = serde_json::from_slice(&manifest).map_err(|_| Failed::Unreadable)?;": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/essay_media/takes.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn words_file": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -776,6 +807,14 @@
       "fn finish_sign_in": {
         ".map_err(|_| FileHostError::Unauthorized)?;": 2
       }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn a_write_already_in_flight_does_not_outlive_the_account_it_was_for": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      },
+      "fn app": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
     }
   },
   "apps/servers/file_host/src/handlers/cards_essays.rs": {
@@ -796,6 +835,16 @@
     "clippy::disallowed_methods": {
       "fn if_none_match_hits": {
         "let Some(raw) = headers.get(IF_NONE_MATCH).and_then(|value| value.to_str().ok()) else {": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/handlers/db/curriculum.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn manifest": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      },
+      "fn the_manifest_and_a_lesson_come_from_the_rows": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -848,6 +897,11 @@
       "fn get_week": {
         "let text = String::from_utf8(held.body).map_err(|_| unreadable())?;": 1,
         "week: RawValue::from_string(text).map_err(|_| unreadable())?,": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn get_week": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -953,6 +1007,14 @@
       "fn week_with_runs": {
         "let text = String::from_utf8(held.body).map_err(|_| unreadable())?;": 1,
         "week: RawValue::from_string(text).map_err(|_| unreadable())?,": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn get_round": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      },
+      "fn week_with_runs": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1322,6 +1384,13 @@
       }
     }
   },
+  "apps/servers/file_host/src/metrics/http.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn matched_path_equals_route_inventory_full_path": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "apps/servers/file_host/src/metrics/lane.rs": {
     "clippy::disallowed_methods": {
       "fn signed": {
@@ -1395,6 +1464,13 @@
       }
     }
   },
+  "apps/servers/file_host/src/nudge/actuate.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn send": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "apps/servers/file_host/src/nudge/clock.rs": {
     "clippy::disallowed_methods": {
       "fn parse_timestamp": {
@@ -1406,6 +1482,13 @@
     "clippy::disallowed_methods": {
       "fn timeout": {
         "tokio::time::timeout(budget, work).await.ok()": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/nudge/payload.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn to_bytes": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1450,6 +1533,11 @@
       },
       "fn one_pass_reads_at_most_one_row_per_due_subject": {
         "let _ = write!(id, \"{i}-{j}\");": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn write_topiks": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1500,12 +1588,22 @@
       "fn record_debug": {
         "let _ = write!(line, \"{}={value:?}\", field.name());": 1
       }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn a_rate_limited_request_logs_no_address": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
     }
   },
   "apps/servers/file_host/src/rate_limiter/middleware.rs": {
     "clippy::disallowed_methods": {
       "fn retry_after_seconds": {
         "u64::try_from(wait.as_nanos().div_ceil(1_000_000_000)).unwrap_or(u64::MAX).max(1)": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn a_refusal_says_when_to_ask_again": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1555,6 +1653,13 @@
     "clippy::disallowed_methods": {
       "fn origins": {
         "AllowOrigin::list(config.allowed_origins.iter().filter_map(|origin| origin.parse::<HeaderValue>().ok()))": 1
+      }
+    }
+  },
+  "apps/servers/file_host/src/routes/table.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn on": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1632,6 +1737,14 @@
     "clippy::disallowed_methods": {
       "fn ask": {
         ".unwrap_or_else(|_| Err(AskError::NotSent(std::io::Error::other(\"the client's thread ended\"))))": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn run_once": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      },
+      "fn stopped_run": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1723,6 +1836,13 @@
       }
     }
   },
+  "apps/servers/file_host/src/trace.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn app": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "apps/servers/file_host/src/transcribe.rs": {
     "clippy::let_underscore_must_use": {
       "fn start": {
@@ -1771,6 +1891,11 @@
         ".map_err(|_| anyhow::anyhow!(\"transcribe::verbatim::PROMPT does not tokenize in transcribe::MODEL's vocabulary\"))?;": 1,
         "WhisperVadContext::new(vad_path, vad_context(threads)?).map_err(|_| anyhow::anyhow!(\"transcribe::VAD_MODEL does not load as a whisper.cpp VAD model\"))?;": 1,
         "let context = WhisperContext::new_with_params(model_path, parameters).map_err(|_| anyhow::anyhow!(\"transcribe::MODEL does not load as a whisper.cpp model\"))?;": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn verbatim_keeps_fillers_the_plain_decode_drops": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1822,6 +1947,11 @@
       "fn live_after": {
         ".and_then(|n| n.parse::<i64>().ok())": 1
       }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn only_a_paired_phone_may_open_it": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
     }
   },
   "apps/servers/file_host/src/websocket/game_live/wire.rs": {
@@ -1837,6 +1967,18 @@
     "clippy::let_underscore_must_use": {
       "fn server_view_of": {
         "let _ = sender.send(verdict);": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn server_view_of": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
+  "apps/servers/file_host/tests/leetype_runs.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn the_runner_reaches_file_host_only_through_leetype_runner": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -1858,6 +2000,11 @@
       },
       "fn unmet": {
         "let Some(number) = value(bound.variable).and_then(|current| current.parse::<f64>().ok()) else {": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn assert_checked_in": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -2037,6 +2184,20 @@
       }
     }
   },
+  "crates/db/curriculum/src/importer.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn write_corpus": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
+  "crates/db/curriculum/src/repository.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn upsert": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "crates/db/drama_prompt/src/lib.rs": {
     "clippy::map_err_ignore": {
       "fn parse": {
@@ -2153,10 +2314,22 @@
       }
     }
   },
+  "crates/db/leetype_round/src/repository.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn witnesses_for": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "crates/db/leetype_round/src/runs.rs": {
     "clippy::disallowed_methods": {
       "fn parse": {
         "digits.parse().ok().map(Self::Diff)": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn replace_runs": {
+        "#[allow(clippy::disallowed_methods)]": 2
       }
     }
   },
@@ -2196,6 +2369,11 @@
       "fn from": {
         ".unwrap_or_default()": 1
       }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn upsert": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
     }
   },
   "crates/db/reflection/src/lib.rs": {
@@ -2207,6 +2385,13 @@
     "clippy::map_err_ignore": {
       "fn parse": {
         "let wire: Wire = serde_json::from_slice(body).map_err(|_| vec![(\"body\", \"is not the shape a reflection has\")])?;": 1
+      }
+    }
+  },
+  "crates/db/rust_round/src/draft.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn put_draft": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -2281,6 +2466,16 @@
       },
       "fn read_start": {
         "let start: Start = serde_json::from_value(value).map_err(|_| {": 1
+      }
+    }
+  },
+  "crates/db/session/src/repository.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn encode": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      },
+      "fn refresh_if_untouched": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -2482,6 +2677,13 @@
       }
     }
   },
+  "crates/leetype_runner/tests/nevers.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn nothing_in_the_runners_dependency_closure_knows_a_study_signal": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "crates/leetype_runner/tests/runner.rs": {
     "clippy::disallowed_methods": {
       "fn runner": {
@@ -2568,6 +2770,14 @@
     "clippy::disallowed_methods": {
       "fn record": {
         "metrics::counter!(SENT_METRIC, \"caller\" => caller_label, \"host\" => host_label).increment(u64::try_from(sent).unwrap_or(u64::MAX));": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn build": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      },
+      "fn client": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -2712,6 +2922,13 @@
       }
     }
   },
+  "crates/rust_runner/src/lib.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn forward_toolchain_env": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "crates/rust_runner/src/process.rs": {
     "clippy::disallowed_methods": {
       "fn alive_and_owned_by": {
@@ -2734,6 +2951,11 @@
     "clippy::map_err_ignore": {
       "fn joined": {
         "handle.join().map_err(|_| std::io::Error::other(\"an output reader panicked\"))?": 1
+      }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn resolve": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },
@@ -2784,6 +3006,14 @@
       "fn the_service_side": {
         "let client = client.to_str().and_then(|client| client.parse::<u32>().ok()).unwrap();": 1
       }
+    },
+    "erasure::suppressed_without_reason": {
+      "fn the_service_side": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      },
+      "fn toolchain_variables": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
     }
   },
   "crates/rust_runner/tests/recording.rs": {
@@ -2822,6 +3052,13 @@
       }
     }
   },
+  "crates/some-metrics/src/lib.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn route": {
+        "#[allow(clippy::disallowed_methods)]": 1
+      }
+    }
+  },
   "crates/some-services/src/rate_limiter/clock.rs": {
     "clippy::disallowed_methods": {
       "fn advance": {
@@ -2850,6 +3087,13 @@
     "clippy::let_underscore_must_use": {
       "fn run": {
         "let _ = limiter.snapshot();": 1
+      }
+    }
+  },
+  "crates/some-shutdown/tests/sigterm.rs": {
+    "erasure::suppressed_without_reason": {
+      "fn child_waits_for_shutdown_signal": {
+        "#[allow(clippy::disallowed_methods)]": 1
       }
     }
   },

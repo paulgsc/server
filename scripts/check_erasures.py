@@ -1,43 +1,57 @@
 #!/usr/bin/env python3
-"""Erasures as a ratchet: no new silent erasure of a `Result`, and the old ones only go.
+"""Erasures as a ratchet: no new silent erasure, and the old ones only go.
 
 The owner's rule (epic #1174): a failure is like energy, never destroyed. A
 `Result` turned into an ordinary value with no count and no error log is a
 failure destroyed, and about 140 of them hid real ones (#1172: a refused
 handing stored as an answer, then read as "waits"). The `Failure` token
-(`apps/servers/file_host/src/failure.rs`) makes the right thing easy; this
-makes the wrong thing visible, at the place it is written:
+(`apps/servers/file_host/src/failure.rs`, #1193) makes the right thing easy;
+this makes the wrong thing visible where it is written:
 
   * `clippy.toml`'s `disallowed-methods` names `Result::ok`, `unwrap_or`,
-    `unwrap_or_default` and `unwrap_or_else`;
+    `unwrap_or_default` and `unwrap_or_else`, as calls and as paths
+    (`filter_map(Result::ok)`, `filter_map(|r| r.ok())`);
   * `.cargo/config.toml` warns `clippy::let_underscore_must_use` (`let _ =`
-    of a `Result` or a `Failure`) and `clippy::map_err_ignore`
-    (`.map_err(|_| ...)`).
+    of anything `#[must_use]`: a `Result`, a `Failure`, and also iterators
+    and futures) and `clippy::map_err_ignore` (`.map_err(|_| ...)`);
+  * and, read here from the source: an `#[allow]` or `#[expect]` of any of
+    those lints that gives no `reason = "..."`. Such an attribute silences the
+    erasures in its whole scope, and the 45 bare `#[allow(clippy::disallowed_methods)]`
+    already here for other policies (`serde_json::to_*`, `std::env::var`,
+    `Router::route`) would otherwise hide erasures from this check entirely.
+    A suppression with a reason says why, and review reads it.
 
 Most existing sites are benign (an `Option` default, an untrusted parse that
 becomes a 4xx, a send to a closed socket), so these findings are recorded in
 their own baseline, `scripts/erasure_baseline.json`, not in
 `scripts/clippy_baseline.json`: the owner's decision on #1189, option (a). The
 clippy baseline's rule (only a toolchain bump grows it) stays as written, and
-`check_clippy_baseline.py` leaves these findings to this script.
+`check_clippy_baseline.py` leaves these findings to this script. A
+`disallowed_methods` message in a shape neither script recognises stops both
+(`check_clippy_baseline.is_erasure`), so a reworded clippy cannot move
+erasures into the baseline a toolchain bump may grow.
 
 This baseline only shrinks. There is no `--allow-growth`: a new erasure is
 either counted (`Failure::record`, or an `error!` that names it), or it is
 benign and says so where it is written, in
 `#[expect(clippy::disallowed_methods, reason = "...")]` (or the lint it is).
-Three comparisons, as the clippy ratchet makes them:
+An `#[expect]` of `disallowed_methods` also silences that lint's other
+policies in its scope, so keep it on the one statement. Three comparisons,
+as the clippy ratchet makes them:
 
   * the findings vs the committed baseline: a new one fails, and so does a
     fixed one until `--update` records the fix;
   * the committed baseline vs the base branch's (`--base`): it may not record
-    anything the base's does not;
-  * `--update` refuses to record growth.
+    anything the base's does not. lint.yml fails, rather than skips, when the
+    base runs this check and its baseline cannot be read;
+  * `--update` refuses to record growth, once a baseline exists.
 
 A finding's identity is the clippy ratchet's own (file, lint, enclosing item,
 source text), counted, from the same `cargo clippy --message-format=json`
-output lint.yml already makes. What it does not see: `filter_map(|r| r.ok())`
-and `.flatten()` over `Result`s, and a `match` arm `Err(_) => default`.
-`filter_map(Result::ok)` is seen, as a path. Review covers the rest.
+output lint.yml already makes. What it does not see, and review covers:
+`map_err(|_e| ...)` (a named, unused binding), `is_ok()`/`is_err()` as the
+only use, `map_or`/`map_or_else`, `if let Ok(..)` and `let Ok(x) = .. else`,
+`Err(_) => default` arms, `.flatten()` over `Result`s, and `drop(result)`.
 
     python3 scripts/check_erasures.py clippy.json [--base base.json] [--update]
     python3 scripts/check_erasures.py --self-test
@@ -48,6 +62,8 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
+import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -57,10 +73,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_clippy_baseline as clippy  # noqa: E402
 
 BASELINE = clippy.REPO_ROOT / "scripts" / "erasure_baseline.json"
+SUPPRESSED = "erasure::suppressed_without_reason"
+ERASURE_LINT_NAMES = ("disallowed_methods", "let_underscore_must_use", "map_err_ignore")
+SUPPRESSION = re.compile(r"#!?\[\s*(?:allow|expect)\s*\((?P<inner>[^\]]*)\)\s*\]", re.DOTALL)
+REASON = re.compile(r"\breason\s*=")
 
 
-def read(stream) -> tuple[Counter, list[str], bool]:
-	return clippy.read(stream, keep=clippy.is_erasure)
+def suppressions(files: list[str]) -> Counter:
+	"""Each `#[allow]`/`#[expect]` of an erasure lint with no reason, keyed as a finding."""
+	found: Counter = Counter()
+	for file in files:
+		path = clippy.REPO_ROOT / file
+		if not path.is_file():
+			continue
+		text = path.read_text(encoding="utf-8")
+		for match in SUPPRESSION.finditer(text):
+			inner = match.group("inner")
+			if not any(re.search(rf"\bclippy::{name}\b", inner) for name in ERASURE_LINT_NAMES) or REASON.search(inner):
+				continue
+			# The item it decorates: the first header at or below the line after it.
+			after = text.count("\n", 0, match.end()) + 2
+			found[(file, SUPPRESSED, clippy.enclosing_item(file, after), clippy.WHITESPACE.sub(" ", match.group(0)).strip())] += 1
+	return found
+
+
+def rust_files() -> list[str]:
+	listed = subprocess.run(["git", "ls-files", "-z", "--", "*.rs"], cwd=clippy.REPO_ROOT, capture_output=True, check=True)
+	return sorted(name for name in listed.stdout.decode().split("\0") if name)
+
+
+def read(stream, files: list[str]) -> tuple[Counter, list[str], bool]:
+	findings, errors, succeeded = clippy.read(stream, keep=clippy.is_erasure)
+	return findings + suppressions(files), errors, succeeded
 
 
 def check(findings: Counter, committed: Counter, base: Counter | None) -> list[str]:
@@ -68,7 +112,10 @@ def check(findings: Counter, committed: Counter, base: Counter | None) -> list[s
 	problems: list[str] = []
 	grew = clippy.exceeding(findings, committed)
 	if grew:
-		problems.append("::error::a new silent erasure of a Result: count it with Failure::record, or say why it is benign in #[expect(..., reason)]:")
+		problems.append(
+			"::error::a new silent erasure: count it with Failure::record (or log it at error), "
+			'or say why it is benign in #[expect(<the lint>, reason = "...")]:'
+		)
 		problems.extend(clippy.rows(grew))
 	stale = [(key, recorded, found) for key, found, recorded in clippy.exceeding(committed, findings)]
 	if stale:
@@ -84,7 +131,7 @@ def check(findings: Counter, committed: Counter, base: Counter | None) -> list[s
 	return problems
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, files: list[str] | None = None) -> int:
 	parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 	parser.add_argument("messages", type=Path, nargs="?", help="cargo clippy --message-format=json output")
 	parser.add_argument("--update", action="store_true", help="rewrite the baseline from these findings (refuses growth)")
@@ -98,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
 		parser.error("the clippy messages are required")
 
 	with args.messages.open(encoding="utf-8") as stream:
-		findings, errors, succeeded = read(stream)
+		findings, errors, succeeded = read(stream, rust_files() if files is None else files)
 	if errors or not succeeded:
 		print("::error::clippy did not build the workspace; check_clippy_baseline.py says why")
 		return 1
@@ -107,16 +154,16 @@ def main(argv: list[str] | None = None) -> int:
 
 	if args.update:
 		grew = clippy.exceeding(findings, committed)
-		# The first baseline records what is there (#1189); after it, the
-		# base branch's copy is what CI's `--base` holds any later one to, so
-		# deleting the file is no way to record growth either.
+		# The first baseline records what is there (#1189). After it, `--update`
+		# refuses growth, and CI's `--base` holds the committed file to the
+		# base branch's, so deleting it is no way to record growth either.
 		if grew and BASELINE.exists():
 			print("::error::refusing to record new erasures in the baseline: it only shrinks.")
 			print("\n".join(clippy.rows(grew)))
 			return 1
 		BASELINE.write_text(json.dumps(clippy.to_json(findings), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-		files = len({file for file, *_ in findings})
-		print(f"wrote {sum(findings.values())} erasures across {files} files to {BASELINE.relative_to(clippy.REPO_ROOT)}")
+		count = len({file for file, *_ in findings})
+		print(f"wrote {sum(findings.values())} erasures across {count} files to {BASELINE.relative_to(clippy.REPO_ROOT)}")
 		return 0
 
 	problems = check(findings, committed, clippy.load(args.base) if args.base is not None else None)
@@ -130,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 # --- self-test -------------------------------------------------------------
 
 
-def _message(code: str, text: str, message: str, file: str = "apps/x/src/lib.rs", line: int = 3) -> str:
+def _message(code: str, text: str, message: str, line: int, file: str = "apps/x/src/lib.rs") -> str:
 	return json.dumps(
 		{
 			"reason": "compiler-message",
@@ -145,47 +192,106 @@ def _message(code: str, text: str, message: str, file: str = "apps/x/src/lib.rs"
 
 
 FINISHED = json.dumps({"reason": "build-finished", "success": True})
-OK = _message("clippy::disallowed_methods", "let n = s.parse().ok();", "use of a disallowed method `core::result::Result::ok`")
-OR = _message("clippy::disallowed_methods", "x.unwrap_or_default()", "use of a disallowed method `core::result::Result::unwrap_or_default`", line=5)
-LET = _message("clippy::let_underscore_must_use", "let _ = send();", "non-binding `let` on a result of a `#[must_use]` function", line=7)
-MAP = _message("clippy::map_err_ignore", ".map_err(|_| E)", "`map_err(|_|...` wildcard pattern discards the original error", line=9)
-ENV = _message("clippy::disallowed_methods", "std::env::var(\"X\")", "use of a disallowed method `std::env::var`", line=11)
-DOC = _message("clippy::doc_markdown", "/// a FooBar", "item in documentation is missing backticks", line=1)
+OK = _message("clippy::disallowed_methods", "let n = s.parse().ok();", "use of a disallowed method `core::result::Result::ok`", 3)
+OR = _message("clippy::disallowed_methods", "x.unwrap_or_default()", "use of a disallowed method `core::result::Result::unwrap_or_default`", 5)
+LET = _message("clippy::let_underscore_must_use", "let _ = send();", "non-binding `let` on a result of a `#[must_use]` function", 7)
+MAP = _message("clippy::map_err_ignore", ".map_err(|_| E)", "`map_err(|_|...` wildcard pattern discards the original error", 9)
+ENV = _message("clippy::disallowed_methods", 'std::env::var("X")', "use of a disallowed method `std::env::var`", 11)
+DOC = _message("clippy::doc_markdown", "/// a FooBar", "item in documentation is missing backticks", 1)
+REWORDED = _message("clippy::disallowed_methods", "s.ok()", "`core::result::Result::ok` is disallowed", 3)
+
+SOURCE = "\n".join(
+	[
+		"fn a() {}",
+		"#[allow(clippy::disallowed_methods)]",
+		"fn hidden() {}",
+		'#[expect(clippy::disallowed_methods, reason = "a probe; its failure is the answer")]',
+		"fn said() {}",
+		"#[allow(clippy::too_many_lines)]",
+		"fn other() {}",
+		"#![allow(",
+		"    clippy::map_err_ignore",
+		")]",
+		"fn b() {}",
+		"fn c() {}",
+	]
+)
 
 
-def _read(*lines: str, keep=None) -> Counter:
-	stream = io.StringIO("\n".join([*lines, FINISHED]) + "\n")
-	findings, errors, succeeded = clippy.read(stream, keep=keep) if keep else read(stream)
-	assert not errors and succeeded
-	return findings
+def _stream(*lines: str) -> io.StringIO:
+	return io.StringIO("\n".join([*lines, FINISHED]) + "\n")
+
+
+def _run(*argv: str) -> tuple[int, str]:
+	out = io.StringIO()
+	saved, sys.stdout = sys.stdout, out
+	try:
+		code = main(list(argv), files=["apps/x/src/lib.rs"])
+	finally:
+		sys.stdout = saved
+	return code, out.getvalue()
 
 
 def self_test() -> int:
+	global BASELINE
+	saved_root, saved_baseline = clippy.REPO_ROOT, BASELINE
 	with tempfile.TemporaryDirectory() as tmp:
-		source = Path(tmp)
-		clippy.REPO_ROOT, saved = source, clippy.REPO_ROOT
+		root = Path(tmp)
+		clippy.REPO_ROOT, BASELINE = root, root / "erasure_baseline.json"
 		clippy._sources.clear()
 		try:
-			(source / "apps/x/src").mkdir(parents=True)
-			(source / "apps/x/src/lib.rs").write_text("\n".join(["fn a() {"] * 12) + "\n", encoding="utf-8")
-
+			(root / "apps/x/src").mkdir(parents=True)
+			(root / "apps/x/src/lib.rs").write_text(SOURCE + "\n", encoding="utf-8")
+			files = ["apps/x/src/lib.rs"]
 			everything = (OK, OR, LET, MAP, ENV, DOC)
-			erasures = _read(*everything)
-			assert {key[1] for key in erasures} == {"clippy::disallowed_methods", "clippy::let_underscore_must_use", "clippy::map_err_ignore"}, erasures
-			assert sum(erasures.values()) == 4, "the four erasures, not the env read or the doc lint"
 
-			rest = _read(*everything, keep=clippy.not_erasure)
+			# Each ratchet reads only its own findings, the clippy one by default.
+			found, errors, succeeded = read(_stream(*everything), files)
+			assert not errors and succeeded
+			lints = Counter(key[1] for key in found for _ in range(found[key]))
+			assert lints == Counter({"clippy::disallowed_methods": 2, "clippy::let_underscore_must_use": 1, "clippy::map_err_ignore": 1, SUPPRESSED: 2}), lints
+			rest, _, _ = clippy.read(_stream(*everything))
 			assert sum(rest.values()) == 2, "the clippy ratchet keeps the env read and the doc lint, and only those"
-			assert not set(rest) & set(erasures), "no finding is in both ratchets"
+			assert not set(rest) & set(found), "no finding is in both ratchets"
 
-			assert check(erasures, erasures, erasures) == [], "the recorded set holds"
-			fewer = _read(OK, OR, LET)
-			assert any("a new silent erasure" in line for line in check(erasures, fewer, None)), "a new one fails"
-			assert any("were fixed" in line for line in check(fewer, erasures, None)), "a fixed one fails until recorded"
-			assert any("only shrinks" in line for line in check(erasures, erasures, fewer)), "the baseline may not grow past the base's"
-			assert check(fewer, fewer, erasures) == [], "it may shrink"
+			# A suppression with no reason is a finding; one with a reason, or of another lint, is not.
+			hidden = {key[2]: key[3] for key in found if key[1] == SUPPRESSED}
+			assert set(hidden) == {"fn hidden", "fn b"}, hidden
+
+			# A message clippy reworded stops both ratchets.
+			for reader in (lambda s: clippy.read(s), lambda s: read(s, files)):
+				try:
+					reader(_stream(REWORDED))
+				except clippy.UnknownMessage:
+					pass
+				else:
+					raise AssertionError("a reworded disallowed_methods message was read")
+
+			# The comparisons.
+			fewer, _, _ = read(_stream(OK, OR, LET), files)
+			assert check(found, found, found) == [], "the recorded set holds"
+			assert any("a new silent erasure" in line for line in check(found, fewer, None)), "a new one fails"
+			assert any("were fixed" in line for line in check(fewer, found, None)), "a fixed one fails until recorded"
+			assert any("only shrinks" in line for line in check(found, found, fewer)), "the baseline may not grow past the base's"
+			assert check(fewer, fewer, found) == [], "it may shrink"
+
+			# main(), end to end, against the redirected baseline.
+			messages = root / "clippy.json"
+			messages.write_text(_stream(OK, OR, LET).getvalue(), encoding="utf-8")
+			assert _run(str(messages), "--update")[0] == 0 and BASELINE.exists(), "the first --update records what is there"
+			assert _run(str(messages))[0] == 0, "and then holds"
+			messages.write_text(_stream(*everything).getvalue(), encoding="utf-8")
+			code, out = _run(str(messages), "--update")
+			assert code == 1 and "refusing" in out, "--update refuses growth once a baseline exists"
+			code, out = _run(str(messages))
+			assert code == 1 and "a new silent erasure" in out, out
+			base = root / "base.json"
+			base.write_text(json.dumps({}), encoding="utf-8")
+			messages.write_text(_stream(OK, OR, LET).getvalue(), encoding="utf-8")
+			code, out = _run(str(messages), "--base", str(base))
+			assert code == 1 and "only shrinks" in out, "a baseline past an empty base's fails"
 		finally:
-			clippy.REPO_ROOT = saved
+			clippy.REPO_ROOT, BASELINE = saved_root, saved_baseline
 			clippy._sources.clear()
 	print("check_erasures self-test: ok")
 	return 0
