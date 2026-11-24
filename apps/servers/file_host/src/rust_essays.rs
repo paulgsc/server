@@ -298,7 +298,9 @@ async fn pass(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Result<E
 	match crate::mailbox::pass_subject(db, configured).await? {
 		Owner::Subject(subject) => {
 			let now = crate::handlers::rust_rounds::now();
-			let exported = export(db, kind, subject.as_str(), &Folders::server(kind), &now).await?;
+			// Read whether export went or not, so a failing export leaves no
+			// stale answer behind it.
+			let exported = export(db, kind, subject.as_str(), &Folders::server(kind), &now).await;
 			let feed = match kind {
 				Kind::RustRounds => crate::feeds::Feed::RustEssay,
 				Kind::Interview => crate::feeds::Feed::InterviewEssay,
@@ -319,7 +321,7 @@ async fn pass(db: &SqlitePool, kind: Kind, configured: Option<&str>) -> Result<E
 				}
 				Err(_) => warn!(error = "storage", "{}: whether an essay owed is overdue was not read", spec(kind).name),
 			}
-			Ok(exported)
+			exported
 		}
 		Owner::NoAccount | Owner::Several => {
 			crate::metrics::rust_essays::record_overdue(kind, false);
@@ -398,8 +400,15 @@ pub async fn export(db: &SqlitePool, kind: Kind, subject: &str, folders: &Folder
 		if let_go.contains(&week) || folders.renders.join(&week).join(VIDEO).exists() || given_revision(&input).await.is_some_and(|given| given >= revision) {
 			continue;
 		}
+		// A refusal is of the revision it read: a newer one that waits is
+		// not refused, so its log goes (the board's `waitsOn` and the
+		// `*EssayRefused` alerts read it).
+		let stale_refusal = || tokio::fs::remove_file(folders.status.join(week.clone() + ".refused.log"));
 		match given(db, kind, subject, &week, &held, now).await? {
-			Given::Waiting => done.waiting += 1,
+			Given::Waiting => {
+				done.waiting += 1;
+				let _ = stale_refusal().await;
+			}
 			Given::Refused(problems) => {
 				done.refused += 1;
 				if keep_refusal(&folders.status, &week, &problems).await.is_err() {
@@ -407,7 +416,10 @@ pub async fn export(db: &SqlitePool, kind: Kind, subject: &str, folders: &Folder
 				}
 			}
 			Given::Final(played) => match takes(db, kind, subject, &played).await? {
-				Takes::Waiting => done.waiting += 1,
+				Takes::Waiting => {
+					done.waiting += 1;
+					let _ = stale_refusal().await;
+				}
 				Takes::Deleted(note) => {
 					let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 					rust_round_repo::essay_video::withdraw(&mut tx, kind, subject, &week, &note, 0, now).await?;
@@ -1608,6 +1620,29 @@ mod tests {
 			None,
 			"another kind's week is not this one's"
 		);
+	}
+
+	/// A refusal is of the revision it read: a corrected revision that waits
+	/// on its take is not refused, so the log goes and the board says it
+	/// waits (paulgsc/some-ui#3478).
+	#[tokio::test]
+	async fn a_refusal_goes_once_a_newer_revision_waits_instead() {
+		let (pool, dir) = (pool().await, tempfile::tempdir().unwrap());
+		let folders = folders(dir.path());
+		std::fs::create_dir_all(&folders.status).unwrap();
+		hold_week(&pool, 1, "2026-w46").await;
+		send(&pool, "2026-w46").await;
+		hold(&pool, 2, &essay::mailbox_name("2026-w46"), &essay("2026-w46", ["silence", "silence"])).await;
+		let refused = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
+		assert_eq!(refused.refused, 1);
+		let waits = || async { waits_on(&pool, Kind::RustRounds, ME, &folders.status, "2026-w46").await.unwrap() };
+		assert_eq!(waits().await, Some(WaitsOn::EssayRefused));
+
+		hold(&pool, 3, "rust-essay-2026-w46-r2.json", &essay("2026-w46", ["take", "silence"])).await;
+		let waiting = export(&pool, Kind::RustRounds, ME, &folders, AFTER).await.unwrap();
+		assert_eq!((waiting.refused, waiting.waiting), (0, 1), "its take has not reached home");
+		assert!(!folders.status.join("2026-w46.refused.log").exists());
+		assert_eq!(waits().await, Some(WaitsOn::EssayWaiting));
 	}
 
 	/// Invariant 23's exception, (b): the takes are in the render's input

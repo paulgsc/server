@@ -444,6 +444,9 @@ pub struct FeedSeen {
 	/// The newest `from` home holds, let go or not, the call's only: its
 	/// weeks are days.
 	pub newest_week: Option<NaiveDate>,
+	/// That week's last day (`call_week`'s `to`, at its newest revision), the
+	/// call's only: a week the routine made longer to catch up ends later.
+	pub newest_week_to: Option<NaiveDate>,
 	/// Each episode that is a part of a call's week of more than one
 	/// (paulgsc/some-ui#2918), by key: which part, of how many.
 	pub parts: BTreeMap<String, (u32, u32)>,
@@ -493,6 +496,10 @@ pub async fn seen_of(db: &SqlitePool, folders: &Folders, subject: &str, shelf: S
 				Feed::CardsEssay => return Ok(None),
 			};
 			let mut seen = seen(shelf, &held, &let_go, renders, status).await;
+			if feed == Feed::Call {
+				let weeks = call_week_repo::held(&mut *db.acquire().await?).await?;
+				seen.newest_week_to = weeks.first().and_then(|week| NaiveDate::parse_from_str(&week.to, "%Y-%m-%d").ok());
+			}
 			let kind = match feed {
 				Feed::RustEssay => Some((Weeks::RustRounds, crate::rust_essays::Kind::RustRounds)),
 				Feed::InterviewEssay => Some((Weeks::Interview, crate::rust_essays::Kind::Interview)),
@@ -957,7 +964,8 @@ pub enum WaitsOn {
 	/// under Needs your attention: the routine writes no essay until it can
 	/// read a transcript of it.
 	TakeUnheard,
-	/// Home hasn't heard a take the week names yet, so the routine waits.
+	/// A take the week names has no words the routine can read yet: home
+	/// is still hearing it, or has not filed what it heard. The routine waits.
 	TakeHearing,
 	/// Its day passed and nothing home holds says why: the routine wrote
 	/// nothing (it did not run, or it failed).
@@ -1067,15 +1075,16 @@ fn cadence(feed: Feed, seen: &FeedSeen, now: i64, today: NaiveDate) -> Option<Na
 	}
 	let taken = DateTime::<Utc>::from_timestamp(newest_taken, 0)?.with_timezone(&HOME_ZONE).date_naive();
 	match feed {
-		// The weekly routine writes a week on the Friday after it ends
-		// (paulgsc/some-ui's `CALL-ROUTINE.md`): the week from Friday F, to
-		// Thursday F + 6, on F + 7. So the next week comes on F + 14, the
-		// first Friday after the newest came, or later for a week the
-		// routine made longer to catch up a missed run (up to 14 days). Kept
+		// The weekly routine writes a week on the day after it ends
+		// (paulgsc/some-ui's `CALL-ROUTINE.md`): the week from Friday F to
+		// Thursday T on T + 1, a Friday. So the next, a week long, comes on
+		// T + 8, whenever the newest was taken, and after a week the routine
+		// made longer to catch up a missed run, from its own last day. Kept
 		// once it has passed: the board's `overdue` (paulgsc/some-ui#3478).
+		// With no last day read, a week is seven days.
 		Feed::Call => {
-			let from = seen.newest_week?;
-			Some((from + Duration::days(14)).max(on_or_after(taken + Duration::days(1), from.weekday())))
+			let to = seen.newest_week_to.or_else(|| seen.newest_week.map(|from| from + Duration::days(6)))?;
+			Some(to + Duration::days(8))
 		}
 		// The Tuesday after the newest fill was taken, today at the soonest.
 		Feed::PlayoffDelta => Some(on_or_after((taken + Duration::days(1)).max(today), Weekday::Tue)),
