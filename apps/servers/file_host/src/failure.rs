@@ -8,7 +8,8 @@
 //! nothing having gone wrong (#1172).
 //!
 //! [`Failure`] is the proof that one was counted. Only [`Failure::record`]
-//! makes one, and it does three things at once:
+//! makes one, and it does three things at once ([`Failure::alone`] does the
+//! first two, for a failure whose only outcome is its count and its log):
 //!
 //! - increments `failures_total{process, step}`;
 //! - logs at `error!`, naming the process, the step, the cause and the line
@@ -172,23 +173,14 @@ steps! {
 	/// The Jobs mailbox holds other bytes under a file's name, which it never
 	/// replaces, so the file home handed in is never taken (#1172).
 	MailboxHandOverConflict => MailboxPasses, "hand_over_conflict";
-	/// A file read from the mailbox was not kept: its bytes were not what the
-	/// listing said, its name could not be asked for, it was not JSON, or home
-	/// holds other bytes under its name (#1175).
-	MailboxRead => MailboxPasses, "read";
 	/// A file kept as a plain brief because its body does not read as its
 	/// name says: a Drive takes list, a Rust Rounds week, or a pickup's
-	/// answer. What it would have queued or moved is not (#1175).
+	/// answer. What it would have queued or moved is not. Counted when it is
+	/// first kept (#1175).
 	MailboxReadBody => MailboxPasses, "read_body";
-	/// A `LeetType` session's log home could not file (#1175).
-	MailboxFileLeetypeLog => MailboxPasses, "file_leetype_log";
-	/// An archived file the routine asked for was not put back: the mailbox
-	/// holds other bytes, refused it, or home holds nothing for it (#1175).
-	MailboxRestore => MailboxPasses, "restore";
-	/// A file to be archived was not what its listing said (#1175).
-	MailboxArchive => MailboxPasses, "archive";
 	/// An index was not put: over the mailbox's ceiling, refused, or held
-	/// with other bytes, so the routine reads a stale one (#1175).
+	/// with other bytes, so the routine reads a stale one. Counted once per
+	/// index computed, as an index is put once per computed state (#1175).
 	MailboxIndexPut => MailboxPasses, "index_put";
 }
 
@@ -226,7 +218,9 @@ impl Failure {
 	/// As [`Failure::record`], for a failure whose only outcome is its count
 	/// and its log: nothing stores it (a file kept as a plain brief because
 	/// its body does not read as its name says, say). Where an outcome is
-	/// stored, `record` it and carry the token there instead.
+	/// stored, `record` it and carry the token there instead. Either way, one
+	/// event is one count: a condition that persists is not counted again
+	/// each time it is seen.
 	#[track_caller]
 	pub fn alone(step: Step, cause: &dyn fmt::Display) {
 		count(step, cause, Location::caller());
@@ -243,11 +237,11 @@ fn count(step: Step, cause: &dyn fmt::Display, at: &Location<'_>) {
 	let (process, name) = (step.process().as_str(), step.as_str());
 	counter!("failures_total", "process" => process, "step" => name).increment(1);
 	tracing::error!(
-			process,
-			step = name,
-			at = %format_args!("{}:{}", at.file(), at.line()),
-			cause = %cause,
-			"{process} failed at {name}: {cause}"
+		process,
+		step = name,
+		at = %format_args!("{}:{}", at.file(), at.line()),
+		cause = %cause,
+		"{process} failed at {name}: {cause}"
 	);
 }
 

@@ -579,14 +579,12 @@ async fn read_one<T: MailboxTransport>(
 	let body = match mailbox.get(folder, item).await {
 		Ok(body) => body,
 		Err(err @ (MailboxError::Mismatch | MailboxError::BadName)) => {
-			Counted::alone(Step::MailboxRead, &format_args!("{}: {err}", folder.as_str()));
 			outcome.refused.push(err.kind());
 			return Ok(true);
 		}
 		Err(err) => return Err(Failure::Mailbox(err)),
 	};
 	if serde_json::from_slice::<IgnoredAny>(&body).is_err() {
-		Counted::alone(Step::MailboxRead, &format_args!("{}: the file is not JSON", folder.as_str()));
 		outcome.refused.push("not_json");
 		return Ok(true);
 	}
@@ -604,10 +602,7 @@ async fn read_one<T: MailboxTransport>(
 			outcome.no_account = true;
 			return Ok(false);
 		}
-		Err(mailbox_repo::MailboxError::Rewritten) => {
-			Counted::alone(Step::MailboxRead, &format_args!("{}: home holds other bytes under the name", folder.as_str()));
-			outcome.refused.push("rewritten");
-		}
+		Err(mailbox_repo::MailboxError::Rewritten) => outcome.refused.push("rewritten"),
 		Err(mailbox_repo::MailboxError::Storage(err)) => return Err(Failure::Storage(err)),
 	}
 	Ok(true)
@@ -632,15 +627,10 @@ async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
 	let held = mailbox_repo::rust_weeks(&mut tx, subject).await.map_err(storage)?;
-	let mut weeks = Vec::with_capacity(held.len());
-	for file in &held {
-		match rust_round_repo::week::read(&file.body) {
-			Ok(week) if week.id == file.id => weeks.push(week),
-			// Counted once per process, as the sweep runs (#1175).
-			Ok(_) => Counted::alone(Step::MailboxReadBody, &format_args!("brief: a held Rust Rounds week {} is another week's", file.id)),
-			Err(err) => Counted::alone(Step::MailboxReadBody, &format_args!("brief: a held Rust Rounds week {} does not read: {err:?}", file.id)),
-		}
-	}
+	let weeks: Vec<_> = held
+		.iter()
+		.filter_map(|file| rust_round_repo::week::read(&file.body).ok().filter(|week| week.id == file.id))
+		.collect();
 	let mut written = 0;
 	for week in &weeks {
 		written += rust_round_repo::queue_week(&mut tx, week, &at).await.map_err(Failure::Storage)?;
@@ -924,10 +914,7 @@ async fn file_leetype_logs(
 				return Ok(());
 			}
 			Logged::Filed => outcome.filed += 1,
-			Logged::Refused(why) => {
-				Counted::alone(Step::MailboxFileLeetypeLog, &format_args!("a session's log was not filed: {why}"));
-				outcome.refused.push(why);
-			}
+			Logged::Refused(why) => outcome.refused.push(why),
 		}
 	}
 	Ok(())
@@ -973,24 +960,14 @@ async fn answer_asks<T: MailboxTransport>(db: &SqlitePool, archiving: &Archiving
 				mailbox_repo::archived_body(&mut conn, subject, folder.as_str(), &ask.name).await.map_err(storage)?
 			};
 			let Some(body) = body else {
-				Counted::alone(
-					Step::MailboxRestore,
-					&format_args!("{}: the routine asked for a file home holds nothing for", folder.as_str()),
-				);
 				outcome.restored.push("missing");
 				continue;
 			};
 			let answer = match archiving.mailbox.restore(folder, &ask.name, body).await {
 				Ok(Restore::Restored { .. }) => "restored",
 				Ok(Restore::Unchanged { .. }) => "unchanged",
-				Ok(Restore::Conflict) => {
-					Counted::alone(Step::MailboxRestore, &format_args!("{}: the mailbox holds other bytes under the name", folder.as_str()));
-					"conflict"
-				}
-				Err(err @ (MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName | MailboxError::NotFound)) => {
-					Counted::alone(Step::MailboxRestore, &format_args!("{}: {err}", folder.as_str()));
-					"refused"
-				}
+				Ok(Restore::Conflict) => "conflict",
+				Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName | MailboxError::NotFound) => "refused",
 				Err(err) => return Err(Failure::Mailbox(err)),
 			};
 			outcome.restored.push(answer);
@@ -1154,11 +1131,7 @@ async fn ask_archive<T: MailboxTransport>(
 	let answer = match archiving.mailbox.archive(folder, item).await {
 		Ok(Archive::Archived) => "archived",
 		Ok(Archive::Unchanged) => "unchanged",
-		Err(err @ MailboxError::Mismatch) => {
-			Counted::alone(Step::MailboxArchive, &format_args!("{}: {err}", folder.as_str()));
-			err.kind()
-		}
-		// Too young to archive: the mailbox working, not a failure.
+		Err(err @ MailboxError::Mismatch) => err.kind(),
 		Err(MailboxError::Refused(_)) => "refused",
 		Err(MailboxError::NotFound) => "gone",
 		Err(err) => return Err(Failure::Mailbox(err)),
@@ -1860,17 +1833,12 @@ mod tests {
 	/// over, and the week beside it that does is queued (RR25).
 	#[tokio::test]
 	async fn a_held_week_that_does_not_read_is_skipped_and_the_rest_queued() {
-		let recorder = metrics_util::debugging::DebuggingRecorder::new();
-		let snapshotter = recorder.snapshotter();
-		let _recorder = metrics::set_default_local_recorder(&recorder);
 		let (pool, fake) = (pool().await, Fake::default());
 		hold_unqueued(&pool, 1, "rust-week-2026-w46.json", r#"{"schema":"some-ui.rust-week/2","id":"2026-w46","tickets":"#).await;
 		hold_unqueued(&pool, 2, "rust-week-2026-w47.json", &rust_week("2026-w48", &["fn main() { 2; }\n"])).await;
 		hold_unqueued(&pool, 3, "rust-week-2026-w49.json", &rust_week("2026-w49", &["fn main() { 3; }\n"])).await;
 		pass(&pool, &fake).await.unwrap();
 		assert_eq!(queued(&pool).await, ["fn main() { 3; }\n"]);
-		// #1175: the week that does not read and the week that is another's.
-		assert_eq!(failures(&snapshotter), [(String::from("read_body"), 2)]);
 	}
 
 	/// The sweep reads the held weeks under the deletion hold, so a deletion
@@ -3275,9 +3243,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn an_ask_is_answered_from_home_and_one_home_lacks_stays_open() {
-		let recorder = metrics_util::debugging::DebuggingRecorder::new();
-		let snapshotter = recorder.snapshotter();
-		let _recorder = metrics::set_default_local_recorder(&recorder);
 		let (pool, vault) = (pool().await, Vault::default());
 		let (kept, body) = digest("2026-07-01");
 		vault.add("brief", 1, &kept, &body, OLD);
@@ -3290,8 +3255,6 @@ mod tests {
 		*vault.wanted.lock().unwrap() = vec![(String::from("brief"), kept.clone()), (String::from("brief"), String::from("digest-2026-06-01.json"))];
 		let outcome = archive_pass(&pool, &vault).await;
 		assert_eq!(outcome.restored, ["restored", "missing"]);
-		// #1175: the ask home holds nothing for is a failure, counted.
-		assert_eq!(failures(&snapshotter), [(String::from("restore"), 1)]);
 		assert_eq!(vault.names(), std::slice::from_ref(&kept), "the same bytes are live again");
 		assert_eq!(vault.live.lock().unwrap()[0].3, body);
 		assert_eq!(vault.wanted.lock().unwrap().len(), 1, "the one home lacks stays asked");
@@ -4208,6 +4171,21 @@ mod tests {
 		assert_eq!(indexes(&fake).len(), 2);
 		// #1175: each refused put counted, and the pass between, which put nothing, not.
 		assert_eq!(failures(&snapshotter), [(String::from("index_put"), 2)]);
+	}
+
+	/// #1175: a file named as a Rust week that does not read as one is kept as a
+	/// plain brief, and counted once, when it is first kept; a later pass that
+	/// lists nothing new counts nothing.
+	#[tokio::test]
+	async fn a_week_that_does_not_read_is_counted_once_when_kept() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		fake.add(10, "rust-week-2026-w46.json", r#"{"schema":"some-ui.rust-week/2","id":"2026-w46","tickets":5}"#);
+		assert_eq!(pass(&pool, &fake).await.unwrap().kept, 1);
+		pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap();
+		assert_eq!(failures(&snapshotter), [(String::from("read_body"), 1)]);
 	}
 
 	/// Home's memory of its last index lives as long as the poller: after a
