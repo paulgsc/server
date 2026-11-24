@@ -97,7 +97,8 @@ struct Run {
 /// What a pass did, as counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Outcome {
-	/// Records told to at least one phone, or answered for good by all.
+	/// Records told to at least one phone, or whose every phone FCM no
+	/// longer knows.
 	pub noticed: usize,
 	/// Re-runs recorded and told to nobody.
 	pub skipped: usize,
@@ -197,9 +198,12 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 				SendOutcome::Delivered => took += 1,
 				SendOutcome::Unregistered => gone.push(token.clone()),
 				// Throttling and FCM's own failures pass (FCM's error codes say
-				// to retry them). Any other refusal (a key FCM won't take, a
-				// token it won't sign for) is not a delivery either: the cause
-				// is fixed on home's side, so the record waits for it (#1206).
+				// to retry them). Any other refusal (a key FCM won't take, a JWT
+				// home could not sign, a token FCM calls invalid) is not a
+				// delivery either: the record waits, and is tried again each
+				// pass until a phone takes it or it leaves the window (#1206).
+				// A phone whose own token FCM refuses for good is never
+				// forgotten for it, and its records go untold.
 				SendOutcome::Refused(status) if status == 429 || status >= 500 => {
 					tracing::warn!(status, "FCM could not take a Jobs arrival notice now");
 					unanswered = true;
@@ -545,7 +549,10 @@ mod tests {
 	/// JN1 (#1206): a notice every phone refused was not delivered, so it is
 	/// not recorded as told. It waits, and once the cause is fixed (a key FCM
 	/// takes again) the next pass within the window tells the phone. Family:
-	/// every final refusal status, with and without a phone that took it.
+	/// final refusals of the send (400, 401, 403) and of the token endpoint,
+	/// with no phone, one phone gone, or one phone that took it. A JWT home
+	/// could not sign (`Refused(0)`) takes the same arm, untested: a test key
+	/// always signs.
 	#[tokio::test]
 	async fn a_notice_every_phone_refused_is_tried_again() {
 		let pool = pool().await;
@@ -581,6 +588,29 @@ mod tests {
 		*fake.token.lock().unwrap() = None;
 		assert_eq!(pass(&pool, &sender, now() + Duration::minutes(15)).await, Outcome { noticed: 1, ..Outcome::default() });
 		assert_eq!(fake.took().len(), 1);
+	}
+
+	/// JN1: a phone FCM forgot is forgotten, and the refusing one keeps the
+	/// record waiting.
+	#[tokio::test]
+	async fn a_gone_phone_beside_a_refusing_one_is_forgotten_and_the_notice_waits() {
+		let pool = pool().await;
+		let fake = Fake::default();
+		phone(&pool, "gone").await;
+		phone(&pool, "refusing").await;
+		fake.answer("gone", Ok(404));
+		fake.answer("refusing", Ok(403));
+		run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		assert_eq!(
+			pass(&pool, &sender(&fake), now()).await,
+			Outcome {
+				forgotten: 1,
+				unsent: 1,
+				..Outcome::default()
+			}
+		);
+		assert_eq!(devices(&pool).await, ["refusing"]);
+		assert!(sent(&pool).await.is_empty());
 	}
 
 	/// JN1: one phone took it, so it was told: another phone's refusal does
