@@ -3,9 +3,10 @@
 A snip is one picture of one screen of the app, taken on sample data by
 paulgsc/some-ui's `Snips Capture` workflow (epic paulgsc/some-ui#3114). The
 bundle's contract is some-ui's `docs/snips.md`. This file covers what home
-does with snips, and with public pages, the same fetcher's second family
-(below): `apps/servers/file_host/src/snips.rs` fetches them, and
-`essay_media::snips` and `essay_media::pages` hand them to the render.
+does with snips, and with public pages and walks, the same fetcher's
+second and third families (below): `apps/servers/file_host/src/snips.rs`
+fetches them, and `essay_media::snips`, `essay_media::pages` and
+`essay_media::walks` hand them to the render.
 
 ## Invariants
 
@@ -157,6 +158,85 @@ re-run away. A page is a new dispatch and a new cut list. This is unchanged
 from the snips' shape and left as it is: taking an essay back is rare (an
 account gone, or a clip frame gone), and keeping the pictures past their
 essay's withdrawal would be a library.
+
+## Walks: the family's third member (paulgsc/some-ui#3476)
+
+Video essays show our own apps in motion. A cards essay's walk scene is
+`{"kind": "screen", "of": {"from": "walks", "run": "<digits>", "app":
+"<slug>", "steps": [first, last]?}}`. some-ui's dispatch-only `Snips Capture`
+(`.github/workflows/snips-capture.yml`) uploads `walks-bundle-<run>` for one
+day: `walks.json` (`some-ui.walks/1`: the run's commit and id, and per app
+its `some-ui.walk/1` record and its pictures), `SHA256SUMS`, and each
+`<app>/snips/<NN>.png`. A walk that failed in that run is left out, never
+listed half. `snips.rs` fetches it as `Family::Walks` (`snips/walks.rs`) into
+`renders/walks/<run>/`. `essay_media::walks` hands `<key>.walks/`: one
+`walks.json` (`some-ui.walks-given/1`, `{"runs": [{"run", "commit", "walks"}]}`)
+and each picture at `<run>/<app>/snips/<NN>.png` (the render's `--walks`,
+which checks every picture's sha256 again).
+
+The four invariants and the pages' readings hold for walks as written: no
+library, the copy goes with the video, gone is said and never retried, and
+home never dispatches a run.
+
+### Call C1470: walks are a member of the one family, after pages
+
+Decided by WALKS-S, as the brief asked ("add walks as a member of that
+family, with its shared queue, limits and deadline").
+
+A walk's run is found as a page's is, by `GET /actions/runs/<run>`, here
+with `path` `.github/workflows/snips-capture.yml` and `conclusion` `success`.
+A run not finished is `unfinished` and waited on (C1442). Of several
+unexpired `walks-bundle-<run>` artifacts, the newest is taken, so a re-run
+attempt's bundle wins when it is fetched. As for a page's run (C1441), a run
+already cached is not fetched again for a newer attempt: a scene naming an
+app only the re-attempt walked stays `walk-gone`, and the recovery is a new
+dispatch named in the cut list. A newest attempt that failed is no run, even
+while an earlier attempt's bundle is live, as for pages. The check is whole or nothing. It covers the
+schema, the run's own commit (the run's `head_sha`) and id (as a string),
+and each app a slug listed once. Each walk must be a `some-ui.walk/1` of
+that app with 1 to 99 steps, whose step files are `snips/01.png` on in
+order, and whose `pictures` are exactly `<app>/snips/<NN>.png` in the same
+order. `SHA256SUMS` must name exactly `walks.json` and every picture, the
+bundle hold nothing else, and every file be its sum and its listed bytes.
+One walk that doesn't check out refuses the whole bundle, the walks that do
+included: a half bundle is never cached.
+
+The one queue now holds three families. Among keys of the same standing,
+pages come first, then walks, then snips. A walks bundle lives one day, and
+a new run is a new cut list, so a walk goes before a snips commit (a re-run
+away under the same key). It goes after a page because a walk can be walked
+again on sample data, and a page can't be taken again. Failed keys keep
+their turn, longest ago first, whatever their family, so a walk that keeps
+failing never holds a page or a snip back for good. The pass still looks up
+at most five keys and downloads at most one bundle in all, within the one
+five-minute deadline. Rejected: a fetcher of its own, or a bound per family.
+
+### Call C1471: what a walk scene is refused for
+
+- **`walk-gone`**, naming `<run> <app>`. The run is no successful `Snips
+  Capture` run, its bundle expired or was refused, the run's `walks.json`
+  doesn't list the app (its walk failed in that run), or the scene's last
+  step is past the walk's. None of these is put right by waiting. The
+  recovery is the owner's: a new dispatch, and a cut list naming the new run.
+- **`walk-missing`**: no `SNIPS_GITHUB_TOKEN`, or a scene that names nothing
+  a capture makes. That covers a run that isn't a run id string, an app that
+  isn't a slug (`^[a-z0-9][a-z0-9-]{0,63}$`), or `steps` that aren't two
+  whole numbers with `1 <= first <= last`. Steps count from 1, as the
+  pictures' `<NN>` does. No `steps` is the whole walk.
+- **A wait**, not a refusal, while the run's bundle is not cached yet and not
+  marked gone, as a page's run waits. Every refusal is also looked at again
+  on the next pass, so a token added later clears `walk-missing`.
+
+A refusal outranks a wait within the kind, as for every kind.
+
+### Call C1472: a walk is handed whole
+
+`walks.json` given beside the essay holds, per run in the order first named,
+the commit and the record of each app the essay names, once, as the bundle
+lists it: `{app, walk, pictures}`. Every picture of that walk is handed, not
+only the steps a scene names. The render takes the steps from the scene, and
+re-checks every picture the record lists, so a record handed with fewer
+pictures than it lists would fail there. A walk is at most 99 pictures.
 
 ## Not yet
 

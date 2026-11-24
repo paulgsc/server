@@ -167,7 +167,7 @@ pub struct MailboxContext {
 	pub wake: Arc<bell::Wake>,
 	/// The mailbox's bell, through `MAILBOX_TOKEN`.
 	pub bell: Arc<bell::Bell>,
-	/// The snips and pages pickup, through `SNIPS_GITHUB_TOKEN`, or `None`
+	/// The snips, pages and walks pickup, through `SNIPS_GITHUB_TOKEN`, or `None`
 	/// when the deployment picks up none (`crate::snips`).
 	pub snips: Option<Arc<crate::snips::GitHub>>,
 }
@@ -264,7 +264,7 @@ impl MailboxContext {
 		};
 		let snips = crate::snips::GitHub::new(config.snips_github_token.as_deref())?.map(Arc::new);
 		if snips.is_none() {
-			info!("SNIPS_GITHUB_TOKEN is not set; home will pick up no snips or public pages");
+			info!("SNIPS_GITHUB_TOKEN is not set; home will pick up no snips, public pages or walks");
 		}
 		Ok(Some(Self {
 			snips,
@@ -463,7 +463,7 @@ async fn watch(db: &SqlitePool, context: &MailboxContext) {
 	}
 }
 
-/// The snips and pages pickup's pass (`crate::snips`), after the mailbox's
+/// The snips, pages and walks pickup's pass (`crate::snips`), after the mailbox's
 /// own work: counts and kinds, never a token, URL or record.
 async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) {
 	let (essays, folders) = (std::path::Path::new(crate::cards_essays::ESSAYS_FOLDER), crate::snips::Folders::server());

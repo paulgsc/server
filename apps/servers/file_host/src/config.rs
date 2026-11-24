@@ -503,9 +503,10 @@ pub struct Config {
 	/// A fine-grained GitHub token with Actions: read on paulgsc/some-ui only:
 	/// with it, each mailbox pass fetches the `Snips Capture` bundle of each
 	/// commit a waiting cards essay's snips name (`snips`, SNIPS2), and the
-	/// `Public Pages Capture` bundle of each run its pages name (some-ui#3395).
-	/// Unset, nothing is fetched and an essay showing a snip or a page is
-	/// refused. Never logged.
+	/// `Public Pages Capture` bundle of each run its pages name (some-ui#3395),
+	/// and the `Snips Capture` walks bundle of each run its walks name
+	/// (some-ui#3476). Unset, nothing is fetched and an essay showing a snip,
+	/// a page or a walk is refused. Never logged.
 	#[arg(long, env = "SNIPS_GITHUB_TOKEN", hide_env_values = true, help_heading = "Jobs mailbox")]
 	pub snips_github_token: Option<String>,
 

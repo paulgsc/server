@@ -38,6 +38,12 @@ impl Fake {
 		self.held(key, run, bundle);
 	}
 
+	/// A run of `Snips Capture`'s walks, by its id.
+	fn walk_run(&self, run: Run, bundle: Answer) {
+		let key = (Family::Walks, run.id.to_string());
+		self.held(key, run, bundle);
+	}
+
 	fn held(&self, key: (Family, String), run: Run, bundle: Answer) {
 		self.bundles.lock().unwrap().insert(run.id, bundle);
 		if let Ok(held) = self.runs.lock().unwrap().entry(key).or_insert_with(|| Ok(Vec::new())) {
@@ -150,14 +156,27 @@ struct Dirs {
 	essays: PathBuf,
 	cache: PathBuf,
 	pages: PathBuf,
+	walks: PathBuf,
 }
 
 impl Dirs {
-	/// Both families' caches.
+	/// Every family's caches.
 	fn folders(&self) -> Folders {
 		Folders {
 			snips: self.cache.clone(),
 			pages: self.pages.clone(),
+			walks: self.walks.clone(),
+		}
+	}
+
+	/// The hand-off's sources over these caches.
+	fn sources(&self) -> essay_media::Sources {
+		essay_media::Sources {
+			subject: None,
+			frames: self.cache.join("no-frames"),
+			snips: Some(self.cache.clone()),
+			pages: Some(self.pages.clone()),
+			walks: Some(self.walks.clone()),
 		}
 	}
 
@@ -171,23 +190,20 @@ impl Dirs {
 fn dirs() -> Dirs {
 	let root = tempfile::tempdir().unwrap();
 	let (essays, cache, pages) = (root.path().join("essays"), root.path().join("snips"), root.path().join("pages"));
+	let walks = root.path().join("walks");
 	std::fs::create_dir_all(&essays).unwrap();
 	Dirs {
 		_root: root,
 		essays,
 		cache,
 		pages,
+		walks,
 	}
 }
 
 /// What the hand-off makes of `snips` with the cache in `dirs`.
 async fn handed(pool: &SqlitePool, dirs: &Dirs, snips: &[(String, String)]) -> essay_media::Handed {
-	let sources = essay_media::Sources {
-		subject: None,
-		frames: dirs.cache.join("no-frames"),
-		snips: Some(dirs.cache.clone()),
-		pages: Some(dirs.pages.clone()),
-	};
+	let sources = dirs.sources();
 	let items: Vec<String> = snips.iter().map(|(commit, id)| commit.clone() + " " + id).collect();
 	let mut conn = pool.acquire().await.unwrap();
 	essay_media::hand(&mut conn, &sources, essay_media::Kind::Snips, &items).await.unwrap()
@@ -476,12 +492,7 @@ fn page_run(id: i64) -> Run {
 /// What the hand-off makes of `scenes` with the caches in `dirs`.
 async fn pages_handed(pool: &SqlitePool, dirs: &Dirs, scenes: &[serde_json::Value]) -> essay_media::Handed {
 	let essay = serde_json::json!({ "shots": scenes.iter().map(|of| serde_json::json!({ "picture": { "kind": "screen", "of": of } })).collect::<Vec<_>>() });
-	let sources = essay_media::Sources {
-		subject: None,
-		frames: dirs.cache.join("no-frames"),
-		snips: Some(dirs.cache.clone()),
-		pages: Some(dirs.pages.clone()),
-	};
+	let sources = dirs.sources();
 	let items = essay_media::named(essay_media::Kind::Pages, &essay);
 	let mut conn = pool.acquire().await.unwrap();
 	essay_media::hand(&mut conn, &sources, essay_media::Kind::Pages, &items).await.unwrap()
@@ -579,6 +590,7 @@ async fn a_scene_its_runs_bundle_does_not_give_as_named_is_gone_naming_the_run_a
 		frames: dirs.cache.join("no-frames"),
 		snips: None,
 		pages: None,
+		walks: None,
 	};
 	let items = essay_media::named(
 		essay_media::Kind::Pages,
@@ -744,7 +756,7 @@ async fn both_families_share_one_queue_and_one_bundle_a_pass() {
 fn a_run_is_a_pages_run_only_when_of_its_workflow_and_a_success() {
 	let one = |path: &str, conclusion: serde_json::Value| -> Result<Option<Run>, &'static str> {
 		let answer = serde_json::json!({ "id": 101, "head_sha": commit(0), "run_attempt": 2, "path": path, "conclusion": conclusion, "status": "completed" });
-		serde_json::from_value::<OneRun>(answer).unwrap().of_pages()
+		serde_json::from_value::<OneRun>(answer).unwrap().of(PAGES_WORKFLOW)
 	};
 	assert_eq!(one(PAGES_WORKFLOW, serde_json::json!("success")), Ok(Some(Run { run_attempt: 2, ..page_run(101) })));
 	assert_eq!(one(".github/workflows/snips-capture.yml", serde_json::json!("success")), Ok(None), "another workflow's");
@@ -804,3 +816,5 @@ async fn a_page_run_under_way_is_waited_on_and_a_newer_attempt_under_way_clears_
 	assert_eq!(run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap().fetched, 1, "fetched once it succeeds");
 	assert!(matches!(pages_handed(&pool, &dirs, &scenes).await, essay_media::Handed::Ready(_)));
 }
+
+mod walks;
