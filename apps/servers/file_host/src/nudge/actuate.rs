@@ -118,6 +118,7 @@ pub(super) async fn send<C: PassClock>(
 		// because nothing confirmed acceptance.
 		warn!(subject = %subject_id, timed_out, "no device confirmed the intervention and at least one delivery timed out; keeping the claim rather than risking a duplicate");
 		crate::metrics::waker::record_verdict("delivery_timed_out", "n/a");
+		Failure::alone(Step::StudyNudgeDeliveryTimedOut, &format_args!("{timed_out} deliveries timed out and none was accepted"));
 		return Ok(Considered::NotSent);
 	}
 	if accepted == 0 {

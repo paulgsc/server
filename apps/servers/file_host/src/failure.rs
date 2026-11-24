@@ -219,6 +219,19 @@ steps! {
 	/// conflicted on, which is not put again until what it counts moves.
 	/// Held in memory, so a restart puts it again (#1201).
 	MailboxPutIndex => MailboxPasses, "put_index", open;
+	/// The Rust Rounds runner refused a program as malformed or too large,
+	/// and the refusal is kept as the program's run, never asked again
+	/// (#1182). Counted when it is kept.
+	RustRoundsRunnerRefused => RustRoundsRuns, "runner_refused";
+	/// A Rust Rounds program's run was lost (the runner dropped it or did not
+	/// answer in time), kept as one loss; the last loss it is allowed keeps it
+	/// as `runner-lost`. Counted once per loss kept.
+	RustRoundsRunLost => RustRoundsRuns, "run_lost";
+	/// A study nudge was claimed and sent, no device confirmed it, and a
+	/// delivery timed out: the intervention is spent and kept, never sent
+	/// again (#1180). Counted when it is kept; a process that dies between
+	/// the claim and the verdict leaves the claim spent and uncounted.
+	StudyNudgeDeliveryTimedOut => StudyNudge, "delivery_timed_out";
 	/// Open: the call's render signals a tick of the call weeks worker could
 	/// not read: what the worker made of the weeks held (a storage error),
 	/// and the drive's free and total bytes (`statvfs`). Each one's gauges

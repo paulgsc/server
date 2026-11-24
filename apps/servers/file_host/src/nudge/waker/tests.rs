@@ -1841,6 +1841,59 @@ fn a_timed_out_delivery_is_a_failure_not_a_prune_and_is_never_retried_into_a_dup
 	});
 }
 
+/// #1180: an intervention that timed out on every device and that no
+/// device accepted is spent and kept, so it is a failure, counted once at
+/// `delivery_timed_out` and logged at error. The next pass finds nothing
+/// due, so nothing is counted again.
+#[test]
+fn an_intervention_no_device_confirmed_after_a_timeout_is_counted_once() {
+	use crate::failure::{counted::failures, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+	use sqlx::sqlite::SqlitePoolOptions;
+
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+	let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() == tracing::Level::ERROR);
+	let recorder = DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let subject_id = "subject-only-a-slow-device";
+	let (stalled, _) = stalling_push_service();
+
+	metrics::with_local_recorder(&recorder, || {
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+
+			let now = Utc::now();
+			let engagement = EngagementRepository::new(pool.clone());
+			subscribe(&pool, subject_id, &stalled, &now.to_rfc3339()).await;
+			first_contact(&pool, subject_id).await.unwrap();
+			rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+
+			let nudge = NudgeContext {
+				delivery_timeout: std::time::Duration::from_millis(200),
+				..nudge_context()
+			};
+			let first = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!(first.intervened, 0, "nothing was accepted: {first:?}");
+			assert_eq!(failures(&snapshotter, Step::StudyNudgeDeliveryTimedOut), Some(1));
+
+			let second = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!(second, PassReport::default(), "the spent intervention is not due again");
+		});
+	});
+
+	// A snapshot drains what it read, so this is what the second pass added.
+	assert_eq!(failures(&snapshotter, Step::StudyNudgeDeliveryTimedOut), Some(0), "one event, one count");
+	let lines = captured.lines();
+	assert!(
+		lines.iter().any(|line| line.starts_with("process=study-nudge")) && lines.iter().any(|line| line.starts_with("step=delivery_timed_out")),
+		"logged at error: {lines:#?}"
+	);
+	assert!(!lines.iter().any(|line| line.contains(&stalled)), "no endpoint in an error line: {lines:#?}");
+}
+
 /// #1180: an attempt every device tried refused is one failure, counted
 /// once. The claim is handed back, but the subject is not due again until
 /// its next eligibility, so no later pass meets the same attempt: a retry
