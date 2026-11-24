@@ -126,7 +126,14 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    are in the same closed `Step` table, marked `open`, and a step is one or
    the other, never both. A condition that ends in a loss is an event at the
    end: a refused file a newer kept file passes is never read again, so the
-   pass whose keep passes it counts it once (`passed_over`). Nothing is
+   pass whose keep passes it counts it once (`passed_over`); a study nudge
+   one device accepted is spent, so each device that did not take it is
+   counted once (`device_missed`). The open steps beyond the mailbox's
+   (#1179, #1180, #809): the call's and Playoff Delta's render signals a tick
+   could not read, the call's next-week answer, subjects every device
+   refused (handed back, so met again; a pass cut short by its deadline
+   leaves the level, having not looked at all of them), and what a clips
+   pass could not take, a walk drawn otherwise than its index apart. Nothing is
    stored for it and it adds no clock: the
    passes that already run set it. `HomeFailuresOpen`
    (`infra/prometheus/rules/home.yml`) tells the owner while one stays open
@@ -136,7 +143,8 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    A condition nothing can fix is not a level, since it would page for good
    with no action behind it: a held Rust Rounds week that does not read
    stays held (nothing rewrites `mailbox_item`), so it is counted once, as
-   `read_body`, when it is kept, and the once-per-process sweep that meets it
+   `read_body`, when it is kept, and so is a mock interview's week (#1178),
+   since neither is then owed an essay, and the once-per-process sweep that meets it
    again counts nothing. The bound there: weeks kept before #1198 were never
    counted, since process memory cannot tell the first boot after a deploy
    from any other restart, and a record of it would be a new store

@@ -1700,6 +1700,7 @@ fn a_pass_that_reaches_its_deadline_leaves_the_subjects_it_never_reached_untouch
 			PassReport {
 				considered: REACHED,
 				intervened: 0,
+				unaccepted: 0,
 				deferred: SUBJECTS - REACHED,
 				deadline_exceeded: true,
 				caught_up: 0,
@@ -1839,6 +1840,106 @@ fn a_timed_out_delivery_is_a_failure_not_a_prune_and_is_never_retried_into_a_dup
 			"exactly one intervention_log row, and it reached actuated_at"
 		);
 	});
+}
+
+/// #1180: a subject whose every device refuses the intervention is handed
+/// back, so each pass meets it again: a level the pass sets, never a count,
+/// and a pass that finds no such subject clears it.
+#[test]
+fn a_subject_no_device_accepted_is_held_open_and_never_counted() {
+	use crate::failure::{held, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+	use sqlx::sqlite::SqlitePoolOptions;
+
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+	let recorder = DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let subject_id = "subject-only-a-refusing-device";
+	let refusing = echoing_push_service(400, "refusing-device-token");
+
+	metrics::with_local_recorder(&recorder, || {
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+			let now = Utc::now();
+			let engagement = EngagementRepository::new(pool.clone());
+			subscribe(&pool, subject_id, &refusing, &now.to_rfc3339()).await;
+			first_contact(&pool, subject_id).await.unwrap();
+			rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+			let nudge = nudge_context();
+
+			crate::failure::open(Step::StudyNudgeNoDeviceAccepted, 9);
+			let first = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!((first.intervened, first.unaccepted), (0, 1), "{first:?}");
+			let seen = held::seen(&snapshotter);
+			assert_eq!(seen.open(Step::StudyNudgeNoDeviceAccepted), Some(1.0));
+			assert_eq!(seen.counted(Step::StudyNudgeDeviceMissed), None, "nothing was spent");
+
+			let empty = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&empty).await.unwrap();
+			crate::failure::open(Step::StudyNudgeNoDeviceAccepted, 9);
+			run_once(&empty, &nudge).await.unwrap();
+			assert_eq!(held::open(&snapshotter, Step::StudyNudgeNoDeviceAccepted), Some(0.0), "none met, it clears");
+		});
+	});
+}
+
+/// #1180: an intervention one device accepted is spent, so each device that
+/// refused it or did not answer in time never gets it: one count each, and
+/// nothing held open.
+#[test]
+fn each_device_an_accepted_intervention_missed_is_counted_once() {
+	use crate::failure::{counted::failures, held, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+	use sqlx::sqlite::SqlitePoolOptions;
+
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+	let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() == tracing::Level::ERROR);
+	let recorder = DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let subject_id = "subject-three-devices-one-taking";
+	let (stalled, _) = stalling_push_service();
+	let (answering, _) = loopback_push_service();
+	let refusing = echoing_push_service(400, "refusing-device-token");
+
+	metrics::with_local_recorder(&recorder, || {
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+			let now = Utc::now();
+			let engagement = EngagementRepository::new(pool.clone());
+			for endpoint in [&stalled, &answering, &refusing] {
+				subscribe(&pool, subject_id, endpoint, &now.to_rfc3339()).await;
+			}
+			first_contact(&pool, subject_id).await.unwrap();
+			rewind_first_contact_past_the_solved_instant(&engagement, subject_id, now).await;
+			let nudge = NudgeContext {
+				delivery_timeout: std::time::Duration::from_millis(200),
+				..nudge_context()
+			};
+
+			crate::failure::open(Step::StudyNudgeNoDeviceAccepted, 9);
+			let pass = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!((pass.intervened, pass.unaccepted), (1, 0), "{pass:?}");
+			let seen = held::seen(&snapshotter);
+			assert_eq!(seen.counted(Step::StudyNudgeDeviceMissed), Some(2), "the slow one and the refusing one");
+			assert_eq!(seen.open(Step::StudyNudgeNoDeviceAccepted), Some(0.0), "set by the pass, not the sentinel");
+
+			let again = run_once(&pool, &nudge).await.unwrap();
+			assert_eq!(again.considered, 0, "the spent intervention is not due again: {again:?}");
+		});
+	});
+	// A snapshot drains what it read, so this is what the second pass added.
+	assert_eq!(failures(&snapshotter, Step::StudyNudgeDeviceMissed), Some(0), "one event, one count");
+	let lines = captured.lines();
+	assert!(lines.iter().any(|line| line.starts_with("step=device_missed")), "logged at error: {lines:#?}");
+	for endpoint in [&stalled, &answering, &refusing] {
+		assert!(!lines.iter().any(|line| line.contains(endpoint.as_str())), "no endpoint in an error line: {lines:#?}");
+	}
 }
 
 /// docs/identity.md, invariant 14: a push endpoint is a per-browser
