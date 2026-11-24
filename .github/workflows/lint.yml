@@ -59,6 +59,8 @@ jobs:
             rust-toolchain
             scripts/check_clippy_baseline.py
             scripts/clippy_baseline.json
+            scripts/check_erasures.py
+            scripts/erasure_baseline.json
             scripts/check_instrument_skip.py
             scripts/check_privacy.py
             .github/workflows/lint.yml
@@ -365,6 +367,25 @@ jobs:
             args+=(--allow-growth)
           fi
           python3 scripts/check_clippy_baseline.py clippy.json "${args[@]}"
+
+      # A failure is never destroyed (epic #1174): no new silent erasure of a
+      # Result (`.ok()`, `unwrap_or*`, `let _ =`, `map_err(|_| ...)`), read from
+      # the same clippy output. Its own baseline, kept out of the clippy one
+      # (#1189, the owner's option (a)), only shrinks: no toolchain bump lets
+      # it grow, so a clippy release that sees more names each new one here.
+      - name: Check erasures against their baseline
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_erasures.py --self-test
+          args=()
+          if git show FETCH_HEAD:scripts/erasure_baseline.json > base_erasures.json 2>/dev/null; then
+            args+=(--base base_erasures.json)
+          else
+            echo "the base branch has no erasure baseline yet; skipping the shrink-only comparison"
+          fi
+          python3 scripts/check_erasures.py clippy.json "${args[@]}"
 
   # GitHub starts no `workflow_run` when a run whose actor is github-actions[bot] finishes (a pull
   # request the image bot pushed), so PR gate (verdict) would never hear this one: tell it here, last,

@@ -22,6 +22,11 @@ rustflags = [
     # Same for `redundant_pub_crate`, which contradicts `unreachable_pub` —
     # see its comment in the root Cargo.toml.
     "-A", "clippy::redundant_pub_crate",
+    # A Result erased with no count (epic #1174): ratcheted, with the
+    # disallowed `Result::ok`/`unwrap_or*` in clippy.toml, by
+    # scripts/check_erasures.py, never by the clippy baseline (#1189).
+    "-W", "clippy::let_underscore_must_use",
+    "-W", "clippy::map_err_ignore",
     "-D", "warnings"
 ]
 
