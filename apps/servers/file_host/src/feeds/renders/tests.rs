@@ -1192,6 +1192,8 @@ fn a_home_refusal_reads_as_its_class() {
 	assert_eq!(super::home_refusal("reason=snip-gone\n"), Some("snip-gone"));
 	assert_eq!(super::home_refusal("reason=page-missing\n"), Some("page-missing"));
 	assert_eq!(super::home_refusal("reason=page-gone\n"), Some("page-gone"));
+	assert_eq!(super::home_refusal("reason=walk-missing\n"), Some("walk-missing"));
+	assert_eq!(super::home_refusal("reason=walk-gone\n"), Some("walk-gone"));
 	assert_eq!(super::home_refusal("reason=too-long\n"), None);
 	assert_eq!(super::home_refusal("take-missing\n"), None);
 	assert_eq!(Over::parse("reason=take-missing\n"), None, "never the policy's");

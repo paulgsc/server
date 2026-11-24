@@ -101,7 +101,7 @@ pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: 
 	Ok(Held::Record {
 		bundle: String::from(run),
 		record: page.clone(),
-		picture: (String::from(file), bytes),
+		pictures: vec![(String::from(file), bytes)],
 	})
 }
 
@@ -115,12 +115,16 @@ pub(super) async fn still_held(_conn: &mut SqliteConnection, _sources: &Sources,
 /// `pages.json`, one record per file in the order first named, then each
 /// picture; none for none. `Err` with each `<run> <file>` whose file another
 /// run gives unlike: another address, moment or picture.
-pub(super) fn given(paged: Vec<(String, Value, File)>) -> Result<Vec<File>, Vec<String>> {
+pub(super) fn given(paged: Vec<(String, Value, Vec<File>)>) -> Result<Vec<File>, Vec<String>> {
 	if paged.is_empty() {
 		return Ok(Vec::new());
 	}
 	let mut kept: Vec<(String, Value, File)> = Vec::new();
 	let mut unlike: Vec<String> = Vec::new();
+	// A page's record has one picture ([`hold`]).
+	let paged = paged
+		.into_iter()
+		.flat_map(|(run, record, pictures)| pictures.into_iter().map(move |picture| (run.clone(), record.clone(), picture)));
 	for (run, record, picture) in paged {
 		let Some((first, held, (_, bytes))) = kept.iter().find(|(_, _, (name, _))| *name == picture.0) else {
 			kept.push((run, record, picture));

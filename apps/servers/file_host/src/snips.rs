@@ -60,10 +60,20 @@
 //! same, so a page gone is the owner's to capture anew and name in a new cut
 //! list; a newer attempt of the same run still clears its mark.
 //!
+//! **Walks are its third** (paulgsc/some-ui#3476, C1470): [`Family::Walks`].
+//! A scene names a walk by the run of `Snips Capture` that walked it and the
+//! app, and that run's `walks-bundle-<run>` is fetched, checked ([`walks`])
+//! and cached in `<WALKS_FOLDER>/<run>/` by the same rules as a page's run,
+//! the run found as a page's is (one of [`WORKFLOW`] that succeeded). It
+//! shares the one queue, its bounds and its deadline; among keys of the same
+//! standing it comes after pages and before snips, since a walk is named by
+//! its run and a new run is a new cut list.
+//!
 //! Not yet: putting each record in the mailbox for the routine (SNIPS2's
 //! fourth step) waits on the mailbox Worker gaining a folder for it.
 
 pub mod pages;
+pub mod walks;
 
 use regex::Regex;
 use serde::Deserialize;
@@ -84,11 +94,19 @@ pub const FOLDER: &str = "/app/dbs/renders/snips";
 /// `<run>/` (its `pages.json` and pictures), `<run>.gone` or `<run>.retry`.
 pub const PAGES_FOLDER: &str = "/app/dbs/renders/pages";
 
+/// Where home keeps the bundles of the walks waiting essays name: `<run>/`
+/// (its `walks.json` and pictures), `<run>.gone` or `<run>.retry`.
+pub const WALKS_FOLDER: &str = "/app/dbs/renders/walks";
+
+/// The one workflow whose runs home takes walks from, as a run's `path`
+/// says it: [`WORKFLOW`]'s (C1470).
+pub const WALKS_WORKFLOW: &str = ".github/workflows/snips-capture.yml";
+
 /// The one workflow whose runs home takes public pages from: a run of any
 /// other is no run of the pages (C1440).
 pub const PAGES_WORKFLOW: &str = ".github/workflows/public-pages-capture.yml";
 
-/// The failure of a run still under way (a pages run not concluded): only
+/// The failure of a run still under way (a page's or walk's run not concluded): only
 /// retried, and a newer attempt under way clears its key's gone mark, so
 /// its essay waits rather than being refused (C1442).
 pub const UNFINISHED: &str = "unfinished";
@@ -186,20 +204,26 @@ pub enum Family {
 	Snips,
 	/// `pages-bundle-<run>`, of `Public Pages Capture`, named by its run.
 	Pages,
+	/// `walks-bundle-<run>`, of `Snips Capture`, named by its run.
+	Walks,
 }
 
 impl Family {
 	/// Every family.
-	pub const ALL: [Self; 2] = [Self::Snips, Self::Pages];
+	pub const ALL: [Self; 3] = [Self::Snips, Self::Pages, Self::Walks];
 
 	/// Its place in a pass's queue among keys of the same standing and retry
-	/// time: pages first. A pages bundle lives one day and can't be made again, while a
+	/// time: pages first, then walks, then snips. A pages bundle lives one day and can't be made again, while a
 	/// snips bundle is a re-run away; and at one bundle a pass, hourly, a
 	/// day's worth of snips commits ahead of a run would outlive it (C1443).
+	/// A walks bundle lives one day too, and a new run of it is a new cut
+	/// list, so it comes before snips; after pages, since its walk can be
+	/// walked again on sample data and a page can't be taken again (C1470).
 	const fn first(self) -> u8 {
 		match self {
 			Self::Pages => 0,
-			Self::Snips => 1,
+			Self::Walks => 1,
+			Self::Snips => 2,
 		}
 	}
 
@@ -209,6 +233,7 @@ impl Family {
 		match self {
 			Self::Snips => crate::essay_media::Kind::Snips,
 			Self::Pages => crate::essay_media::Kind::Pages,
+			Self::Walks => crate::essay_media::Kind::Walks,
 		}
 	}
 
@@ -217,7 +242,7 @@ impl Family {
 	pub fn is_key(self, key: &str) -> bool {
 		match self {
 			Self::Snips => is_commit(key),
-			Self::Pages => is_run(key),
+			Self::Pages | Self::Walks => is_run(key),
 		}
 	}
 
@@ -225,7 +250,7 @@ impl Family {
 	fn owns(self, run: &Run, key: &str) -> bool {
 		match self {
 			Self::Snips => run.head_sha == key,
-			Self::Pages => run.id.to_string() == key,
+			Self::Pages | Self::Walks => run.id.to_string() == key,
 		}
 	}
 
@@ -235,6 +260,7 @@ impl Family {
 		match self {
 			Self::Snips => String::from("snips-bundle-") + &run.head_sha,
 			Self::Pages => String::from("pages-bundle-") + &run.id.to_string(),
+			Self::Walks => String::from("walks-bundle-") + &run.id.to_string(),
 		}
 	}
 
@@ -244,6 +270,7 @@ impl Family {
 		match self {
 			Self::Snips => open(zip, stage, run),
 			Self::Pages => pages::open(zip, stage),
+			Self::Walks => walks::open(zip, stage, run),
 		}
 	}
 }
@@ -253,15 +280,17 @@ impl Family {
 pub struct Folders {
 	pub snips: PathBuf,
 	pub pages: PathBuf,
+	pub walks: PathBuf,
 }
 
 impl Folders {
-	/// The server's: [`FOLDER`] and [`PAGES_FOLDER`].
+	/// The server's: [`FOLDER`], [`PAGES_FOLDER`] and [`WALKS_FOLDER`].
 	#[must_use]
 	pub fn server() -> Self {
 		Self {
 			snips: PathBuf::from(FOLDER),
 			pages: PathBuf::from(PAGES_FOLDER),
+			walks: PathBuf::from(WALKS_FOLDER),
 		}
 	}
 
@@ -271,6 +300,7 @@ impl Folders {
 		match family {
 			Family::Snips => &self.snips,
 			Family::Pages => &self.pages,
+			Family::Walks => &self.walks,
 		}
 	}
 }
@@ -394,7 +424,8 @@ struct Runs {
 	workflow_runs: Vec<Run>,
 }
 
-/// One run, as `GET /actions/runs/<run>` answers: its latest attempt.
+/// One run, as `GET /actions/runs/<run>` answers: its latest attempt (a
+/// page's run, or a walk's).
 #[derive(Deserialize)]
 struct OneRun {
 	#[serde(flatten)]
@@ -404,13 +435,13 @@ struct OneRun {
 }
 
 impl OneRun {
-	/// The run, when it is a successful run of [`PAGES_WORKFLOW`]: a run of
-	/// another workflow, or one that concluded otherwise, is no run of the
-	/// pages. One not concluded yet (queued, or in progress) is the failure
+	/// The run, when it is a successful run of `workflow`: a run of
+	/// another workflow, or one that concluded otherwise, is no run of its
+	/// family. One not concluded yet (queued, or in progress) is the failure
 	/// `unfinished`: only retried, so its essay waits rather than being
 	/// refused for a capture about to succeed (C1442).
-	fn of_pages(self) -> Result<Option<Run>, &'static str> {
-		if self.path != PAGES_WORKFLOW {
+	fn of(self, workflow: &str) -> Result<Option<Run>, &'static str> {
+		if self.path != workflow {
 			return Ok(None);
 		}
 		match self.conclusion.as_deref() {
@@ -446,10 +477,11 @@ impl Capture for GitHub {
 				let url = String::from(REPOSITORY) + "/actions/workflows/" + WORKFLOW + "/runs?status=success&per_page=20&head_sha=" + key;
 				Ok(self.json::<Runs>(&url).await?.workflow_runs)
 			}
-			Family::Pages => {
+			Family::Pages | Family::Walks => {
+				let workflow = if family == Family::Pages { PAGES_WORKFLOW } else { WALKS_WORKFLOW };
 				let url = String::from(REPOSITORY) + "/actions/runs/" + key;
 				match self.json_or_none::<OneRun>(&url).await? {
-					Some(one) => Ok(one.of_pages()?.into_iter().collect()),
+					Some(one) => Ok(one.of(workflow)?.into_iter().collect()),
 					None => Ok(Vec::new()),
 				}
 			}
@@ -504,7 +536,7 @@ pub struct Picked {
 	/// Cached bundles and marks no waiting essay names, removed.
 	pub dropped: usize,
 	/// Each failure, by kind (`timeout`, `connect`, `transport`, `refused`,
-	/// `unreadable`, `drive`, or `unfinished`, a pages run not concluded
+	/// `unreadable`, `drive`, or `unfinished`, a run not concluded
 	/// yet): asked again next pass.
 	pub failures: Vec<&'static str>,
 }

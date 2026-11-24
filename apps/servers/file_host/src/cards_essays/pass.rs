@@ -41,7 +41,8 @@
 //!   failed row on Studio › Renders, as the worker's own refusals are:
 //!   `<key>.failed.log` (the reason in words and the items by id, never what
 //!   they hold) and `<key>.refused` (`reason=take-missing`, `take-unheard`,
-//!   `snip-missing`, `snip-gone`, `clip-missing`, `page-missing` or `page-gone`) in [`super::STATUS_FOLDER`], both gone
+//!   `snip-missing`, `snip-gone`, `clip-missing`, `page-missing`, `page-gone`,
+//!   `walk-missing` or `walk-gone`) in [`super::STATUS_FOLDER`], both gone
 //!   once the essay is given. Every pass looks again at an essay not given.
 //! - **No copy outlives its need** ([`tidy`], each minute, as
 //!   `rust_essays::tidy`): once an essay's video is made its media folders
@@ -270,6 +271,9 @@ pub struct Given {
 	/// The public pages bundles home fetches for waiting essays
 	/// (`snips::PAGES_FOLDER`), or `None` when it fetches none.
 	pub pages: Option<PathBuf>,
+	/// The walks bundles home fetches for waiting essays
+	/// (`snips::WALKS_FOLDER`), or `None` when it fetches none.
+	pub walks: Option<PathBuf>,
 	/// The worker's work folder ([`super::WORK_FOLDER`]): a withdrawn
 	/// essay's waiting work goes with it.
 	pub work: PathBuf,
@@ -286,6 +290,7 @@ impl Given {
 			frames: self.frames.clone(),
 			snips: self.snips.clone(),
 			pages: self.pages.clone(),
+			walks: self.walks.clone(),
 		}
 	}
 }
@@ -772,6 +777,7 @@ mod tests {
 			frames: dir.join("frames-held"),
 			snips: None,
 			pages: None,
+			walks: None,
 			work: dir.join("work"),
 			deletion: crate::auth::DeletionLock::default(),
 		}

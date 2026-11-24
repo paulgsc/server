@@ -447,7 +447,7 @@
       "values": [],
       "delimiter": null,
       "secret": true,
-      "help": "A fine-grained GitHub token with Actions: read on paulgsc/some-ui only: with it, each mailbox pass fetches the `Snips Capture` bundle of each commit a waiting cards essay's snips name (`snips`, SNIPS2), and the `Public Pages Capture` bundle of each run its pages name (some-ui#3395). Unset, nothing is fetched and an essay showing a snip or a page is refused. Never logged",
+      "help": "A fine-grained GitHub token with Actions: read on paulgsc/some-ui only: with it, each mailbox pass fetches the `Snips Capture` bundle of each commit a waiting cards essay's snips name (`snips`, SNIPS2), and the `Public Pages Capture` bundle of each run its pages name (some-ui#3395), and the `Snips Capture` walks bundle of each run its walks name (some-ui#3476). Unset, nothing is fetched and an essay showing a snip, a page or a walk is refused. Never logged",
       "required_when": null,
       "bounds": null,
       "class": "deployment",

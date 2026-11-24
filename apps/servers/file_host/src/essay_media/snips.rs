@@ -82,7 +82,7 @@ pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: 
 	Ok(Held::Record {
 		bundle: String::from(commit),
 		record,
-		picture: (name, bytes),
+		pictures: vec![(name, bytes)],
 	})
 }
 
@@ -95,14 +95,14 @@ pub(super) async fn still_held(_conn: &mut SqliteConnection, _sources: &Sources,
 
 /// `snips.json`: for each commit, in the order first named, the records of
 /// its snips the essay names; then each snip's picture. None for none.
-pub(super) fn given(snipped: Vec<(String, Value, File)>) -> Vec<File> {
+pub(super) fn given(snipped: Vec<(String, Value, Vec<File>)>) -> Vec<File> {
 	if snipped.is_empty() {
 		return Vec::new();
 	}
 	let mut bundles: Vec<(String, Vec<Value>)> = Vec::new();
 	let mut pictures = Vec::with_capacity(snipped.len());
-	for (commit, record, picture) in snipped {
-		pictures.push(picture);
+	for (commit, record, files) in snipped {
+		pictures.extend(files);
 		match bundles.iter_mut().find(|(held, _)| *held == commit) {
 			Some((_, records)) => records.push(record),
 			None => bundles.push((commit, vec![record])),

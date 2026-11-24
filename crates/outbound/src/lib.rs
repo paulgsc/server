@@ -65,8 +65,9 @@ pub enum Caller {
 	/// `file_host::nudge`: Web Push to each browser's push service.
 	Nudge,
 	/// `file_host::snips`: the snips bundle of a commit, or the public pages
-	/// bundle of a run, a waiting cards essay names, from GitHub's Actions
-	/// API (SNIPS2, some-ui#3395), with `SNIPS_GITHUB_TOKEN`.
+	/// or walks bundle of a run, a waiting cards essay names, from GitHub's
+	/// Actions API (SNIPS2, some-ui#3395, some-ui#3476), with
+	/// `SNIPS_GITHUB_TOKEN`.
 	Snips,
 	/// `file_host --health-check`: its own `/ready`, on loopback. The probe
 	/// exits straight after, so nothing scrapes it; it is a case so that the
