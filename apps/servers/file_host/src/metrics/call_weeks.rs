@@ -144,7 +144,11 @@ mod tests {
 			..Disk::default()
 		};
 		let set = gauges(|| record_disk(&disk));
-		for name in ["call_render_cache_warning_timestamp_seconds", "call_render_drive_avail_bytes", "call_render_drive_size_bytes"] {
+		for name in [
+			"call_render_cache_warning_timestamp_seconds",
+			"call_render_drive_avail_bytes",
+			"call_render_drive_size_bytes",
+		] {
 			assert!(value(&set, name).is_nan(), "{name}");
 		}
 		let disk = Disk {
