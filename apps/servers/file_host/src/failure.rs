@@ -178,10 +178,6 @@ steps! {
 	/// answer. What it would have queued or moved is not. Counted when it is
 	/// first kept (#1175).
 	MailboxReadBody => MailboxPasses, "read_body";
-	/// An index was not put: over the mailbox's ceiling, refused, or held
-	/// with other bytes, so the routine reads a stale one. Counted once per
-	/// index computed, as an index is put once per computed state (#1175).
-	MailboxIndexPut => MailboxPasses, "index_put";
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.

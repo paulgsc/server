@@ -4156,9 +4156,6 @@ mod tests {
 	/// index again each pass, only once what it counts moves.
 	#[tokio::test]
 	async fn a_refused_index_is_not_put_again_until_what_it_counts_moves() {
-		let recorder = metrics_util::debugging::DebuggingRecorder::new();
-		let snapshotter = recorder.snapshotter();
-		let _recorder = metrics::set_default_local_recorder(&recorder);
 		let (pool, fake) = (pool().await, Fake::default());
 		let (name, body) = digest("2026-10-23");
 		fake.add(10, &name, &body);
@@ -4169,8 +4166,6 @@ mod tests {
 		fake.add(11, &next, &body);
 		assert_eq!(pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap().indexed, ["refused"]);
 		assert_eq!(indexes(&fake).len(), 2);
-		// #1175: each refused put counted, and the pass between, which put nothing, not.
-		assert_eq!(failures(&snapshotter), [(String::from("index_put"), 2)]);
 	}
 
 	/// #1175: a file named as a Rust week that does not read as one is kept as a
