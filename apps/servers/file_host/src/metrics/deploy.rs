@@ -74,12 +74,16 @@ pub struct Last {
 ///   the record anew (envctl starts it from nothing) then reads as a reset
 ///   `DeployFailed` sees, however long it was unreadable (the
 ///   coordinator's call C1511, after `NaN` on the totals hid that reset
-///   from `increase()`). Two bounds, where `HomeFailuresOpen` has told the
-///   unreadable record but `DeployFailed` does not tell the healing run's
-///   failure: its outcome's held total is exactly 1, so it reads 1 then 1;
-///   or file_host restarted while it was unreadable, which leaves the
-///   totals absent until a tick reads them, more than an hour before the
-///   healing run;
+///   from `increase()`). Two bounds, where `DeployFailed` does not tell the
+///   healing run's failure: its outcome's held total is exactly 1, so it
+///   reads 1 then 1; or file_host restarted while the record was
+///   unreadable, which leaves the totals absent until a tick reads them,
+///   more than an hour before the healing run. `HomeFailuresOpen` tells
+///   the unreadable record only once it has stayed so about 2 hours, so a
+///   record unreadable for 1 to 2 hours across a restart, healed by a run
+///   that fails more than an hour after the restart, is told by neither.
+///   Both come from envctl rewriting an unreadable record from nothing
+///   (#1224);
 /// - the last run's time and exit code and the newest epoch seen, which
 ///   state a current value, are `NaN`, a gap, as is the marker's age when it
 ///   can't be read.
