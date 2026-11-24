@@ -701,6 +701,7 @@ pub async fn put_reflections_index<T: MailboxTransport>(
 		let as_of = mailbox_repo::reflections_as_of(&mut tx, subject).await.map_err(crate::mailbox::pass::storage)?;
 		// Nothing to count yet: no index, and the routine reads as before.
 		if as_of.is_none() {
+			last.nothing_to_count();
 			return Ok(());
 		}
 		// Nothing arrived, and no moment the last index carries has come.
