@@ -502,8 +502,13 @@ asked to record, and "the programs' uid" is 10101 (and gid 10101).
     the program (RP3). A fault once the program ran (a run or a sweep it
     could not supervise to its end, `SpawnError::Unsupervised`, which a
     program's survivors can cause) is answered with nothing, so the client
-    counts a drop. This is the only change to the service since slice 1:
-    one refusal kind, and one variant that tells the two phases apart. Each
+    counts a drop. A request the service could not read whole within the
+    client timeout (a client stalled under load) is answered `unavailable`
+    too, with no exit: it says nothing about the program, so the client
+    asks again (#1209). Only a line read whole that is not one request is
+    `malformed`, which the client keeps against the program. These are the
+    only changes to the service since slice 1: one refusal kind, and one
+    variant that tells the two phases apart. Each
     retry of a program that wedges the
     runner holds the one job slot for up to the job deadline, so the pass's
     `DROPS` cap (2) bounds that program at two job deadlines per toolchain.
@@ -635,7 +640,7 @@ applied to this pass. "The pass" is `rust_rounds::pass::run_once`.
       with a `stopped` `RustcRun` (`exit`). The pass stops.
     - **an outage** (nothing listening, no socket, the request not written
       whole; `unavailable`, the runner's own machine failing before the
-      program ran, RX3; `peer`; an answer that is no answer, or a recording
+      program ran, RX3, or a request it could not read in time, #1209; `peer`; an answer that is no answer, or a recording
       under another toolchain): nothing kept; the pass stops, and the next
       asks again.
     - **`wrong-toolchain`** (the runner was replaced mid-pass): nothing

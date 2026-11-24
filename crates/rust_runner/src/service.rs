@@ -61,10 +61,13 @@ use std::time::{Duration, Instant};
 /// The machine's failures from [`Recorder::record`], which the service
 /// stops on. One before the program ran is first answered with
 /// [`Refusal::Unavailable`]; one after ([`SpawnError::Unsupervised`]) is
-/// answered with nothing. A client that sends nothing, too much or garbage
-/// is answered with a refusal; one whose request can't be read whole in time
-/// (too slowly) is answered [`Refusal::Unavailable`], which holds nothing
-/// against the program (#1209); and one that goes away is not an error.
+/// answered with nothing. A client that sends too much is answered
+/// [`Refusal::TooLarge`]; one that sends garbage, or nothing and closes, is
+/// answered [`Refusal::Malformed`]; one whose request can't be read whole in
+/// time (too slowly, or nothing while it holds the connection open) is
+/// answered [`Refusal::Unavailable`], which holds nothing against the program
+/// (#1209), and the service keeps serving; one that goes away is not an
+/// error.
 pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>) -> Result<Response, SpawnError> {
 	let refused = |reason| Response::Refused {
 		reason,

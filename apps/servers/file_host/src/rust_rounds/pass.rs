@@ -102,7 +102,8 @@ pub enum Stop {
 	/// request, or did not answer the toolchain ask in time.
 	Unreachable,
 	/// An outage: the runner said `unavailable`, a fault of its own machine
-	/// before the program ran.
+	/// before the program ran, or a request it could not read whole in time
+	/// (#1209).
 	Unavailable,
 	/// An outage: the runner refused this server (`peer`, its uid).
 	Refused(Refusal),
