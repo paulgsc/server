@@ -268,17 +268,24 @@ pub async fn hand(conn: &mut SqliteConnection, sources: &Sources, kind: Kind, it
 			items.push(id);
 		}
 	};
+	// Each walk held, by its id: another scene of it is checked, not read again.
+	let mut walked: Vec<String> = Vec::new();
 	for item in items {
 		let held = match kind {
 			Kind::Takes => takes::hold(conn, sources, item).await?,
 			Kind::Snips => snips::hold(conn, sources, item).await?,
 			Kind::ClipFrames => clip_frames::hold(conn, sources, item).await?,
 			Kind::Pages => pages::hold(conn, sources, item).await?,
-			Kind::Walks => walks::hold(conn, sources, item).await?,
+			Kind::Walks => walks::hold(conn, sources, item, !walked.contains(&kind.id_of(item))).await?,
 		};
 		match held {
 			Held::Files(handed) => files.extend(handed),
-			Held::Record { bundle, record, pictures } => recorded.push((bundle, record, pictures)),
+			Held::Record { bundle, record, pictures } => {
+				if kind == Kind::Walks {
+					walked.push(kind.id_of(item));
+				}
+				recorded.push((bundle, record, pictures));
+			}
 			Held::Waiting => push(&mut waiting, item),
 			Held::Refused(Why::Missing) => push(&mut missing, item),
 			Held::Refused(Why::Unheard) => push(&mut unheard, item),

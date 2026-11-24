@@ -93,8 +93,11 @@ impl Steps {
 	}
 }
 
-/// One walk, `<run> <app>[ <first>-<last>]`, as the module doc says.
-pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: &str) -> Result<Held, Failed> {
+/// One walk, `<run> <app>[ <first>-<last>]`, as the module doc says. Its
+/// pictures are read only when `read`: a walk already held for another
+/// scene's steps is checked again, never read again, so an essay holds
+/// each walk's pictures once however many scenes show it.
+pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: &str, read: bool) -> Result<Held, Failed> {
 	let mut parts = item.splitn(3, ' ');
 	let (run, app) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
 	let Some(steps) = Steps::of(parts.next()) else {
@@ -133,8 +136,8 @@ pub(super) async fn hold(_conn: &mut SqliteConnection, sources: &Sources, item: 
 	if listed.len() != count {
 		return Ok(Held::Refused(Why::Missing));
 	}
-	let mut pictures = Vec::with_capacity(count);
-	for (at, picture) in listed.iter().enumerate() {
+	let mut pictures = Vec::with_capacity(if read { count } else { 0 });
+	for (at, picture) in listed.iter().enumerate().filter(|_| read) {
 		// Its name is the one the check held it to, never read from the
 		// record: it reads only inside the bundle.
 		let name = picture_of(app, at + 1);
@@ -193,4 +196,51 @@ pub(super) fn given(walked: Vec<(String, Value, Vec<File>)>) -> Vec<File> {
 		.collect();
 	let body = serde_json::json!({ "schema": GIVEN_SCHEMA, "runs": runs });
 	std::iter::once((String::from(RECORD), body.to_string().into_bytes())).chain(pictures).collect()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use sqlx::Connection;
+
+	#[tokio::test]
+	async fn a_walk_held_again_is_checked_not_read_again() {
+		let dir = tempfile::tempdir().unwrap();
+		let bundle = crate::snips::bundle_of(dir.path(), "301");
+		std::fs::create_dir_all(bundle.join("jobs/snips")).unwrap();
+		let walks = serde_json::json!({ "schema": "some-ui.walks/1", "commit": "c".repeat(40), "run": "301", "walks": [{
+			"app": "jobs",
+			"walk": { "schema": "some-ui.walk/1", "app": "jobs", "snips": [{ "file": "snips/01.png" }, { "file": "snips/02.png" }] },
+			"pictures": [
+				{ "name": "jobs/snips/01.png", "bytes": 1, "sha256": super::super::sha256_hex(b"1") },
+				{ "name": "jobs/snips/02.png", "bytes": 1, "sha256": super::super::sha256_hex(b"2") },
+			],
+		}]});
+		std::fs::write(bundle.join(RECORD), walks.to_string()).unwrap();
+		std::fs::write(bundle.join("jobs/snips/01.png"), b"1").unwrap();
+		std::fs::write(bundle.join("jobs/snips/02.png"), b"2").unwrap();
+		let sources = Sources {
+			subject: None,
+			frames: dir.path().join("no-frames"),
+			snips: None,
+			pages: None,
+			walks: Some(dir.path().to_owned()),
+		};
+		let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+		let Held::Record { pictures, .. } = hold(&mut conn, &sources, "301 jobs 1-1", true).await.unwrap() else {
+			panic!("held");
+		};
+		assert_eq!(pictures.len(), 2, "every picture, once");
+		// With its pictures gone, a walk held again still checks out: none is read.
+		std::fs::remove_dir_all(bundle.join("jobs")).unwrap();
+		let Held::Record { pictures, .. } = hold(&mut conn, &sources, "301 jobs 2-2", false).await.unwrap() else {
+			panic!("checked");
+		};
+		assert!(pictures.is_empty());
+		assert_eq!(
+			hold(&mut conn, &sources, "301 jobs 2-3", false).await.unwrap(),
+			Held::Refused(Why::Gone),
+			"its steps are still checked"
+		);
+	}
 }
