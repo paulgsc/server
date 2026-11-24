@@ -894,3 +894,25 @@ groups:
         labels:
           objective: OA8
           says: "Home's {{ $labels.process }} failed at {{ $labels.step }} in the last 15 minutes; each failure is logged at error with its cause."
+
+      - alert: HomeFailuresOpen
+        # OA8, #1201 (epic #1174): a failure that persists (an ask home cannot
+        # answer, a refused file newest in its folder, a held week that does
+        # not read, an index the mailbox did not take) is met again by every
+        # pass or every restart, so it is not counted in failures_total, where
+        # each meeting would be one more failure. failures_open{process,step}
+        # is how many are open now, set afresh by each pass that looks
+        # (apps/servers/file_host/src/failure.rs, open), never added to: a
+        # restart cannot count one twice, and a fixed one reads 0 at the next
+        # pass. For 2 hours, so it has held through at least one more hourly
+        # backstop pass than the one that found it; a refused file a newer one
+        # passes within that never tells. max_over_time bridges a restart, when
+        # the series is gone until the new process's first pass sets it, so a
+        # deploy does not start the 2 hours again; it also holds a cleared level
+        # 15 minutes longer.
+        expr: |
+          max by (process, step) (max_over_time(failures_open[15m])) > 0
+        for: 2h
+        labels:
+          objective: OA8
+          says: "Home's {{ $labels.process }} has had a failure open at {{ $labels.step }} for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."

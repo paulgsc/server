@@ -82,7 +82,7 @@
 //! makes no request for either folder.
 
 use crate::auth::DeletionLock;
-use crate::failure::{Failure as Counted, Step};
+use crate::failure::{self, Failure as Counted, Step};
 use chrono::{DateTime, SecondsFormat, Utc};
 use leetype_log_repo::{Event, LogError, SessionEvents};
 use mailbox_kit::{Archive, Folder, Mailbox, MailboxError, MailboxTransport, Put, Restore, PAGE_LIMIT};
@@ -284,6 +284,11 @@ pub struct Outcome {
 	/// `handed`; an index over the mailbox's ceiling, never put (`too_big`),
 	/// is in `refused`.
 	pub indexed: Vec<&'static str>,
+	/// Of `refused`'s files read, those newer than every file kept in their
+	/// folder: the cursor is the newest file kept, so the next pass fetches
+	/// each again. Each is a failure that persists, held as a level
+	/// (`failures_open`, #1201), never counted again.
+	pub open_incoming: usize,
 	/// Files archived home this pass, each by what came of it
 	/// (`metrics::mailbox::ARCHIVE_ANSWERS`).
 	pub archived: Vec<&'static str>,
@@ -464,11 +469,18 @@ pub async fn run_once<T: MailboxTransport>(
 		}
 		inbound = read_folder(db, mailbox, folder, subject, deletion, now, &mut outcome).await;
 	}
+	if inbound.is_ok() && !outcome.no_account {
+		// Every folder read to its end: what is refused now is all that is
+		// open (#1201).
+		failure::open(Step::MailboxReadIncoming, outcome.open_incoming);
+	}
 	if inbound.is_ok() && !outcome.no_account && !last_index.weeks_queued.load(Ordering::Relaxed) {
-		inbound = queue_held_weeks(db, subject, deletion, now).await;
-		if inbound.is_ok() {
+		inbound = queue_held_weeks(db, subject, deletion, now).await.map(|unreadable| {
+			// Held weeks never leave, so this stands until the next process
+			// sweeps again.
+			failure::open(Step::MailboxHeldWeek, unreadable);
 			last_index.weeks_queued.store(true, Ordering::Relaxed);
-		}
+		});
 	}
 	let filing = if outcome.no_account {
 		Ok(())
@@ -500,10 +512,19 @@ pub async fn run_once<T: MailboxTransport>(
 		let call = super::index::put_call_index(db, mailbox, subject, &last_index.call, now, &mut outcome).await;
 		let rust = super::index::put_rust_index(db, mailbox, subject, deletion, &last_index.rust, now, &mut outcome).await;
 		let interview = super::index::put_interview_index(db, mailbox, subject, deletion, &last_index.interview, now, &mut outcome).await;
+		// What the mailbox last answered for each routine, so a put that did
+		// not reach it leaves that routine as it stood.
+		failure::open(Step::MailboxPutIndex, last_index.open());
 		jobs.and(reflections).and(call).and(rust).and(interview)
 	};
 	let asks = match archiving {
-		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await,
+		Some(archiving) if !outcome.no_account => answer_asks(db, archiving, subject, &mut outcome).await.inspect(|()| {
+			// Every ask listed was answered or found open: what is open now.
+			failure::open(
+				Step::MailboxRestore,
+				outcome.restored.iter().filter(|answer| !matches!(**answer, "restored" | "unchanged")).count(),
+			);
+		}),
 		_ => Ok(()),
 	};
 	let old = match archiving {
@@ -539,6 +560,11 @@ async fn read_folder<T: MailboxTransport>(
 ) -> Result<(), Failure> {
 	let mut after = cursor(db, subject, folder).await.map_err(Failure::Storage)?;
 	let mut fetched = 0;
+	// The `seq`s of files refused in this folder this pass, newer than every
+	// file kept so far: `outcome.open_incoming` counts them (#1201). A file
+	// kept after one moves the cursor past it, so it is never listed again
+	// and is no longer open.
+	let mut open: Vec<i64> = Vec::new();
 	for _ in 0..PAGES_PER_PASS {
 		let items = mailbox.list(folder, after, ITEMS_PER_PASS).await.map_err(Failure::Mailbox)?;
 		let full = items.len() >= ITEMS_PER_PASS as usize;
@@ -552,7 +578,17 @@ async fn read_folder<T: MailboxTransport>(
 				return Ok(());
 			}
 			fetched += 1;
-			if !read_one(db, (mailbox, folder), subject, deletion, now, outcome, item).await? {
+			let (refused, kept) = (outcome.refused.len(), outcome.kept);
+			let read = read_one(db, (mailbox, folder), subject, deletion, now, outcome, item).await?;
+			if outcome.refused.len() > refused {
+				open.push(item.seq);
+				outcome.open_incoming += 1;
+			} else if outcome.kept > kept {
+				let passed = open.iter().filter(|seq| **seq < item.seq).count();
+				open.retain(|seq| *seq > item.seq);
+				outcome.open_incoming -= passed;
+			}
+			if !read {
 				return Ok(());
 			}
 		}
@@ -622,7 +658,13 @@ async fn read_one<T: MailboxTransport>(
 /// it queues what the older build left. Queueing is idempotent, so a week
 /// queued already writes nothing, and the log counts only programs written.
 /// A year holds 52 weeks, each read once per process.
-async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync)) -> Result<(), Failure> {
+///
+/// Returns how many weeks it held that do not read as the week their name
+/// says: failures that persist, held as a level by the caller (#1201). One
+/// kept since #1175 was counted once, as `read_body`, when it was first kept;
+/// one kept later in this process is in the level from the next process's
+/// sweep.
+async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync)) -> Result<usize, Failure> {
 	let at = now();
 	let _hold = deletion.hold().await;
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(Failure::Storage)?;
@@ -639,7 +681,7 @@ async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLoc
 	if written > 0 {
 		tracing::info!(written, "queued programs of weeks home held before it could read them");
 	}
-	Ok(())
+	Ok(held.len() - weeks.len())
 }
 
 /// The SHA-256 `mailbox_item` holds for `subject`'s (`folder`, `name`), if any.
@@ -1841,6 +1883,28 @@ mod tests {
 		assert_eq!(queued(&pool).await, ["fn main() { 3; }\n"]);
 	}
 
+	/// #1201: a held week that does not read is met again by every process's
+	/// sweep, so it is held as a level the sweep sets, never counted: the same
+	/// process holds it, and a restart sets it afresh rather than adding.
+	#[tokio::test]
+	async fn a_held_week_that_does_not_read_is_held_open_and_never_counted() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		hold_unqueued(&pool, 1, "rust-week-2026-w46.json", r#"{"schema":"some-ui.rust-week/2","id":"2026-w46","tickets":"#).await;
+		hold_unqueued(&pool, 2, "rust-week-2026-w49.json", &rust_week("2026-w49", &["fn main() { 3; }\n"])).await;
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(open_level(&snapshotter, "held_week"), Some(1.0));
+		// A level only a sweep sets: a later pass of the same process leaves
+		// whatever stands.
+		crate::failure::open(crate::failure::Step::MailboxHeldWeek, 7);
+		pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap();
+		assert_eq!(open_level(&snapshotter, "held_week"), Some(7.0), "the same process does not sweep or set it again");
+		pass_at(&pool, &Fake::default(), "2026-10-25T15:00:00.000Z").await.unwrap();
+		assert_eq!(open_level(&snapshotter, "held_week"), Some(1.0), "a restart sets it afresh: still one");
+	}
+
 	/// The sweep reads the held weeks under the deletion hold, so a deletion
 	/// that lands while it waits for the hold leaves it nothing to queue
 	/// (RR25). The deletion starts once the pass has had time to reach the
@@ -1908,6 +1972,38 @@ mod tests {
 		let outcome = pass(&pool, &fake).await.unwrap();
 		assert_eq!((outcome.kept, outcome.refused), (1, vec!["mismatch"]), "refused, and the next day still kept");
 		assert_eq!(held(&pool).await, [good]);
+	}
+
+	/// #1201: a refused file newer than every file kept in its folder is
+	/// fetched and refused again by every pass, so it is held as a level, not
+	/// counted. Once a newer file is kept the cursor passes it and it is open
+	/// no more; one passed in the same pass was never open.
+	#[tokio::test]
+	async fn a_refused_newest_file_is_held_open_until_a_newer_one_is_kept() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		fake.add(9, "digest-2026-10-21.json", "not json");
+		let (bad, body) = digest("2026-10-22");
+		fake.add(10, &bad, &body);
+		fake.bodies.lock().unwrap().insert(bad, String::from("{}"));
+		let outcome = pass(&pool, &fake).await.unwrap();
+		assert_eq!((outcome.refused, outcome.open_incoming), (vec!["not_json", "mismatch"], 2));
+		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(2.0));
+		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().open_incoming, 2);
+		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(2.0), "the same two, met again, are two");
+
+		let (good, body) = digest("2026-10-23");
+		fake.add(11, &good, &body);
+		// Set apart from what a pass sets, so a 0 read is the pass's own.
+		crate::failure::open(crate::failure::Step::MailboxReadIncoming, 9);
+		let outcome = pass_at(&pool, &fake, "2026-10-23T15:30:00.000Z").await.unwrap();
+		assert_eq!((outcome.kept, outcome.open_incoming), (1, 0));
+		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(0.0), "a newer file kept passes them");
+		fake.add(12, "digest-2026-10-24.json", "not json");
+		assert_eq!(pass_at(&pool, &fake, "2026-10-23T15:45:00.000Z").await.unwrap().open_incoming, 1);
+		assert_eq!(open_level(&snapshotter, "read_incoming"), Some(1.0));
 	}
 
 	#[tokio::test]
@@ -2207,6 +2303,29 @@ mod tests {
 			.collect();
 		counts.sort();
 		counts
+	}
+
+	/// The `failures_open` level of the mailbox pass's `step` as last set, if
+	/// it ever was, asserting no `failures_total` count since the last read.
+	///
+	/// A snapshot drains what it reads (a gauge not set since reads 0), so
+	/// each read covers what happened since the one before.
+	fn open_level(snapshotter: &metrics_util::debugging::Snapshotter, step: &str) -> Option<f64> {
+		use metrics_util::debugging::DebugValue;
+		let snapshot = snapshotter.snapshot().into_vec();
+		let counted: Vec<_> = snapshot
+			.iter()
+			.filter(|(key, _, _, value)| key.key().name() == "failures_total" && !matches!(value, DebugValue::Counter(0)))
+			.collect();
+		assert!(counted.is_empty(), "a failure held open is never counted: {counted:?}");
+		snapshot.into_iter().find_map(|(key, _, _, value)| {
+			let key = key.key();
+			let is_it = key.name() == "failures_open" && key.labels().any(|l| l.key() == "step" && l.value() == step);
+			match (is_it, value) {
+				(true, DebugValue::Gauge(n)) => Some(n.into_inner()),
+				_ => None,
+			}
+		})
 	}
 
 	/// #1172: a handing the mailbox did not take is a failure, counted in
@@ -3261,6 +3380,27 @@ mod tests {
 		assert!(outcome.archived.is_empty(), "a file just put back is not old");
 	}
 
+	/// #1201: an ask home cannot answer stays open, so every pass meets it
+	/// again. It is held as a level, not counted: two passes over the same ask
+	/// hold it at one, and it clears once the routine no longer asks.
+	#[tokio::test]
+	async fn an_ask_home_cannot_answer_is_held_open_and_never_counted() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, vault) = (pool().await, Vault::default());
+		*vault.wanted.lock().unwrap() = vec![(String::from("brief"), String::from("digest-2026-06-01.json"))];
+		assert_eq!(archive_pass(&pool, &vault).await.restored, ["missing"]);
+		assert_eq!(open_level(&snapshotter, "restore"), Some(1.0));
+		assert_eq!(archive_pass(&pool, &vault).await.restored, ["missing"]);
+		assert_eq!(open_level(&snapshotter, "restore"), Some(1.0), "the same ask, met again, is one");
+		vault.wanted.lock().unwrap().clear();
+		// Set apart from what a pass sets, so a 0 read is the pass's own.
+		crate::failure::open(crate::failure::Step::MailboxRestore, 9);
+		archive_pass(&pool, &vault).await;
+		assert_eq!(open_level(&snapshotter, "restore"), Some(0.0));
+	}
+
 	#[tokio::test]
 	async fn files_put_back_never_hold_back_a_new_digest() {
 		let (pool, vault) = (pool().await, Vault::default());
@@ -4166,6 +4306,38 @@ mod tests {
 		fake.add(11, &next, &body);
 		assert_eq!(pass_at(&pool, &fake, "2026-10-24T15:00:00.000Z").await.unwrap().indexed, ["refused"]);
 		assert_eq!(indexes(&fake).len(), 2);
+	}
+
+	/// #1201: an index the mailbox refused is not put again until what it
+	/// counts moves, and a restart puts it again, so it is held as a level,
+	/// never counted: open while the last answer was a refusal, through a
+	/// restart's put refused again, and clear once one is taken.
+	#[tokio::test]
+	async fn a_refused_index_is_held_open_until_one_is_taken() {
+		let recorder = metrics_util::debugging::DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recorder = metrics::set_default_local_recorder(&recorder);
+		let (pool, fake) = (pool().await, Fake::default());
+		let (name, body) = digest("2026-10-23");
+		fake.add(10, &name, &body);
+		*fake.index_answer.lock().unwrap() = Some((422, r#"{"error":"the jobs index carries picked"}"#));
+		pass(&pool, &fake).await.unwrap();
+		assert_eq!(open_level(&snapshotter, "put_index"), Some(1.0));
+		assert!(pass_at(&pool, &fake, "2026-10-23T15:15:00.000Z").await.unwrap().indexed.is_empty());
+		assert_eq!(open_level(&snapshotter, "put_index"), Some(1.0), "not put again, still open");
+
+		let restarted = Fake::default();
+		restarted.add(10, &name, &body);
+		*restarted.index_answer.lock().unwrap() = Some((422, r#"{"error":"the jobs index carries picked"}"#));
+		assert_eq!(pass_at(&pool, &restarted, "2026-10-23T15:30:00.000Z").await.unwrap().indexed, ["refused"]);
+		assert_eq!(open_level(&snapshotter, "put_index"), Some(1.0), "a restart's put refused again is still one");
+		*restarted.index_answer.lock().unwrap() = None;
+		let (next, body) = digest("2026-10-24");
+		restarted.add(11, &next, &body);
+		// Set apart from what a pass sets, so a 0 read is the pass's own.
+		crate::failure::open(crate::failure::Step::MailboxPutIndex, 9);
+		assert_eq!(pass_at(&pool, &restarted, "2026-10-24T15:00:00.000Z").await.unwrap().indexed, ["added"]);
+		assert_eq!(open_level(&snapshotter, "put_index"), Some(0.0));
 	}
 
 	/// #1175: a file named as a Rust week that does not read as one is kept as a

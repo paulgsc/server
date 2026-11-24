@@ -113,6 +113,23 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    (the erasure ratchet, #1189, **Planned**). The owner's rule
    (2026-11-24): a failure is like energy, never destroyed, and the
    bookkeeping must reconcile.
+9. **A failure that persists is a level, never a recount.** A condition
+   every pass or every restart meets again until it is fixed (an ask home
+   cannot answer, a refused file newest in its folder, a held week that does
+   not read, an index the mailbox did not take) is not counted each time it
+   is met, since one condition would be many failures (invariant 8: one
+   event, one count). It is `failures_open{process,step}`, how many are open
+   now, set by `file_host::failure::open` afresh by each pass that looks and
+   never added to, so a restart cannot count one twice and a fixed one reads
+   0 at the next pass that looks; a pass that could not look leaves it as it
+   stood, and its own failure is its process's `*Failing` alert. Its steps
+   are in the same closed `Step` table, marked `open`, and a step is one or
+   the other, never both. Nothing is stored for it and it adds no clock: the
+   passes that already run set it. `HomeFailuresOpen`
+   (`infra/prometheus/rules/home.yml`) tells the owner while one stays open
+   for 2 hours. The owner's choice on #1201 (2026-11-24): a gauge, not a
+   counted-once table. Held by `failure`'s and the mailbox pass's tests and
+   `HomeFailuresOpen`'s promtool cases.
 
 ## Classes: who is low priority, and what that means
 

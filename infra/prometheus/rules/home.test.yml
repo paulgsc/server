@@ -2036,3 +2036,77 @@ tests:
       - eval_time: 45m
         alertname: HomeFailures
         exp_alerts: []
+
+  - name: a failure open for 2 hours is told, and one fixed stops (#1201)
+    interval: 1m
+    input_series:
+      - series: 'failures_open{job="file_host",process="mailbox-passes",step="restore"}'
+        values: '2x150 0x40'
+    alert_rule_test:
+      - eval_time: 110m
+        alertname: HomeFailuresOpen
+        exp_alerts: []
+      - eval_time: 125m
+        alertname: HomeFailuresOpen
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: restore
+              objective: OA8
+              says: "Home's mailbox-passes has had a failure open at restore for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+      - eval_time: 160m
+        alertname: HomeFailuresOpen
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: restore
+              objective: OA8
+              says: "Home's mailbox-passes has had a failure open at restore for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+      - eval_time: 170m
+        alertname: HomeFailuresOpen
+        exp_alerts: []
+
+  - name: a failure fixed within 2 hours never tells (#1201)
+    interval: 1m
+    input_series:
+      - series: 'failures_open{job="file_host",process="mailbox-passes",step="restore"}'
+        values: '1x90 0x60'
+    alert_rule_test:
+      - eval_time: 125m
+        alertname: HomeFailuresOpen
+        exp_alerts: []
+      - eval_time: 140m
+        alertname: HomeFailuresOpen
+        exp_alerts: []
+
+  - name: a restart, the level gone until its first pass, does not start the 2 hours again (#1201)
+    interval: 1m
+    input_series:
+      - series: 'failures_open{job="file_host",process="mailbox-passes",step="restore"}'
+        values: '1x60 _x5 1x100'
+    alert_rule_test:
+      - eval_time: 125m
+        alertname: HomeFailuresOpen
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: restore
+              objective: OA8
+              says: "Home's mailbox-passes has had a failure open at restore for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."
+
+  - name: a level of 0 never tells, and each step is its own (#1201)
+    interval: 1m
+    input_series:
+      - series: 'failures_open{job="file_host",process="mailbox-passes",step="restore"}'
+        values: '0x200'
+      - series: 'failures_open{job="file_host",process="mailbox-passes",step="put_index"}'
+        values: '1x200'
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: HomeFailuresOpen
+        exp_alerts:
+          - exp_labels:
+              process: mailbox-passes
+              step: put_index
+              objective: OA8
+              says: "Home's mailbox-passes has had a failure open at put_index for 2 hours, met again each time home looks and not counted again; the pass's log line says what it refused, restored or indexed."

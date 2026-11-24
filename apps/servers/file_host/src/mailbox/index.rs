@@ -783,8 +783,13 @@ impl Computed {
 /// database: an index is a view, and home keeps no copy of it (the module
 /// doc). After a restart it is empty, so the first pass puts one again, and
 /// the mailbox drops the one before it.
+///
+/// It also holds whether the mailbox's answer to that put was a failure (a
+/// refusal, a conflict, or a body over its ceiling, never put): one is not
+/// put again until what the index counts moves, so it stays open until then,
+/// a level the pass reports in `failures_open` ([`LastIndexes::open`], #1201).
 #[derive(Debug, Default)]
-pub struct LastIndex(Mutex<Option<Computed>>);
+pub struct LastIndex(Mutex<Option<(Computed, bool)>>);
 
 impl LastIndex {
 	fn holds(&self, subject: &str, as_of: Option<&str>, within: impl FnOnce(&str) -> bool) -> bool {
@@ -793,11 +798,19 @@ impl LastIndex {
 			.lock()
 			.unwrap_or_else(PoisonError::into_inner)
 			.as_ref()
-			.is_some_and(|last| last.holds(subject, as_of, within))
+			.is_some_and(|(last, _)| last.holds(subject, as_of, within))
 	}
 
-	fn remember(&self, computed: Computed) {
-		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(computed);
+	/// Remembers what the index the mailbox answered was computed from, and
+	/// whether its answer was a failure.
+	fn remember(&self, computed: Computed, failed: bool) {
+		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((computed, failed));
+	}
+
+	/// Whether the last index the mailbox answered was refused, conflicted
+	/// on, or too big to put.
+	fn failed(&self) -> bool {
+		self.0.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|(_, failed)| *failed)
 	}
 }
 
@@ -814,6 +827,18 @@ pub struct LastIndexes {
 	/// process, so the first pass after an upgrade queues a week an older
 	/// build kept without reading.
 	pub weeks_queued: std::sync::atomic::AtomicBool,
+}
+
+impl LastIndexes {
+	/// How many routines' last index the mailbox did not take: each a
+	/// failure that persists until what it counts moves (#1201).
+	#[must_use]
+	pub fn open(&self) -> usize {
+		[&self.jobs, &self.reflections, &self.call, &self.rust, &self.interview]
+			.into_iter()
+			.filter(|last| last.failed())
+			.count()
+	}
 }
 
 /// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),
@@ -882,18 +907,18 @@ async fn put_index<T: MailboxTransport>(
 ) -> Result<(), Failure> {
 	if body.len() > MAILBOX_BODY_CEILING {
 		outcome.refused.push("too_big");
-		last.remember(computed);
+		last.remember(computed, true);
 		return Ok(());
 	}
-	let answer = match mailbox.put(Folder::Index, name, body).await {
-		Ok(Put::Added { .. }) => "added",
-		Ok(Put::Unchanged { .. }) => "unchanged",
-		Ok(Put::Conflict) => "conflict",
-		Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => "refused",
+	let (answer, failed) = match mailbox.put(Folder::Index, name, body).await {
+		Ok(Put::Added { .. }) => ("added", false),
+		Ok(Put::Unchanged { .. }) => ("unchanged", false),
+		Ok(Put::Conflict) => ("conflict", true),
+		Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => ("refused", true),
 		Err(err) => return Err(Failure::Mailbox(err)),
 	};
 	outcome.indexed.push(answer);
-	last.remember(computed);
+	last.remember(computed, failed);
 	Ok(())
 }
 
