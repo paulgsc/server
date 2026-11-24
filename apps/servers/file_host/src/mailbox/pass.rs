@@ -665,7 +665,6 @@ async fn read_one<T: MailboxTransport>(
 /// it queues what the older build left. Queueing is idempotent, so a week
 /// queued already writes nothing, and the log counts only programs written.
 /// A year holds 52 weeks, each read once per process.
-
 async fn queue_held_weeks(db: &SqlitePool, subject: &str, deletion: &DeletionLock, now: &(impl Fn() -> String + Sync)) -> Result<(), Failure> {
 	let at = now();
 	let _hold = deletion.hold().await;
