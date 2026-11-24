@@ -258,7 +258,7 @@ mod tests {
 				waiting: 1,
 				failed: 1,
 				oldest_waiting_taken: Some(chrono::DateTime::parse_from_rfc3339("2026-11-17T20:00:00.000Z").unwrap().timestamp()),
-				worker_last_pass: Some(1_794_000_000),
+				worker_last_pass: crate::call_weeks::render::Reading::Read(1_794_000_000),
 			}
 		);
 	}

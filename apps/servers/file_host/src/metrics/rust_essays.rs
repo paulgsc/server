@@ -93,14 +93,15 @@ pub fn record_pass(kind: Kind, result: &Result<Exported, sqlx::Error>) {
 }
 
 /// What the render worker has made of the essays given. A time that is not
-/// there reads 0.
+/// there reads 0, and the worker's `last-pass` that can't be read `NaN`
+/// (#1207).
 pub fn record_renders(kind: Kind, seen: &Seen) {
 	gauge(kind, Gauge::Refused).set(count(seen.refused));
 	gauge(kind, Gauge::Given).set(count(seen.renders.held));
 	gauge(kind, Gauge::Waiting).set(count(seen.renders.waiting));
 	gauge(kind, Gauge::Failed).set(count(seen.renders.failed));
 	gauge(kind, Gauge::OldestWaiting).set(seen.renders.oldest_waiting_taken.map_or(0.0, as_f64));
-	gauge(kind, Gauge::WorkerLastPass).set(seen.renders.worker_last_pass.map_or(0.0, as_f64));
+	gauge(kind, Gauge::WorkerLastPass).set(seen.renders.worker_last_pass.gauge());
 }
 
 /// Whether an essay home is owed has passed its Monday unrendered.

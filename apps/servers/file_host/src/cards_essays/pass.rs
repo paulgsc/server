@@ -1460,7 +1460,7 @@ mod tests {
 
 		let seen = crate::cards_essays::observe(&pool, &renders, &status).await.unwrap();
 		assert_eq!((seen.held, seen.waiting, seen.failed, seen.let_go), (3, 2, 1, 0));
-		assert_eq!(seen.worker_last_pass, Some(1_763_110_800));
+		assert_eq!(seen.worker_last_pass, crate::call_weeks::render::Reading::Read(1_763_110_800));
 		assert_eq!(seen.oldest_waiting_taken, Some(clock().timestamp()));
 	}
 

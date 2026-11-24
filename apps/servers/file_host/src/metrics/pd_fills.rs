@@ -47,3 +47,19 @@ pub fn record_renders(seen: &Seen) {
 	metrics::gauge!("pd_render_episodes_let_go").set(count(seen.renders.let_go));
 	metrics::gauge!("pd_render_oldest_waiting_taken_timestamp_seconds").set(seen.renders.oldest_waiting_taken.map_or(0.0, as_f64));
 }
+
+/// What the render worker has made of the fills is unknown: the tick could
+/// not read it. Every gauge [`record_renders`] sets is `NaN`, a gap, never
+/// its last value (#1207, OA6).
+pub fn record_renders_unknown() {
+	for name in [
+		"pd_fills_held",
+		"pd_render_episodes_unvoiced",
+		"pd_render_episodes_waiting",
+		"pd_render_episodes_failed",
+		"pd_render_episodes_let_go",
+		"pd_render_oldest_waiting_taken_timestamp_seconds",
+	] {
+		metrics::gauge!(name).set(f64::NAN);
+	}
+}

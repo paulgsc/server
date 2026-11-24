@@ -42,33 +42,131 @@ pub fn record_pass(result: &Result<Pass, sqlx::Error>) {
 
 /// Whether the week the weekly routine owes has passed its Friday at home
 /// without reaching home (`feeds::renders::overdue`, paulgsc/some-ui#3478):
-/// 1 or 0, set by each pass.
-pub fn record_next_overdue(overdue: bool) {
-	metrics::gauge!("call_weeks_next_overdue").set(if overdue { 1.0 } else { 0.0 });
+/// 1 or 0, set by each pass, and `NaN` when the pass could not read it
+/// (`None`): unknown, never the last answer (#1207).
+pub fn record_next_overdue(overdue: Option<bool>) {
+	metrics::gauge!("call_weeks_next_overdue").set(overdue.map_or(f64::NAN, |overdue| if overdue { 1.0 } else { 0.0 }));
 }
 
 /// What the render worker has made of the weeks home holds. A time that is
-/// not there reads 0.
+/// not there reads 0, and the worker's `last-pass` that can't be read `NaN`.
 pub fn record_renders(seen: &Renders) {
 	metrics::gauge!("call_weeks_held").set(count(seen.held));
 	metrics::gauge!("call_render_weeks_waiting").set(count(seen.waiting));
 	metrics::gauge!("call_render_weeks_let_go").set(count(seen.let_go));
 	metrics::gauge!("call_render_weeks_failed").set(count(seen.failed));
 	metrics::gauge!("call_render_oldest_waiting_taken_timestamp_seconds").set(seen.oldest_waiting_taken.map_or(0.0, as_f64));
-	metrics::gauge!("call_render_worker_last_pass_timestamp_seconds").set(seen.worker_last_pass.map_or(0.0, as_f64));
+	metrics::gauge!("call_render_worker_last_pass_timestamp_seconds").set(seen.worker_last_pass.gauge());
+}
+
+/// What the render worker has made of the weeks is unknown: the tick could
+/// not read it. Every gauge [`record_renders`] sets is `NaN`, a gap, never
+/// its last value (#1207, OA6).
+pub fn record_renders_unknown() {
+	for name in [
+		"call_weeks_held",
+		"call_render_weeks_waiting",
+		"call_render_weeks_let_go",
+		"call_render_weeks_failed",
+		"call_render_oldest_waiting_taken_timestamp_seconds",
+		"call_render_worker_last_pass_timestamp_seconds",
+	] {
+		metrics::gauge!(name).set(f64::NAN);
+	}
 }
 
 fn bytes(value: u64) -> f64 {
 	as_f64(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
-/// What the call takes of the drive that keeps it. A time or a drive that
-/// is not there reads 0.
+/// What the call takes of the drive that keeps it. A cache warning that is
+/// not there reads 0, and one that can't be read `NaN`; a drive `statvfs`
+/// could not read is `NaN`, never 0 free (#1207).
 pub fn record_disk(seen: &Disk) {
 	metrics::gauge!("call_render_videos_bytes").set(bytes(seen.videos_bytes));
 	metrics::gauge!("call_render_work_bytes").set(bytes(seen.work_bytes));
-	metrics::gauge!("call_render_cache_warning_timestamp_seconds").set(seen.cache_warning_at.map_or(0.0, as_f64));
-	let (free, size) = seen.drive.unwrap_or((0, 0));
-	metrics::gauge!("call_render_drive_avail_bytes").set(bytes(free));
-	metrics::gauge!("call_render_drive_size_bytes").set(bytes(size));
+	metrics::gauge!("call_render_cache_warning_timestamp_seconds").set(seen.cache_warning_at.gauge());
+	let (free, size) = seen.drive.map_or((f64::NAN, f64::NAN), |(free, size)| (bytes(free), bytes(size)));
+	metrics::gauge!("call_render_drive_avail_bytes").set(free);
+	metrics::gauge!("call_render_drive_size_bytes").set(size);
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{record_disk, record_next_overdue, record_renders, record_renders_unknown};
+	use crate::call_weeks::render::{Disk, Reading, Renders};
+	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+	/// Every gauge `record` set, by name.
+	fn gauges(record: impl FnOnce()) -> Vec<(String, f64)> {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		metrics::with_local_recorder(&recorder, record);
+		snapshotter
+			.snapshot()
+			.into_vec()
+			.into_iter()
+			.filter_map(|(key, _, _, value)| match value {
+				DebugValue::Gauge(value) => Some((key.key().name().to_owned(), value.into_inner())),
+				_ => None,
+			})
+			.collect()
+	}
+
+	fn value(gauges: &[(String, f64)], name: &str) -> f64 {
+		gauges.iter().find(|(n, _)| n == name).map(|(_, v)| *v).unwrap()
+	}
+
+	/// #1207 (OA6): a signal not read is `NaN`, a gap, never 0 or its last
+	/// value; one that is not there (no warning, no pass yet) stays 0.
+	/// Family: the renders unread, a `last-pass` and a cache warning
+	/// unreadable or absent, a drive `statvfs` could not read, and whether
+	/// the next week is overdue unread.
+	#[test]
+	fn a_signal_not_read_is_unknown_and_one_not_there_is_zero() {
+		let unknown = gauges(record_renders_unknown);
+		assert_eq!(unknown.len(), 6, "{unknown:?}");
+		assert!(unknown.iter().all(|(_, v)| v.is_nan()), "{unknown:?}");
+
+		let unreadable = Renders {
+			worker_last_pass: Reading::Unreadable,
+			..Renders::default()
+		};
+		let set = gauges(|| record_renders(&unreadable));
+		assert!(value(&set, "call_render_worker_last_pass_timestamp_seconds").is_nan());
+		assert!(value(&set, "call_render_weeks_waiting").abs() < f64::EPSILON, "the rest read");
+		let set = gauges(|| record_renders(&Renders::default()));
+		assert!(value(&set, "call_render_worker_last_pass_timestamp_seconds").abs() < f64::EPSILON, "no pass yet is 0");
+
+		let disk = Disk {
+			cache_warning_at: Reading::Unreadable,
+			drive: None,
+			..Disk::default()
+		};
+		let set = gauges(|| record_disk(&disk));
+		for name in ["call_render_cache_warning_timestamp_seconds", "call_render_drive_avail_bytes", "call_render_drive_size_bytes"] {
+			assert!(value(&set, name).is_nan(), "{name}");
+		}
+		let disk = Disk {
+			drive: Some((1, 2)),
+			..Disk::default()
+		};
+		let set = gauges(|| record_disk(&disk));
+		assert!(value(&set, "call_render_cache_warning_timestamp_seconds").abs() < f64::EPSILON, "no warning is 0");
+		assert!((value(&set, "call_render_drive_avail_bytes") - 1.0).abs() < f64::EPSILON);
+
+		assert!(value(&gauges(|| record_next_overdue(None)), "call_weeks_next_overdue").is_nan());
+		assert!((value(&gauges(|| record_next_overdue(Some(true))), "call_weeks_next_overdue") - 1.0).abs() < f64::EPSILON);
+	}
+
+	/// #1207: two jobs' newest cache warning is unknown when either is.
+	#[test]
+	fn the_newest_of_two_readings_is_unknown_when_either_is() {
+		let (absent, unreadable) = (Reading::Absent, Reading::Unreadable);
+		assert_eq!(Reading::Read(1).newest(Reading::Read(2)), Reading::Read(2));
+		assert_eq!(Reading::Read(1).newest(absent), Reading::Read(1));
+		assert_eq!(absent.newest(absent), absent);
+		assert_eq!(Reading::Read(1).newest(unreadable), unreadable);
+		assert_eq!(unreadable.newest(absent), unreadable);
+	}
 }

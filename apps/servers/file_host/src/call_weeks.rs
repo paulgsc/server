@@ -159,13 +159,15 @@ fn spawn(state: &AppState, context: CallWeeksContext) {
 					// Whether the week the weekly routine owes has passed its
 					// Friday without coming (paulgsc/some-ui#3478), as the
 					// board's `coming` says it. The call's weeks are no
-					// subject's. A failing read leaves the last value.
-					// Held open while it is not read (#1179).
+					// subject's. A failing read makes it unknown (`NaN`,
+					// never the last value, #1207), held open while it is
+					// not read (#1179).
 					if let Ok(overdue) = crate::feeds::renders::overdue(&db, &crate::feeds::renders::Folders::server(), "", crate::feeds::Feed::Call, chrono::Utc::now().timestamp()).await {
-						crate::metrics::call_weeks::record_next_overdue(overdue);
+						crate::metrics::call_weeks::record_next_overdue(Some(overdue));
 						crate::failure::open(crate::failure::Step::CallWeeksNextOverdue, 0);
 					} else {
 						warn!(error = "storage", "whether the call's next week is overdue was not read");
+						crate::metrics::call_weeks::record_next_overdue(None);
 						crate::failure::open(crate::failure::Step::CallWeeksNextOverdue, 1);
 					}
 					if result.as_ref().is_ok_and(|done| done.failures.is_empty()) {
@@ -200,15 +202,19 @@ impl Seen<'static> {
 }
 
 /// What the render worker has made of the weeks held, as metrics. A
-/// failing read leaves the last values and logs, and each signal not read
-/// (the renders, the drive) is held open until a tick reads it (#1179).
+/// failing read makes them unknown (`NaN`, never the last values or 0,
+/// #1207) and logs, and each signal not read (the renders, the worker's
+/// `last-pass`, its cache warnings, the drive) is held open until a tick
+/// reads it (#1179).
 async fn observe_renders(db: &sqlx::SqlitePool, seen: &Seen<'_>) {
 	let Seen { renders, status, work } = *seen;
 	let mut unread = 0;
 	if let Ok(seen) = render::observe(db, renders, status).await {
 		crate::metrics::call_weeks::record_renders(&seen);
+		unread += usize::from(seen.worker_last_pass == render::Reading::Unreadable);
 	} else {
 		warn!(error = "storage", "call render observation failed");
+		crate::metrics::call_weeks::record_renders_unknown();
 		unread += 1;
 	}
 	// The worker's Playoff Delta job keeps its videos, work and cache
@@ -222,6 +228,7 @@ async fn observe_renders(db: &sqlx::SqlitePool, seen: &Seen<'_>) {
 	let disk = render::disk(renders, work, status).await.and(&pd).and(&essays).and(&interview).and(&cards).and(&report);
 	crate::metrics::call_weeks::record_disk(&disk);
 	unread += usize::from(disk.drive.is_none());
+	unread += usize::from(disk.cache_warning_at == render::Reading::Unreadable);
 	crate::failure::open(crate::failure::Step::CallWeeksObserve, unread);
 }
 
@@ -279,5 +286,19 @@ mod tests {
 		crate::failure::open(Step::CallWeeksObserve, 9);
 		observe_renders(&pool, &seen).await;
 		assert_eq!(held::open(&snapshotter, Step::CallWeeksObserve), Some(0.0), "read, it clears");
+
+		// #1207: the worker's `last-pass` there and not a time is not read.
+		std::fs::write(status.join("last-pass"), b"not a time").unwrap();
+		crate::failure::open(Step::CallWeeksObserve, 9);
+		observe_renders(&pool, &seen).await;
+		assert_eq!(held::open(&snapshotter, Step::CallWeeksObserve), Some(1.0), "an unreadable last-pass");
+
+		// #1207: a status that is not a folder: neither its `last-pass` nor its
+		// cache warnings can be read.
+		std::fs::remove_dir_all(&status).unwrap();
+		std::fs::write(&status, b"").unwrap();
+		crate::failure::open(Step::CallWeeksObserve, 9);
+		observe_renders(&pool, &seen).await;
+		assert_eq!(held::open(&snapshotter, Step::CallWeeksObserve), Some(2.0), "the last-pass and the cache warnings");
 	}
 }

@@ -108,14 +108,15 @@ async fn run_once(db: &sqlx::SqlitePool, fetch: &crate::game_feed::pass::Reqwest
 }
 
 /// What the render worker has made of the fills held, as metrics. A failing
-/// read leaves the last values and logs, and is held open until a tick reads
-/// it (#1179).
+/// read makes them unknown (`NaN`, never the last values, #1207) and logs,
+/// and is held open until a tick reads it (#1179).
 async fn observe_renders(db: &sqlx::SqlitePool, renders: &std::path::Path, status: &std::path::Path) {
 	if let Ok(seen) = render::observe(db, renders, status).await {
 		crate::metrics::pd_fills::record_renders(&seen);
 		crate::failure::open(crate::failure::Step::PdFillsObserve, 0);
 	} else {
 		warn!(error = "storage", "playoff delta render observation failed");
+		crate::metrics::pd_fills::record_renders_unknown();
 		crate::failure::open(crate::failure::Step::PdFillsObserve, 1);
 	}
 }

@@ -50,6 +50,48 @@ pub const STATUS_FOLDER: &str = "/app/dbs/renders/call-worker";
 /// attempts, as this server sees it.
 pub const WORK_FOLDER: &str = "/app/dbs/renders/call-work";
 
+/// A file the render worker writes, as one tick read it (#1207): there is
+/// none ([`Reading::Absent`]: the worker never wrote it), it read, or it is
+/// there and could not be read or does not say what it should
+/// ([`Reading::Unreadable`]). Unreadable is never absent: it is `NaN` on its
+/// gauge, a gap, never 0 or the last value (OA6).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Reading<T> {
+	/// Not there.
+	#[default]
+	Absent,
+	/// There, and read.
+	Read(T),
+	/// There, and not read.
+	Unreadable,
+}
+
+impl Reading<i64> {
+	/// The newer of two times: unknown when either is unreadable, since the
+	/// newest is then unknown too.
+	#[must_use]
+	pub const fn newest(self, other: Self) -> Self {
+		match (self, other) {
+			(Self::Unreadable, _) | (_, Self::Unreadable) => Self::Unreadable,
+			(Self::Read(one), Self::Read(two)) => Self::Read(if one > two { one } else { two }),
+			(Self::Read(at), Self::Absent) | (Self::Absent, Self::Read(at)) => Self::Read(at),
+			(Self::Absent, Self::Absent) => Self::Absent,
+		}
+	}
+
+	/// The gauge's value: 0 when absent (the alerts on these times read only
+	/// above 0), the time when read, `NaN` when unreadable.
+	#[must_use]
+	#[allow(clippy::cast_precision_loss)] // Unix seconds, far below 2^52
+	pub const fn gauge(self) -> f64 {
+		match self {
+			Self::Absent => 0.0,
+			Self::Read(at) => at as f64,
+			Self::Unreadable => f64::NAN,
+		}
+	}
+}
+
 /// What the call takes of the drive that keeps it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Disk {
@@ -58,8 +100,9 @@ pub struct Disk {
 	/// Bytes of the waiting weeks' work and step caches.
 	pub work_bytes: u64,
 	/// Unix seconds of the newest cache warning, if one was ever written.
-	pub cache_warning_at: Option<i64>,
-	/// The drive's bytes free to the worker and its size, if it can be read.
+	pub cache_warning_at: Reading<i64>,
+	/// The drive's bytes free to the worker and its size; `None` only when
+	/// `statvfs` fails.
 	pub drive: Option<(u64, u64)>,
 }
 
@@ -72,7 +115,7 @@ impl Disk {
 		Self {
 			videos_bytes: self.videos_bytes.saturating_add(other.videos_bytes),
 			work_bytes: self.work_bytes.saturating_add(other.work_bytes),
-			cache_warning_at: self.cache_warning_at.max(other.cache_warning_at),
+			cache_warning_at: self.cache_warning_at.newest(other.cache_warning_at),
 			drive: self.drive.or(other.drive),
 		}
 	}
@@ -112,24 +155,34 @@ pub(crate) async fn bytes_under(dir: &Path) -> u64 {
 	total
 }
 
-/// When the newest `*.cache.log` in `status` was written.
-async fn newest_cache_warning(status: &Path) -> Option<i64> {
-	let mut entries = tokio::fs::read_dir(status).await.ok()?;
-	let mut newest: Option<i64> = None;
-	while let Ok(Some(entry)) = entries.next_entry().await {
+/// When the newest `*.cache.log` in `status` was written: absent when there
+/// is none (or no `status` yet), unreadable when the folder or a warning's
+/// time can't be read (#1207).
+async fn newest_cache_warning(status: &Path) -> Reading<i64> {
+	let mut entries = match tokio::fs::read_dir(status).await {
+		Ok(entries) => entries,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Reading::Absent,
+		Err(_) => return Reading::Unreadable,
+	};
+	let mut newest = Reading::Absent;
+	loop {
+		let entry = match entries.next_entry().await {
+			Ok(Some(entry)) => entry,
+			Ok(None) => return newest,
+			Err(_) => return Reading::Unreadable,
+		};
 		if !entry.file_name().to_string_lossy().ends_with(".cache.log") {
 			continue;
 		}
-		let Some(at) = entry.metadata().await.ok().and_then(|meta| meta.modified().ok()) else {
-			continue;
+		let Ok(at) = entry.metadata().await.and_then(|meta| meta.modified()) else {
+			return Reading::Unreadable;
 		};
 		let Ok(since) = at.duration_since(std::time::UNIX_EPOCH) else {
-			continue;
+			return Reading::Unreadable;
 		};
 		let at = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
-		newest = Some(newest.map_or(at, |seen| seen.max(at)));
+		newest = newest.newest(Reading::Read(at));
 	}
-	newest
 }
 
 /// The drive's bytes free to an unprivileged writer, and its size.
@@ -157,7 +210,7 @@ pub struct Renders {
 	/// waits.
 	pub oldest_waiting_taken: Option<i64>,
 	/// Unix seconds when the worker last started a pass, if it ever has.
-	pub worker_last_pass: Option<i64>,
+	pub worker_last_pass: Reading<i64>,
 }
 
 /// Reads what the worker has made of each week home holds.
@@ -280,10 +333,18 @@ async fn exists(path: &Path) -> bool {
 	tokio::fs::try_exists(path).await.unwrap_or(false)
 }
 
-/// The worker's `last-pass`: Unix seconds on one line, or `None`.
-async fn last_pass(status: &Path) -> Option<i64> {
-	let text = tokio::fs::read_to_string(status.join("last-pass")).await.ok()?;
-	text.trim().parse().ok()
+/// The worker's `last-pass`: Unix seconds on one line. Absent when the
+/// worker never wrote one; unreadable when it is there and can't be read or
+/// is not a time (#1207).
+async fn last_pass(status: &Path) -> Reading<i64> {
+	match tokio::fs::read_to_string(status.join("last-pass")).await {
+		Ok(text) => match text.trim().parse() {
+			Ok(at) => Reading::Read(at),
+			Err(_) => Reading::Unreadable,
+		},
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Reading::Absent,
+		Err(_) => Reading::Unreadable,
+	}
 }
 
 #[cfg(test)]
@@ -334,17 +395,17 @@ mod tests {
 		let other = Disk {
 			videos_bytes: 1,
 			work_bytes: 2,
-			cache_warning_at: Some(i64::MAX),
+			cache_warning_at: Reading::Read(i64::MAX),
 			drive: None,
 		};
 		let both = seen.clone().and(&other);
 		assert_eq!(
 			(both.videos_bytes, both.work_bytes, both.cache_warning_at),
-			(16, 22, Some(i64::MAX)),
+			(16, 22, Reading::Read(i64::MAX)),
 			"both jobs' bytes and the newest warning"
 		);
 		assert_eq!(both.drive, seen.drive);
-		assert!(seen.cache_warning_at.is_some_and(|at| at > 1_700_000_000));
+		assert!(matches!(seen.cache_warning_at, Reading::Read(at) if at > 1_700_000_000));
 		let (free, size) = seen.drive.unwrap();
 		assert!(size > 0 && free <= size);
 	}
@@ -377,7 +438,7 @@ mod tests {
 				waiting: 2,
 				failed: 1,
 				oldest_waiting_taken: Some(DateTime::parse_from_rfc3339("2026-11-06T08:00:00.000Z").unwrap().timestamp()),
-				worker_last_pass: Some(1_794_000_000),
+				worker_last_pass: Reading::Read(1_794_000_000),
 			}
 		);
 
@@ -387,7 +448,7 @@ mod tests {
 		std::fs::write(status.join("last-pass"), b"not a time").unwrap();
 		let done = observe(&pool, &renders, &status).await.unwrap();
 		assert_eq!((done.waiting, done.failed, done.oldest_waiting_taken), (0, 0, None), "a video counts whatever log is left");
-		assert_eq!(done.worker_last_pass, None, "a stamp that is not a time reads as none");
+		assert_eq!(done.worker_last_pass, Reading::Unreadable, "a stamp that is not a time is unreadable, never none (#1207)");
 
 		// A week whose video was let go is counted apart, never as waiting.
 		std::fs::remove_file(renders.join("2026-10-23").join("call.mp4")).unwrap();
