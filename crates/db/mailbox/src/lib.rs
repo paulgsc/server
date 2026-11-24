@@ -56,9 +56,11 @@
 //!   a mark does not unname one, so a Jobs note set aside is still heard
 //!   and filed, and the Jobs index is left as it is. The note, its audio and
 //!   every file already filed are kept.
-//! - **Handed once.** A file filed for the mailbox is handed until the
-//!   mailbox answers it, and the answer is final: [`pending_outgoing`] is the
-//!   filed files with no answer recorded.
+//! - **Handed until taken.** A file filed for the mailbox is handed until the
+//!   mailbox answers it, and every answer but a refusal is final. A refused
+//!   file is handed again once its last refusal is old enough, until it has
+//!   had [`REFUSED_TRIES`] answers (paulgsc/some-ui#3508): [`pending_outgoing`]
+//!   is the filed files with no answer, then those refused and due again.
 //! - **A pickup is filed once per ready move** (paulgsc/some-ui#2875,
 //!   CONVEYOR3). A Studio take the owner moved to `ready-for-pickup`, once
 //!   heard, is filed under [`pickup_name`] with that move's number. The
@@ -410,7 +412,10 @@ pub struct Outgoing {
 	pub body: Vec<u8>,
 }
 
-/// What the mailbox said to a file home handed it. Every answer is final.
+/// What the mailbox said to a file home handed it.
+///
+/// Every answer is final but [`Answer::Refused`]: a refused file is handed
+/// again, up to [`REFUSED_TRIES`] answers in all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
 	/// It took the file.
@@ -471,23 +476,46 @@ pub async fn file_outgoing(conn: &mut SqliteConnection, subject: &str, folder: &
 	Ok(if written.rows_affected() == 0 { Change::NoAccount } else { Change::Added })
 }
 
-/// `subject`'s filed files the mailbox has not answered, oldest filed first,
-/// at most `limit`.
+/// How many answers a file the mailbox keeps refusing gets before home stops
+/// handing it.
+///
+/// A refusal is usually final (the mailbox will not take the bytes), but one
+/// can come from a mailbox that drifted from home (paulgsc/some-ui#3508), so
+/// a refused file is handed again until it has had this many answers. Every
+/// answer is kept; the last one stays `refused`.
+pub const REFUSED_TRIES: i64 = 7;
+
+/// `subject`'s filed files due to be handed to the mailbox, at most `limit`.
+///
+/// A file is due when the mailbox has not answered it, or when every answer
+/// was a refusal, the last at or before `refused_before`, and it has had
+/// fewer than [`REFUSED_TRIES`] answers. Files never answered come first,
+/// then the refused ones, each oldest filed first. An empty `refused_before`
+/// hands no refused file again.
 ///
 /// # Errors
 /// Any `sqlx` failure.
-pub async fn pending_outgoing(conn: &mut SqliteConnection, subject: &str, limit: i64) -> Result<Vec<Outgoing>, MailboxError> {
+pub async fn pending_outgoing(conn: &mut SqliteConnection, subject: &str, refused_before: &str, limit: i64) -> Result<Vec<Outgoing>, MailboxError> {
 	let pending = sqlx::query_as!(
 		Outgoing,
-		"SELECT folder, name, body FROM mailbox_outgoing AS filed
-		 WHERE subject_id = ?1
-		   AND NOT EXISTS (
-		     SELECT 1 FROM mailbox_handed AS handed
-		     WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		r#"SELECT folder AS "folder!", name AS "name!", body AS "body!" FROM (
+		     SELECT filed.folder, filed.name, filed.body, filed.filed_at, filed.rowid AS filed_row,
+		       (SELECT COUNT(*) FROM mailbox_handed AS handed
+		        WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name) AS answers
+		     FROM mailbox_outgoing AS filed
+		     WHERE filed.subject_id = ?1
+		       AND NOT EXISTS (
+		         SELECT 1 FROM mailbox_handed AS handed
+		         WHERE handed.subject_id = filed.subject_id AND handed.folder = filed.folder AND handed.name = filed.name
+		           AND (handed.answer <> 'refused' OR handed.handed_at > ?2)
+		       )
 		   )
-		 ORDER BY filed_at, rowid
-		 LIMIT ?2",
+		   WHERE answers < ?3
+		   ORDER BY answers > 0, filed_at, filed_row
+		   LIMIT ?4"#,
 		subject,
+		refused_before,
+		REFUSED_TRIES,
 		limit
 	)
 	.fetch_all(&mut *conn)
@@ -2090,7 +2118,11 @@ mod tests {
 	}
 
 	async fn pending(pool: &SqlitePool, subject: &str) -> Vec<String> {
-		pending_outgoing(&mut pool.acquire().await.unwrap(), subject, 20)
+		pending_refused_before(pool, subject, "").await
+	}
+
+	async fn pending_refused_before(pool: &SqlitePool, subject: &str, refused_before: &str) -> Vec<String> {
+		pending_outgoing(&mut pool.acquire().await.unwrap(), subject, refused_before, 20)
 			.await
 			.unwrap()
 			.into_iter()
@@ -2108,7 +2140,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_file_is_pending_until_the_mailbox_answers_it_and_any_answer_is_final() {
+	async fn a_file_is_pending_until_the_mailbox_answers_it_and_any_answer_but_a_refusal_is_final() {
 		let pool = pool().await;
 		for name in ["decisions-2026-10-21.json", "decisions-2026-10-22.json", "decisions-2026-10-23.json"] {
 			file(&pool, A, name, name).await.unwrap();
@@ -2130,6 +2162,47 @@ mod tests {
 			record_handed(&mut conn, "subject-gone", "decisions", "x", Answer::Refused, NOW).await.unwrap(),
 			Change::NoAccount
 		);
+	}
+
+	#[tokio::test]
+	async fn a_refused_file_is_handed_again_until_taken_or_its_tries_are_spent() {
+		const REFUSED: &str = "decisions-2026-10-21.json";
+		const FRESH: &str = "decisions-2026-10-22.json";
+		const TAKEN: &str = "decisions-2026-10-20.json";
+		let pool = pool().await;
+		for name in [TAKEN, REFUSED, FRESH] {
+			file(&pool, A, name, name).await.unwrap();
+		}
+		let mut conn = pool.acquire().await.unwrap();
+		record_handed(&mut conn, A, "decisions", TAKEN, Answer::Refused, "2026-10-23T09:00:00.000Z").await.unwrap();
+		record_handed(&mut conn, A, "decisions", TAKEN, Answer::Added, "2026-10-23T10:00:00.000Z").await.unwrap();
+		record_handed(&mut conn, A, "decisions", REFUSED, Answer::Refused, "2026-10-23T10:00:00.000Z")
+			.await
+			.unwrap();
+		drop(conn);
+		assert_eq!(pending_refused_before(&pool, A, "2026-10-23T09:59:59.000Z").await, [FRESH], "a refusal is not due yet");
+		assert_eq!(pending(&pool, A).await, [FRESH], "no time, no second try");
+		assert_eq!(
+			pending_refused_before(&pool, A, "2026-10-23T11:00:00.000Z").await,
+			[FRESH, REFUSED],
+			"never answered first, then the refused one; a file taken after a refusal is not handed again"
+		);
+		let later = ["10:30", "11:00", "12:00", "13:00", "14:00", "15:00"].map(|time| String::from("2026-10-23T") + time + ":00.000Z");
+		for (answer, at) in (2..).zip(&later) {
+			assert_eq!(pending_refused_before(&pool, A, NOW).await, [FRESH, REFUSED], "answer {answer} is due");
+			record_handed(&mut pool.acquire().await.unwrap(), A, "decisions", REFUSED, Answer::Refused, at)
+				.await
+				.unwrap();
+		}
+		assert_eq!(pending_refused_before(&pool, A, "2026-10-24T00:00:00.000Z").await, [FRESH], "its tries are spent");
+		let answers: Vec<String> = sqlx::query_scalar("SELECT answer FROM mailbox_handed WHERE subject_id = ?1 AND name = ?2 ORDER BY handed_at")
+			.bind(A)
+			.bind(REFUSED)
+			.fetch_all(&pool)
+			.await
+			.unwrap();
+		assert_eq!(answers.len(), usize::try_from(super::REFUSED_TRIES).unwrap(), "every answer is kept");
+		assert!(answers.iter().all(|answer| answer == "refused"));
 	}
 
 	/// A voice note `note` of `subject`'s, and one attempt by `model` to hear it.
