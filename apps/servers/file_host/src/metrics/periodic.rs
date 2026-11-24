@@ -60,7 +60,7 @@ pub fn spawn(state: AppState, rate_limiter: Arc<HttpLimiter>, freshness: Duratio
 					let folder = std::path::Path::new(crate::deploy::FOLDER);
 					let backups = crate::migrate::backups_held(&state.core.config.database_url);
 					crate::metrics::deploy::record_state(
-						crate::deploy::read_recorded(folder).as_ref(),
+						&crate::deploy::read_recorded(folder),
 						&crate::deploy::marker_since(folder),
 						chrono::Utc::now().timestamp(),
 						backups,

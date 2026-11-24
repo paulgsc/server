@@ -53,16 +53,16 @@ const fn seconds(value: i64) -> f64 {
 /// What home's deploy recorded, at `now` (seconds since the epoch), with
 /// the marker's time if one is waiting and the migration backups held.
 ///
-/// `recorded` is `None` when `state.json` is there and can't be read, and
+/// `recorded` is an error when `state.json` is there and can't be read, and
 /// `marker_since` an error when the marker can't be read (`Ok(None)`: no
 /// marker). Either unknown is `NaN`, a gap on the graph, never 0 (HD3,
 /// #1208): a total read as 0 and then as itself again would be a reset and
 /// an increase `DeployFailed` reads as a failure. A gap fires no alert
 /// either; saying it is unreadable is the open-failures gauge's (#1201), and
 /// `/compat` says it at error on each ask.
-pub fn record_state(recorded: Option<&Recorded>, marker_since: &std::io::Result<Option<i64>>, now: i64, backups: (u64, u64)) {
-	let counts = recorded.map(|recorded| &recorded.counts);
-	let total = |value: fn(&crate::deploy::Counts) -> u64| counts.map_or(f64::NAN, |counts| as_f64(value(counts)));
+pub fn record_state(recorded: &std::io::Result<Recorded>, marker_since: &std::io::Result<Option<i64>>, now: i64, backups: (u64, u64)) {
+	let counts = recorded.as_ref().map(|recorded| &recorded.counts);
+	let total = |value: fn(&crate::deploy::Counts) -> u64| counts.as_ref().map_or(f64::NAN, |counts| as_f64(value(counts)));
 	for (outcome, value) in [
 		("deployed", total(|counts| counts.deployed)),
 		("rolled_back", total(|counts| counts.rolled_back)),
@@ -74,8 +74,8 @@ pub fn record_state(recorded: Option<&Recorded>, marker_since: &std::io::Result<
 	}
 	metrics::gauge!("home_deploy_pulls").set(total(|counts| counts.pulls));
 	metrics::gauge!("home_deploy_pulled_bytes").set(total(|counts| counts.pulled_bytes));
-	recorded.map_or_else(
-		|| {
+	recorded.as_ref().map_or_else(
+		|_| {
 			metrics::gauge!("home_deploy_last_run_timestamp_seconds").set(f64::NAN);
 			metrics::gauge!("home_deploy_last_exit_code").set(f64::NAN);
 			metrics::gauge!("home_deploy_latest_seen_epoch").set(f64::NAN);
@@ -105,7 +105,7 @@ mod tests {
 	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
 	/// Every gauge `record_state` set, by name and `outcome` label.
-	fn gauges(state: Option<&Recorded>, marker: &std::io::Result<Option<i64>>) -> Vec<(String, f64)> {
+	fn gauges(state: &std::io::Result<Recorded>, marker: &std::io::Result<Option<i64>>) -> Vec<(String, f64)> {
 		let recorder = DebuggingRecorder::new();
 		let snapshotter = recorder.snapshotter();
 		metrics::with_local_recorder(&recorder, || record_state(state, marker, 1_000, (0, 0)));
@@ -131,7 +131,7 @@ mod tests {
 	/// `DeployStuck` can't see.
 	#[test]
 	fn an_unreadable_record_or_marker_is_a_gap_never_zero() {
-		let unreadable = gauges(None, &Err(std::io::Error::other("unreadable")));
+		let unreadable = gauges(&Err(std::io::Error::other("garbled")), &Err(std::io::Error::other("unreadable")));
 		assert!(unreadable.len() >= 10, "{unreadable:?}");
 		for (name, value) in &unreadable {
 			assert!(value.is_nan(), "{name} = {value}");
@@ -144,13 +144,13 @@ mod tests {
 			},
 			..Recorded::default()
 		};
-		let readable = gauges(Some(&recorded), &Ok(None));
+		let readable = gauges(&Ok(recorded.clone()), &Ok(None));
 		let value = |name: &str| readable.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
 		assert_eq!(value("home_deploy_runs/rolled_back"), Some(2.0));
 		assert_eq!(value("home_deploy_runs/failed"), Some(0.0));
 		assert_eq!(value("home_deploy_wanted_age_seconds"), Some(0.0), "no marker is an age of 0");
 		assert_eq!(
-			gauges(Some(&recorded), &Ok(Some(400)))
+			gauges(&Ok(recorded), &Ok(Some(400)))
 				.iter()
 				.find(|(n, _)| n == "home_deploy_wanted_age_seconds")
 				.map(|(_, v)| *v),

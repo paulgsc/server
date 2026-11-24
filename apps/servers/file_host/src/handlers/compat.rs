@@ -91,10 +91,13 @@ fn answer(folder: &Path, needs: u32, now: i64, rate_limit: Option<RateLimit>) ->
 	// decided on as if absent. The deploy that answers writes the record
 	// anew, and a marker that is there after all fails the write, which is
 	// `in_flight` or, if it can't be written, `cannot_request`, which alerts.
-	let recorded = deploy::read_recorded(folder).unwrap_or_else(|| {
-		tracing::error!(needs, "home's deploy record can't be read: deciding as if nothing were recorded");
-		deploy::Recorded::default()
-	});
+	let recorded = match deploy::read_recorded(folder) {
+		Ok(recorded) => recorded,
+		Err(err) => {
+			tracing::error!(needs, kind = %err.kind(), "home's deploy record can't be read: deciding as if nothing were recorded");
+			deploy::Recorded::default()
+		}
+	};
 	let marker_waiting = match deploy::marker_since(folder) {
 		Ok(since) => since.is_some(),
 		Err(err) => {
@@ -202,7 +205,7 @@ mod tests {
 	}
 
 	/// HD3: a marker that can't be read is said, and the ask that follows
-	/// can't write one either, which is `cannot_request` (DeployCannotRequest
+	/// can't write one either, which is `cannot_request` (`DeployCannotRequest`
 	/// alerts on it), never a silent `in_flight`.
 	#[test]
 	fn an_unreadable_marker_is_said_and_reaches_an_alert() {
