@@ -90,6 +90,7 @@ use mailbox_repo::{HeldFile, HeldTranscript, JobsInputs};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use super::pass::{Failure, Outcome, MAILBOX_BODY_CEILING};
@@ -783,8 +784,15 @@ impl Computed {
 /// database: an index is a view, and home keeps no copy of it (the module
 /// doc). After a restart it is empty, so the first pass puts one again, and
 /// the mailbox drops the one before it.
+///
+/// It also holds whether the mailbox's answer to that put was a failure (a
+/// refusal, a conflict, or a body over its ceiling, never put): one is not
+/// put again until what the index counts moves, so it stays open until then,
+/// a level the pass reports in `failures_open` ([`LastIndexes::open`], #1201).
+/// The flag is atomic, apart from the lock, so reading or clearing it never
+/// recovers a poisoned lock (an erasure, #1202).
 #[derive(Debug, Default)]
-pub struct LastIndex(Mutex<Option<Computed>>);
+pub struct LastIndex(Mutex<Option<Computed>>, AtomicBool);
 
 impl LastIndex {
 	fn holds(&self, subject: &str, as_of: Option<&str>, within: impl FnOnce(&str) -> bool) -> bool {
@@ -796,8 +804,24 @@ impl LastIndex {
 			.is_some_and(|last| last.holds(subject, as_of, within))
 	}
 
-	fn remember(&self, computed: Computed) {
+	/// Remembers what the index the mailbox answered was computed from, and
+	/// whether its answer was a failure.
+	fn remember(&self, computed: Computed, failed: bool) {
+		self.1.store(failed, Ordering::Relaxed);
 		*self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(computed);
+	}
+
+	/// The routine has nothing to count, so no index stands and none is open
+	/// (#1201). What the last one was computed from stays: the next arrival
+	/// moves what it counts, so a new one is put.
+	pub(super) fn nothing_to_count(&self) {
+		self.1.store(false, Ordering::Relaxed);
+	}
+
+	/// Whether the last index the mailbox answered was refused, conflicted
+	/// on, or too big to put.
+	fn failed(&self) -> bool {
+		self.1.load(Ordering::Relaxed)
 	}
 }
 
@@ -813,7 +837,19 @@ pub struct LastIndexes {
 	/// of Rust Rounds home holds (`pass::queue_held_weeks`, RR25): once per
 	/// process, so the first pass after an upgrade queues a week an older
 	/// build kept without reading.
-	pub weeks_queued: std::sync::atomic::AtomicBool,
+	pub weeks_queued: AtomicBool,
+}
+
+impl LastIndexes {
+	/// How many routines' last index the mailbox did not take: each a
+	/// failure that persists until what it counts moves (#1201).
+	#[must_use]
+	pub fn open(&self) -> usize {
+		[&self.jobs, &self.reflections, &self.call, &self.rust, &self.interview]
+			.into_iter()
+			.filter(|last| last.failed())
+			.count()
+	}
 }
 
 /// The name an index for `routine`, put at `stamp` (`YYYYMMDDTHHMMSSmmmZ`),
@@ -846,6 +882,7 @@ pub(super) async fn put_jobs_index<T: MailboxTransport>(
 		let as_of = mailbox_repo::jobs_as_of(&mut tx, subject).await.map_err(super::pass::storage)?;
 		// Nothing to count yet: no index, and the routine reads Drive.
 		if as_of.is_none() {
+			last.nothing_to_count();
 			return Ok(());
 		}
 		// A new day alone is no reason: the last index still says what a
@@ -882,18 +919,18 @@ async fn put_index<T: MailboxTransport>(
 ) -> Result<(), Failure> {
 	if body.len() > MAILBOX_BODY_CEILING {
 		outcome.refused.push("too_big");
-		last.remember(computed);
+		last.remember(computed, true);
 		return Ok(());
 	}
-	let answer = match mailbox.put(Folder::Index, name, body).await {
-		Ok(Put::Added { .. }) => "added",
-		Ok(Put::Unchanged { .. }) => "unchanged",
-		Ok(Put::Conflict) => "conflict",
-		Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => "refused",
+	let (answer, failed) = match mailbox.put(Folder::Index, name, body).await {
+		Ok(Put::Added { .. }) => ("added", false),
+		Ok(Put::Unchanged { .. }) => ("unchanged", false),
+		Ok(Put::Conflict) => ("conflict", true),
+		Err(MailboxError::Refused(_) | MailboxError::TooBig | MailboxError::BadName) => ("refused", true),
 		Err(err) => return Err(Failure::Mailbox(err)),
 	};
 	outcome.indexed.push(answer);
-	last.remember(computed);
+	last.remember(computed, failed);
 	Ok(())
 }
 

@@ -113,6 +113,36 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    (the erasure ratchet, #1189, **Planned**). The owner's rule
    (2026-11-24): a failure is like energy, never destroyed, and the
    bookkeeping must reconcile.
+9. **A failure that persists is a level, never a recount.** A condition
+   every pass or every restart meets again until it is fixed (an ask home
+   cannot answer, a refused file newest in its folder, an index the mailbox
+   did not take) is not counted each time it
+   is met, since one condition would be many failures (invariant 8: one
+   event, one count). It is `failures_open{process,step}`, how many are open
+   now, set by `file_host::failure::open` afresh by each pass that looks and
+   never added to, so a restart cannot count one twice and a fixed one reads
+   0 at the next pass that looks; a pass that could not look leaves it as it
+   stood, and its own failure is its process's `*Failing` alert. Its steps
+   are in the same closed `Step` table, marked `open`, and a step is one or
+   the other, never both. A condition that ends in a loss is an event at the
+   end: a refused file a newer kept file passes is never read again, so the
+   pass whose keep passes it counts it once (`passed_over`). Nothing is
+   stored for it and it adds no clock: the
+   passes that already run set it. `HomeFailuresOpen`
+   (`infra/prometheus/rules/home.yml`) tells the owner while one stays open
+   for about 2 hours (1h45m and the 15 minutes its window holds a cleared
+   level). One that clears sooner with nothing lost (an ask the routine
+   withdrew, an index a newer one replaced) never tells; that is the bound.
+   A condition nothing can fix is not a level, since it would page for good
+   with no action behind it: a held Rust Rounds week that does not read
+   stays held (nothing rewrites `mailbox_item`), so it is counted once, as
+   `read_body`, when it is kept, and the once-per-process sweep that meets it
+   again counts nothing. The bound there: weeks kept before #1198 were never
+   counted, since process memory cannot tell the first boot after a deploy
+   from any other restart, and a record of it would be a new store
+   (the coordinator's call on #1201, 2026-11-24). The owner's choice on #1201 (2026-11-24): a gauge, not a
+   counted-once table. Held by `failure`'s and the mailbox pass's tests and
+   `HomeFailuresOpen`'s promtool cases.
 
 ## Classes: who is low priority, and what that means
 

@@ -8,7 +8,8 @@
 //! nothing having gone wrong (#1172).
 //!
 //! [`Failure`] is the proof that one was counted. Only [`Failure::record`]
-//! makes one, and it does three things at once:
+//! makes one, and it does three things at once ([`Failure::alone`] does the
+//! first two, for a failure whose only outcome is its count and its log):
 //!
 //! - increments `failures_total{process, step}`;
 //! - logs at `error!`, naming the process, the step, the cause and the line
@@ -44,8 +45,15 @@
 //!
 //! `HomeFailures` (`infra/prometheus/rules/home.yml`) sends any increase to
 //! the owner's Slack, beside the per-process `*Failing` alerts.
+//!
+//! One event is one count, so a failure that persists, which every pass or
+//! every restart meets again until it is fixed, is not counted each time it
+//! is met. It is a level instead: [`open`] sets `failures_open{process, step}`
+//! to how many are open now, afresh each pass, at a step marked `open` in the
+//! same table, and `HomeFailuresOpen` tells the owner while one stays open
+//! (#1201, the owner's choice on 2026-11-24).
 
-use metrics::counter;
+use metrics::{counter, gauge};
 use std::fmt;
 use std::panic::Location;
 
@@ -126,14 +134,15 @@ impl fmt::Display for Process {
 /// and its labels come from the one table, so a step cannot be left off the
 /// list [`register_all`] starts at zero.
 macro_rules! steps {
-	($($(#[$doc:meta])* $variant:ident => $process:ident, $name:literal;)+) => {
+	($($(#[$doc:meta])* $variant:ident => $process:ident, $name:literal $(, $open:ident)?;)+) => {
 		/// Where in a process a failure happened: the `step` label.
 		///
 		/// A closed set, not a free string, so that every `(process, step)`
 		/// series exists at 0 from boot ([`register_all`]) and a failure's
 		/// first count is an increase `HomeFailures` can see, after a restart
 		/// too. A new step is one line in this table, named for what failed,
-		/// in a few words.
+		/// in a few words. A step marked `open` is a failure that persists,
+		/// held as a level ([`open`]), never counted.
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 		pub enum Step {
 			$($(#[$doc])* $variant,)+
@@ -158,8 +167,20 @@ macro_rules! steps {
 					$(Self::$variant => $name,)+
 				}
 			}
+
+			/// Whether this step is a failure that persists, held as a level
+			/// in `failures_open` ([`open`]) rather than counted in
+			/// `failures_total`.
+			#[must_use]
+			pub const fn is_open(self) -> bool {
+				match self {
+					$(Self::$variant => steps!(@open $($open)?),)+
+				}
+			}
 		}
 	};
+	(@open open) => { true };
+	(@open) => { false };
 }
 
 steps! {
@@ -172,6 +193,31 @@ steps! {
 	/// The Jobs mailbox holds other bytes under a file's name, which it never
 	/// replaces, so the file home handed in is never taken (#1172).
 	MailboxHandOverConflict => MailboxPasses, "hand_over_conflict";
+	/// A file kept as a plain brief because its body does not read as its
+	/// name says: a Drive takes list, a Rust Rounds week, or a pickup's
+	/// answer. What it would have queued or moved is not. Counted when it is
+	/// first kept (#1175).
+	MailboxReadBody => MailboxPasses, "read_body";
+	/// A file read from the mailbox and not kept (`read_incoming`) that a
+	/// newer file kept in its folder passes: the cursor moves past it, so it
+	/// is never read again. A final loss, counted once, by the pass whose keep
+	/// passes it (#1201).
+	MailboxPassedOver => MailboxPasses, "passed_over";
+	/// Open: an archived file the routine asked back that home cannot put
+	/// back: it holds no copy (`missing`), or the mailbox would not take the
+	/// one it holds (`conflict`, `refused`). The ask stays open, so every
+	/// pass meets it again (#1201).
+	MailboxRestore => MailboxPasses, "restore", open;
+	/// Open: a file read from the mailbox and not kept (its bytes are not
+	/// what the listing said, its name is bad, it is not JSON, or its name
+	/// already holds other bytes) that is newer than every file kept in its
+	/// folder. The cursor is the newest file kept, so every pass fetches it
+	/// again until a newer one is kept (#1201).
+	MailboxReadIncoming => MailboxPasses, "read_incoming", open;
+	/// Open: a routine's index the mailbox refused, was too big for, or
+	/// conflicted on, which is not put again until what it counts moves.
+	/// Held in memory, so a restart puts it again (#1201).
+	MailboxPutIndex => MailboxPasses, "put_index", open;
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
@@ -183,9 +229,34 @@ steps! {
 /// `process_start_time_seconds`.) The repo's other counters
 /// that page on any increase do the same (`refusals::register_all`).
 pub fn register_all() {
-	for step in Step::ALL {
+	for step in Step::ALL.iter().filter(|step| !step.is_open()) {
 		counter!("failures_total", "process" => step.process().as_str(), "step" => step.as_str()).increment(0);
 	}
+}
+
+/// Sets `failures_open{process, step}` to how many of `step`'s failures that
+/// persist are open now, as one pass found them (#1201, epic #1174).
+///
+/// A failure that persists (an ask home cannot answer, a file refused that is
+/// the newest in its folder) is met again by every pass, or every restart,
+/// until it is fixed. Counting it each time would count one condition many
+/// times, so it is a level: computed afresh by the pass that looks, never
+/// added to, so a restart cannot count it twice and a fixed one clears
+/// itself. It is neither counted in `failures_total` nor logged at error:
+/// what the pass met is in its own outcome, logged with it.
+/// `HomeFailuresOpen` (`infra/prometheus/rules/home.yml`) tells the owner
+/// while one stays open. A pass that could not look leaves the level as the
+/// last one that did set it; the pass's own failure is told by its process's
+/// `*Failing` alert.
+///
+/// # Panics
+/// In a debug build, when `step` is not marked `open`: a step's failure is
+/// either an event, counted once, or a level, never both.
+pub fn open(step: Step, now: usize) {
+	debug_assert!(step.is_open(), "{step:?} is counted, not held open");
+	#[allow(clippy::cast_precision_loss)] // a count of files and asks, far below 2^52
+	let now = now as f64;
+	gauge!("failures_open", "process" => step.process().as_str(), "step" => step.as_str()).set(now);
 }
 
 /// Proof that a failure was counted and logged. Only [`Failure::record`]
@@ -201,23 +272,39 @@ impl Failure {
 	/// proof. `cause` is why, and must be loggable (see the module).
 	#[track_caller]
 	pub fn record(step: Step, cause: &dyn fmt::Display) -> Self {
-		let at = Location::caller();
-		let (process, name) = (step.process().as_str(), step.as_str());
-		counter!("failures_total", "process" => process, "step" => name).increment(1);
-		tracing::error!(
-			process,
-			step = name,
-			at = %format_args!("{}:{}", at.file(), at.line()),
-			cause = %cause,
-			"{process} failed at {name}: {cause}"
-		);
+		count(step, cause, Location::caller());
 		Self { step }
+	}
+
+	/// As [`Failure::record`], for a failure whose only outcome is its count
+	/// and its log: nothing stores it (a file kept as a plain brief because
+	/// its body does not read as its name says, say). Where an outcome is
+	/// stored, `record` it and carry the token there instead. Either way, one
+	/// event is one count: a condition that persists is not counted again
+	/// each time it is seen.
+	#[track_caller]
+	pub fn alone(step: Step, cause: &dyn fmt::Display) {
+		count(step, cause, Location::caller());
 	}
 
 	#[must_use]
 	pub const fn step(&self) -> Step {
 		self.step
 	}
+}
+
+/// The count and the log both makers share; `at` is their caller's line.
+fn count(step: Step, cause: &dyn fmt::Display, at: &Location<'_>) {
+	debug_assert!(!step.is_open(), "{step:?} is held open, never counted");
+	let (process, name) = (step.process().as_str(), step.as_str());
+	counter!("failures_total", "process" => process, "step" => name).increment(1);
+	tracing::error!(
+		process,
+		step = name,
+		at = %format_args!("{}:{}", at.file(), at.line()),
+		cause = %cause,
+		"{process} failed at {name}: {cause}"
+	);
 }
 
 #[cfg(test)]
@@ -246,7 +333,7 @@ mod tests {
 		let recorder = DebuggingRecorder::new();
 		let snapshotter = recorder.snapshotter();
 		metrics::with_local_recorder(&recorder, register_all);
-		for step in Step::ALL {
+		for step in Step::ALL.iter().filter(|step| !step.is_open()) {
 			assert_eq!(count(&snapshotter, *step), Some(0), "{step:?}");
 		}
 	}
@@ -281,6 +368,45 @@ mod tests {
 			"at=apps/servers/file_host/src/failure.rs:",
 		] {
 			assert!(lines.iter().any(|line| line.starts_with(expected)), "{expected} in {lines:#?}");
+		}
+	}
+
+	fn level(snapshotter: &Snapshotter, step: Step) -> Option<f64> {
+		snapshotter.snapshot().into_vec().into_iter().find_map(|(key, _, _, value)| {
+			let key = key.key();
+			let is_it = key.name() == "failures_open"
+				&& key.labels().any(|l| l.key() == "process" && l.value() == step.process().as_str())
+				&& key.labels().any(|l| l.key() == "step" && l.value() == step.as_str());
+			match (is_it, value) {
+				(true, DebugValue::Gauge(n)) => Some(n.into_inner()),
+				_ => None,
+			}
+		})
+	}
+
+	/// A step held open is a level, never a count: `register_all` starts no
+	/// `failures_total` series for it, and each pass's level replaces the
+	/// last, so two passes over the same condition hold it rather than add to
+	/// it, and a fixed one clears.
+	#[test]
+	fn an_open_step_is_a_level_set_afresh_and_never_counted() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		metrics::with_local_recorder(&recorder, || {
+			register_all();
+			super::open(Step::MailboxRestore, 2);
+		});
+		assert_eq!(level(&snapshotter, Step::MailboxRestore), Some(2.0));
+		// Twice between reads, since a read drains: set, not added to.
+		metrics::with_local_recorder(&recorder, || {
+			super::open(Step::MailboxRestore, 2);
+			super::open(Step::MailboxRestore, 2);
+		});
+		assert_eq!(level(&snapshotter, Step::MailboxRestore), Some(2.0), "the same two, met again, are still two");
+		metrics::with_local_recorder(&recorder, || super::open(Step::MailboxRestore, 0));
+		assert_eq!(level(&snapshotter, Step::MailboxRestore), Some(0.0), "fixed, it clears");
+		for step in Step::ALL {
+			assert_eq!(count(&snapshotter, *step).is_some(), !step.is_open(), "{step:?}");
 		}
 	}
 

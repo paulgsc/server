@@ -871,8 +871,9 @@ groups:
       - alert: HomeFailures
         # OA8 (#1189, epic #1174): every failure home counts is one increase
         # of failures_total{process,step}, made only by
-        # apps/servers/file_host/src/failure.rs's Failure::record, which also
-        # logs it at error with its cause. Beside the per-process *Failing
+        # apps/servers/file_host/src/failure.rs (Failure::record, or
+        # Failure::alone where nothing stores the failure), which also logs it
+        # at error with its cause. Beside the per-process *Failing
         # alerts, not instead of them: those say a pass keeps failing, this
         # says any one step failed. Over 15 minutes, as HomeShedding is, so a
         # burst is one alert per process and step, resolved after a quiet
@@ -893,3 +894,29 @@ groups:
         labels:
           objective: OA8
           says: "Home's {{ $labels.process }} failed at {{ $labels.step }} in the last 15 minutes; each failure is logged at error with its cause."
+
+      - alert: HomeFailuresOpen
+        # OA8, #1201 (epic #1174): a failure that persists (an ask home cannot
+        # answer, a refused file newest in its folder, an index the mailbox
+        # did not take) is met again by every pass or every restart, so it is
+        # not counted in failures_total, where
+        # each meeting would be one more failure. failures_open{process,step}
+        # is how many are open now, set afresh by each pass that looks
+        # (apps/servers/file_host/src/failure.rs, open), never added to: a
+        # restart cannot count one twice, and a fixed one reads 0 at the next
+        # pass. For 2 hours, so it has held through at least one more hourly
+        # backstop pass than the one that found it. max_over_time bridges a
+        # restart, when the series is gone until the new process's first pass
+        # sets it, so a deploy does not start the 2 hours again (a first pass
+        # that fails for longer than 15 minutes does; its *Failing alert says
+        # so). It also holds a cleared level 15 minutes longer, so a condition
+        # open for 1h45m can tell. One cleared sooner without a loss never
+        # tells: an ask the routine withdrew, an index a newer one replaced. A
+        # refused file a newer keep passes is a loss, counted once in
+        # failures_total as passed_over, so HomeFailures tells it.
+        expr: |
+          max by (process, step) (max_over_time(failures_open[15m])) > 0
+        for: 2h
+        labels:
+          objective: OA8
+          says: "Home's {{ $labels.process }} has had a failure open at {{ $labels.step }} for about 2 hours, met again each time home looks and not counted again; what each step means is its line in file_host's failure.rs Step table, and failures_open says how many."
