@@ -312,6 +312,12 @@ variable the shell sets itself wins. From any other shell,
 exported into a shell, so no role's value reaches `make dev` or anything
 else run there.
 
+**Reading file_host's database by hand.** It is `hopium.db` in the host folder compose mounts at
+`/app/dbs` (`STORAGE`); `docker inspect file-host-server --format '{{range .Mounts}}{{if eq
+.Destination "/app/dbs"}}{{.Source}}{{end}}{{end}}'` prints that folder. Open it with
+`sqlite3 -readonly <folder>/hopium.db` (home's shell has `sqlite3`), never read-write while
+file_host runs.
+
 **Moving the box onto them, once (ENV2, #615).** The values exist today only
 in the running containers and the box's plain-text `.env`. `make import`
 (`DRY=1` to only name what would change) reads each running container with
