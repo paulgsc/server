@@ -917,13 +917,15 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 }
 
 /// Keys an essay waits on whose last fetch failed and may clear, as a pass
-/// leaves them: held open, a level, never a recount (invariant 9, #1177).
+/// leaves them: held open, a level, never a recount (invariant 9, #1177). A
+/// key marked gone is not waiting on a fetch, whatever retry mark a pass the
+/// deadline dropped left beside it.
 fn retrying(wanted: &BTreeSet<(Family, String)>, folders: &Folders) -> usize {
 	wanted
 		.iter()
 		.filter(|(family, key)| {
 			let folder = folders.of(*family);
-			!bundle_of(folder, key).is_dir() && retry_of(folder, key).exists()
+			!bundle_of(folder, key).is_dir() && !gone_of(folder, key).exists() && retry_of(folder, key).exists()
 		})
 		.count()
 }

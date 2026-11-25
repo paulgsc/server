@@ -855,3 +855,32 @@ async fn a_gone_mark_is_counted_once_and_a_retry_held_open_until_fetched() {
 	assert_eq!(seen.open(Step::SnipsPickupRetry), Some(0.0), "fetched: nothing waits");
 	assert_eq!(seen.counted(Step::SnipsPickupGone).unwrap_or(0), 0, "met again, never counted again");
 }
+
+/// #1177: a pass the deadline drops while a gone mark is being written still
+/// counts the mark once it lands: the mark and its count run in a task the
+/// deadline does not drop. A gone key's leftover retry mark is not open.
+#[tokio::test]
+async fn a_gone_mark_the_deadline_cuts_off_still_lands_counted() {
+	use crate::failure::{counted::failures, Step};
+	let recorder = metrics_util::debugging::DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let _recording = metrics::set_default_local_recorder(&recorder);
+	let dirs = dirs();
+	std::fs::create_dir_all(&dirs.cache).unwrap();
+	let key = commit(0);
+	// The first poll spawns the mark's task, then the deadline drops the call.
+	let cut = tokio::time::timeout(std::time::Duration::ZERO, mark_gone_counted(&dirs.cache, &key, None, "no-run")).await;
+	assert!(cut.is_err(), "dropped before it finished");
+	for _ in 0..1000 {
+		if gone_of(&dirs.cache, &key).exists() {
+			break;
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+	}
+	assert!(gone_of(&dirs.cache, &key).exists(), "the mark landed");
+	assert_eq!(failures(&snapshotter, Step::SnipsPickupGone), Some(1), "and was counted");
+
+	std::fs::write(retry_of(&dirs.cache, &key), b"").unwrap();
+	let wanted = BTreeSet::from([(Family::Snips, key.clone())]);
+	assert_eq!(retrying(&wanted, &dirs.folders()), 0, "gone, not waiting on a fetch");
+}
