@@ -176,7 +176,8 @@ async fn newest_cache_warning(status: &Path) -> Reading<i64> {
 			Err(_) => return Reading::Unreadable,
 		};
 		// The worker writes a warning as a hidden `.<name>.cache.log` and then
-		// moves or removes it: never one to read.
+		// moves or removes it; one a killed attempt left behind was never
+		// published either: never one to read.
 		let name = entry.file_name();
 		let name = name.to_string_lossy();
 		if name.starts_with('.') || !name.ends_with(".cache.log") {
