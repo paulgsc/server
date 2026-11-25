@@ -538,6 +538,10 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 	log_pass(&result, cause);
 	let settled = result.as_ref().is_ok_and(|outcome| !outcome.no_account && !outcome.more);
 	let Some(subject) = subject else {
+		// No account, so no phone and no record is owed a notice: nothing of
+		// the Jobs notice is open (Codex on #1230). Account deletion took its
+		// phones and records with it.
+		crate::jobs_notice::nothing_open();
 		// A snip names no person: picked up whether or not there is an account.
 		if let Some(capture) = context.snips.as_deref() {
 			pick_up_snips(db, capture).await;
@@ -552,6 +556,7 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 				skipped = outcome.skipped,
 				forgotten = outcome.forgotten,
 				unsent = outcome.unsent,
+				expired = outcome.expired,
 				"Jobs arrival notice pass"
 			),
 			Ok(_) => {}

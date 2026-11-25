@@ -2021,8 +2021,9 @@ nowhere is marked as such and belongs to review.
     `PARTLY`, `STOPPED`): whether the picks are at home or the run couldn't
     finish, and nothing of the picks, counts or reasons, since FCM carries
     the text through Google. `jobs_notice_sent` is append-only (a trigger
-    aborts an `UPDATE`), one row per run record noticed, and records what was
-    said and to how many phones, never which. A token FCM calls
+    aborts an `UPDATE`), one row per run record noticed or lost (`expired`:
+    its window closed with no phone told, #1176), and records what was said
+    and to how many phones, never which. A token FCM calls
     `UNREGISTERED`, or one the phone withdraws (`DELETE /jobs/notice`), is
     deleted. Both tables leave with the account (invariant 12).
     *Enforced by* `jobs_notice`'s

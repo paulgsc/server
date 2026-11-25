@@ -108,8 +108,10 @@ NOT_BACKGROUND: dict[str, tuple[int, str]] = {
 	"apps/servers/file_host/src/websocket/broadcast/handlers.rs": (2, "a connection's event forwarder and its NATS subscriptions; per connection, ended with it"),
 	"apps/servers/file_host/src/websocket/message/handlers.rs": (1, "a connection's incoming-message loop; per connection, ended with it"),
 	"apps/servers/file_host/src/snips.rs": (
-		1,
-		"the blocking check of one downloaded snips bundle, awaited at once by the mailbox pass's pickup; it owes nothing after it returns",
+		2,
+		"the blocking check of one downloaded snips bundle, and one gone mark written with its count (#1177), each awaited at once by the "
+		"mailbox pass's pickup; the mark's task outlives a pass its deadline drops only to finish that one write and count, and owes "
+		"nothing after it returns",
 	),
 }
 
@@ -649,7 +651,7 @@ BASE_FILES = {
 	f"{SRC}/mailbox.rs": "fn spawn(s: &S) { tokio::spawn(async move { pass().await }); }\nfn start() { spawn(s); }\n",
 	f"{SRC}/mailbox/pass.rs": "/// `tokio::spawn(` in a doc comment\nfn every_failed_phase_is_reported() {}\n",
 	f"{SRC}/storage.rs": "fn spawn() { tokio::spawn(async {}); }\n",
-	f"{SRC}/snips.rs": "async fn f() { tokio::task::spawn_blocking(move || open()).await; }\n",
+	f"{SRC}/snips.rs": "async fn f() { tokio::task::spawn_blocking(move || open()).await; }\nasync fn g() { tokio::spawn(async move { mark().await }).await; }\n",
 	f"{SRC}/metrics/periodic.rs": "fn spawn() { tokio::spawn(async {}); }\n",
 	f"{SRC}/transcribe/engine.rs": 'fn f() { let s = "tokio::spawn("; let c = \'{\'; let child = ffmpeg().spawn(); }\n',
 	f"{SRC}/lib.rs": "#[cfg(test)]\nmod privacy;\npub mod mailbox;\n",

@@ -6,8 +6,9 @@
 //!   [`forget`] removes it (the phone stopped asking, or FCM says it is
 //!   gone). A token is never logged (docs/identity.md invariant 24).
 //! - **`jobs_notice_sent`**, append-only: one row per run record home
-//!   noticed, so a record notifies at most once ([`record_sent`],
-//!   [`was_noticed`]).
+//!   noticed, or lost (`expired`: its window closed with no phone told,
+//!   server#1176), so a record notifies, or is counted lost, at most once
+//!   ([`record_sent`], [`was_noticed`]).
 //!
 //! Every query takes the subject and filters on it. The writers are
 //! `file_host`'s `handlers::jobs` (`PUT` and `DELETE /api/v1/jobs/notice`) and
@@ -36,6 +37,9 @@ pub enum Said {
 	/// A re-run that added nothing, on a morning another record's picks
 	/// already spoke for: nothing sent.
 	Skipped,
+	/// No phone was told before the record left the notice's window: a
+	/// loss, stored so it is counted once (server#1176).
+	Expired,
 }
 
 impl Said {
@@ -46,6 +50,7 @@ impl Said {
 			Self::Picks => "picks",
 			Self::Trouble => "trouble",
 			Self::Skipped => "skipped",
+			Self::Expired => "expired",
 		}
 	}
 }
@@ -91,6 +96,16 @@ pub async fn forget(conn: &mut SqliteConnection, subject: &str, token: &str) -> 
 pub async fn devices(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<String>, sqlx::Error> {
 	sqlx::query_scalar!("SELECT token FROM jobs_notice_device WHERE subject_id = ?1 ORDER BY registered_at, token", subject)
 		.fetch_all(&mut *conn)
+		.await
+}
+
+/// When the first phone `subject` still has asked to be told, if any.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn first_registered(conn: &mut SqliteConnection, subject: &str) -> Result<Option<String>, sqlx::Error> {
+	sqlx::query_scalar!(r#"SELECT MIN(registered_at) AS "first: String" FROM jobs_notice_device WHERE subject_id = ?1"#, subject)
+		.fetch_one(&mut *conn)
 		.await
 }
 

@@ -818,3 +818,91 @@ async fn a_page_run_under_way_is_waited_on_and_a_newer_attempt_under_way_clears_
 }
 
 mod walks;
+
+/// #1177: a gone mark is counted once, when it is written, and not by the
+/// passes that meet it again; a key whose fetch failed and may clear is held
+/// open, a level each pass sets afresh, until a pass fetches it (invariant 9).
+#[tokio::test]
+async fn a_gone_mark_is_counted_once_and_a_retry_held_open_until_fetched() {
+	use crate::failure::{held, Step};
+	let recorder = metrics_util::debugging::DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let _recording = metrics::set_default_local_recorder(&recorder);
+	let (pool, dirs, fake) = (pool().await, dirs(), Fake::default());
+	let (_, a, _) = record(b"a", "/a");
+	let (_, b, _) = record(b"b", "/b");
+	hold_essay(&pool, "one-2026-11-20", &[(commit(0), a)]).await;
+	hold_essay(&pool, "two-2026-11-21", &[(commit(1), b)]).await;
+	fake.run(run(1, 0), Err("timeout"));
+
+	// The first pass looks at commit(0) only (one bundle a pass): it times out.
+	crate::failure::open(Step::SnipsPickupRetry, 9);
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	let seen = held::seen(&snapshotter);
+	assert_eq!(seen.open(Step::SnipsPickupRetry), Some(1.0), "the timed-out commit waits");
+	assert_eq!(seen.counted(Step::SnipsPickupGone).unwrap_or(0), 0, "a failure that may clear is not gone");
+
+	// commit(1) has no run: marked gone, counted once.
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	assert_eq!(held::seen(&snapshotter).counted(Step::SnipsPickupGone), Some(1));
+
+	// commit(0) fetches now; commit(1) is met again, marked as it was.
+	fake.bundles.lock().unwrap().insert(1, Ok(Some(bundle(&commit(0), &[(b"a", "/a")], |_| {}))));
+	crate::failure::open(Step::SnipsPickupRetry, 9);
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
+	let seen = held::seen(&snapshotter);
+	assert_eq!(seen.open(Step::SnipsPickupRetry), Some(0.0), "fetched: nothing waits");
+	assert_eq!(seen.counted(Step::SnipsPickupGone).unwrap_or(0), 0, "met again, never counted again");
+}
+
+/// #1177: a pass the deadline drops while a gone mark is being written still
+/// counts the mark once it lands: the mark and its count run in a task the
+/// deadline does not drop. A gone key's leftover retry mark is not open.
+#[tokio::test]
+async fn a_gone_mark_the_deadline_cuts_off_still_lands_counted() {
+	use crate::failure::{counted::failures, Step};
+	let recorder = metrics_util::debugging::DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let _recording = metrics::set_default_local_recorder(&recorder);
+	let dirs = dirs();
+	std::fs::create_dir_all(&dirs.cache).unwrap();
+	let key = commit(0);
+	// The first poll spawns the mark's task, then the deadline drops the call
+	// (almost always: under load the task can finish first, which is the
+	// ordinary path). Either way, the mark lands counted once.
+	let cut = tokio::time::timeout(std::time::Duration::ZERO, mark_gone_counted(&dirs.cache, &key, None, "no-run")).await;
+	assert!(cut.as_ref().map_or(true, Result::is_ok), "{cut:?}");
+	// The task renames the mark into place, then counts it: wait for both.
+	let mut counted = 0;
+	for _ in 0..1000 {
+		counted += failures(&snapshotter, Step::SnipsPickupGone).unwrap_or(0);
+		if counted > 0 {
+			break;
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+	}
+	assert!(gone_of(&dirs.cache, &key).exists(), "the mark landed");
+	tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+	counted += failures(&snapshotter, Step::SnipsPickupGone).unwrap_or(0);
+	assert_eq!(counted, 1, "and was counted, once");
+
+	// The pass touched the retry mark before the try, so it is the older.
+	std::fs::write(retry_of(&dirs.cache, &key), b"").unwrap();
+	let before = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+	std::fs::File::options()
+		.write(true)
+		.open(retry_of(&dirs.cache, &key))
+		.unwrap()
+		.set_modified(before)
+		.unwrap();
+	let wanted = BTreeSet::from([(Family::Snips, key.clone())]);
+	assert_eq!(retrying(&wanted, &dirs.folders()), 0, "gone, not waiting on a fetch");
+
+	// Codex on #1230: a newer run's fetch that fails after an older run was
+	// marked gone leaves a retry mark newer than the gone mark: waiting.
+	let older = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+	std::fs::File::options().write(true).open(gone_of(&dirs.cache, &key)).unwrap().set_modified(older).unwrap();
+	std::fs::write(retry_of(&dirs.cache, &key), b"").unwrap();
+	assert_eq!(retrying(&wanted, &dirs.folders()), 1, "a newer run's failed fetch waits");
+}
