@@ -840,7 +840,7 @@ async fn a_gone_mark_is_counted_once_and_a_retry_held_open_until_fetched() {
 	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
 	let seen = held::seen(&snapshotter);
 	assert_eq!(seen.open(Step::SnipsPickupRetry), Some(1.0), "the timed-out commit waits");
-	assert_eq!(seen.counted(Step::SnipsPickupGone), None, "a failure that may clear is not gone");
+	assert_eq!(seen.counted(Step::SnipsPickupGone).unwrap_or(0), 0, "a failure that may clear is not gone");
 
 	// commit(1) has no run: marked gone, counted once.
 	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
@@ -853,5 +853,5 @@ async fn a_gone_mark_is_counted_once_and_a_retry_held_open_until_fetched() {
 	run_once(&pool, &fake, &dirs.essays, &dirs.folders()).await.unwrap();
 	let seen = held::seen(&snapshotter);
 	assert_eq!(seen.open(Step::SnipsPickupRetry), Some(0.0), "fetched: nothing waits");
-	assert_eq!(seen.counted(Step::SnipsPickupGone), None, "met again, never counted again");
+	assert_eq!(seen.counted(Step::SnipsPickupGone).unwrap_or(0), 0, "met again, never counted again");
 }

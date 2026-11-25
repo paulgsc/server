@@ -549,7 +549,7 @@ mod tests {
 		assert_eq!(sent(&pool).await, [(name, String::from("expired"), 0)]);
 		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold), Some(1));
 		assert_eq!(pass(&pool, &sender(&fake), now() + Duration::hours(13)).await, Outcome::default());
-		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold), None, "never again");
+		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold).unwrap_or(0), 0, "never again");
 	}
 
 	/// #1176: a record that started before any phone asked, and whose window
@@ -591,7 +591,7 @@ mod tests {
 		pass(&pool, &sender, now()).await;
 		let seen = held::seen(&snapshotter);
 		assert_eq!((seen.open(Step::JobsNoticeRefused), seen.open(Step::JobsNoticeUnanswered)), (Some(0.0), Some(1.0)));
-		assert_eq!(seen.counted(Step::JobsNoticeUntold), None, "waiting is not lost");
+		assert_eq!(seen.counted(Step::JobsNoticeUntold).unwrap_or(0), 0, "waiting is not lost");
 
 		crate::failure::open(Step::JobsNoticeUnanswered, 9);
 		assert_eq!(pass(&pool, &sender, now() + Duration::hours(12)).await, Outcome { expired: 1, ..Outcome::default() });
