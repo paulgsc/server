@@ -21,8 +21,9 @@
 --                    non-acceptance, home's own included, so it is not this.
 --   set_aside_at  -- ISO-8601 UTC, when `strikes` reached the count; NULL
 --                    while the device is sent to.
---   set_aside_why -- a fixed label (`timeouts`, `refused`), never the
---                    service's words, which may name the device.
+--   set_aside_why -- a fixed label (`timeouts`, `no_answer`,
+--                    `sender_mismatch`, `refused`), never the service's
+--                    words, which may name the device.
 --   last_probe_at -- ISO-8601 UTC, when a set-aside device was last included
 --                    in a real send to see whether it takes one again: at
 --                    most once a day, and only when a send happens anyway.

@@ -41,7 +41,7 @@
 use chrono::{DateTime, Duration, Utc};
 
 /// Failures of its own in a row that set a device aside: the owner's number
-/// on #1180, kept in code (CLAUDE.md, "Policy limits move with the story").
+/// on #1180, a policy kept in code.
 pub const SET_ASIDE_AFTER: i64 = 3;
 
 /// How often, at most, a set-aside device is included in a real send.
@@ -57,6 +57,9 @@ pub enum Turn {
 	Probe,
 	/// It is set aside and was probed within the day.
 	Skip,
+	/// It is sent to, and already took a strike in this pass: a pass is one
+	/// try, however many records or interventions it sends (#1180).
+	Struck,
 }
 
 /// This send's turn for a device set aside at `set_aside_at` (`None`: it is
@@ -67,9 +70,7 @@ pub fn turn(set_aside_at: Option<&str>, last_probe_at: Option<&str>, now: DateTi
 	if set_aside_at.is_none() {
 		return Turn::Send;
 	}
-	let due = last_probe_at.map_or(true, |at| {
-		DateTime::parse_from_rfc3339(at).map_or(true, |at| now - at.with_timezone(&Utc) >= Duration::hours(PROBE_EVERY_HOURS))
-	});
+	let due = last_probe_at.is_none_or(|at| DateTime::parse_from_rfc3339(at).map_or(true, |at| now - at.with_timezone(&Utc) >= Duration::hours(PROBE_EVERY_HOURS)));
 	if due {
 		Turn::Probe
 	} else {
@@ -126,6 +127,7 @@ mod tests {
 	/// outcome, and FCM's with and without another phone taking the notice.
 	#[test]
 	fn only_a_devices_own_failure_strikes() {
+		use fcm_kit::SendOutcome as Fcm;
 		use push_kit::SendOutcome as Push;
 		assert_eq!(web_push(None), Some("timeouts"));
 		assert_eq!(web_push(Some(&Push::Transport(String::from("reset")))), Some("no_answer"));
@@ -142,7 +144,6 @@ mod tests {
 			assert_eq!(web_push(Some(&home)), None, "{home:?}");
 		}
 
-		use fcm_kit::SendOutcome as Fcm;
 		assert_eq!(fcm(&Fcm::Mismatched, false), Some("sender_mismatch"));
 		assert_eq!(fcm(&Fcm::Refused(400), true), Some("refused"), "another phone took it: the token's");
 		assert_eq!(fcm(&Fcm::Refused(400), false), None, "a lone phone's 400 could be our payload");

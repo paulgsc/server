@@ -273,7 +273,11 @@ pub(super) async fn actuate<C: PassClock>(
 			warn!(service, timeout_ms = budget.as_millis(), "push service did not answer in time");
 			subscriptions_repo.record_failure(endpoint, &Utc::now().to_rfc3339()).await?;
 			delivery.timed_out += 1;
-			strike(&subscriptions_repo, endpoint, service, turn, crate::strikes::web_push(None)).await?;
+			// Only a timeout the device had its whole budget for: one the pass
+			// deadline cut short is home's (#1180).
+			if budget == nudge.delivery_timeout {
+				strike(&subscriptions_repo, endpoint, service, turn, crate::strikes::web_push(None)).await?;
+			}
 			continue;
 		};
 		let stamp = Utc::now().to_rfc3339();
