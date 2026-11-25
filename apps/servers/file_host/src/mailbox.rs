@@ -99,7 +99,8 @@ pub const INTERVAL: Duration = Duration::from_secs(3600);
 /// 15 minutes, the poll as it was before the bell: with no connection, a
 /// 404, a backoff or a dead bell, a file still reaches home within MI4's 20
 /// minutes and MI3's stale check keeps its 1,080 s (C64). After a failure it
-/// keeps `MailboxPollerFailing`'s 45 minutes at three failed passes in a row.
+/// keeps `MailboxPollerFailing`'s 45 minutes at three failed passes in a row,
+/// and `JobsNoticeFailing`'s and `SnipsPickupFailing`'s (#1229).
 /// A bell down all day is 96 passes, MI6's 2,400 requests.
 pub const UNHELD: Duration = Duration::from_secs(900);
 
@@ -366,8 +367,9 @@ fn spawn(state: &AppState, context: MailboxContext) {
 /// raised while a pass runs fold into at most one more. The backstop timer
 /// counts from the start of the last pass, whatever ran it, so a pass a ring
 /// ran is not followed by the timer's a moment later: `held` after a pass
-/// that settled (`pass` returns true: it succeeded and left no bounded
-/// phase with work owed) while the bell is held, `unheld`
+/// that settled (`pass` returns true: it succeeded, its Jobs notice and
+/// Snips pickup did not fail, and it left no bounded phase with work owed)
+/// while the bell is held, `unheld`
 /// while it isn't or after a pass that failed. When the bell drops, the
 /// timer moves to `unheld` at once, counted from the last pass, so a bell
 /// that dropped 40 minutes after a pass is followed by one now.
