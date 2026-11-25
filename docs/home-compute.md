@@ -134,7 +134,10 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    and a walk render the clips pass rejected and removed (`walk_rejected`);
    a level for either would read 0 at the next pass while nothing was fixed
    (Codex on #1221). The open steps beyond the mailbox's (#1179, #809): the
-   call's and Playoff Delta's render signals a tick could not read, the
+   call's, Playoff Delta's, the report weeks' and the cards essays' render
+   signals a tick could not read (`report-weeks` and `cards-essays`
+   `observe`, #1227; the report's also when its worker's last pass does
+   not read), the
    call's next-week answer, what a clips pass could not take and asks
    again, the Jobs run records waiting on a phone (`jobs-notice`'s
    `refused` and `unanswered`, #1176) and the Snips keys waiting on a fetch
