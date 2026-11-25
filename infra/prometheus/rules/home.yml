@@ -84,6 +84,33 @@ groups:
           objective: MI3
           says: "The Jobs mailbox poller has failed every pass for 45 minutes; the MAILBOX dashboard's FAILING panel says why."
 
+      - alert: JobsNoticeFailing
+        # OA8 (#1229): every Jobs arrival notice pass for 45 minutes ended on
+        # a storage failure. Such a pass can't look, so jobs-notice's open
+        # levels (refused, unanswered) keep what the last pass that looked set
+        # (docs/home-compute.md, invariant 9) and only this says it. It runs
+        # after each mailbox pass, so 45 minutes is three passes, as
+        # MailboxPollerFailing.
+        expr: |
+          max(jobs_notice_pass_failing) == 1
+        for: 45m
+        labels:
+          objective: OA8
+          says: "Every Jobs arrival notice pass for 45 minutes failed on storage, so no phone is told of a morning run and what waits on a phone is not counted; file-host-server's log says why."
+
+      - alert: SnipsPickupFailing
+        # OA8 (#1229): every Snips pickup pass for 45 minutes failed on
+        # storage or ran out its deadline (snips::PASS_DEADLINE). Such a pass
+        # can't finish, so snips-pickup's open retry level keeps what the last
+        # finished pass set, and only this says it. A fetch that may clear is
+        # not a failing pass: it is that level.
+        expr: |
+          max(snips_pickup_pass_failing) == 1
+        for: 45m
+        labels:
+          objective: OA8
+          says: "Every Snips pickup pass for 45 minutes failed or ran out of time, so an essay waiting on snips gets none; file-host-server's log says why."
+
       - alert: MailboxBellDown
         # #500: home has held no connection to the mailbox's bell for 30
         # minutes. Nothing is lost, since the backstop is back to every 15

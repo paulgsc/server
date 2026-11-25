@@ -468,10 +468,14 @@ async fn watch(db: &SqlitePool, context: &MailboxContext) {
 async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) {
 	let (essays, folders) = (std::path::Path::new(crate::cards_essays::ESSAYS_FOLDER), crate::snips::Folders::server());
 	let Ok(done) = tokio::time::timeout(crate::snips::PASS_DEADLINE, crate::snips::run_once(db, capture, essays, &folders)).await else {
-		// What it left half-made goes next pass (`snips::run_once`).
+		// What it left half-made goes next pass (`snips::run_once`). A pass
+		// that could not finish left its retry level as it stood, so it is
+		// failing (#1229).
 		warn!("Snips pickup pass reached its deadline; asked again next pass");
+		crate::metrics::mailbox::record_snips_pickup_pass(true);
 		return;
 	};
+	crate::metrics::mailbox::record_snips_pickup_pass(done.is_err());
 	match done {
 		Ok(picked) if picked == crate::snips::Picked::default() => {}
 		Ok(picked) if picked.failures.is_empty() => info!(fetched = picked.fetched, gone = picked.gone, dropped = picked.dropped, "Snips pickup pass"),
@@ -542,6 +546,9 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 		// the Jobs notice is open (Codex on #1230). Account deletion took its
 		// phones and records with it.
 		crate::jobs_notice::nothing_open();
+		if context.notice.is_some() {
+			crate::metrics::mailbox::record_jobs_notice_pass(false);
+		}
 		// A snip names no person: picked up whether or not there is an account.
 		if let Some(capture) = context.snips.as_deref() {
 			pick_up_snips(db, capture).await;
@@ -550,7 +557,9 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 	};
 	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
 	if let Some(sender) = context.notice.as_deref() {
-		match crate::jobs_notice::run_once(db, &context.deletion, &subject, sender, chrono::Utc::now()).await {
+		let told = crate::jobs_notice::run_once(db, &context.deletion, &subject, sender, chrono::Utc::now()).await;
+		crate::metrics::mailbox::record_jobs_notice_pass(told.is_err());
+		match told {
 			Ok(outcome) if outcome.busy() => info!(
 				noticed = outcome.noticed,
 				skipped = outcome.skipped,
