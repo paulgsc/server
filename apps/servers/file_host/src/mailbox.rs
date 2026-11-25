@@ -552,6 +552,7 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 				skipped = outcome.skipped,
 				forgotten = outcome.forgotten,
 				unsent = outcome.unsent,
+				expired = outcome.expired,
 				"Jobs arrival notice pass"
 			),
 			Ok(_) => {}

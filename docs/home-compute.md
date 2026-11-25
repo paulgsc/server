@@ -135,8 +135,10 @@ says what holds it, or **Planned** with its issue where nothing does yet.
    a level for either would read 0 at the next pass while nothing was fixed
    (Codex on #1221). The open steps beyond the mailbox's (#1179, #809): the
    call's and Playoff Delta's render signals a tick could not read, the
-   call's next-week answer, and what a clips pass could not take and asks
-   again. Nothing is
+   call's next-week answer, what a clips pass could not take and asks
+   again, the Jobs run records waiting on a phone (`jobs-notice`'s
+   `refused` and `unanswered`, #1176) and the Snips keys waiting on a fetch
+   that may clear (`snips-pickup`'s `retry`, #1177). Nothing is
    stored for it and it adds no clock: the
    passes that already run set it. `HomeFailuresOpen`
    (`infra/prometheus/rules/home.yml`) tells the owner while one stays open

@@ -754,6 +754,26 @@ async fn mark_gone(folder: &Path, key: &str, run: Option<&Run>, reason: &str) ->
 	tokio::fs::rename(&partial, gone_of(folder, key)).await
 }
 
+/// Marks `key` gone and counts it once (`snips-pickup`/`gone`, #1177), in a
+/// task of its own. The pickup's deadline (`PASS_DEADLINE`) can drop the
+/// pass mid-write, and a mark that lands then would never be counted: every
+/// later pass meets it and skips it. The spawned task finishes the write and
+/// its count together. A mark that fails is not counted: the key is asked
+/// again. Bound: a mark `drop_unwanted` removes (no essay waits on the key)
+/// and a later essay's wait marks again is counted again.
+async fn mark_gone_counted(folder: &Path, key: &str, run: Option<&Run>, reason: &'static str) -> std::io::Result<()> {
+	let (folder, key, run) = (folder.to_path_buf(), key.to_owned(), run.cloned());
+	let marked = tokio::spawn(async move {
+		mark_gone(&folder, &key, run.as_ref(), reason).await?;
+		Failure::alone(Step::SnipsPickupGone, &reason);
+		Ok::<(), std::io::Error>(())
+	});
+	match marked.await {
+		Ok(done) => done,
+		Err(join) => Err(std::io::Error::other(join)),
+	}
+}
+
 /// Removes the cache's entries no waiting essay names, and what a stopped
 /// pass left: the pickup is the cache's one writer, and runs in one task.
 async fn drop_unwanted(folder: &Path, family: Family, wanted: &BTreeSet<(Family, String)>, picked: &mut Picked) {
@@ -834,12 +854,10 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		let Some(run) = newest else {
 			if mark.is_none() {
 				picked.gone += 1;
-				if mark_gone(folder, key, None, "no-run").await.is_err() {
+				if mark_gone_counted(folder, key, None, "no-run").await.is_err() {
 					picked.failures.push("drive");
 					continue;
 				}
-				// Counted once the mark lands: an unmarked key is asked again.
-				Failure::alone(Step::SnipsPickupGone, &"no-run");
 			}
 			// Only once it is marked gone: a mark the drive refused leaves it
 			// at the back, never at the head.
@@ -881,10 +899,9 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 			}
 			Ok(Some(reason)) => {
 				picked.gone += 1;
-				if mark_gone(folder, key, Some(&run), reason).await.is_err() {
+				if mark_gone_counted(folder, key, Some(&run), reason).await.is_err() {
 					picked.failures.push("drive");
 				} else {
-					Failure::alone(Step::SnipsPickupGone, &reason);
 					let _ = tokio::fs::remove_file(retry_of(folder, key)).await;
 				}
 			}

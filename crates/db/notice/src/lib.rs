@@ -6,8 +6,9 @@
 //!   [`forget`] removes it (the phone stopped asking, or FCM says it is
 //!   gone). A token is never logged (docs/identity.md invariant 24).
 //! - **`jobs_notice_sent`**, append-only: one row per run record home
-//!   noticed, so a record notifies at most once ([`record_sent`],
-//!   [`was_noticed`]).
+//!   noticed, or lost (`expired`: its window closed with no phone told,
+//!   server#1176), so a record notifies, or is counted lost, at most once
+//!   ([`record_sent`], [`was_noticed`]).
 //!
 //! Every query takes the subject and filters on it. The writers are
 //! `file_host`'s `handlers::jobs` (`PUT` and `DELETE /api/v1/jobs/notice`) and

@@ -9,7 +9,11 @@
 //! (`mailbox_repo::jobs_runs`, the newest [`RUNS_READ`]) that started within
 //! [`WINDOW_HOURS`] and that `jobs_notice_sent` does not name yet. It tells
 //! each phone in `jobs_notice_device` once per record, oldest record first,
-//! and records what it said. The record is the trigger, not the digest:
+//! and records what it said. A record past the window that a phone was owed
+//! and none was told of is recorded `expired` and counted once as lost
+//! (#1176); one that a later run pushed out of the newest [`RUNS_READ`]
+//! before its window closed is not looked at again, so not counted (the
+//! bound). The record is the trigger, not the digest:
 //! every run leaves one, a stopped run included, and it comes last (paulgsc/some-ui
 //! `packages/job-desk/ROUTINE.md` §9). With no phone asking, it does nothing.
 //!
