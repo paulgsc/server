@@ -515,8 +515,9 @@ pub async fn disk() -> crate::call_weeks::render::Disk {
 	crate::call_weeks::render::disk(Path::new(RENDERS_FOLDER), Path::new(WORK_FOLDER), Path::new(STATUS_FOLDER)).await
 }
 
-/// What the render worker has made, as metrics. A failing read leaves the
-/// last values and logs.
+/// What the render worker has made, as metrics. A failing read makes them
+/// unknown (`NaN`, never the last values, #1227) and logs, and it and an
+/// unreadable worker `last-pass` are held open until a tick reads them.
 async fn observe_renders(db: &SqlitePool) {
 	let seen = match crate::auth::owner::owner(db).await {
 		Ok(owner) => observe(db, &owner, Path::new(RENDERS_FOLDER), Path::new(STATUS_FOLDER)).await,
@@ -524,8 +525,12 @@ async fn observe_renders(db: &SqlitePool) {
 	};
 	if let Ok(seen) = seen {
 		crate::metrics::report_weeks::record_renders(&seen);
+		let unread = seen.worker_last_pass == crate::call_weeks::render::Reading::Unreadable;
+		crate::failure::open(crate::failure::Step::ReportWeeksObserve, usize::from(unread));
 	} else {
 		warn!(error = "storage", "report render observation failed");
+		crate::metrics::report_weeks::record_renders_unknown();
+		crate::failure::open(crate::failure::Step::ReportWeeksObserve, 1);
 	}
 }
 

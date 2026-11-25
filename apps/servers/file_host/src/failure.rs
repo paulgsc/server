@@ -316,6 +316,15 @@ steps! {
 	/// (#1222, `strikes`), as `device_set_aside`. Counted once, when the
 	/// mark is written.
 	JobsNoticePhoneSetAside => JobsNotice, "phone_set_aside";
+	/// Open: what the render worker made of the Report weeks, which a tick
+	/// could not read (a storage error), or the worker's `last-pass` there
+	/// and unreadable; the `report_render_*` gauges are unknown (`NaN`) while
+	/// it is open (#1227).
+	ReportWeeksObserve => ReportWeeks, "observe", open;
+	/// Open: what the render worker made of the Cards essays, which a tick
+	/// could not read (a storage error); the `cards_essay_render_*` gauges are
+	/// unknown (`NaN`) while it is open (#1227).
+	CardsEssaysObserve => CardsEssays, "observe", open;
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.
