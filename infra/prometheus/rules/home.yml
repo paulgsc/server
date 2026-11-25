@@ -18,7 +18,8 @@
 # A watcher whose passes start but keep failing still stamps every attempt,
 # so its stale rule never sees it: each `*Failing` rule fires on its
 # `*_pass_failing` gauge (any class) held for three of its intervals, while
-# its `*_enabled` gauge is 1.
+# its `*_enabled` gauge is 1 where it has one (a gauge set only where its
+# feature is configured needs none).
 #
 # home-health holds what /ready finds wrong with a file_host that is
 # answering: a degraded home serves, so the container healthcheck never says.
@@ -83,6 +84,38 @@ groups:
         labels:
           objective: MI3
           says: "The Jobs mailbox poller has failed every pass for 45 minutes; the MAILBOX dashboard's FAILING panel says why."
+
+      - alert: JobsNoticeFailing
+        # OA8 (#1229): every Jobs arrival notice pass for 45 minutes ended on
+        # a storage failure. Such a pass can't look, so jobs-notice's open
+        # levels (refused, unanswered) keep what the last pass that looked set
+        # (docs/home-compute.md, invariant 9) and only this says it. It runs
+        # after each mailbox pass, and a pass whose notice failed is not
+        # settled, so the next is 15 minutes later (mailbox::UNHELD) even
+        # while the bell holds: 45 minutes is three passes, as
+        # MailboxPollerFailing. No enabled gauge: the series exists only
+        # where FCM is configured.
+        expr: |
+          max(jobs_notice_pass_failing) == 1
+        for: 45m
+        labels:
+          objective: OA8
+          says: "Every Jobs arrival notice pass for 45 minutes failed on storage, so no phone is told of a morning run and what waits on a phone is not counted; file-host-server's log says why."
+
+      - alert: SnipsPickupFailing
+        # OA8 (#1229): every Snips pickup pass for 45 minutes failed on
+        # storage or ran out its deadline (snips::PASS_DEADLINE). Such a pass
+        # can't finish, so snips-pickup's open retry level keeps what the last
+        # finished pass set, and only this says it. A fetch that may clear is
+        # not a failing pass: it is that level. As JobsNoticeFailing, a
+        # failed pickup leaves its pass unsettled, so 45 minutes is three
+        # passes; the series exists only where Snips capture is configured.
+        expr: |
+          max(snips_pickup_pass_failing) == 1
+        for: 45m
+        labels:
+          objective: OA8
+          says: "Every Snips pickup pass for 45 minutes failed or ran out of time, so an essay waiting on snips gets none; file-host-server's log says why."
 
       - alert: MailboxBellDown
         # #500: home has held no connection to the mailbox's bell for 30
