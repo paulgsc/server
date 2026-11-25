@@ -190,16 +190,6 @@ pub async fn devices(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<S
 		.await
 }
 
-/// When the first phone `subject` still has asked to be told, if any.
-///
-/// # Errors
-/// Any `sqlx` failure.
-pub async fn first_registered(conn: &mut SqliteConnection, subject: &str) -> Result<Option<String>, sqlx::Error> {
-	sqlx::query_scalar!(r#"SELECT MIN(registered_at) AS "first: String" FROM jobs_notice_device WHERE subject_id = ?1"#, subject)
-		.fetch_one(&mut *conn)
-		.await
-}
-
 /// Whether home already noticed the run record `run_name`.
 ///
 /// # Errors
