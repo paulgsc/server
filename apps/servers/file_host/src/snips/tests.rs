@@ -871,14 +871,19 @@ async fn a_gone_mark_the_deadline_cuts_off_still_lands_counted() {
 	// The first poll spawns the mark's task, then the deadline drops the call.
 	let cut = tokio::time::timeout(std::time::Duration::ZERO, mark_gone_counted(&dirs.cache, &key, None, "no-run")).await;
 	assert!(cut.is_err(), "dropped before it finished");
+	// The task renames the mark into place, then counts it: wait for both.
+	let mut counted = 0;
 	for _ in 0..1000 {
-		if gone_of(&dirs.cache, &key).exists() {
+		counted += failures(&snapshotter, Step::SnipsPickupGone).unwrap_or(0);
+		if counted > 0 {
 			break;
 		}
 		tokio::time::sleep(std::time::Duration::from_millis(1)).await;
 	}
 	assert!(gone_of(&dirs.cache, &key).exists(), "the mark landed");
-	assert_eq!(failures(&snapshotter, Step::SnipsPickupGone), Some(1), "and was counted");
+	tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+	counted += failures(&snapshotter, Step::SnipsPickupGone).unwrap_or(0);
+	assert_eq!(counted, 1, "and was counted, once");
 
 	std::fs::write(retry_of(&dirs.cache, &key), b"").unwrap();
 	let wanted = BTreeSet::from([(Family::Snips, key.clone())]);
