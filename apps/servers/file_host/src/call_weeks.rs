@@ -207,8 +207,10 @@ impl Seen<'static> {
 /// 0, #1207) and logs, and each signal not read (the renders, the worker's
 /// `last-pass`, each job's cache warnings, the drive) is held open until a
 /// tick reads it (#1179). The newest cache warning combines six jobs'
-/// folders: a time any of them read is kept, a lower bound, and it is `NaN`
-/// only when none reads (C1512).
+/// folders: a warning time read in any of them is kept, a lower bound,
+/// whatever another folder holds. With a folder unreadable and no warning
+/// read in any other (none read, or those that read hold none), it is
+/// `NaN` (C1512).
 async fn observe_renders(db: &sqlx::SqlitePool, seen: &Seen<'_>) {
 	let Seen { renders, status, work } = *seen;
 	let mut unread = 0;

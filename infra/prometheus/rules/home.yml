@@ -570,8 +570,9 @@ groups:
         # (Playoff Delta, the Rust and Interview essays, Cards, Report) to its
         # own status folder. file_host reads the newest time across all six
         # each minute (call_weeks::render::disk, call_weeks::observe_renders);
-        # a folder it can't read is held open in call-weeks/observe, and the
-        # others' newest still counts (C1512). Said for a day, so a render
+        # a folder it can't read is held open in call-weeks/observe, and a
+        # warning time read in another still counts; with none read, the
+        # gauge is NaN and this is silent (C1512). Said for a day, so a render
         # that warned and then finished is still heard.
         expr: |
           max(call_render_cache_warning_timestamp_seconds) > 0

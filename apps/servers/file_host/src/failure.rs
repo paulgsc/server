@@ -237,8 +237,10 @@ steps! {
 	/// the worker's `last-pass`, each job's cache warnings, and the drive's
 	/// free and total bytes (`statvfs`). Each one's gauges are unknown
 	/// (`NaN`) while it is open, except the newest cache warning, which
-	/// combines six jobs' folders: it keeps a time any other folder read, a
-	/// lower bound, and is `NaN` only when none reads (#1179, #1207, C1512).
+	/// combines six jobs' folders: it keeps a warning time read in another
+	/// folder, a lower bound. With a folder unreadable and no warning read in
+	/// any other (none read, or those that read hold none), it is `NaN`
+	/// (#1179, #1207, C1512).
 	CallWeeksObserve => CallWeeks, "observe", open;
 	/// Open: whether the call's next week is overdue, which a pass could not
 	/// read, so `call_weeks_next_overdue` is unknown (`NaN`) and
