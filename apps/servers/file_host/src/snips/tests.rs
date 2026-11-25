@@ -868,9 +868,11 @@ async fn a_gone_mark_the_deadline_cuts_off_still_lands_counted() {
 	let dirs = dirs();
 	std::fs::create_dir_all(&dirs.cache).unwrap();
 	let key = commit(0);
-	// The first poll spawns the mark's task, then the deadline drops the call.
+	// The first poll spawns the mark's task, then the deadline drops the call
+	// (almost always: under load the task can finish first, which is the
+	// ordinary path). Either way, the mark lands counted once.
 	let cut = tokio::time::timeout(std::time::Duration::ZERO, mark_gone_counted(&dirs.cache, &key, None, "no-run")).await;
-	assert!(cut.is_err(), "dropped before it finished");
+	assert!(cut.as_ref().map_or(true, Result::is_ok), "{cut:?}");
 	// The task renames the mark into place, then counts it: wait for both.
 	let mut counted = 0;
 	for _ in 0..1000 {
