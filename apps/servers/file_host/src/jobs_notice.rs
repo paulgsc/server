@@ -189,18 +189,21 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 			Some((file.name, started, run))
 		})
 		.collect();
+	runs.retain(|(_, started, _)| *started <= now);
 	runs.sort_by_key(|(_, started, _)| *started);
-	let (runs, past): (Vec<_>, Vec<_>) = runs
-		.into_iter()
-		.filter(|(_, started, _)| *started <= now)
-		.partition(|(_, started, _)| now - *started < Duration::hours(WINDOW_HOURS));
+	// Every record read, in or past the window, so a re-run's silence reads
+	// the record that added its morning's picks wherever it falls.
 	let added: Vec<(DateTime<Utc>, bool)> = runs.iter().map(|(_, started, run)| (*started, !run.added.is_empty())).collect();
+	let in_window = |started: DateTime<Utc>| now - started < Duration::hours(WINDOW_HOURS);
 
 	let stamp = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-	outcome.expired = expire(db, deletion, subject, &past, asked_since.as_deref(), &stamp).await?;
+	outcome.expired = expire(db, deletion, subject, &runs, now, asked_since.as_deref(), &stamp).await?;
 	let unix = u64::try_from(now.timestamp()).unwrap_or(0);
 	let (mut refused_open, mut unanswered_open) = (0, 0);
 	for (index, (name, started, run)) in runs.iter().enumerate() {
+		if !in_window(*started) {
+			continue;
+		}
 		let mut conn = db.acquire().await?;
 		if notice_repo::was_noticed(&mut conn, subject, name).await? {
 			continue;
@@ -273,8 +276,9 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 	Ok(outcome)
 }
 
-/// Stores each record in `past` (started before the window) that a phone
-/// was owed and none was told of as `expired`, and counts it: a loss, the
+/// Stores each record of `runs` (sorted by start) that started before the
+/// window at `at`, that a phone was owed and none was told of, as `expired`,
+/// and counts it: a loss, the
 /// window outlived every try. Stored so it is counted once, by the pass that
 /// stores it (invariant 9: a condition that ends in a loss is an event at
 /// the end). How many it stored.
@@ -282,13 +286,15 @@ async fn expire(
 	db: &SqlitePool,
 	deletion: &DeletionLock,
 	subject: &str,
-	past: &[(String, DateTime<Utc>, Run)],
+	runs: &[(String, DateTime<Utc>, Run)],
+	at: DateTime<Utc>,
 	asked_since: Option<&str>,
 	now: &str,
 ) -> Result<usize, sqlx::Error> {
+	let added: Vec<(DateTime<Utc>, bool)> = runs.iter().map(|(_, started, run)| (*started, !run.added.is_empty())).collect();
 	let mut expired = 0;
-	for (name, started, _) in past {
-		if !owed(asked_since, *started) {
+	for (index, (name, started, run)) in runs.iter().enumerate() {
+		if at - *started < Duration::hours(WINDOW_HOURS) || !owed(asked_since, *started) {
 			continue;
 		}
 		let mut conn = db.acquire().await?;
@@ -296,6 +302,13 @@ async fn expire(
 			continue;
 		}
 		drop(conn);
+		// A re-run that added nothing, on a morning another record's picks
+		// spoke for, is silent by design: never owed, so never lost (Codex
+		// on #1230). It is recorded `skipped`, as it would have been in time.
+		if words(run, *started, &added[..index]).0 == Said::Skipped {
+			record(db, deletion, subject, name, Said::Skipped, 0, now).await?;
+			continue;
+		}
 		if record(db, deletion, subject, name, Said::Expired, 0, now).await? == notice_repo::Change::Added {
 			Failure::alone(Step::JobsNoticeUntold, &"no phone took a Jobs arrival notice before its window closed");
 			expired += 1;
@@ -570,6 +583,26 @@ mod tests {
 
 	/// #1176: a record that started before any phone asked, and whose window
 	/// closed before one did, was owed to no one: nothing is stored or
+	/// #1176, Codex on #1230: a re-run that added nothing, on a morning
+	/// another record's picks spoke for, is silent by design. First read past
+	/// its window, it is recorded `skipped` as it would have been in time:
+	/// never owed, never counted lost.
+	#[tokio::test]
+	async fn a_silent_rerun_read_past_its_window_is_skipped_not_lost() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
+		let pool = pool().await;
+		let fake = Fake::default();
+		phone(&pool, "phone-1").await;
+		let picks = run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		assert_eq!(pass(&pool, &sender(&fake), now()).await, Outcome { noticed: 1, ..Outcome::default() });
+		let rerun = run(&pool, 2, "2026-10-26T15:05:00Z", "done", false).await;
+		assert_eq!(pass(&pool, &sender(&fake), now() + Duration::hours(13)).await, Outcome::default());
+		assert_eq!(sent(&pool).await, [(picks, String::from("picks"), 1), (rerun, String::from("skipped"), 0)]);
+		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold).unwrap_or(0), 0, "never owed, never lost");
+	}
+
 	/// counted.
 	#[tokio::test]
 	async fn a_record_no_phone_had_asked_for_is_not_a_loss() {
