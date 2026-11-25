@@ -171,6 +171,41 @@ tests:
         alertname: MailboxPollerStale
         exp_alerts: []
 
+  - name: a Jobs notice pass failing for 45 minutes is JobsNoticeFailing, and one that recovers is not (#1229)
+    interval: 1m
+    input_series:
+      - series: 'jobs_notice_pass_failing{job="file_host"}'
+        values: '1x60 0x20'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: JobsNoticeFailing
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: JobsNoticeFailing
+        exp_alerts:
+          - exp_labels:
+              objective: OA8
+              says: "Every Jobs arrival notice pass for 45 minutes failed on storage, so no phone is told of a morning run and what waits on a phone is not counted; file-host-server's log says why."
+      - eval_time: 70m
+        alertname: JobsNoticeFailing
+        exp_alerts: []
+
+  - name: a Snips pickup pass failing for 45 minutes is SnipsPickupFailing, and a blip is not (#1229)
+    interval: 1m
+    input_series:
+      - series: 'snips_pickup_pass_failing{job="file_host"}'
+        values: '1x20 0x5 1x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: SnipsPickupFailing
+        exp_alerts: []
+      - eval_time: 75m
+        alertname: SnipsPickupFailing
+        exp_alerts:
+          - exp_labels:
+              objective: OA8
+              says: "Every Snips pickup pass for 45 minutes failed or ran out of time, so an essay waiting on snips gets none; file-host-server's log says why."
+
   - name: an outage whose class changes every pass still alerts (Codex on #643)
     interval: 1m
     input_series:

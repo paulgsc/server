@@ -99,7 +99,8 @@ pub const INTERVAL: Duration = Duration::from_secs(3600);
 /// 15 minutes, the poll as it was before the bell: with no connection, a
 /// 404, a backoff or a dead bell, a file still reaches home within MI4's 20
 /// minutes and MI3's stale check keeps its 1,080 s (C64). After a failure it
-/// keeps `MailboxPollerFailing`'s 45 minutes at three failed passes in a row.
+/// keeps `MailboxPollerFailing`'s 45 minutes at three failed passes in a row,
+/// and `JobsNoticeFailing`'s and `SnipsPickupFailing`'s (#1229).
 /// A bell down all day is 96 passes, MI6's 2,400 requests.
 pub const UNHELD: Duration = Duration::from_secs(900);
 
@@ -366,8 +367,9 @@ fn spawn(state: &AppState, context: MailboxContext) {
 /// raised while a pass runs fold into at most one more. The backstop timer
 /// counts from the start of the last pass, whatever ran it, so a pass a ring
 /// ran is not followed by the timer's a moment later: `held` after a pass
-/// that settled (`pass` returns true: it succeeded and left no bounded
-/// phase with work owed) while the bell is held, `unheld`
+/// that settled (`pass` returns true: it succeeded, its Jobs notice and
+/// Snips pickup did not fail, and it left no bounded phase with work owed)
+/// while the bell is held, `unheld`
 /// while it isn't or after a pass that failed. When the bell drops, the
 /// timer moves to `unheld` at once, counted from the last pass, so a bell
 /// that dropped 40 minutes after a pass is followed by one now.
@@ -464,27 +466,38 @@ async fn watch(db: &SqlitePool, context: &MailboxContext) {
 }
 
 /// The snips, pages and walks pickup's pass (`crate::snips`), after the mailbox's
-/// own work: counts and kinds, never a token, URL or record.
-async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) {
+/// own work: counts and kinds, never a token, URL or record. True when the
+/// pass failed (`snips_pickup_pass_failing`), so `tick` does not count the
+/// pass as settled and the next one comes `UNHELD` later, not the held hour.
+async fn pick_up_snips(db: &SqlitePool, capture: &crate::snips::GitHub) -> bool {
 	let (essays, folders) = (std::path::Path::new(crate::cards_essays::ESSAYS_FOLDER), crate::snips::Folders::server());
 	let Ok(done) = tokio::time::timeout(crate::snips::PASS_DEADLINE, crate::snips::run_once(db, capture, essays, &folders)).await else {
-		// What it left half-made goes next pass (`snips::run_once`).
+		// What it left half-made goes next pass (`snips::run_once`). A pass
+		// that could not finish left its retry level as it stood, so it is
+		// failing (#1229).
 		warn!("Snips pickup pass reached its deadline; asked again next pass");
-		return;
+		crate::metrics::mailbox::record_snips_pickup_pass(true);
+		return true;
 	};
+	let failing = done.is_err();
+	crate::metrics::mailbox::record_snips_pickup_pass(failing);
 	match done {
 		Ok(picked) if picked == crate::snips::Picked::default() => {}
 		Ok(picked) if picked.failures.is_empty() => info!(fetched = picked.fetched, gone = picked.gone, dropped = picked.dropped, "Snips pickup pass"),
 		Ok(picked) => warn!(fetched = picked.fetched, gone = picked.gone, failures = ?picked.failures, "Snips pickup pass did not finish; asked again next pass"),
 		Err(err) => error!(error = %err, "Snips pickup pass failed"),
 	}
+	failing
 }
 
 /// One pass of the poller: find whose copy to keep, run a pass for it, then
 /// stamp the routine watch and tell the phones. True when it settled: no
 /// phase failed, there was an account to keep the files for, and no phase
-/// stopped at its budget with files left to move (`Outcome::more`), so the
-/// held bell's hour is the right wait for the next.
+/// stopped at its budget with files left to move (`Outcome::more`), and
+/// neither the Jobs notice's nor the Snips pickup's pass failed, so the held
+/// bell's hour is the right wait for the next. A failed one is retried
+/// `UNHELD` later, as a failed mailbox phase is, so `JobsNoticeFailing` and
+/// `SnipsPickupFailing`'s 45 minutes are three passes, not one (#1229).
 async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> bool {
 	crate::metrics::mailbox::record_pass_started();
 	let started = tokio::time::Instant::now();
@@ -542,15 +555,23 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 		// the Jobs notice is open (Codex on #1230). Account deletion took its
 		// phones and records with it.
 		crate::jobs_notice::nothing_open();
-		// A snip names no person: picked up whether or not there is an account.
-		if let Some(capture) = context.snips.as_deref() {
-			pick_up_snips(db, capture).await;
+		if context.notice.is_some() {
+			crate::metrics::mailbox::record_jobs_notice_pass(false);
 		}
-		return settled;
+		// A snip names no person: picked up whether or not there is an account.
+		let snips_failed = match context.snips.as_deref() {
+			Some(capture) => pick_up_snips(db, capture).await,
+			None => false,
+		};
+		return settled && !snips_failed;
 	};
 	crate::routine_watch::stamp(db, &subject, &context.schedules, chrono::Utc::now()).await;
+	let mut notice_failed = false;
 	if let Some(sender) = context.notice.as_deref() {
-		match crate::jobs_notice::run_once(db, &context.deletion, &subject, sender, chrono::Utc::now()).await {
+		let told = crate::jobs_notice::run_once(db, &context.deletion, &subject, sender, chrono::Utc::now()).await;
+		notice_failed = told.is_err();
+		crate::metrics::mailbox::record_jobs_notice_pass(notice_failed);
+		match told {
 			Ok(outcome) if outcome.busy() => info!(
 				noticed = outcome.noticed,
 				skipped = outcome.skipped,
@@ -564,8 +585,9 @@ async fn tick(db: &SqlitePool, context: &MailboxContext, cause: bell::Cause) -> 
 		}
 	}
 	// Last, after what a phone or the routine waits on.
-	if let Some(capture) = context.snips.as_deref() {
-		pick_up_snips(db, capture).await;
-	}
-	settled
+	let snips_failed = match context.snips.as_deref() {
+		Some(capture) => pick_up_snips(db, capture).await,
+		None => false,
+	};
+	settled && !notice_failed && !snips_failed
 }
