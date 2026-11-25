@@ -895,17 +895,20 @@ pub async fn run_once<C: Capture>(db: &SqlitePool, capture: &C, essays: &Path, f
 		// One bundle a pass, of either family.
 		break;
 	}
-	// Keys an essay waits on whose last fetch failed and may clear, as this
-	// pass leaves them (invariant 9: a level, never a recount).
-	let mut waiting = 0;
-	for (family, key) in &wanted {
-		let folder = folders.of(*family);
-		if !bundle_of(folder, key).is_dir() && retry_of(folder, key).exists() {
-			waiting += 1;
-		}
-	}
-	crate::failure::open(Step::SnipsPickupRetry, waiting);
+	crate::failure::open(Step::SnipsPickupRetry, retrying(&wanted, folders));
 	Ok(picked)
+}
+
+/// Keys an essay waits on whose last fetch failed and may clear, as a pass
+/// leaves them: held open, a level, never a recount (invariant 9, #1177).
+fn retrying(wanted: &BTreeSet<(Family, String)>, folders: &Folders) -> usize {
+	wanted
+		.iter()
+		.filter(|(family, key)| {
+			let folder = folders.of(*family);
+			!bundle_of(folder, key).is_dir() && retry_of(folder, key).exists()
+		})
+		.count()
 }
 
 #[cfg(test)]

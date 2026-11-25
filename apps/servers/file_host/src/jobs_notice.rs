@@ -193,23 +193,7 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 	let added: Vec<(DateTime<Utc>, bool)> = runs.iter().map(|(_, started, run)| (*started, !run.added.is_empty())).collect();
 
 	let stamp = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-	for (name, started, _) in &past {
-		if !owed(asked_since.as_deref(), *started) {
-			continue;
-		}
-		let mut conn = db.acquire().await?;
-		if notice_repo::was_noticed(&mut conn, subject, name).await? {
-			continue;
-		}
-		drop(conn);
-		// A loss: the window outlived every try. Stored so it is counted
-		// once, by the pass that stores it (invariant 9: a condition that
-		// ends in a loss is an event at the end).
-		if record(db, deletion, subject, name, Said::Expired, 0, &stamp).await? == notice_repo::Change::Added {
-			Failure::alone(Step::JobsNoticeUntold, &"no phone took a Jobs arrival notice before its window closed");
-			outcome.expired += 1;
-		}
-	}
+	outcome.expired = expire(db, deletion, subject, &past, asked_since.as_deref(), &stamp).await?;
 	let unix = u64::try_from(now.timestamp()).unwrap_or(0);
 	let (mut refused_open, mut unanswered_open) = (0, 0);
 	for (index, (name, started, run)) in runs.iter().enumerate() {
@@ -285,6 +269,37 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 	Ok(outcome)
 }
 
+/// Stores each record in `past` (started before the window) that a phone
+/// was owed and none was told of as `expired`, and counts it: a loss, the
+/// window outlived every try. Stored so it is counted once, by the pass that
+/// stores it (invariant 9: a condition that ends in a loss is an event at
+/// the end). How many it stored.
+async fn expire(
+	db: &SqlitePool,
+	deletion: &DeletionLock,
+	subject: &str,
+	past: &[(String, DateTime<Utc>, Run)],
+	asked_since: Option<&str>,
+	now: &str,
+) -> Result<usize, sqlx::Error> {
+	let mut expired = 0;
+	for (name, started, _) in past {
+		if !owed(asked_since, *started) {
+			continue;
+		}
+		let mut conn = db.acquire().await?;
+		if notice_repo::was_noticed(&mut conn, subject, name).await? {
+			continue;
+		}
+		drop(conn);
+		if record(db, deletion, subject, name, Said::Expired, 0, now).await? == notice_repo::Change::Added {
+			Failure::alone(Step::JobsNoticeUntold, &"no phone took a Jobs arrival notice before its window closed");
+			expired += 1;
+		}
+	}
+	Ok(expired)
+}
+
 /// Whether a record that started at `started` was owed a notice: a phone had
 /// asked (`asked_since`, the first phone still asking) before its window
 /// closed. A time that does not read is owed: counting a loss that wasn't is
@@ -293,10 +308,7 @@ fn owed(asked_since: Option<&str>, started: DateTime<Utc>) -> bool {
 	let Some(asked) = asked_since else {
 		return false;
 	};
-	match DateTime::parse_from_rfc3339(asked) {
-		Ok(asked) => asked.with_timezone(&Utc) < started + Duration::hours(WINDOW_HOURS),
-		Err(_) => true,
-	}
+	DateTime::parse_from_rfc3339(asked).map_or(true, |asked| asked.with_timezone(&Utc) < started + Duration::hours(WINDOW_HOURS))
 }
 
 /// One write, under the deletion hold, as `mailbox::pass`'s.
