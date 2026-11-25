@@ -236,7 +236,9 @@ steps! {
 	/// not read: what the worker made of the weeks held (a storage error),
 	/// the worker's `last-pass`, each job's cache warnings, and the drive's
 	/// free and total bytes (`statvfs`). Each one's gauges are unknown
-	/// (`NaN`) while it is open (#1179, #1207).
+	/// (`NaN`) while it is open, except the newest cache warning, which
+	/// combines six jobs' folders: it keeps a time any other folder read, a
+	/// lower bound, and is `NaN` only when none reads (#1179, #1207, C1512).
 	CallWeeksObserve => CallWeeks, "observe", open;
 	/// Open: whether the call's next week is overdue, which a pass could not
 	/// read, so `call_weeks_next_overdue` is unknown (`NaN`) and
