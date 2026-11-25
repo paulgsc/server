@@ -3252,18 +3252,35 @@ fn a_browser_that_keeps_timing_out_is_set_aside_once_and_probed_daily() {
 			let repo = PushSubscriptionRepository::new(pool.clone());
 			let stored = || async { repo.for_subject(subject_id).await.unwrap().remove(0) };
 
+			// One pass, one send: what each pass does to the dead browser, with
+			// `reached` saying whether some other push service answered in it.
+			let pass = |reached: bool| {
+				let (pool, nudge, action) = (pool.clone(), &nudge, &action);
+				async move {
+					let deadline = far_deadline();
+					super::super::actuate::actuate(&pool, nudge, action, subject_id, &deadline).await.unwrap();
+					if reached {
+						deadline.reach.heard();
+					}
+					super::super::actuate::settle_strikes(&pool, &deadline).await.unwrap();
+				}
+			};
+
+			// A pass in which no push service answered is home's: no strike.
+			pass(false).await;
+			assert_eq!(stored().await.set_aside_at, None);
 			for _ in 0..crate::strikes::SET_ASIDE_AFTER {
-				super::super::actuate::actuate(&pool, &nudge, &action, subject_id, &far_deadline()).await.unwrap();
+				pass(true).await;
 			}
-			assert!(stored().await.set_aside_at.is_some(), "set aside at the third timeout in a row");
+			assert!(stored().await.set_aside_at.is_some(), "set aside at the third timeout in a row while home was heard");
 			assert_eq!(failures(&snapshotter, Step::StudyNudgeDeviceSetAside), Some(1));
 
 			// The next send includes it once, as the day's probe; its timeout
 			// takes no strike and no count. The one after skips it.
 			let before = tries();
-			super::super::actuate::actuate(&pool, &nudge, &action, subject_id, &far_deadline()).await.unwrap();
+			pass(true).await;
 			assert!(stored().await.last_probe_at.is_some(), "probed");
-			super::super::actuate::actuate(&pool, &nudge, &action, subject_id, &far_deadline()).await.unwrap();
+			pass(true).await;
 			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 			assert_eq!(tries() - before, 1, "probed once, then skipped within the day");
 			assert_eq!(failures(&snapshotter, Step::StudyNudgeDeviceSetAside).unwrap_or(0), 0, "no new count");

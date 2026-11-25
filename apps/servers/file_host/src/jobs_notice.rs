@@ -179,14 +179,6 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 		nothing_open();
 		return Ok(outcome);
 	}
-	// A record no phone is sent to (every one set aside, #1222) is owed to
-	// none: setting each aside was counted once, and its records are not
-	// counted lost again each morning.
-	let asked_since = if devices.iter().any(|phone| phone.set_aside_at.is_none()) {
-		notice_repo::first_registered(&mut conn, subject).await?
-	} else {
-		None
-	};
 	let held = mailbox_repo::jobs_runs(&mut conn, subject, RUNS_READ).await.map_err(|err| match err {
 		mailbox_repo::MailboxError::Storage(err) => err,
 		mailbox_repo::MailboxError::Rewritten => sqlx::Error::Protocol(String::from("a read cannot rewrite")),
@@ -211,7 +203,7 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 	let in_window = |started: DateTime<Utc>| now - started < Duration::hours(WINDOW_HOURS);
 
 	let stamp = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-	outcome.expired = expire(db, deletion, subject, &runs, now, asked_since.as_deref(), &stamp).await?;
+	outcome.expired = expire(db, deletion, subject, &runs, now, &devices, &stamp).await?;
 	let unix = u64::try_from(now.timestamp()).unwrap_or(0);
 	let (mut refused_open, mut unanswered_open) = (0, 0);
 	// Each phone's turn for the whole pass (#1180): a set-aside phone is
@@ -352,6 +344,10 @@ async fn tell<T: FcmTransport>(
 				tracing::warn!("FCM refused a Jobs arrival notice: the token is another sender's");
 				told.refused = true;
 			}
+			SendOutcome::NoToken(status) => {
+				tracing::warn!(status, "home could not get an FCM access token for a Jobs arrival notice");
+				told.refused = true;
+			}
 			SendOutcome::Transport(why) => {
 				tracing::warn!(error = %why, "a Jobs arrival notice got no answer from FCM");
 				told.unanswered = true;
@@ -390,13 +386,13 @@ async fn expire(
 	subject: &str,
 	runs: &[(String, DateTime<Utc>, Run)],
 	at: DateTime<Utc>,
-	asked_since: Option<&str>,
+	phones: &[notice_repo::Phone],
 	now: &str,
 ) -> Result<usize, sqlx::Error> {
 	let added: Vec<(DateTime<Utc>, bool)> = runs.iter().map(|(_, started, run)| (*started, !run.added.is_empty())).collect();
 	let mut expired = 0;
 	for (index, (name, started, run)) in runs.iter().enumerate() {
-		if at - *started < Duration::hours(WINDOW_HOURS) || !owed(asked_since, *started) {
+		if at - *started < Duration::hours(WINDOW_HOURS) || !phones.iter().any(|phone| owed(phone, *started)) {
 			continue;
 		}
 		let mut conn = db.acquire().await?;
@@ -419,15 +415,19 @@ async fn expire(
 	Ok(expired)
 }
 
-/// Whether a record that started at `started` was owed a notice: a phone had
-/// asked (`asked_since`, the first phone still asking) before its window
-/// closed. A time that does not read is owed: counting a loss that wasn't is
+/// Whether `phone` was owed the notice of a record that started at
+/// `started`: it had asked before the record's window closed, and was not
+/// already set aside when the record started (#1222). A phone set aside
+/// before it is not sent to, so its setting aside was the count; one set
+/// aside later was owed the record, whatever it is now. Decided by the
+/// record's own times, so a phone re-registering later changes nothing
+/// owed. A time that does not read is owed: counting a loss that wasn't is
 /// the side to err on.
-fn owed(asked_since: Option<&str>, started: DateTime<Utc>) -> bool {
-	let Some(asked) = asked_since else {
-		return false;
-	};
-	DateTime::parse_from_rfc3339(asked).map_or(true, |asked| asked.with_timezone(&Utc) < started + Duration::hours(WINDOW_HOURS))
+fn owed(phone: &notice_repo::Phone, started: DateTime<Utc>) -> bool {
+	let at = |text: &str| DateTime::parse_from_rfc3339(text).map(|at| at.with_timezone(&Utc));
+	let asked_in_time = at(&phone.registered_at).map_or(true, |asked| asked < started + Duration::hours(WINDOW_HOURS));
+	let aside_before = phone.set_aside_at.as_deref().is_some_and(|aside| at(aside).is_ok_and(|aside| aside <= started));
+	asked_in_time && !aside_before
 }
 
 /// One write, under the deletion hold, as `mailbox::pass`'s.
@@ -862,7 +862,7 @@ mod tests {
 	/// takes again) the next pass within the window tells the phone. Family:
 	/// final refusals of the send (400, 401, 403) and of the token endpoint,
 	/// with no phone, one phone gone, or one phone that took it. A JWT home
-	/// could not sign (`Refused(0)`) takes the same arm, untested: a test key
+	/// could not sign (`NoToken(0)`) takes the same arm, untested: a test key
 	/// always signs.
 	#[tokio::test]
 	async fn a_notice_every_phone_refused_is_tried_again() {
@@ -1008,5 +1008,49 @@ mod tests {
 			let lone_aside = aside(&pool).await.contains(&(String::from("lone"), true, false));
 			assert_eq!(lone_aside, day == 3, "day {day}: one strike a day beside a phone that took it");
 		}
+	}
+
+	/// #1180: a pass is one try for a phone, however many records wait: a
+	/// refusing phone takes one strike a pass, not one per record.
+	#[tokio::test]
+	async fn a_phone_takes_one_strike_a_pass_however_many_records_wait() {
+		let pool = pool().await;
+		let fake = Fake::default();
+		let sender = sender(&fake);
+		phone(&pool, "mismatch-1").await;
+		fake.answer("mismatch-1", Ok(403));
+		for (seq, started) in [(1, "2026-10-26T14:00:00Z"), (2, "2026-10-26T14:20:00Z"), (3, "2026-10-26T14:52:07Z")] {
+			run(&pool, seq, started, "done", true).await;
+		}
+		pass(&pool, &sender, now()).await;
+		pass(&pool, &sender, now() + Duration::minutes(15)).await;
+		assert_eq!(aside(&pool).await, [(String::from("mismatch-1"), false, false)], "two passes, two strikes");
+		pass(&pool, &sender, now() + Duration::minutes(30)).await;
+		assert_eq!(aside(&pool).await, [(String::from("mismatch-1"), true, false)], "the third pass sets it aside");
+	}
+
+	/// #1222: whether a phone was owed a record is decided by the record's
+	/// own times. A phone set aside after a record started was owed it, and
+	/// the record that leaves its window untold is lost; one that started
+	/// after the phone was set aside was owed to no one.
+	#[tokio::test]
+	async fn a_record_is_owed_by_its_own_times_not_the_phones_state_now() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
+		let pool = pool().await;
+		let fake = Fake::default();
+		phone(&pool, "phone-1").await;
+		sqlx::query("UPDATE jobs_notice_device SET set_aside_at = '2026-10-26T15:00:00.000Z', last_probe_at = '2026-10-27T05:00:00.000Z'")
+			.execute(&pool)
+			.await
+			.unwrap();
+		let before = run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		let after = run(&pool, 2, "2026-10-26T15:10:00Z", "done", true).await;
+		let at = now() + Duration::hours(13);
+		assert_eq!(pass(&pool, &sender(&fake), at).await, Outcome { expired: 1, ..Outcome::default() });
+		assert_eq!(sent(&pool).await, [(before, String::from("expired"), 0)], "owed before it was set aside");
+		assert!(!sent(&pool).await.iter().any(|(name, ..)| *name == after), "owed to no one");
+		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold), Some(1));
 	}
 }

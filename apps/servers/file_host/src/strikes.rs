@@ -15,14 +15,18 @@
 //! strikes, since it would set every device aside at once:
 //!
 //! - web push ([`web_push`]): a delivery that got no answer in time, or no
-//!   answer at all, strikes. `400` (our payload or VAPID JWT), `403` (our
+//!   answer at all, strikes, but only in a pass where some push service
+//!   answered (`nudge::deadline::Reach`): if none did, home could not reach
+//!   the internet, and that is home's. Bound: a pass whose only send is to one
+//!   dead browser takes no strike. `400` (our payload or VAPID JWT), `403` (our
 //!   key), `413`, `429`, `5xx` and a send we never made do not; `404`/`410`
 //!   prune the subscription, as before.
 //! - FCM ([`fcm`]): `403 SENDER_ID_MISMATCH` strikes. A `400` strikes only
 //!   when another phone took the same notice in that pass, which shows the
 //!   notice and the key were fine. A lone phone's `400` never strikes: its
-//!   token can't be told apart from our payload (the bound). `401`, the token
-//!   endpoint, a JWT home could not sign, `429`, `5xx` and no answer never
+//!   token can't be told apart from our payload (the bound). `401`, a token
+//!   home could not get (`fcm_kit::SendOutcome::NoToken`: the token endpoint
+//!   refused, or a JWT home could not sign), `429`, `5xx` and no answer never
 //!   strike; `404`/`UNREGISTERED` forget the phone, as before.
 //!
 //! **Brought back without a clock.** A set-aside device is not probed on a
@@ -40,8 +44,9 @@
 
 use chrono::{DateTime, Duration, Utc};
 
-/// Failures of its own in a row that set a device aside: the owner's number
-/// on #1180, a policy kept in code.
+/// Failures of its own in a row that set a device aside. The owner asked for
+/// "a few" on #1180; 3 is the coordinator's starting value there, a policy
+/// kept in code.
 pub const SET_ASIDE_AFTER: i64 = 3;
 
 /// How often, at most, a set-aside device is included in a real send.
@@ -150,7 +155,8 @@ mod tests {
 		for home in [
 			Fcm::Delivered,
 			Fcm::Unregistered,
-			Fcm::Refused(0),
+			Fcm::NoToken(0),
+			Fcm::NoToken(400),
 			Fcm::Refused(401),
 			Fcm::Refused(403),
 			Fcm::Refused(429),

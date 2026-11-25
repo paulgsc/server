@@ -1,10 +1,11 @@
 -- A device that keeps failing on its own is set aside, not sent to every
 -- time (server#1180, server#1222, epic #1174). The owner's words on #1180:
--- "stop sending to a phone after a few timeouts"; the device is set aside,
--- not deleted, "marked as no longer sent to, with the time and why, so the
--- record of it stays, and a delivery it accepts later (or the phone
--- registering again) brings it back". The count is the owner's, 3, kept in
--- code (`file_host::strikes::SET_ASIDE_AFTER`); which failures strike is the
+-- "stop sending to a phone after a few timeouts". As the coordinator set it
+-- out there, the device is set aside, not deleted: marked as no longer sent
+-- to, with the time and why, so the record of it stays, and a delivery it
+-- accepts later, or registering again, brings it back. The count, 3, is the
+-- coordinator's starting value for the owner's "a few", kept in code
+-- (`file_host::strikes::SET_ASIDE_AFTER`); which failures strike is the
 -- coordinator's call C1513, per sender, in the same module.
 --
 -- Columns on each device table, not a shared table: a shared one would hold

@@ -187,6 +187,10 @@ pub enum SendOutcome {
 	Unregistered,
 	/// FCM, or Google's token endpoint, refused with this status.
 	Refused(u16),
+	/// Home could not get an access token, so nothing was sent: Google's token
+	/// endpoint refused home's assertion with this status, or home could not
+	/// sign one (`0`). Home's, never the phone's (server#1222).
+	NoToken(u16),
 	/// FCM refused with `403 SENDER_ID_MISMATCH`: the token was made for
 	/// another sender. The phone's own, never the key's or the notice's,
 	/// which refuse every phone alike (server#1222).
@@ -205,6 +209,7 @@ impl SendOutcome {
 			Self::Unregistered => "unregistered",
 			Self::Refused(_) => "refused",
 			Self::Mismatched => "mismatched",
+			Self::NoToken(_) => "no_token",
 			Self::Transport(_) => "transport",
 		}
 	}
@@ -243,6 +248,9 @@ impl<T: FcmTransport> Sender<T> {
 	pub async fn send(&self, device: &DeviceToken, notice: &Notice<'_>, now: u64) -> SendOutcome {
 		let bearer = match self.bearer(now).await {
 			Ok(bearer) => bearer,
+			// Home could not get a token, so nothing was sent for this phone:
+			// home's, never the phone's (server#1222).
+			Err(SendOutcome::Refused(status)) => return SendOutcome::NoToken(status),
 			Err(outcome) => return outcome,
 		};
 		let request = Request {
@@ -560,7 +568,7 @@ mod tests {
 		let key = RS256KeyPair::generate(2048).unwrap();
 		let fake = Fake::default();
 		fake.answer(400, r#"{"error":"invalid_grant"}"#);
-		assert_eq!(sender(&key, &fake).send(&device(), &NOTICE, 1_000).await, SendOutcome::Refused(400));
+		assert_eq!(sender(&key, &fake).send(&device(), &NOTICE, 1_000).await, SendOutcome::NoToken(400));
 		assert_eq!(fake.urls(), [TOKEN_URI]);
 	}
 }
