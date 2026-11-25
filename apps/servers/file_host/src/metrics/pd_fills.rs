@@ -68,14 +68,12 @@ pub fn record_renders_unknown() {
 mod tests {
 	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
-	/// #1207 (OA6): fills the tick could not read are `NaN` on every gauge
-	/// `record_renders` sets, a gap, never their last values.
-	#[test]
-	fn renders_not_read_are_unknown() {
+	/// Every gauge `record` set, by name.
+	fn gauges(record: impl FnOnce()) -> Vec<(String, f64)> {
 		let recorder = DebuggingRecorder::new();
 		let snapshotter = recorder.snapshotter();
-		metrics::with_local_recorder(&recorder, super::record_renders_unknown);
-		let set: Vec<_> = snapshotter
+		metrics::with_local_recorder(&recorder, record);
+		snapshotter
 			.snapshot()
 			.into_vec()
 			.into_iter()
@@ -83,8 +81,21 @@ mod tests {
 				DebugValue::Gauge(value) => Some((key.key().name().to_owned(), value.into_inner())),
 				_ => None,
 			})
-			.collect();
-		assert_eq!(set.len(), 6, "{set:?}");
-		assert!(set.iter().all(|(_, value)| value.is_nan()), "{set:?}");
+			.collect()
+	}
+
+	/// #1207 (OA6): fills the tick could not read are `NaN` on exactly the
+	/// gauges `record_renders` sets, a gap, never their last values.
+	#[test]
+	fn renders_not_read_are_unknown_on_every_gauge_renders_sets() {
+		let unknown = gauges(super::record_renders_unknown);
+		assert!(unknown.iter().all(|(_, value)| value.is_nan()), "{unknown:?}");
+		let names = |set: Vec<(String, f64)>| {
+			let mut names: Vec<String> = set.into_iter().map(|(name, _)| name).collect();
+			names.sort();
+			names
+		};
+		let seen = crate::pd_fills::render::Seen::default();
+		assert_eq!(names(unknown), names(gauges(|| super::record_renders(&seen))));
 	}
 }

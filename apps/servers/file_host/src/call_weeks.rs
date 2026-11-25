@@ -225,10 +225,16 @@ async fn observe_renders(db: &sqlx::SqlitePool, seen: &Seen<'_>) {
 	let interview = crate::rust_essays::disk(crate::rust_essays::Kind::Interview).await;
 	let cards = crate::cards_essays::disk().await;
 	let report = crate::report_weeks::disk().await;
-	let disk = render::disk(renders, work, status).await.and(&pd).and(&essays).and(&interview).and(&cards).and(&report);
+	let own = render::disk(renders, work, status).await;
+	// Each job's cache warnings that can't be read, though a warning another
+	// job's folder read still tells (`Reading::newest`).
+	unread += [&own, &pd, &essays, &interview, &cards, &report]
+		.iter()
+		.filter(|disk| disk.cache_warning_at == render::Reading::Unreadable)
+		.count();
+	let disk = own.and(&pd).and(&essays).and(&interview).and(&cards).and(&report);
 	crate::metrics::call_weeks::record_disk(&disk);
 	unread += usize::from(disk.drive.is_none());
-	unread += usize::from(disk.cache_warning_at == render::Reading::Unreadable);
 	crate::failure::open(crate::failure::Step::CallWeeksObserve, unread);
 }
 

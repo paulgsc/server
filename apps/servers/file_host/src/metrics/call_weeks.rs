@@ -40,10 +40,12 @@ pub fn record_pass(result: &Result<Pass, sqlx::Error>) {
 	metrics::gauge!("call_weeks_pass_failing").set(if failing { 1.0 } else { 0.0 });
 }
 
-/// Whether the week the weekly routine owes has passed its Friday at home
-/// without reaching home (`feeds::renders::overdue`, paulgsc/some-ui#3478):
-/// 1 or 0, set by each pass, and `NaN` when the pass could not read it
-/// (`None`): unknown, never the last answer (#1207).
+/// Whether the week the weekly routine owes is overdue: 1, 0, or `NaN`.
+///
+/// Overdue is its Friday at home passed without it reaching home
+/// (`feeds::renders::overdue`, paulgsc/some-ui#3478). Set by each pass, and
+/// `NaN` when the pass could not read it (`None`): unknown, never the last
+/// answer (#1207).
 pub fn record_next_overdue(overdue: Option<bool>) {
 	metrics::gauge!("call_weeks_next_overdue").set(overdue.map_or(f64::NAN, |overdue| if overdue { 1.0 } else { 0.0 }));
 }
@@ -163,14 +165,29 @@ mod tests {
 		assert!((value(&gauges(|| record_next_overdue(Some(true))), "call_weeks_next_overdue") - 1.0).abs() < f64::EPSILON);
 	}
 
-	/// #1207: two jobs' newest cache warning is unknown when either is.
+	/// #1207: two jobs' newest cache warning keeps a time read, a lower
+	/// bound, beside one unreadable, and is unknown only when nothing read.
 	#[test]
-	fn the_newest_of_two_readings_is_unknown_when_either_is() {
+	fn the_newest_of_two_readings_keeps_a_time_read_and_is_unknown_only_when_none_is() {
 		let (absent, unreadable) = (Reading::Absent, Reading::Unreadable);
 		assert_eq!(Reading::Read(1).newest(Reading::Read(2)), Reading::Read(2));
 		assert_eq!(Reading::Read(1).newest(absent), Reading::Read(1));
 		assert_eq!(absent.newest(absent), absent);
-		assert_eq!(Reading::Read(1).newest(unreadable), unreadable);
+		assert_eq!(Reading::Read(1).newest(unreadable), Reading::Read(1));
+		assert_eq!(unreadable.newest(Reading::Read(1)), Reading::Read(1));
 		assert_eq!(unreadable.newest(absent), unreadable);
+		assert_eq!(absent.newest(unreadable), unreadable);
+	}
+
+	/// #1207: `record_renders_unknown` empties exactly the gauges
+	/// `record_renders` sets, no more and no fewer.
+	#[test]
+	fn renders_unknown_names_every_gauge_renders_sets() {
+		let names = |set: Vec<(String, f64)>| {
+			let mut names: Vec<String> = set.into_iter().map(|(name, _)| name).collect();
+			names.sort();
+			names
+		};
+		assert_eq!(names(gauges(record_renders_unknown)), names(gauges(|| record_renders(&Renders::default()))));
 	}
 }

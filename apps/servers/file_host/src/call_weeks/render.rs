@@ -50,9 +50,10 @@ pub const STATUS_FOLDER: &str = "/app/dbs/renders/call-worker";
 /// attempts, as this server sees it.
 pub const WORK_FOLDER: &str = "/app/dbs/renders/call-work";
 
-/// A file the render worker writes, as one tick read it (#1207): there is
-/// none ([`Reading::Absent`]: the worker never wrote it), it read, or it is
-/// there and could not be read or does not say what it should
+/// A file the render worker writes, as one tick read it (#1207).
+///
+/// There is none ([`Reading::Absent`]: the worker never wrote it), it read,
+/// or it is there and could not be read or does not say what it should
 /// ([`Reading::Unreadable`]). Unreadable is never absent: it is `NaN` on its
 /// gauge, a gap, never 0 or the last value (OA6).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -67,14 +68,17 @@ pub enum Reading<T> {
 }
 
 impl Reading<i64> {
-	/// The newer of two times: unknown when either is unreadable, since the
-	/// newest is then unknown too.
+	/// The newer of two times. A time read beside one unreadable is still a
+	/// lower bound on the newest, so it is kept, and a warning known to be
+	/// recent still tells (`CallRenderCacheFull` asks only whether there was
+	/// one in the last day); the unreadable one is held open by its caller
+	/// (`call_weeks::observe_renders`). Unknown only when nothing read.
 	#[must_use]
 	pub const fn newest(self, other: Self) -> Self {
 		match (self, other) {
-			(Self::Unreadable, _) | (_, Self::Unreadable) => Self::Unreadable,
 			(Self::Read(one), Self::Read(two)) => Self::Read(if one > two { one } else { two }),
-			(Self::Read(at), Self::Absent) | (Self::Absent, Self::Read(at)) => Self::Read(at),
+			(Self::Read(at), Self::Absent | Self::Unreadable) | (Self::Absent | Self::Unreadable, Self::Read(at)) => Self::Read(at),
+			(Self::Unreadable, _) | (_, Self::Unreadable) => Self::Unreadable,
 			(Self::Absent, Self::Absent) => Self::Absent,
 		}
 	}
@@ -171,11 +175,18 @@ async fn newest_cache_warning(status: &Path) -> Reading<i64> {
 			Ok(None) => return newest,
 			Err(_) => return Reading::Unreadable,
 		};
-		if !entry.file_name().to_string_lossy().ends_with(".cache.log") {
+		// The worker writes a warning as a hidden `.<name>.cache.log` and then
+		// moves or removes it: never one to read.
+		let name = entry.file_name();
+		let name = name.to_string_lossy();
+		if name.starts_with('.') || !name.ends_with(".cache.log") {
 			continue;
 		}
-		let Ok(at) = entry.metadata().await.and_then(|meta| meta.modified()) else {
-			return Reading::Unreadable;
+		let at = match entry.metadata().await.and_then(|meta| meta.modified()) {
+			Ok(at) => at,
+			// Removed between the listing and this read: not there.
+			Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+			Err(_) => return Reading::Unreadable,
 		};
 		let Ok(since) = at.duration_since(std::time::UNIX_EPOCH) else {
 			return Reading::Unreadable;
@@ -338,10 +349,7 @@ async fn exists(path: &Path) -> bool {
 /// is not a time (#1207).
 async fn last_pass(status: &Path) -> Reading<i64> {
 	match tokio::fs::read_to_string(status.join("last-pass")).await {
-		Ok(text) => match text.trim().parse() {
-			Ok(at) => Reading::Read(at),
-			Err(_) => Reading::Unreadable,
-		},
+		Ok(text) => text.trim().parse().map_or(Reading::Unreadable, Reading::Read),
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Reading::Absent,
 		Err(_) => Reading::Unreadable,
 	}
@@ -408,6 +416,24 @@ mod tests {
 		assert!(matches!(seen.cache_warning_at, Reading::Read(at) if at > 1_700_000_000));
 		let (free, size) = seen.drive.unwrap();
 		assert!(size > 0 && free <= size);
+	}
+
+	/// #1207: a warning the worker is still writing (hidden, `.<name>`) is
+	/// never read; none else is absent, never unreadable; a status that is
+	/// not a folder is unreadable.
+	#[tokio::test]
+	async fn a_hidden_warning_is_never_read_and_none_is_absent() {
+		let dir = tempfile::tempdir().unwrap();
+		let status = dir.path().join("call-worker");
+		assert_eq!(newest_cache_warning(&status).await, Reading::Absent, "no status yet");
+		std::fs::create_dir_all(&status).unwrap();
+		std::fs::write(status.join(".2026-11-06.cache.log"), b"").unwrap();
+		assert_eq!(newest_cache_warning(&status).await, Reading::Absent, "being written");
+		std::fs::write(status.join("2026-11-06.cache.log"), b"cache warning").unwrap();
+		assert!(matches!(newest_cache_warning(&status).await, Reading::Read(_)));
+		let file = dir.path().join("a-file");
+		std::fs::write(&file, b"").unwrap();
+		assert_eq!(newest_cache_warning(&file).await, Reading::Unreadable);
 	}
 
 	#[tokio::test]
