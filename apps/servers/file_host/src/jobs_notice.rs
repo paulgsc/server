@@ -17,6 +17,11 @@
 //! every run leaves one, a stopped run included, and it comes last (paulgsc/some-ui
 //! `packages/job-desk/ROUTINE.md` §9). With no phone asking, it does nothing.
 //!
+//! **Closed, not lost.** A record past its window that no phone was owed
+//! (each was set aside before it started, #1222) is closed `skipped`, as a
+//! silent re-run is, so no phone coming back later is owed it; it counts in
+//! no outcome, since it is neither told nor lost.
+//!
 //! **A re-run says nothing.** A record that added no picks, on a morning
 //! another record within [`WINDOW_HOURS`] before it added them, is recorded
 //! `skipped` and sent to nobody: the record that added the picks speaks, as
@@ -361,8 +366,9 @@ async fn tell<T: FcmTransport>(
 	}
 	for token in &taking {
 		phone_took(db, deletion, subject, token).await?;
-		// Back: the rest of this pass's records go to it too.
-		for here in phones.iter_mut().filter(|here| here.phone.token == *token) {
+		// A probe that took it is back: the rest of this pass's records go
+		// to it too. A phone already struck stays struck for the pass.
+		for here in phones.iter_mut().filter(|here| here.phone.token == *token && here.turn == Turn::Skip) {
 			here.turn = Turn::Send;
 		}
 	}
@@ -433,10 +439,14 @@ async fn expire(
 /// `started`: it had asked before the record's window closed, and was not
 /// already set aside when the record started (#1222). A phone set aside
 /// before it is not sent to, so its setting aside was the count; one set
-/// aside later was owed the record, whatever it is now. Decided by the
-/// record's own times, so a phone re-registering later changes nothing
-/// owed. A time that does not read is owed: counting a loss that wasn't is
-/// the side to err on.
+/// aside later was owed the record, whatever it is now. `registered_at` is
+/// kept when a phone asks again, so asking again changes nothing owed by it;
+/// `set_aside_at` is read as it is now, so the pass that closes a record the
+/// phone was not owed has to run while the phone is still aside. Bound: a
+/// phone that comes back (asks again, or a probe delivers in another pass)
+/// between a record's window closing and the next pass makes that record
+/// owed, and lost. A time that does not read is owed: counting a loss that
+/// wasn't is the side to err on.
 fn owed(phone: &notice_repo::Phone, started: DateTime<Utc>) -> bool {
 	let at = |text: &str| DateTime::parse_from_rfc3339(text).map(|at| at.with_timezone(&Utc));
 	let asked_in_time = at(&phone.registered_at).map_or(true, |asked| asked < started + Duration::hours(WINDOW_HOURS));

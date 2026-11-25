@@ -6,8 +6,9 @@
 //!   [`forget`] removes it (the phone stopped asking, or FCM says it is
 //!   gone). A token is never logged (docs/identity.md invariant 24).
 //! - **`jobs_notice_sent`**, append-only: one row per run record home
-//!   noticed, or lost (`expired`: its window closed with no phone told,
-//!   server#1176), so a record notifies, or is counted lost, at most once
+//!   noticed, closed (`skipped`: told to none, and owed to none), or lost
+//!   (`expired`: its window closed with no phone told, server#1176), so a
+//!   record notifies, or is counted lost, at most once
 //!   ([`record_sent`], [`was_noticed`]).
 //!
 //! Every query takes the subject and filters on it. The writers are
@@ -34,8 +35,9 @@ pub enum Said {
 	Picks,
 	/// The run couldn't finish.
 	Trouble,
-	/// A re-run that added nothing, on a morning another record's picks
-	/// already spoke for: nothing sent.
+	/// Nothing sent, and none owed: a re-run that added nothing, on a morning
+	/// another record's picks already spoke for; or a record past its window
+	/// that no phone was owed, each set aside before it started (#1222).
 	Skipped,
 	/// No phone was told before the record left the notice's window: a
 	/// loss, stored so it is counted once (server#1176).

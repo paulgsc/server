@@ -312,7 +312,7 @@ pub(crate) async fn run_pass<C: PassClock>(db: &SqlitePool, nudge: &NudgeContext
 	// A write that fails is logged and the pass goes on: a strike is
 	// bookkeeping, and the pass's own report and sweep come first.
 	if let Err(err) = crate::nudge::actuate::settle_strikes(db, deadline).await {
-		error!(error = %err, "could not take the strikes this pass held; the browsers are struck again next time they fail");
+		error!(error = %err, "could not take the strikes this pass held; those from the failed one on are not taken");
 	}
 
 	// After the loop, not only at the pre-subject check above: a deadline
