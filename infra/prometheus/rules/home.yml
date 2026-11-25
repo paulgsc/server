@@ -566,10 +566,14 @@ groups:
         # (record:call --cache-mb, infra/render/render-calls.sh), and a step
         # past it runs uncached rather than failing; the worker writes each
         # such warning, and each week's work it removed past the total cap,
-        # to renders/call-worker/*.cache.log (and Playoff Delta's job to
-        # renders/playoff-delta-worker/*.cache.log), whose newest time file_host
-        # reads each minute (call_weeks::render::disk). Said for a day, so a
-        # render that warned and then finished is still heard.
+        # to renders/call-worker/*.cache.log, and each of its other jobs
+        # (Playoff Delta, the Rust and Interview essays, Cards, Report) to its
+        # own status folder. file_host reads the newest time across all six
+        # each minute (call_weeks::render::disk, call_weeks::observe_renders);
+        # a folder it can't read is held open in call-weeks/observe, and a
+        # warning time read in another still counts; with none read, the
+        # gauge is NaN and this is silent (C1512). Said for a day, so a render
+        # that warned and then finished is still heard.
         expr: |
           max(call_render_cache_warning_timestamp_seconds) > 0
           and on() (time() - max(call_render_cache_warning_timestamp_seconds)) < 86400

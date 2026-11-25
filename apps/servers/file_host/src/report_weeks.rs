@@ -732,7 +732,10 @@ mod tests {
 		std::fs::write(status.join("2026-W46.failed.log"), b"refused").unwrap();
 		std::fs::write(status.join("last-pass"), b"1795400000\n").unwrap();
 		let seen = observe(&pool, &me(), &folders.renders, &status).await.unwrap();
-		assert_eq!((seen.waiting, seen.failed, seen.worker_last_pass), (1, 1, Some(1_795_400_000)));
+		assert_eq!(
+			(seen.waiting, seen.failed, seen.worker_last_pass),
+			(1, 1, crate::call_weeks::render::Reading::Read(1_795_400_000))
+		);
 
 		// The owner lets W45's video go: its file leaves the input, and no
 		// later pass writes it back.
