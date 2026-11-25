@@ -240,11 +240,17 @@ steps! {
 	StudyNudgeDeliveryTimedOut => StudyNudge, "delivery_timed_out";
 	/// Open: the call's render signals a tick of the call weeks worker could
 	/// not read: what the worker made of the weeks held (a storage error),
-	/// and the drive's free and total bytes (`statvfs`). Each one's gauges
-	/// are not what the drive holds while it is open (#1179).
+	/// the worker's `last-pass`, each job's cache warnings, and the drive's
+	/// free and total bytes (`statvfs`). Each one's gauges are unknown
+	/// (`NaN`) while it is open, except the newest cache warning, which
+	/// combines six jobs' folders: it keeps a warning time read in another
+	/// folder, a lower bound. With a folder unreadable and no warning read in
+	/// any other (none read, or those that read hold none), it is `NaN`
+	/// (#1179, #1207, C1512).
 	CallWeeksObserve => CallWeeks, "observe", open;
 	/// Open: whether the call's next week is overdue, which a pass could not
-	/// read, so `CallWeekOverdue` reads an old answer (#1179).
+	/// read, so `call_weeks_next_overdue` is unknown (`NaN`) and
+	/// `CallWeekOverdue` is silent while it is open (#1179, #1207).
 	CallWeeksNextOverdue => CallWeeks, "next_overdue", open;
 	/// Open: what the render worker made of the Playoff Delta fills held,
 	/// which a tick could not read (a storage error), so the `pd_render_*`

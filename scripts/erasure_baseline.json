@@ -432,14 +432,8 @@
       "fn exists": {
         "tokio::fs::try_exists(path).await.unwrap_or(false)": 1
       },
-      "fn last_pass": {
-        "let text = tokio::fs::read_to_string(status.join(\"last-pass\")).await.ok()?;": 1,
-        "text.trim().parse().ok()": 1
-      },
       "fn newest_cache_warning": {
-        "let Some(at) = entry.metadata().await.ok().and_then(|meta| meta.modified().ok()) else {": 2,
-        "let at = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);": 1,
-        "let mut entries = tokio::fs::read_dir(status).await.ok()?;": 1
+        "let at = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);": 1
       },
       "fn parts": {
         "parts_read(renders, week).await.unwrap_or(1)": 1

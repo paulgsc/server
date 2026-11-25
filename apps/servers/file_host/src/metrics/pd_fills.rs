@@ -47,3 +47,55 @@ pub fn record_renders(seen: &Seen) {
 	metrics::gauge!("pd_render_episodes_let_go").set(count(seen.renders.let_go));
 	metrics::gauge!("pd_render_oldest_waiting_taken_timestamp_seconds").set(seen.renders.oldest_waiting_taken.map_or(0.0, as_f64));
 }
+
+/// What the render worker has made of the fills is unknown: the tick could
+/// not read it. Every gauge [`record_renders`] sets is `NaN`, a gap, never
+/// its last value (#1207, OA6).
+pub fn record_renders_unknown() {
+	for name in [
+		"pd_fills_held",
+		"pd_render_episodes_unvoiced",
+		"pd_render_episodes_waiting",
+		"pd_render_episodes_failed",
+		"pd_render_episodes_let_go",
+		"pd_render_oldest_waiting_taken_timestamp_seconds",
+	] {
+		metrics::gauge!(name).set(f64::NAN);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+	/// Every gauge `record` set, by name.
+	fn gauges(record: impl FnOnce()) -> Vec<(String, f64)> {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		metrics::with_local_recorder(&recorder, record);
+		snapshotter
+			.snapshot()
+			.into_vec()
+			.into_iter()
+			.filter_map(|(key, _, _, value)| match value {
+				DebugValue::Gauge(value) => Some((key.key().name().to_owned(), value.into_inner())),
+				_ => None,
+			})
+			.collect()
+	}
+
+	/// #1207 (OA6): fills the tick could not read are `NaN` on exactly the
+	/// gauges `record_renders` sets, a gap, never their last values.
+	#[test]
+	fn renders_not_read_are_unknown_on_every_gauge_renders_sets() {
+		let unknown = gauges(super::record_renders_unknown);
+		assert!(unknown.iter().all(|(_, value)| value.is_nan()), "{unknown:?}");
+		let names = |set: Vec<(String, f64)>| {
+			let mut names: Vec<String> = set.into_iter().map(|(name, _)| name).collect();
+			names.sort();
+			names
+		};
+		let seen = crate::pd_fills::render::Seen::default();
+		assert_eq!(names(unknown), names(gauges(|| super::record_renders(&seen))));
+	}
+}

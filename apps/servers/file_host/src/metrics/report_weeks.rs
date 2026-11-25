@@ -52,10 +52,11 @@ pub fn record_pass(result: &Result<Pass, sqlx::Error>) {
 }
 
 /// What the render worker has made of the weeks given. A time that is not
-/// there reads 0.
+/// there reads 0, and the worker's `last-pass` that can't be read `NaN`
+/// (#1207).
 pub fn record_renders(seen: &Renders) {
 	metrics::gauge!("report_render_weeks_waiting").set(count(seen.waiting));
 	metrics::gauge!("report_render_weeks_failed").set(count(seen.failed));
 	metrics::gauge!("report_render_oldest_waiting_taken_timestamp_seconds").set(seen.oldest_waiting_taken.map_or(0.0, seconds));
-	metrics::gauge!("report_render_worker_last_pass_timestamp_seconds").set(seen.worker_last_pass.map_or(0.0, seconds));
+	metrics::gauge!("report_render_worker_last_pass_timestamp_seconds").set(seen.worker_last_pass.gauge());
 }
