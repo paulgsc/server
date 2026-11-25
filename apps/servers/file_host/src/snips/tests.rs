@@ -887,7 +887,22 @@ async fn a_gone_mark_the_deadline_cuts_off_still_lands_counted() {
 	counted += failures(&snapshotter, Step::SnipsPickupGone).unwrap_or(0);
 	assert_eq!(counted, 1, "and was counted, once");
 
+	// The pass touched the retry mark before the try, so it is the older.
 	std::fs::write(retry_of(&dirs.cache, &key), b"").unwrap();
+	let before = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+	std::fs::File::options()
+		.write(true)
+		.open(retry_of(&dirs.cache, &key))
+		.unwrap()
+		.set_modified(before)
+		.unwrap();
 	let wanted = BTreeSet::from([(Family::Snips, key.clone())]);
 	assert_eq!(retrying(&wanted, &dirs.folders()), 0, "gone, not waiting on a fetch");
+
+	// Codex on #1230: a newer run's fetch that fails after an older run was
+	// marked gone leaves a retry mark newer than the gone mark: waiting.
+	let older = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+	std::fs::File::options().write(true).open(gone_of(&dirs.cache, &key)).unwrap().set_modified(older).unwrap();
+	std::fs::write(retry_of(&dirs.cache, &key), b"").unwrap();
+	assert_eq!(retrying(&wanted, &dirs.folders()), 1, "a newer run's failed fetch waits");
 }
