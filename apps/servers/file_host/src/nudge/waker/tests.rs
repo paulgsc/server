@@ -3266,9 +3266,10 @@ fn a_browser_that_keeps_timing_out_is_set_aside_once_and_probed_daily() {
 				}
 			};
 
+			let strikes = || async { sqlx::query_scalar::<_, i64>("SELECT strikes FROM push_subscriptions").fetch_one(&pool).await.unwrap() };
 			// A pass in which no push service answered is home's: no strike.
 			pass(false).await;
-			assert_eq!(stored().await.set_aside_at, None);
+			assert_eq!(strikes().await, 0, "home was not heard");
 			for _ in 0..crate::strikes::SET_ASIDE_AFTER {
 				pass(true).await;
 			}

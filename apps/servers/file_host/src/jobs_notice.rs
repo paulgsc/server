@@ -344,6 +344,11 @@ async fn tell<T: FcmTransport>(
 				tracing::warn!("FCM refused a Jobs arrival notice: the token is another sender's");
 				told.refused = true;
 			}
+			// Google's token endpoint having a bad hour: try later, as FCM's own.
+			SendOutcome::NoToken(status) if status == 429 || status >= 500 => {
+				tracing::warn!(status, "Google's token endpoint could not answer for a Jobs arrival notice now");
+				told.unanswered = true;
+			}
 			SendOutcome::NoToken(status) => {
 				tracing::warn!(status, "home could not get an FCM access token for a Jobs arrival notice");
 				told.refused = true;
@@ -356,6 +361,10 @@ async fn tell<T: FcmTransport>(
 	}
 	for token in &taking {
 		phone_took(db, deletion, subject, token).await?;
+		// Back: the rest of this pass's records go to it too.
+		for here in phones.iter_mut().filter(|here| here.phone.token == *token) {
+			here.turn = Turn::Send;
+		}
 	}
 	for (token, answer) in &striking {
 		if let Some(why) = crate::strikes::fcm(answer, told.took > 0) {
@@ -392,7 +401,7 @@ async fn expire(
 	let added: Vec<(DateTime<Utc>, bool)> = runs.iter().map(|(_, started, run)| (*started, !run.added.is_empty())).collect();
 	let mut expired = 0;
 	for (index, (name, started, run)) in runs.iter().enumerate() {
-		if at - *started < Duration::hours(WINDOW_HOURS) || !phones.iter().any(|phone| owed(phone, *started)) {
+		if at - *started < Duration::hours(WINDOW_HOURS) {
 			continue;
 		}
 		let mut conn = db.acquire().await?;
@@ -400,10 +409,15 @@ async fn expire(
 			continue;
 		}
 		drop(conn);
-		// A re-run that added nothing, on a morning another record's picks
-		// spoke for, is silent by design: never owed, so never lost (Codex
-		// on #1230). It is recorded `skipped`, as it would have been in time.
-		if words(run, *started, &added[..index]).0 == Said::Skipped {
+		// Two kinds of record that leave the window untold are no loss, and
+		// are closed as `skipped` so nothing later reopens them:
+		// - one no phone was owed (each was set aside before it started, the
+		//   set-asides being the count, #1222). Closed now, so a phone that
+		//   comes back later is not owed it after the fact;
+		// - a re-run that added nothing, on a morning another record's picks
+		//   spoke for, silent by design (Codex on #1230), as it would have
+		//   been recorded in time.
+		if !phones.iter().any(|phone| owed(phone, *started)) || words(run, *started, &added[..index]).0 == Said::Skipped {
 			record(db, deletion, subject, name, Said::Skipped, 0, now).await?;
 			continue;
 		}
@@ -719,8 +733,6 @@ mod tests {
 		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold).unwrap_or(0), 0, "never again");
 	}
 
-	/// #1176: a record that started before any phone asked, and whose window
-	/// closed before one did, was owed to no one: nothing is stored or
 	/// #1176, Codex on #1230: a re-run that added nothing, on a morning
 	/// another record's picks spoke for, is silent by design. First read past
 	/// its window, it is recorded `skipped` as it would have been in time:
@@ -741,15 +753,17 @@ mod tests {
 		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold).unwrap_or(0), 0, "never owed, never lost");
 	}
 
-	/// counted.
+	/// #1176: a record that started before any phone asked, and whose window
+	/// closed before one did, was owed to no one: it is closed `skipped`,
+	/// never counted lost.
 	#[tokio::test]
 	async fn a_record_no_phone_had_asked_for_is_not_a_loss() {
 		let pool = pool().await;
 		let fake = Fake::default();
-		run(&pool, 1, "2026-10-20T14:52:07Z", "done", true).await;
+		let name = run(&pool, 1, "2026-10-20T14:52:07Z", "done", true).await;
 		phone(&pool, "phone-1").await;
 		assert_eq!(pass(&pool, &sender(&fake), now()).await, Outcome::default());
-		assert!(sent(&pool).await.is_empty());
+		assert_eq!(sent(&pool).await, [(name, String::from("skipped"), 0)]);
 	}
 
 	/// #1176, invariant 9: records every phone refused, or FCM never
@@ -1049,8 +1063,52 @@ mod tests {
 		let after = run(&pool, 2, "2026-10-26T15:10:00Z", "done", true).await;
 		let at = now() + Duration::hours(13);
 		assert_eq!(pass(&pool, &sender(&fake), at).await, Outcome { expired: 1, ..Outcome::default() });
-		assert_eq!(sent(&pool).await, [(before, String::from("expired"), 0)], "owed before it was set aside");
-		assert!(!sent(&pool).await.iter().any(|(name, ..)| *name == after), "owed to no one");
+		assert_eq!(
+			sent(&pool).await,
+			[(before, String::from("expired"), 0), (after, String::from("skipped"), 0)],
+			"owed before it was set aside; the other owed to no one, and closed"
+		);
 		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold), Some(1));
+	}
+
+	/// #1222: records a set-aside phone was not owed are closed when they
+	/// leave the window, so a phone that comes back later makes none of them
+	/// a loss after the fact.
+	#[tokio::test]
+	async fn a_phone_that_comes_back_is_owed_nothing_it_missed_while_aside() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
+		let pool = pool().await;
+		let fake = Fake::default();
+		phone(&pool, "phone-1").await;
+		sqlx::query("UPDATE jobs_notice_device SET set_aside_at = '2026-10-26T00:00:00.000Z', last_probe_at = '2026-10-27T05:00:00.000Z'")
+			.execute(&pool)
+			.await
+			.unwrap();
+		let missed = run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		assert_eq!(pass(&pool, &sender(&fake), now() + Duration::hours(13)).await, Outcome::default());
+		assert_eq!(sent(&pool).await, [(missed, String::from("skipped"), 0)], "closed, owed to no one");
+		// The phone comes back (asks again); the closed record stays closed.
+		phone(&pool, "phone-1").await;
+		assert_eq!(pass(&pool, &sender(&fake), now() + Duration::hours(14)).await, Outcome::default());
+		assert_eq!(failures(&snapshotter, Step::JobsNoticeUntold).unwrap_or(0), 0, "no loss after the fact");
+	}
+
+	/// #1222: Google's token endpoint having a bad hour (a 5xx) is a try
+	/// later, held open as unanswered, never as a key home must fix.
+	#[tokio::test]
+	async fn a_token_endpoint_that_cannot_answer_now_is_unanswered_not_refused() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
+		let pool = pool().await;
+		let fake = Fake::default();
+		phone(&pool, "phone-1").await;
+		*fake.token.lock().unwrap() = Some(503);
+		run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		assert_eq!(pass(&pool, &sender(&fake), now()).await, Outcome { unsent: 1, ..Outcome::default() });
+		let seen = held::seen(&snapshotter);
+		assert_eq!((seen.open(Step::JobsNoticeRefused), seen.open(Step::JobsNoticeUnanswered)), (Some(0.0), Some(1.0)));
 	}
 }
