@@ -252,6 +252,12 @@ never "sounds like good practice."
   (`git fetch origin main && git checkout -B <branch> origin/main`) before adding new
   commits — never stack new work on already-merged history. Fetch fresh; a stale local
   `origin/main` ref produces false alarms in both directions.
+- **Never share one `CARGO_TARGET_DIR` (or `target/`) between two worktrees of this repo.**
+  Cargo leaves a path dependency's location out of its artifact hash, so one worktree's build
+  of a local crate (`fcm_kit`, `notice_repo`, …) overwrites the other's, and the next build
+  compiles against the wrong one: a phantom "cannot find function" from `cargo check` while
+  `cargo test` passes (verified directly, CONS-NEXT, 2026-11-25). Give each worktree its own
+  target dir, and its own migrated `DATABASE_URL` when their migrations differ.
 - **Run `git diff --cached --stat` before every commit, not only `git status`.** Run it
   after staging (`git add`) — plain `git diff --stat` only shows the unstaged worktree, so
   it can miss binary corruption in content that's already staged and about to be committed.

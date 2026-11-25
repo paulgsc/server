@@ -3219,3 +3219,77 @@ fn a_failed_pass_is_visible_until_the_next_success() {
 		assert_eq!(failing("schema"), Some(DebugValue::Gauge(0.0.into())));
 	});
 }
+
+/// #1180, C1513: a browser that times out `strikes::SET_ASIDE_AFTER` times in
+/// a row is set aside, counted once; it is then skipped, but for one probe a
+/// day in a send that happens anyway, whose failure takes no strike;
+/// subscribing again brings it back.
+#[test]
+fn a_browser_that_keeps_timing_out_is_set_aside_once_and_probed_daily() {
+	use crate::failure::{counted::failures, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+	use sqlx::sqlite::SqlitePoolOptions;
+
+	static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
+
+	let recorder = DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let subject_id = "subject-a-dead-browser";
+	let (stalled, connections) = stalling_push_service();
+	let tries = || connections.load(std::sync::atomic::Ordering::SeqCst);
+
+	metrics::with_local_recorder(&recorder, || {
+		let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		rt.block_on(async {
+			let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+			MIGRATOR.run(&pool).await.unwrap();
+			subscribe(&pool, subject_id, &stalled, &Utc::now().to_rfc3339()).await;
+			let nudge = NudgeContext {
+				delivery_timeout: std::time::Duration::from_millis(100),
+				..nudge_context()
+			};
+			let action = StudyAction::GetStarted;
+			let repo = PushSubscriptionRepository::new(pool.clone());
+			let stored = || async { repo.for_subject(subject_id).await.unwrap().remove(0) };
+
+			// One pass, one send: what each pass does to the dead browser, with
+			// `reached` saying whether some other push service answered in it.
+			let pass = |reached: bool| {
+				let (pool, nudge, action) = (pool.clone(), &nudge, &action);
+				async move {
+					let deadline = far_deadline();
+					super::super::actuate::actuate(&pool, nudge, action, subject_id, &deadline).await.unwrap();
+					if reached {
+						deadline.reach.heard();
+					}
+					super::super::actuate::settle_strikes(&pool, &deadline).await.unwrap();
+				}
+			};
+
+			let strikes = || async { sqlx::query_scalar::<_, i64>("SELECT strikes FROM push_subscriptions").fetch_one(&pool).await.unwrap() };
+			// A pass in which no push service answered is home's: no strike.
+			pass(false).await;
+			assert_eq!(strikes().await, 0, "home was not heard");
+			for _ in 0..crate::strikes::SET_ASIDE_AFTER {
+				pass(true).await;
+			}
+			assert!(stored().await.set_aside_at.is_some(), "set aside at the third timeout in a row while home was heard");
+			assert_eq!(failures(&snapshotter, Step::StudyNudgeDeviceSetAside), Some(1));
+
+			// The next send includes it once, as the day's probe; its timeout
+			// takes no strike and no count. The one after skips it.
+			let before = tries();
+			pass(true).await;
+			assert!(stored().await.last_probe_at.is_some(), "probed");
+			pass(true).await;
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+			assert_eq!(tries() - before, 1, "probed once, then skipped within the day");
+			assert_eq!(failures(&snapshotter, Step::StudyNudgeDeviceSetAside).unwrap_or(0), 0, "no new count");
+
+			// Subscribing again brings it back.
+			subscribe(&pool, subject_id, &stalled, &Utc::now().to_rfc3339()).await;
+			let back = stored().await;
+			assert_eq!((back.set_aside_at, back.last_probe_at), (None, None));
+		});
+	});
+}

@@ -307,6 +307,15 @@ steps! {
 	/// that may clear (a timeout, the drive), each asked again next pass
 	/// (#1177).
 	SnipsPickupRetry => SnipsPickup, "retry", open;
+	/// A browser the study nudge set aside after failures of its own in a
+	/// row (`strikes::SET_ASIDE_AFTER`; the owner's "a few timeouts" on
+	/// #1180): no longer sent to but for a daily probe, until it accepts one
+	/// or subscribes again. Counted once, when the mark is written.
+	StudyNudgeDeviceSetAside => StudyNudge, "device_set_aside";
+	/// A phone the Jobs notice set aside after failures of its own in a row
+	/// (#1222, `strikes`), as `device_set_aside`. Counted once, when the
+	/// mark is written.
+	JobsNoticePhoneSetAside => JobsNotice, "phone_set_aside";
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.

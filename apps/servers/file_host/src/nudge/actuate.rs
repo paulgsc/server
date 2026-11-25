@@ -6,6 +6,7 @@ use super::propose::refresh_stale_proposal;
 use super::waker::Considered;
 use crate::failure::{Failure, Step};
 use crate::nudge::payload::NudgePayload;
+use crate::strikes::Turn;
 use crate::{auth::DeletionLock, NudgeContext};
 use chrono::{DateTime, Utc};
 use engagement_repo::EngagementRepository;
@@ -247,6 +248,12 @@ pub(super) async fn actuate<C: PassClock>(
 		if !stored.accepts(topic) {
 			continue;
 		}
+		// A browser set aside for failures of its own is included at most
+		// once a day, and only in a send that happens anyway (#1180).
+		let turn = crate::strikes::turn(stored.set_aside_at.as_deref(), stored.last_probe_at.as_deref(), Utc::now());
+		if turn == Turn::Skip {
+			continue;
+		}
 
 		let endpoint = &stored.subscription.endpoint;
 		// What a log line may name: a recognised push service or `other`, never
@@ -259,13 +266,25 @@ pub(super) async fn actuate<C: PassClock>(
 			break;
 		}
 		delivery.tried += 1;
+		if turn == Turn::Probe {
+			subscriptions_repo.probed(endpoint, &Utc::now().to_rfc3339()).await?;
+		}
 		let Some(outcome) = deadline.clock.timeout(budget, nudge.sender.deliver(&stored.subscription, &encoded)).await else {
 			warn!(service, timeout_ms = budget.as_millis(), "push service did not answer in time");
 			subscriptions_repo.record_failure(endpoint, &Utc::now().to_rfc3339()).await?;
 			delivery.timed_out += 1;
+			// Only a timeout the device had its whole budget for: one the pass
+			// deadline cut short is home's (#1180). Held until the pass ends.
+			if budget == nudge.delivery_timeout {
+				hold(deadline, endpoint, turn, crate::strikes::web_push(None)).await;
+			}
 			continue;
 		};
 		let stamp = Utc::now().to_rfc3339();
+		if !matches!(outcome, SendOutcome::Transport(_) | SendOutcome::NotSent(_)) {
+			// A push service answered: home reached the internet this pass.
+			deadline.reach.heard();
+		}
 
 		if outcome.should_prune() {
 			info!(service, "subscription is gone; pruning");
@@ -277,6 +296,7 @@ pub(super) async fn actuate<C: PassClock>(
 			warn!(service, outcome = outcome.label(), detail = %outcome.log_detail(), "push was not accepted");
 			subscriptions_repo.record_failure(endpoint, &stamp).await?;
 			delivery.refused += 1;
+			hold(deadline, endpoint, turn, crate::strikes::web_push(Some(&outcome))).await;
 			continue;
 		}
 
@@ -288,6 +308,38 @@ pub(super) async fn actuate<C: PassClock>(
 	}
 
 	Ok(delivery)
+}
+
+/// A failure that may be the browser's own (`why`, from `strikes::web_push`)
+/// on a browser that is sent to is held for the pass's end
+/// (`deadline::Reach`). A probe's failure is not: the browser stays aside.
+async fn hold<C: PassClock>(deadline: &Deadline<C>, endpoint: &str, turn: Turn, why: Option<&'static str>) {
+	if let (Turn::Send, Some(why)) = (turn, why) {
+		deadline.reach.hold(endpoint, why).await;
+	}
+}
+
+/// Takes the strikes a pass held, if a push service answered in it
+/// (`deadline::Reach::settle`): the one that reaches
+/// `strikes::SET_ASIDE_AFTER` sets its browser aside, counted once (#1180).
+/// One strike a pass for a browser, however many interventions it missed.
+///
+/// # Errors
+/// Any storage failure.
+pub(super) async fn settle_strikes<C: PassClock>(db: &SqlitePool, deadline: &Deadline<C>) -> Result<(), sqlx::Error> {
+	let repo = PushSubscriptionRepository::new(db.clone());
+	let mut struck = std::collections::HashSet::new();
+	for (endpoint, why) in deadline.reach.settle().await {
+		if !struck.insert(endpoint.clone()) {
+			continue;
+		}
+		let after = repo.strike(&endpoint, why, crate::strikes::SET_ASIDE_AFTER, &Utc::now().to_rfc3339()).await?;
+		if after.is_some_and(|strikes| strikes >= crate::strikes::SET_ASIDE_AFTER) {
+			warn!(why, "a browser failed on its own too many times in a row; set aside");
+			Failure::alone(Step::StudyNudgeDeviceSetAside, &why);
+		}
+	}
+	Ok(())
 }
 
 /// What [`actuate`] reports back for one intervention.
