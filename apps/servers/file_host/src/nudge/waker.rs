@@ -308,6 +308,13 @@ pub(crate) async fn run_pass<C: PassClock>(db: &SqlitePool, nudge: &NudgeContext
 		}
 	}
 
+	// Strikes held through the pass are taken now, if home was heard (#1180).
+	// A write that fails is logged and the pass goes on: a strike is
+	// bookkeeping, and the pass's own report and sweep come first.
+	if let Err(err) = crate::nudge::actuate::settle_strikes(db, deadline).await {
+		error!(error = %err, "could not take the strikes this pass held; those from the failed one on are not taken");
+	}
+
 	// After the loop, not only at the pre-subject check above: a deadline
 	// that runs out inside the last (or only) subject's deliveries truncates
 	// the pass just as much, and would otherwise go uncounted — a real
@@ -402,7 +409,12 @@ async fn consider<C: PassClock>(
 	let as_of = stored.first().map_or(now, |row| crate::nudge::clock::parse_timestamp(&row.as_of).unwrap_or(now));
 	let mut charge = Charge::<StudyV1>::from_storage::<StudyCalibration>(&levels, as_of);
 
-	let subscriptions = PushSubscriptionRepository::new(db.clone()).for_subject(subject_id).await?;
+	// A browser set aside and probed within the day is not sent to, so it
+	// gives no consent this pass: a subject with only such browsers is not
+	// claimed (#1180), and its verdict reads `not-consented`. One whose daily
+	// probe is due is claimed, and the nudge that is due anyway is its probe.
+	let mut subscriptions = PushSubscriptionRepository::new(db.clone()).for_subject(subject_id).await?;
+	subscriptions.retain(|sub| crate::strikes::turn(sub.set_aside_at.as_deref(), sub.last_probe_at.as_deref(), now) != crate::strikes::Turn::Skip);
 	let consented_topics: Vec<Topic> = Topic::ALL.iter().copied().filter(|topic| subscriptions.iter().any(|sub| sub.accepts(*topic))).collect();
 
 	// What is prepared and untouched. Without one there is nothing to point at,

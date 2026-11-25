@@ -46,15 +46,21 @@ impl PassClock for TokioClock {
 	}
 }
 
-/// A pass's deadline: `NudgeContext::pass_deadline` after its clock began.
+/// A pass's deadline: `NudgeContext::pass_deadline` after its clock began,
+/// and what the pass learned of whether home reached the push services.
 pub(crate) struct Deadline<C> {
 	pub(super) clock: C,
 	pub(super) after: Duration,
+	pub(super) reach: Reach,
 }
 
 impl<C: PassClock> Deadline<C> {
-	pub(crate) const fn new(clock: C, after: Duration) -> Self {
-		Self { clock, after }
+	pub(crate) fn new(clock: C, after: Duration) -> Self {
+		Self {
+			clock,
+			after,
+			reach: Reach::default(),
+		}
 	}
 
 	pub(super) fn passed(&self) -> bool {
@@ -64,5 +70,48 @@ impl<C: PassClock> Deadline<C> {
 	/// What the pass has left; zero once it has passed.
 	pub(super) fn left(&self) -> Duration {
 		self.after.saturating_sub(self.clock.elapsed())
+	}
+}
+
+/// Whether home reached the internet in one pass, and the strikes waiting on
+/// it (#1180, the coordinator's call C1513).
+///
+/// A browser that timed out, or got no answer, failed on its own only if
+/// home could reach push services at all: an uplink or DNS outage makes every
+/// browser fail alike, and that is home's. So such a strike is held until the
+/// pass ends and taken only if some push service, for any subject, answered
+/// in the pass ([`Reach::heard`]); otherwise none is. Bound: a pass whose only
+/// send is to one dead browser takes no strike, so a lone browser is set aside
+/// only across passes that also reached another push service.
+#[derive(Default)]
+pub(crate) struct Reach {
+	answered: std::sync::atomic::AtomicBool,
+	held: tokio::sync::Mutex<Vec<(String, &'static str)>>,
+}
+
+impl Reach {
+	/// A push service answered (anything: accepted, refused, gone).
+	pub(super) fn heard(&self) {
+		self.answered.store(true, std::sync::atomic::Ordering::Relaxed);
+	}
+
+	/// A strike for `endpoint`, `why`, taken at [`Reach::settle`] if home was
+	/// heard.
+	pub(super) async fn hold(&self, endpoint: &str, why: &'static str) {
+		self.held.lock().await.push((endpoint.to_owned(), why));
+	}
+
+	/// The strikes this pass held, if a push service answered in it; none
+	/// otherwise. Each is taken once.
+	pub(super) async fn settle(&self) -> Vec<(String, &'static str)> {
+		let held = std::mem::take(&mut *self.held.lock().await);
+		if self.answered.load(std::sync::atomic::Ordering::Relaxed) {
+			held
+		} else {
+			if !held.is_empty() {
+				tracing::warn!(held = held.len(), "no push service answered this pass: home's, so no browser takes a strike");
+			}
+			Vec::new()
+		}
 	}
 }
