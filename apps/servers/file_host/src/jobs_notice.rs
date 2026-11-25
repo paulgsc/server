@@ -158,6 +158,13 @@ fn words(run: &Run, started: DateTime<Utc>, earlier: &[(DateTime<Utc>, bool)]) -
 	}
 }
 
+/// Nothing of the notice is open: no phone asked, or there is no account
+/// (invariant 9: the pass that looks sets the level, here to 0).
+pub fn nothing_open() {
+	crate::failure::open(Step::JobsNoticeRefused, 0);
+	crate::failure::open(Step::JobsNoticeUnanswered, 0);
+}
+
 /// One pass: tell each phone of each run record not yet noticed.
 ///
 /// # Errors
@@ -168,8 +175,7 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 	let mut devices = notice_repo::devices(&mut conn, subject).await?;
 	if devices.is_empty() {
 		// No phone asked: nothing is owed, so nothing is open.
-		crate::failure::open(Step::JobsNoticeRefused, 0);
-		crate::failure::open(Step::JobsNoticeUnanswered, 0);
+		nothing_open();
 		return Ok(outcome);
 	}
 	let asked_since = notice_repo::first_registered(&mut conn, subject).await?;
