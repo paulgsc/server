@@ -2797,8 +2797,7 @@
   "crates/rust_runner/src/service.rs": {
     "clippy::disallowed_methods": {
       "fn answer": {
-        "let response = if u64::try_from(line.len()).unwrap_or(u64::MAX) > REQUEST_CEILING {": 1,
-        "match read.ok().and_then(|_| serde_json::from_slice::<Request>(&line).ok()) {": 2
+        "let response = if u64::try_from(line.len()).unwrap_or(u64::MAX) > REQUEST_CEILING {": 1
       },
       "fn peer_uid": {
         "if usize::try_from(len).ok() != Some(size) {": 1

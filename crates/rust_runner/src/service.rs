@@ -61,8 +61,12 @@ use std::time::{Duration, Instant};
 /// The machine's failures from [`Recorder::record`], which the service
 /// stops on. One before the program ran is first answered with
 /// [`Refusal::Unavailable`]; one after ([`SpawnError::Unsupervised`]) is
-/// answered with nothing. A client that sends nothing, too much, garbage or
-/// too slowly is answered with a refusal, and one that goes away is not an
+/// answered with nothing. A client that sends too much is answered
+/// [`Refusal::TooLarge`]; one that sends garbage, or nothing and closes, is
+/// answered [`Refusal::Malformed`]; one whose request can't be read whole in
+/// time (too slowly, or nothing while it holds the connection open) is
+/// answered [`Refusal::Unavailable`], which holds nothing against the program
+/// (#1209), and the service keeps serving; one that goes away is not an
 /// error.
 pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>) -> Result<Response, SpawnError> {
 	let refused = |reason| Response::Refused {
@@ -82,13 +86,19 @@ pub fn answer(recorder: &Recorder, stream: &UnixStream, clients: Option<&[u32]>)
 	let response = if u64::try_from(line.len()).unwrap_or(u64::MAX) > REQUEST_CEILING {
 		refused(Refusal::TooLarge)
 	} else {
-		match read.ok().and_then(|_| serde_json::from_slice::<Request>(&line).ok()) {
-			None => refused(Refusal::Malformed),
-			Some(Request::Toolchain {}) => Response::Toolchain {
+		match read.map(|_| serde_json::from_slice::<Request>(&line)) {
+			// The request could not be read whole (the client was too slow for
+			// the client timeout, under load say, or the connection failed): it
+			// says nothing about the program, so it is the machine's, and the
+			// client asks again (#1209). Only bytes read whole that are not one
+			// request are `Malformed`, which the client keeps for good.
+			Err(_) => refused(Refusal::Unavailable),
+			Ok(Err(_)) => refused(Refusal::Malformed),
+			Ok(Ok(Request::Toolchain {})) => Response::Toolchain {
 				toolchain: recorder.toolchain().to_owned(),
 			},
-			Some(Request::Record { toolchain, .. }) if toolchain != recorder.toolchain() => refused(Refusal::WrongToolchain),
-			Some(Request::Record { source, .. }) => match recorder.record(&source) {
+			Ok(Ok(Request::Record { toolchain, .. })) if toolchain != recorder.toolchain() => refused(Refusal::WrongToolchain),
+			Ok(Ok(Request::Record { source, .. })) => match recorder.record(&source) {
 				Ok(recording) => Response::Recorded {
 					rustc: recording.rustc_run(),
 					recording: Box::new(recording),
