@@ -265,6 +265,14 @@ steps! {
 	/// read. Removed, it is walked again, a new render, so each render
 	/// rejected is counted once (#809, Codex on #1221).
 	ClipsWalkRejected => Clips, "walk_rejected";
+	/// Open: home's deploy record (`state.json`) is there and can't be read
+	/// or parsed. Every sweep meets it again until a deploy writes it anew or
+	/// someone repairs it; one envctl can't replace either (a directory in
+	/// its place, no permission) never heals by itself (HD3, #1208).
+	HomeDeployReadState => HomeDeploy, "read_state", open;
+	/// Open: home's deploy marker is there and its time can't be read, so
+	/// how long a deploy has waited is unknown (HD3, #1208).
+	HomeDeployReadMarker => HomeDeploy, "read_marker", open;
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.

@@ -656,7 +656,15 @@ groups:
         # (or nothing, which FileHostDown says); the client that asked stays
         # unserved until someone looks. home_deploy_runs only rises (the
         # deploy's own totals), so increase() over the hour sees each one;
-        # resolved an hour after the last.
+        # resolved an hour after the last. While file_host can't read the
+        # record it holds the totals as last read (HD3, #1208, C1511), so the
+        # deploy that writes the record anew (from nothing) reads as a reset
+        # increase() sees, however long it was unreadable. Not when the held
+        # total is exactly 1 (1 then 1), or when file_host restarted while
+        # it was unreadable more than an hour before. HomeFailuresOpen tells
+        # the record only after about 2 hours unreadable, never that run.
+        # The root is envctl rewriting a record it can't read from nothing
+        # (#1224).
         expr: sum(increase(home_deploy_runs{outcome=~"rolled_back|failed"}[1h])) > 0
         labels:
           objective: HD2

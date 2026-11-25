@@ -559,15 +559,6 @@
     "clippy::disallowed_methods": {
       "fn decide": {
         "let since = Duration::from_secs(u64::try_from(now.saturating_sub(pulled_at)).unwrap_or(0));": 1
-      },
-      "fn marker_since": {
-        "i64::try_from(since.as_secs()).ok()": 1,
-        "let modified = std::fs::metadata(folder.join(WANTED)).ok()?.modified().ok()?;": 2,
-        "let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;": 1
-      },
-      "fn read_recorded": {
-        ".and_then(|bytes| serde_json::from_slice(&bytes).ok())": 1,
-        ".ok()": 1
       }
     },
     "clippy::let_underscore_must_use": {
