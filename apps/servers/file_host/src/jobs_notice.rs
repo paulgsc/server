@@ -1026,8 +1026,8 @@ mod tests {
 		assert_eq!(aside(&pool).await, [(String::from("lone"), false, false)], "never struck");
 
 		phone(&pool, "taking").await;
-		for day in 1..=3 {
-			run(&pool, day + 1, &format!("2026-10-{:02}T14:52:07Z", 26 + day), "done", true).await;
+		for (day, started) in [(1, "2026-10-27T14:52:07Z"), (2, "2026-10-28T14:52:07Z"), (3, "2026-10-29T14:52:07Z")] {
+			run(&pool, day + 1, started, "done", true).await;
 			pass(&pool, &sender, now() + Duration::days(day)).await;
 			let lone_aside = aside(&pool).await.contains(&(String::from("lone"), true, false));
 			assert_eq!(lone_aside, day == 3, "day {day}: one strike a day beside a phone that took it");

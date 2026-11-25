@@ -146,10 +146,12 @@ pub async fn took(conn: &mut SqliteConnection, subject: &str, token: &str) -> Re
 	Ok(())
 }
 
-/// A failure that was the phone's own (server#1180, which ones is
-/// `file_host::strikes`), on a phone that is sent to. At the `at`th in a
-/// row it is set aside, as of `now`, for `why` (a fixed label). The count
-/// after this one, or `None` when the phone is gone or already set aside.
+/// A failure that was the phone's own, on a phone that is sent to.
+///
+/// Which failures are is `file_host::strikes` (server#1180). At the `at`th
+/// in a row it is set aside, as of `now`, for `why` (a fixed label). The
+/// count after this one, or `None` when the phone is gone or already set
+/// aside.
 ///
 /// # Errors
 /// Any `sqlx` failure.
