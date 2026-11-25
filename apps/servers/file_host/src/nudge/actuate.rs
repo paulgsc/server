@@ -6,6 +6,7 @@ use super::propose::refresh_stale_proposal;
 use super::waker::Considered;
 use crate::failure::{Failure, Step};
 use crate::nudge::payload::NudgePayload;
+use crate::strikes::Turn;
 use crate::{auth::DeletionLock, NudgeContext};
 use chrono::{DateTime, Utc};
 use engagement_repo::EngagementRepository;
@@ -247,6 +248,12 @@ pub(super) async fn actuate<C: PassClock>(
 		if !stored.accepts(topic) {
 			continue;
 		}
+		// A browser set aside for failures of its own is included at most
+		// once a day, and only in a send that happens anyway (#1180).
+		let turn = crate::strikes::turn(stored.set_aside_at.as_deref(), stored.last_probe_at.as_deref(), Utc::now());
+		if turn == Turn::Skip {
+			continue;
+		}
 
 		let endpoint = &stored.subscription.endpoint;
 		// What a log line may name: a recognised push service or `other`, never
@@ -259,10 +266,14 @@ pub(super) async fn actuate<C: PassClock>(
 			break;
 		}
 		delivery.tried += 1;
+		if turn == Turn::Probe {
+			subscriptions_repo.probed(endpoint, &Utc::now().to_rfc3339()).await?;
+		}
 		let Some(outcome) = deadline.clock.timeout(budget, nudge.sender.deliver(&stored.subscription, &encoded)).await else {
 			warn!(service, timeout_ms = budget.as_millis(), "push service did not answer in time");
 			subscriptions_repo.record_failure(endpoint, &Utc::now().to_rfc3339()).await?;
 			delivery.timed_out += 1;
+			strike(&subscriptions_repo, endpoint, service, turn, crate::strikes::web_push(None)).await?;
 			continue;
 		};
 		let stamp = Utc::now().to_rfc3339();
@@ -277,6 +288,7 @@ pub(super) async fn actuate<C: PassClock>(
 			warn!(service, outcome = outcome.label(), detail = %outcome.log_detail(), "push was not accepted");
 			subscriptions_repo.record_failure(endpoint, &stamp).await?;
 			delivery.refused += 1;
+			strike(&subscriptions_repo, endpoint, service, turn, crate::strikes::web_push(Some(&outcome))).await?;
 			continue;
 		}
 
@@ -288,6 +300,22 @@ pub(super) async fn actuate<C: PassClock>(
 	}
 
 	Ok(delivery)
+}
+
+/// A failure that was the browser's own (`why`, from `strikes::web_push`)
+/// on a browser that is sent to takes a strike; the one that reaches
+/// `strikes::SET_ASIDE_AFTER` sets it aside, counted once (#1180). A probe's
+/// failure takes none: the browser stays aside.
+async fn strike(repo: &PushSubscriptionRepository, endpoint: &str, service: &str, turn: Turn, why: Option<&'static str>) -> Result<(), sqlx::Error> {
+	let (Turn::Send, Some(why)) = (turn, why) else {
+		return Ok(());
+	};
+	let after = repo.strike(endpoint, why, crate::strikes::SET_ASIDE_AFTER, &Utc::now().to_rfc3339()).await?;
+	if after.is_some_and(|strikes| strikes >= crate::strikes::SET_ASIDE_AFTER) {
+		warn!(service, why, "a browser failed on its own too many times in a row; set aside");
+		Failure::alone(Step::StudyNudgeDeviceSetAside, &why);
+	}
+	Ok(())
 }
 
 /// What [`actuate`] reports back for one intervention.

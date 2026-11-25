@@ -45,6 +45,7 @@
 
 use crate::auth::DeletionLock;
 use crate::failure::{Failure, Step};
+use crate::strikes::Turn;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use fcm_kit::{DeviceToken, FcmTransport, Notice, SendOutcome, Sender, ServiceAccount};
 use notice_repo::Said;
@@ -165,14 +166,21 @@ fn words(run: &Run, started: DateTime<Utc>, earlier: &[(DateTime<Utc>, bool)]) -
 pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock, subject: &str, sender: &Sender<T>, now: DateTime<Utc>) -> Result<Outcome, sqlx::Error> {
 	let mut outcome = Outcome::default();
 	let mut conn = db.acquire().await?;
-	let mut devices = notice_repo::devices(&mut conn, subject).await?;
+	let mut devices = notice_repo::phones(&mut conn, subject).await?;
 	if devices.is_empty() {
 		// No phone asked: nothing is owed, so nothing is open.
 		crate::failure::open(Step::JobsNoticeRefused, 0);
 		crate::failure::open(Step::JobsNoticeUnanswered, 0);
 		return Ok(outcome);
 	}
-	let asked_since = notice_repo::first_registered(&mut conn, subject).await?;
+	// A record no phone is sent to (every one set aside, #1222) is owed to
+	// none: setting each aside was counted once, and its records are not
+	// counted lost again each morning.
+	let asked_since = if devices.iter().any(|phone| phone.set_aside_at.is_none()) {
+		notice_repo::first_registered(&mut conn, subject).await?
+	} else {
+		None
+	};
 	let held = mailbox_repo::jobs_runs(&mut conn, subject, RUNS_READ).await.map_err(|err| match err {
 		mailbox_repo::MailboxError::Storage(err) => err,
 		mailbox_repo::MailboxError::Rewritten => sqlx::Error::Protocol(String::from("a read cannot rewrite")),
@@ -219,19 +227,36 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 		let mut unanswered = false;
 		let mut refused = false;
 		let mut gone = Vec::new();
-		for token in &devices {
-			match sender.send(&DeviceToken::new(token.clone()), &notice, unix).await {
-				SendOutcome::Delivered => took += 1,
+		// Phones that took it, and phones whose refusal may be their own
+		// (#1222, `strikes::fcm`): which strikes needs every phone's answer.
+		let (mut taking, mut striking) = (Vec::new(), Vec::new());
+		for phone in &devices {
+			// A phone set aside is included at most once a day (#1180).
+			let turn = crate::strikes::turn(phone.set_aside_at.as_deref(), phone.last_probe_at.as_deref(), now);
+			if turn == Turn::Skip {
+				continue;
+			}
+			let token = &phone.token;
+			if turn == Turn::Probe {
+				probed(db, deletion, subject, token, &stamp).await?;
+			}
+			let answer = sender.send(&DeviceToken::new(token.clone()), &notice, unix).await;
+			if turn == Turn::Send {
+				striking.push((token.clone(), answer.clone()));
+			}
+			match answer {
+				SendOutcome::Delivered => {
+					took += 1;
+					taking.push(token.clone());
+				}
 				SendOutcome::Unregistered => gone.push(token.clone()),
 				// Throttling and FCM's own failures pass (FCM's error codes say
 				// to retry them). Any other refusal (a key FCM won't take, a JWT
 				// home could not sign, a token FCM calls invalid) is not a
 				// delivery either: the record waits, and is tried again each
 				// pass until a phone takes it or it leaves the window (#1206).
-				// Bound: a phone whose own token FCM refuses for good is never
-				// forgotten or set aside for it, so it is sent to each pass for
-				// the window of every record, and if it is the only phone its
-				// records go untold. Setting it aside is #1222.
+				// A phone whose own token FCM refuses for good is set aside
+				// after `strikes::SET_ASIDE_AFTER` in a row (#1222).
 				SendOutcome::Refused(status) if status == 429 || status >= 500 => {
 					tracing::warn!(status, "FCM could not take a Jobs arrival notice now");
 					unanswered = true;
@@ -240,17 +265,29 @@ pub async fn run_once<T: FcmTransport>(db: &SqlitePool, deletion: &DeletionLock,
 					tracing::warn!(status, "FCM refused a Jobs arrival notice");
 					refused = true;
 				}
+				SendOutcome::Mismatched => {
+					tracing::warn!("FCM refused a Jobs arrival notice: the token is another sender's");
+					refused = true;
+				}
 				SendOutcome::Transport(why) => {
 					tracing::warn!(error = %why, "a Jobs arrival notice got no answer from FCM");
 					unanswered = true;
 				}
 			}
 		}
+		for token in &taking {
+			phone_took(db, deletion, subject, token).await?;
+		}
+		for (token, answer) in &striking {
+			if let Some(why) = crate::strikes::fcm(answer, took > 0) {
+				strike(db, deletion, subject, token, why, &stamp).await?;
+			}
+		}
 		for token in &gone {
 			forget(db, deletion, subject, token).await?;
 			outcome.forgotten += 1;
 		}
-		devices.retain(|token| !gone.contains(token));
+		devices.retain(|phone| !gone.contains(&phone.token));
 		if took == 0 && (unanswered || refused) {
 			outcome.unsent += 1;
 			// Open until a phone takes it or it leaves the window: a final
@@ -337,6 +374,38 @@ async fn record(db: &SqlitePool, deletion: &DeletionLock, subject: &str, name: &
 	Ok(change)
 }
 
+/// As [`record`], for a phone that took a notice: its run of failures ends
+/// and, set aside, it is back (#1180).
+async fn phone_took(db: &SqlitePool, deletion: &DeletionLock, subject: &str, token: &str) -> Result<(), sqlx::Error> {
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	notice_repo::took(&mut tx, subject, token).await?;
+	tx.commit().await
+}
+
+/// As [`record`], for a failure that was the phone's own (`why`, from
+/// `strikes::fcm`): the one that reaches `strikes::SET_ASIDE_AFTER` sets it
+/// aside, counted once (#1222).
+async fn strike(db: &SqlitePool, deletion: &DeletionLock, subject: &str, token: &str, why: &'static str, now: &str) -> Result<(), sqlx::Error> {
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	let after = notice_repo::strike(&mut tx, subject, token, why, crate::strikes::SET_ASIDE_AFTER, now).await?;
+	tx.commit().await?;
+	if after.is_some_and(|strikes| strikes >= crate::strikes::SET_ASIDE_AFTER) {
+		tracing::warn!(why, "a phone failed on its own too many times in a row; set aside");
+		Failure::alone(Step::JobsNoticePhoneSetAside, &why);
+	}
+	Ok(())
+}
+
+/// As [`record`], for a set-aside phone included in a real send.
+async fn probed(db: &SqlitePool, deletion: &DeletionLock, subject: &str, token: &str, now: &str) -> Result<(), sqlx::Error> {
+	let _hold = deletion.hold().await;
+	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+	notice_repo::probed(&mut tx, subject, token, now).await?;
+	tx.commit().await
+}
+
 /// As [`record`], for a phone FCM no longer knows.
 async fn forget(db: &SqlitePool, deletion: &DeletionLock, subject: &str, token: &str) -> Result<(), sqlx::Error> {
 	let _hold = deletion.hold().await;
@@ -408,9 +477,12 @@ mod tests {
 					.unwrap()
 					.push((token, notification["title"].as_str().unwrap().to_owned(), notification["body"].as_str().unwrap().to_owned()));
 			}
-			// A refusal quotes the token back, as a provider might.
+			// A refusal quotes the token back, as a provider might; a 403 to a
+			// token named `mismatch…` is FCM's SENDER_ID_MISMATCH.
 			let body = if status == 200 {
 				b"{}".to_vec()
+			} else if status == 403 && token.starts_with("mismatch") {
+				br#"{"error":{"details":[{"errorCode":"SENDER_ID_MISMATCH"}]}}"#.to_vec()
 			} else {
 				(String::from(r#"{"error":{"message":"not sent to "#) + &token + r#""}}"#).into_bytes()
 			};
@@ -799,5 +871,74 @@ mod tests {
 		let name = run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
 		assert_eq!(pass(&pool, &sender(&fake), now()).await, Outcome { noticed: 1, ..Outcome::default() });
 		assert_eq!(sent(&pool).await, [(name, String::from("picks"), 1)]);
+	}
+
+	/// The phones' strike state: (token, set aside, probed).
+	async fn aside(pool: &SqlitePool) -> Vec<(String, bool, bool)> {
+		let mut conn = pool.acquire().await.unwrap();
+		notice_repo::phones(&mut conn, A)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|phone| (phone.token, phone.set_aside_at.is_some(), phone.last_probe_at.is_some()))
+			.collect()
+	}
+
+	/// #1222, C1513: a phone whose token is another sender's is set aside at
+	/// the third refusal in a row, counted once; it is then included once a
+	/// day, in a send that happens anyway, and taking a notice brings it back.
+	#[tokio::test]
+	async fn a_phone_another_sender_owns_is_set_aside_once_and_comes_back_when_it_takes_one() {
+		let recorder = DebuggingRecorder::new();
+		let snapshotter = recorder.snapshotter();
+		let _recording = metrics::set_default_local_recorder(&recorder);
+		let pool = pool().await;
+		let fake = Fake::default();
+		let sender = sender(&fake);
+		phone(&pool, "mismatch-1").await;
+		fake.answer("mismatch-1", Ok(403));
+		run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		for minutes in [0, 15, 30] {
+			pass(&pool, &sender, now() + Duration::minutes(minutes)).await;
+		}
+		assert_eq!(aside(&pool).await, [(String::from("mismatch-1"), true, false)]);
+		assert_eq!(failures(&snapshotter, Step::JobsNoticePhoneSetAside), Some(1));
+
+		// Its next send is the day's probe; the one after skips it.
+		pass(&pool, &sender, now() + Duration::minutes(45)).await;
+		assert_eq!(aside(&pool).await, [(String::from("mismatch-1"), true, true)]);
+		fake.answer("mismatch-1", Ok(200));
+		pass(&pool, &sender, now() + Duration::minutes(60)).await;
+		assert!(fake.took().is_empty(), "skipped within the day");
+		assert_eq!(failures(&snapshotter, Step::JobsNoticePhoneSetAside).unwrap_or(0), 0, "no new count");
+
+		// A day on, the next morning's notice probes it, and it takes it: back.
+		run(&pool, 2, "2026-10-27T15:00:00Z", "done", true).await;
+		pass(&pool, &sender, now() + Duration::hours(25)).await;
+		assert_eq!(fake.took().len(), 1, "the probe took the morning's notice");
+		assert!(aside(&pool).await.iter().all(|(_, set_aside, _)| !set_aside), "back");
+	}
+
+	/// C1513: a lone phone's 400 never strikes (its token can't be told
+	/// apart from our notice); beside a phone that took the notice, it does.
+	#[tokio::test]
+	async fn a_400_strikes_only_beside_a_phone_that_took_the_notice() {
+		let pool = pool().await;
+		let fake = Fake::default();
+		let sender = sender(&fake);
+		phone(&pool, "lone").await;
+		fake.answer("lone", Ok(400));
+		run(&pool, 1, "2026-10-26T14:52:07Z", "done", true).await;
+		for minutes in [0, 15, 30, 45] {
+			pass(&pool, &sender, now() + Duration::minutes(minutes)).await;
+		}
+		assert_eq!(aside(&pool).await, [(String::from("lone"), false, false)], "never struck");
+
+		phone(&pool, "taking").await;
+		for day in 1..=3 {
+			run(&pool, day + 1, &format!("2026-10-{:02}T14:52:07Z", 26 + day), "done", true).await;
+			pass(&pool, &sender, now() + Duration::days(day)).await;
+		}
+		assert!(aside(&pool).await.contains(&(String::from("lone"), true, false)), "{:?}", aside(&pool).await);
 	}
 }

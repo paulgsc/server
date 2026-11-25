@@ -64,6 +64,16 @@ pub async fn register(conn: &mut SqliteConnection, subject: &str, token: &str, n
 		.fetch_one(&mut *conn)
 		.await?;
 	if held > 0 {
+		// Asking again brings back a phone set aside for its own failures
+		// (server#1180).
+		sqlx::query!(
+			"UPDATE jobs_notice_device SET strikes = 0, set_aside_at = NULL, set_aside_why = NULL, last_probe_at = NULL
+			 WHERE subject_id = ?1 AND token = ?2",
+			subject,
+			token
+		)
+		.execute(&mut *conn)
+		.await?;
 		return Ok(Change::Unchanged);
 	}
 	let written = sqlx::query!(
@@ -87,6 +97,85 @@ pub async fn forget(conn: &mut SqliteConnection, subject: &str, token: &str) -> 
 		.execute(&mut *conn)
 		.await?;
 	Ok(removed.rows_affected() > 0)
+}
+
+/// A phone that asked to be told, and whether it is set aside (server#1180).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phone {
+	/// Its FCM registration token. Never logged (docs/identity.md).
+	pub token: String,
+	/// When it was set aside after failures of its own in a row, if it is.
+	pub set_aside_at: Option<String>,
+	/// When a set-aside phone was last included in a real send.
+	pub last_probe_at: Option<String>,
+}
+
+/// The phones `subject` wants told, oldest request first, with whether each
+/// is set aside.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn phones(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Phone>, sqlx::Error> {
+	sqlx::query_as!(
+		Phone,
+		"SELECT token, set_aside_at, last_probe_at FROM jobs_notice_device WHERE subject_id = ?1 ORDER BY registered_at, token",
+		subject
+	)
+	.fetch_all(&mut *conn)
+	.await
+}
+
+/// A phone took a notice: its run of failures ends, and a set-aside phone
+/// comes back (server#1180).
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn took(conn: &mut SqliteConnection, subject: &str, token: &str) -> Result<(), sqlx::Error> {
+	sqlx::query!(
+		"UPDATE jobs_notice_device SET strikes = 0, set_aside_at = NULL, set_aside_why = NULL
+		 WHERE subject_id = ?1 AND token = ?2",
+		subject,
+		token
+	)
+	.execute(&mut *conn)
+	.await?;
+	Ok(())
+}
+
+/// A failure that was the phone's own (server#1180, which ones is
+/// `file_host::strikes`), on a phone that is sent to. At the `at`th in a
+/// row it is set aside, as of `now`, for `why` (a fixed label). The count
+/// after this one, or `None` when the phone is gone or already set aside.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn strike(conn: &mut SqliteConnection, subject: &str, token: &str, why: &str, at: i64, now: &str) -> Result<Option<i64>, sqlx::Error> {
+	sqlx::query_scalar!(
+		r#"UPDATE jobs_notice_device
+		 SET strikes = strikes + 1,
+		     set_aside_at = CASE WHEN strikes + 1 >= ?1 THEN ?2 ELSE NULL END,
+		     set_aside_why = CASE WHEN strikes + 1 >= ?1 THEN ?3 ELSE NULL END
+		 WHERE subject_id = ?4 AND token = ?5 AND set_aside_at IS NULL
+		 RETURNING strikes AS "strikes!: i64""#,
+		at,
+		now,
+		why,
+		subject,
+		token
+	)
+	.fetch_optional(&mut *conn)
+	.await
+}
+
+/// A set-aside phone was included in a real send, as of `now`.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn probed(conn: &mut SqliteConnection, subject: &str, token: &str, now: &str) -> Result<(), sqlx::Error> {
+	sqlx::query!("UPDATE jobs_notice_device SET last_probe_at = ?1 WHERE subject_id = ?2 AND token = ?3", now, subject, token)
+		.execute(&mut *conn)
+		.await?;
+	Ok(())
 }
 
 /// The tokens of the phones `subject` wants told, oldest request first.

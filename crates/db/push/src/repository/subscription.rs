@@ -64,6 +64,11 @@ pub struct StoredSubscription {
 	pub last_success_at: Option<String>,
 	pub last_failure_at: Option<String>,
 	pub failure_count: i64,
+	/// When it was set aside after failures of its own in a row, if it is
+	/// (server#1180): not sent to, but for a probe at most once a day.
+	pub set_aside_at: Option<String>,
+	/// When a set-aside device was last included in a real send.
+	pub last_probe_at: Option<String>,
 }
 
 impl StoredSubscription {
@@ -85,6 +90,8 @@ struct SubscriptionRow {
 	last_success_at: Option<String>,
 	last_failure_at: Option<String>,
 	failure_count: i64,
+	set_aside_at: Option<String>,
+	last_probe_at: Option<String>,
 }
 
 impl From<SubscriptionRow> for StoredSubscription {
@@ -112,6 +119,8 @@ impl From<SubscriptionRow> for StoredSubscription {
 			last_success_at: row.last_success_at,
 			last_failure_at: row.last_failure_at,
 			failure_count: row.failure_count,
+			set_aside_at: row.set_aside_at,
+			last_probe_at: row.last_probe_at,
 		}
 	}
 }
@@ -160,7 +169,11 @@ impl PushSubscriptionRepository {
 			    topics          = excluded.topics,
 			    consented_at    = excluded.consented_at,
 			    failure_count   = 0,
-			    last_failure_at = NULL
+			    last_failure_at = NULL,
+			    strikes         = 0,
+			    set_aside_at    = NULL,
+			    set_aside_why   = NULL,
+			    last_probe_at   = NULL
 			"#,
 			subscription.endpoint,
 			consent.subject_id,
@@ -185,7 +198,7 @@ impl PushSubscriptionRepository {
 			SubscriptionRow,
 			r#"
 			SELECT endpoint as "endpoint!", subject_id, p256dh, auth, topics, created_at,
-			       last_success_at, last_failure_at, failure_count
+			       last_success_at, last_failure_at, failure_count, set_aside_at, last_probe_at
 			FROM push_subscriptions
 			WHERE subject_id = ?
 			ORDER BY created_at ASC
@@ -230,7 +243,52 @@ impl PushSubscriptionRepository {
 	/// # Errors
 	/// Propagates any `sqlx` failure.
 	pub async fn record_success(&self, endpoint: &str, now: &str) -> Result<(), sqlx::Error> {
-		sqlx::query!("UPDATE push_subscriptions SET last_success_at = ?, failure_count = 0 WHERE endpoint = ?", now, endpoint)
+		// An acceptance ends a run of its own failures, and brings back a
+		// device set aside for them (server#1180).
+		sqlx::query!(
+			"UPDATE push_subscriptions
+			 SET last_success_at = ?, failure_count = 0, strikes = 0, set_aside_at = NULL, set_aside_why = NULL
+			 WHERE endpoint = ?",
+			now,
+			endpoint
+		)
+		.execute(&self.pool)
+		.await?;
+		Ok(())
+	}
+
+	/// Record a failure that was the device's own (server#1180, which ones is
+	/// `file_host::strikes`), on a device that is sent to. At the `at`th in a
+	/// row it is set aside, as of `now`, for `why` (a fixed label). The
+	/// count after this one, or `None` when the device is gone or already
+	/// set aside, which takes no strike.
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn strike(&self, endpoint: &str, why: &str, at: i64, now: &str) -> Result<Option<i64>, sqlx::Error> {
+		sqlx::query_scalar!(
+			r#"UPDATE push_subscriptions
+			 SET strikes = strikes + 1,
+			     set_aside_at = CASE WHEN strikes + 1 >= ?1 THEN ?2 ELSE NULL END,
+			     set_aside_why = CASE WHEN strikes + 1 >= ?1 THEN ?3 ELSE NULL END
+			 WHERE endpoint = ?4 AND set_aside_at IS NULL
+			 RETURNING strikes AS "strikes!: i64""#,
+			at,
+			now,
+			why,
+			endpoint
+		)
+		.fetch_optional(&self.pool)
+		.await
+	}
+
+	/// Record that a set-aside device was included in a real send, as of
+	/// `now`, so it is not included again for a day (server#1180).
+	///
+	/// # Errors
+	/// Propagates any `sqlx` failure.
+	pub async fn probed(&self, endpoint: &str, now: &str) -> Result<(), sqlx::Error> {
+		sqlx::query!("UPDATE push_subscriptions SET last_probe_at = ? WHERE endpoint = ?", now, endpoint)
 			.execute(&self.pool)
 			.await?;
 		Ok(())
@@ -274,6 +332,8 @@ mod tests {
 			last_success_at: None,
 			last_failure_at: None,
 			failure_count: 0,
+			set_aside_at: None,
+			last_probe_at: None,
 		}
 	}
 

@@ -187,6 +187,10 @@ pub enum SendOutcome {
 	Unregistered,
 	/// FCM, or Google's token endpoint, refused with this status.
 	Refused(u16),
+	/// FCM refused with `403 SENDER_ID_MISMATCH`: the token was made for
+	/// another sender. The phone's own, never the key's or the notice's,
+	/// which refuse every phone alike (server#1222).
+	Mismatched,
 	/// The request never got an answer; the text is the transport's, which
 	/// names no token.
 	Transport(String),
@@ -200,6 +204,7 @@ impl SendOutcome {
 			Self::Delivered => "delivered",
 			Self::Unregistered => "unregistered",
 			Self::Refused(_) => "refused",
+			Self::Mismatched => "mismatched",
 			Self::Transport(_) => "transport",
 		}
 	}
@@ -250,6 +255,7 @@ impl<T: FcmTransport> Sender<T> {
 			Err(err) => SendOutcome::Transport(err.to_string()),
 			Ok(response) if (200..300).contains(&response.status) => SendOutcome::Delivered,
 			Ok(response) if response.status == 404 || unregistered(&response.body) => SendOutcome::Unregistered,
+			Ok(response) if response.status == 403 && error_code(&response.body, "SENDER_ID_MISMATCH") => SendOutcome::Mismatched,
 			Ok(response) => {
 				if response.status == 401 {
 					// The token was refused: fetch another next time.
@@ -322,12 +328,17 @@ fn message(device: &DeviceToken, notice: &Notice<'_>) -> Vec<u8> {
 
 /// Whether an FCM error body says the device is gone (`UNREGISTERED`).
 fn unregistered(body: &[u8]) -> bool {
+	error_code(body, "UNREGISTERED")
+}
+
+/// Whether FCM's error `details` name `code`.
+fn error_code(body: &[u8], code: &str) -> bool {
 	let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
 		return false;
 	};
 	value["error"]["details"]
 		.as_array()
-		.is_some_and(|details| details.iter().any(|detail| detail["errorCode"] == "UNREGISTERED"))
+		.is_some_and(|details| details.iter().any(|detail| detail["errorCode"] == code))
 }
 
 #[cfg(test)]
@@ -509,6 +520,12 @@ mod tests {
 		assert_eq!(sender.send(&device(), &NOTICE, 1_000).await, SendOutcome::Unregistered);
 		fake.answer(400, r#"{"error":{"details":[{"errorCode":"INVALID_ARGUMENT"}]}}"#);
 		assert_eq!(sender.send(&device(), &NOTICE, 1_000).await, SendOutcome::Refused(400));
+		// The token was made for another sender: the phone's own (#1222).
+		fake.answer(403, r#"{"error":{"details":[{"errorCode":"SENDER_ID_MISMATCH"}]}}"#);
+		assert_eq!(sender.send(&device(), &NOTICE, 1_000).await, SendOutcome::Mismatched);
+		// A 403 that is the project's (the API not enabled) is not.
+		fake.answer(403, r#"{"error":{"status":"PERMISSION_DENIED"}}"#);
+		assert_eq!(sender.send(&device(), &NOTICE, 1_000).await, SendOutcome::Refused(403));
 		fake.fail();
 		assert_eq!(sender.send(&device(), &NOTICE, 1_000).await, SendOutcome::Transport(String::from("connection reset")));
 
