@@ -119,8 +119,9 @@ pub fn record_pass(outcome: &Outcome, failed: &[&'static str]) {
 	set_failing(&[failed, no_account].concat());
 }
 
-/// Whether the Jobs arrival notice's pass, after a mailbox pass, failed
-/// (#1229): 1 when it ended on a storage failure, 0 when it finished or had
+/// Whether the Jobs arrival notice's last pass failed (#1229).
+///
+/// 1 when it ended on a storage failure, 0 when it finished or had
 /// nothing to do. `JobsNoticeFailing` reads it, so a pass that can't look,
 /// which leaves `jobs-notice`'s open levels as they stood
 /// (docs/home-compute.md, invariant 9), is told.
@@ -128,7 +129,9 @@ pub fn record_jobs_notice_pass(failing: bool) {
 	metrics::gauge!("jobs_notice_pass_failing").set(if failing { 1.0 } else { 0.0 });
 }
 
-/// Whether the Snips pickup's pass failed (#1229): 1 when it ended on a
+/// Whether the Snips pickup's last pass failed (#1229).
+///
+/// 1 when it ended on a
 /// storage failure or at its deadline (`snips::PASS_DEADLINE`), 0 when it
 /// finished. A fetch that may clear is not a failing pass: it is
 /// `snips-pickup`'s open `retry` level. `SnipsPickupFailing` reads it.
