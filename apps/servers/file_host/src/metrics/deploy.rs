@@ -81,11 +81,12 @@ pub struct Last {
 ///   reads 1 then 1; or `file_host` restarted while the record was
 ///   unreadable, which leaves the totals absent until a tick reads them,
 ///   more than an hour before the healing run. `HomeFailuresOpen` tells
-///   the unreadable record only once it has stayed so about 2 hours, so a
+///   the unreadable record only once it has stayed so about 2 hours, so
+///   either is told by neither alert when the record was unreadable for
+///   less than that: a held total of 1 healed by a run that fails, or a
 ///   record unreadable for 1 to 2 hours across a restart, healed by a run
-///   that fails more than an hour after the restart, is told by neither.
-///   Both come from envctl rewriting an unreadable record from nothing
-///   (#1224);
+///   that fails more than an hour after the restart. Both come from envctl
+///   rewriting an unreadable record from nothing (#1224);
 /// - the last run's time and exit code and the newest epoch seen, which
 ///   state a current value, are `NaN`, a gap, as is the marker's age when it
 ///   can't be read.
@@ -260,13 +261,14 @@ mod tests {
 	fn an_unreadable_file_is_said_when_it_turns_unreadable_not_each_tick() {
 		let (captured, _guard) = crate::privacy::capture_where(|meta| *meta.level() <= tracing::Level::WARN);
 		let mut last = Last::default();
-		let said = |captured: &crate::privacy::Captured| captured.lines().iter().filter(|line| line.contains("deploy record can't be read")).count();
-		record_state(&mut last, &garbled(), &Ok(None), 1_000, (0, 0));
-		assert_eq!(said(&captured), 1, "the first unreadable tick");
-		record_state(&mut last, &garbled(), &Ok(None), 1_000, (0, 0));
-		assert_eq!(said(&captured), 1, "not again while it stays unreadable");
+		let said = |captured: &crate::privacy::Captured, what: &str| captured.lines().iter().filter(|line| line.contains(what)).count();
+		let (record, marker) = ("deploy record can't be read", "deploy marker can't be read");
+		record_state(&mut last, &garbled(), &garbled(), 1_000, (0, 0));
+		assert_eq!((said(&captured, record), said(&captured, marker)), (1, 1), "the first unreadable tick");
+		record_state(&mut last, &garbled(), &garbled(), 1_000, (0, 0));
+		assert_eq!((said(&captured, record), said(&captured, marker)), (1, 1), "not again while they stay unreadable");
 		record_state(&mut last, &Ok(Recorded::default()), &Ok(None), 1_000, (0, 0));
-		record_state(&mut last, &garbled(), &Ok(None), 1_000, (0, 0));
-		assert_eq!(said(&captured), 2, "again once it turns unreadable after a read");
+		record_state(&mut last, &garbled(), &garbled(), 1_000, (0, 0));
+		assert_eq!((said(&captured, record), said(&captured, marker)), (2, 2), "again once each turns unreadable after a read");
 	}
 }
