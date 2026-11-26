@@ -598,9 +598,11 @@ fn home_answers_the_records_step_as_it_does_wherever_home_holds_the_rule() {
 				Ok(Ok(next)) => state = next,
 				// The record's step took this event, so home must too.
 				Ok(Err(refusal)) => {
-					problems.push(String::from(id) + ": home refuses " + name.as_str().unwrap() + " on the path, as " + &serde_json::to_value(refusal).unwrap().to_string())
+					problems.push(String::from(id) + ": home refuses " + name.as_str().unwrap() + " on the path, as " + &serde_json::to_value(refusal).unwrap().to_string());
 				}
-				Err(problems_found) => problems.push(String::from(id) + ": home cannot read " + name.as_str().unwrap() + ": " + &problems_found[0].0),
+				Err(problems_found) => {
+					problems.push(String::from(id) + ": home cannot read " + name.as_str().unwrap() + ": " + &problems_found[0].0);
+				}
 			}
 		}
 		let next = alphabet[case["next"].as_str().unwrap()].clone();
