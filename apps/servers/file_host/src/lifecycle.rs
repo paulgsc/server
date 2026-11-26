@@ -107,6 +107,7 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 	("cards_essay_link", AppendOnly, "each cards essay's YouTube link; never deleted"),
 	("cards_essay_video_deletion", AppendOnly, "a receipt per step of a cards essay's video going; deleted only with its account"),
 	("clip_frame", AppendOnly, "each clip's rendered frames, kept on home; never deleted"),
+	("conversation_event", AppendOnly, "each event of a conversation essay's record, ordered by its number (HOST16-S); deleted only with its account"),
 	(
 		"curriculum",
 		Corpus,

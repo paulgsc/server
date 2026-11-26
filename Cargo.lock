@@ -906,6 +906,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "conversation_repo"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1803,6 +1815,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "clip_frame_repo",
+ "conversation_repo",
  "curriculum_repo",
  "drama_prompt_repo",
  "engagement_repo",
