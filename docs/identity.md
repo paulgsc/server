@@ -2862,7 +2862,11 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     it fails once it holds a row. It is written only by
     `POST /conversations/:id/events` and read only by `GET /conversations/:id`
     and `GET /conversations/:id/previews`, each a session's for its own subject
-    (a paired phone's or a browser's). An event is kept only after the kept log
+    (a paired phone's or a browser's). A conversation's previews are its
+    subject's too: files under `renders/conversation/<subject>/<id>/`, read
+    only by `GET /conversations/:id/previews` and
+    `GET /conversations/:id/previews/:preview/:variant/video`, each for the
+    caller's own subject, so another subject's are a `404`. An event is kept only after the kept log
     and it replay through `conversation_repo::step`, and an approval only for a
     preview home offers as it offers it (docs/conversations.md). Nothing of a
     record reaches a log line: each handler records only `otel.kind`
@@ -2871,10 +2875,12 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     `each_event_is_kept_at_the_logs_end_and_the_record_reads_back_as_sent`,
     `a_refused_event_changes_nothing`, `each_subject_keeps_its_own_log`,
     `the_table_is_append_only_gapless_and_leaves_with_the_account` and
-    `the_migration_round_trips_and_refuses_to_drop_a_record`; and
+    `the_migration_round_trips_and_refuses_to_drop_a_record`;
     `handlers::conversations`'
-    `every_route_needs_a_session_and_an_id_that_is_none_is_not_found` and
-    `a_refused_event_answers_why_and_writes_nothing`.
+    `every_route_needs_a_session_and_an_id_that_is_none_is_not_found`,
+    `a_refused_event_answers_why_and_writes_nothing` and
+    `an_approval_is_kept_only_for_a_preview_home_offers_as_it_offers_it`; and
+    `conversations`' `another_subjects_previews_are_none_of_the_callers`.
     *Not enforced:* that nothing else writes or reads the table, which
     `git grep -n conversation_event -- '*.rs'` shows today; and that a take
     a record names is one home holds, which is not checked.

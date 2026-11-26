@@ -10,12 +10,15 @@
 //! an `approve` event in the conversation's record (`conversation_repo`).
 //!
 //! Generated assets live only on home and are served by URL (C1029), so a
-//! preview is files, kept no table:
+//! preview is files, kept in no table. They are the subject's, as the record
+//! is: a conversation's id is unique only within its subject, so every read
+//! takes the subject and finds the folder under it (`subject-<hex>`, an id no
+//! person chose), and another subject's previews are a `404`:
 //!
 //! ```text
-//! renders/conversation/<conversation>/<preview>/preview.json   some-ui.conversation-preview/1:
+//! renders/conversation/<subject>/<conversation>/<preview>/preview.json   some-ui.conversation-preview/1:
 //!     { schema, preview, about, recommended, variants: [{ variant, title, rule, callouts }] }
-//! renders/conversation/<conversation>/<preview>/<variant>.mp4  each variant's video
+//! renders/conversation/<subject>/<conversation>/<preview>/<variant>.mp4  each variant's video
 //! ```
 //!
 //! The renderer writes `preview.json` last, so a preview is listed once its
@@ -50,8 +53,13 @@ const MANIFEST_CEILING: u64 = 64 * 1024;
 /// The most callouts one variant has: "what's in it", a short list.
 const CALLOUTS_MOST: usize = 12;
 
-/// The most characters of one callout, or of a rule's name.
-const CALLOUT_MOST: usize = 200;
+/// `PreviewOfferSchema`'s bounds (paulgsc/some-ui `preview-offer.ts`):
+/// the most characters of the heading, of a variant's title, of one callout,
+/// and of a name.
+const ABOUT_MOST: usize = 80;
+const TITLE_MOST: usize = 60;
+const CALLOUT_MOST: usize = 80;
+const NAME_MOST: usize = 64;
 
 /// The most previews one conversation lists.
 const PREVIEWS_MOST: usize = 200;
@@ -68,14 +76,17 @@ impl Folder {
 		Self(PathBuf::from(RENDERS_FOLDER))
 	}
 
-	fn of(&self, conversation: &str) -> PathBuf {
-		self.0.join(conversation)
+	/// `subject`'s folder of `conversation`, when both are ids.
+	fn of(&self, subject: &str, conversation: &str) -> Option<PathBuf> {
+		(is_id(subject) && is_id(conversation)).then(|| self.0.join(subject).join(conversation))
 	}
 
-	/// The video of `variant` of `preview`, when every name is an id.
+	/// The video of `variant` of `preview` of `subject`'s `conversation`,
+	/// when every name is an id.
 	#[must_use]
-	pub fn video(&self, conversation: &str, preview: &str, variant: &str) -> Option<PathBuf> {
-		(is_id(conversation) && is_id(preview) && is_id(variant)).then(|| self.of(conversation).join(preview).join(String::from(variant) + ".mp4"))
+	pub fn video(&self, subject: &str, conversation: &str, preview: &str, variant: &str) -> Option<PathBuf> {
+		let folder = self.of(subject, conversation)?;
+		(is_id(preview) && is_id(variant)).then(|| folder.join(preview).join(String::from(variant) + ".mp4"))
 	}
 }
 
@@ -143,8 +154,11 @@ pub struct Previews {
 	pub unreadable: Vec<String>,
 }
 
+/// zod's `z.string().trim().min(1).max(most)`: trimmed, then 1 to `most`
+/// characters.
 fn fits(text: &str, most: usize) -> bool {
-	!text.trim().is_empty() && text.trim() == text && text.chars().count() <= most
+	let trimmed = text.trim();
+	!trimmed.is_empty() && trimmed.chars().count() <= most
 }
 
 /// The manifest's offer, checked: its own id, two or three variants each an
@@ -157,15 +171,24 @@ fn offer(manifest: Manifest, preview: &str) -> Option<Offer> {
 		&& (2..=PREVIEW_VARIANTS_MOST).contains(&names.len())
 		&& names.iter().enumerate().all(|(i, name)| is_id(name) && !names[..i].contains(name))
 		&& names.contains(&manifest.recommended.as_str())
-		&& fits(&manifest.about, CALLOUT_MOST)
+		&& fits(&manifest.about, ABOUT_MOST)
 		&& manifest
 			.variants
 			.iter()
-			.all(|v| fits(&v.title, 64) && fits(&v.rule, 64) && (1..=CALLOUTS_MOST).contains(&v.callouts.len()) && v.callouts.iter().all(|c| fits(c, CALLOUT_MOST)));
-	good.then_some(Offer {
-		about: manifest.about,
+			.all(|v| fits(&v.title, TITLE_MOST) && fits(&v.rule, NAME_MOST) && (1..=CALLOUTS_MOST).contains(&v.callouts.len()) && v.callouts.iter().all(|c| fits(c, CALLOUT_MOST)));
+	good.then(|| Offer {
+		about: manifest.about.trim().to_owned(),
 		recommended: manifest.recommended,
-		variants: manifest.variants,
+		variants: manifest
+			.variants
+			.into_iter()
+			.map(|v| ManifestVariant {
+				title: v.title.trim().to_owned(),
+				rule: v.rule.trim().to_owned(),
+				callouts: v.callouts.iter().map(|c| c.trim().to_owned()).collect(),
+				variant: v.variant,
+			})
+			.collect(),
 	})
 }
 
@@ -215,15 +238,14 @@ async fn read_one(folder: &Path, preview: &str) -> std::io::Result<Read> {
 /// # Errors
 /// The drive's error reading the folder or a manifest. A conversation home
 /// holds no folder for offers none.
-pub async fn previews(folder: &Folder, conversation: &str, approvals: &[Approval]) -> std::io::Result<Previews> {
+pub async fn previews(folder: &Folder, subject: &str, conversation: &str, approvals: &[Approval]) -> std::io::Result<Previews> {
 	let mut out = Previews {
 		previews: Vec::new(),
 		unreadable: Vec::new(),
 	};
-	if !is_id(conversation) {
+	let Some(root) = folder.of(subject, conversation) else {
 		return Ok(out);
-	}
-	let root = folder.of(conversation);
+	};
 	let mut entries = match tokio::fs::read_dir(&root).await {
 		Ok(entries) => entries,
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
@@ -281,18 +303,36 @@ pub enum Unoffered {
 	PreviewOffer { preview: String },
 }
 
-/// Whether `approval` names a preview of `conversation` home offers, exactly
-/// as it offers it.
+/// When `subject`'s preview `preview` of `conversation` last changed: its
+/// manifest's time, or `None` while it has none. One `stat`, so a check
+/// made before a write can be confirmed inside the write's transaction
+/// without reading the preview again.
+///
+/// # Errors
+/// The drive's error, but a manifest that is not there.
+pub async fn stamp(folder: &Folder, subject: &str, conversation: &str, preview: &str) -> std::io::Result<Option<std::time::SystemTime>> {
+	let Some(root) = folder.of(subject, conversation).filter(|_| is_id(preview)) else {
+		return Ok(None);
+	};
+	match tokio::fs::metadata(root.join(preview).join(MANIFEST)).await {
+		Ok(meta) => meta.modified().map(Some),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+		Err(err) => Err(err),
+	}
+}
+
+/// Whether `approval` names a preview of `subject`'s `conversation` home
+/// offers, exactly as it offers it.
 ///
 /// # Errors
 /// The drive's error reading the preview.
-pub async fn offered(folder: &Folder, conversation: &str, approval: &Approval) -> std::io::Result<Result<(), Unoffered>> {
+pub async fn offered(folder: &Folder, subject: &str, conversation: &str, approval: &Approval) -> std::io::Result<Result<(), Unoffered>> {
 	let preview = &approval.preview;
 	let unknown = Unoffered::PreviewUnknown { preview: preview.clone() };
-	if !is_id(conversation) || !is_id(preview) {
+	let Some(root) = folder.of(subject, conversation).filter(|_| is_id(preview)) else {
 		return Ok(Err(unknown));
-	}
-	let Offer { recommended, variants, .. } = match read_one(&folder.of(conversation).join(preview), preview).await {
+	};
+	let Offer { recommended, variants, .. } = match read_one(&root.join(preview), preview).await {
 		Ok(Read::Ready(offer)) => offer,
 		Ok(Read::Making | Read::Unreadable) => return Ok(Err(unknown)),
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Err(unknown)),

@@ -19,7 +19,7 @@ POST /api/v1/conversations/:id/events                            201 { kept, eve
   record's own names for phases, events and refusals, so the phone reads a `409`'s `refused`
   with `refusalLine`.
 - **The previews** are files the renderer leaves at
-  `renders/conversation/<id>/<preview>/preview.json` (`some-ui.conversation-preview/1`:
+  `renders/conversation/<subject>/<id>/<preview>/preview.json` (`some-ui.conversation-preview/1`:
   `{ schema, preview, about, recommended, variants: [{ variant, title, rule, callouts }] }`,
   the card's `PreviewOfferSchema`) beside each `<variant>.mp4`, written manifest last
   (`file_host::conversations`). A preview is offered once its manifest and every variant's
@@ -88,8 +88,23 @@ record, from 1, with no gap.
    variant's `rule` is not the manifest's. So no rule is set from a preview the owner never
    watched. *Enforced by* `an_approval_names_a_preview_exactly_as_home_offers_it` and
    `an_approval_is_kept_only_for_a_preview_home_offers_as_it_offers_it`.
-6. **Every name that reaches a path is one plain segment.** A conversation's, a preview's and
-   a variant's id on home is a `showId` (`^[a-z0-9][a-z0-9-]{0,63}$`). Any other is `404`, or
-   is not listed. *Enforced by* `a_video_is_only_ever_one_plain_segment_per_name`.
+6. **Previews are the subject's, and every name that reaches a path is one plain segment.** A
+   conversation's id is unique only within its subject, so its previews live under the
+   subject's folder, and every read (the list, an approval's check, a video) takes the caller's
+   subject: another subject's are a `404`. The subject's, a conversation's, a preview's and a
+   variant's id on home are each a `showId` (`^[a-z0-9][a-z0-9-]{0,63}$`); any other is `404`,
+   or is not listed. *Enforced by* `another_subjects_previews_are_none_of_the_callers` and
+   `a_video_is_only_ever_one_plain_segment_per_name`.
 7. **Nothing of a record reaches a log line.** Each handler records only `otel.kind`. A
    drive error logs its kind, never a path.
+8. **A manifest reads as the card's `PreviewOfferSchema` reads it.** Its bounds are that
+   schema's: a heading of at most 80 characters, a title of 60, 1 to 12 callouts of 80, names
+   of 64, each trimmed first, 2 or 3 variants each once with the recommended one among them;
+   home also holds preview and variant ids to a `showId`, since they name folders. A manifest
+   past any of them is `unreadable`, never offered. *Not enforced:* parity with the schema,
+   which the follow-up's shared fixtures hold.
+9. **A write holds no file open under its lock.** An approval's preview is read before
+   `BEGIN IMMEDIATE`, and confirmed inside it by one `stat` of its manifest, read again only
+   if it changed.
+10. **Home keeps `/2` records only.** `POST` takes one `/2` event at a time, so a `/1` record
+    lifted into `/2` (`lifted`) never comes through home, and `GET` never answers one.

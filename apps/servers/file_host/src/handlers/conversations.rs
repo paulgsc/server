@@ -86,7 +86,7 @@ async fn previews_of(db: &SqlitePool, subject: &str, folder: &Folder, conversati
 	let mut conn = db.acquire().await?;
 	let state = conversation_repo::state(&mut conn, subject, conversation).await.map_err(stored)?;
 	drop(conn);
-	conversations::previews(folder, conversation, state.approvals()).await.map_err(|err| drive(&err))
+	conversations::previews(folder, subject, conversation, state.approvals()).await.map_err(|err| drive(&err))
 }
 
 /// `GET /conversations/:id/previews/:preview/:variant/video`: the variant's
@@ -97,8 +97,9 @@ async fn previews_of(db: &SqlitePool, subject: &str, folder: &Folder, conversati
 /// does not hold.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "conversations_video", skip_all, fields(otel.kind = "server"))]
-pub async fn get_video(_subject: SubjectId, Path((conversation, preview, variant)): Path<(String, String, String)>, request: Request) -> Result<Response, FileHostError> {
-	let file = Folder::home().video(&conversation, &preview, &variant).ok_or(FileHostError::NotFound)?;
+pub async fn get_video(subject: SubjectId, Path((conversation, preview, variant)): Path<(String, String, String)>, request: Request) -> Result<Response, FileHostError> {
+	// The caller's own folder only: another subject's video is a 404.
+	let file = Folder::home().video(subject.as_str(), &conversation, &preview, &variant).ok_or(FileHostError::NotFound)?;
 	if !tokio::fs::try_exists(&file).await.map_err(|err| drive(&err))? {
 		return Err(FileHostError::NotFound);
 	}
@@ -152,6 +153,16 @@ async fn post(db: &SqlitePool, subject: &str, folder: &Folder, conversation: &st
 	}
 	let value: Value = serde_json::from_slice(body).map_err(|_unreadable| FileHostError::unprocessable_entity([("body", "is not JSON")]))?;
 	let event = step::parse(value).map_err(FileHostError::unprocessable_entity)?;
+	// An approval's preview is read before the write lock is taken, and
+	// confirmed inside it by one `stat`: no file is read while it is held.
+	let offer = match event.approval() {
+		Some(approval) => {
+			let stamp = conversations::stamp(folder, subject, conversation, &approval.preview).await.map_err(|err| drive(&err))?;
+			let offer = conversations::offered(folder, subject, conversation, approval).await.map_err(|err| drive(&err))?;
+			Some((approval, stamp, offer))
+		}
+		None => None,
+	};
 	let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
 	let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 	let at = match conversation_repo::prepare(&mut tx, subject, conversation, &event).await {
@@ -160,8 +171,14 @@ async fn post(db: &SqlitePool, subject: &str, folder: &Folder, conversation: &st
 		Err(ConversationError::Refused { at, refusal }) => return Ok(refused::<Refusal>(refusal, at)),
 		Err(err) => return Err(stored(err)),
 	};
-	if let Some(approval) = event.approval() {
-		let offer = conversations::offered(folder, conversation, approval).await.map_err(|err| drive(&err))?;
+	if let Some((approval, stamp, offer)) = offer {
+		let now_stamp = conversations::stamp(folder, subject, conversation, &approval.preview).await.map_err(|err| drive(&err))?;
+		// The preview changed since it was read: read it again (rare).
+		let offer = if now_stamp == stamp {
+			offer
+		} else {
+			conversations::offered(folder, subject, conversation, approval).await.map_err(|err| drive(&err))?
+		};
 		if let Err(unoffered) = offer {
 			return Ok(refused::<Unoffered>(unoffered, at));
 		}

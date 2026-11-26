@@ -254,6 +254,12 @@ async fn an_approval_is_kept_only_for_a_preview_home_offers_as_it_offers_it() {
 		.await
 		.unwrap();
 	assert_eq!(answer(picked).await, (StatusCode::CREATED, json!({ "kept": 4, "events": 5 })));
+	let theirs = answer(post(&state.pool, "subject-b", &folder, "c", green_lit()[0].to_string().as_bytes()).await.unwrap()).await;
+	assert_eq!(theirs.0, StatusCode::CREATED, "subject B's own conversation c");
+	assert!(
+		previews_of(&state.pool, "subject-b", &folder, "c").await.unwrap().previews.is_empty(),
+		"A's previews are none of B's"
+	);
 	let listed = previews_of(&state.pool, "subject-a", &folder, "c").await.unwrap();
 	let shown = serde_json::to_value(&listed).unwrap();
 	assert_eq!(
