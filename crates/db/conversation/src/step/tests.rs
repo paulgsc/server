@@ -51,15 +51,30 @@ fn green_light(version: u64) -> Value {
 }
 
 fn approve(preview: &str, chose: &Value) -> Value {
-	json!({
-		"event": "approve",
-		"by": "owner",
-		"at": "2026-11-26T10:06:00.000Z",
-		"preview": preview,
-		"offered": ["a", "b"],
-		"recommended": "a",
-		"chose": chose
-	})
+	let mut chose = chose.clone();
+	// A pick names the variant; its rule is the offer's (C1582).
+	if let Some(chose) = chose.as_object_mut() {
+		chose.remove("rule");
+	}
+	json!({ "event": "approve", "by": "owner", "at": "2026-11-26T10:06:00.000Z", "preview": preview, "chose": chose })
+}
+
+fn offer(preview: &str, variants: &[(&str, &str)]) -> Value {
+	let variants: Vec<Value> = variants
+		.iter()
+		.map(|(variant, rule)| json!({ "variant": variant, "title": variant.to_uppercase(), "callouts": ["what is in it"], "rule": rule }))
+		.collect();
+	json!({ "event": "offer", "by": "agent", "at": "2026-11-26T10:05:30.000Z", "offer": { "preview": preview, "about": "How one scene gives way to the next", "recommended": variants[0]["variant"], "variants": variants } })
+}
+
+/// Green-lit, with the agent's offers made: `p-close` (a, b, c), `p` (a, b)
+/// and `p-close-2` (a, b), whose b sets `calm-close` as `p-close`'s a does.
+fn offered() -> Vec<Value> {
+	let mut values = green_lit();
+	values.push(offer("p-close", &[("a", "calm-close"), ("b", "lively-close"), ("c", "playful-close")]));
+	values.push(offer("p", &[("a", "r"), ("b", "r2")]));
+	values.push(offer("p-close-2", &[("a", "quiet-close"), ("b", "calm-close")]));
+	values
 }
 
 /// A conversation green-lit at version 1.
@@ -110,48 +125,112 @@ fn a_log_steps_through_every_phase_to_the_green_light() {
 }
 
 #[test]
-fn an_approval_is_kept_with_the_rule_it_set() {
-	let mut values = green_lit();
-	values.push(approve("p-close", &json!({ "kind": "variant", "variant": "b", "rule": "calm-close" })));
+fn an_approval_is_kept_with_the_rule_its_offer_set() {
+	let mut values = offered();
+	values.push(approve("p-close", &json!({ "kind": "variant", "variant": "b" })));
 	let state = state_of(&values);
-	assert_eq!(state.approvals().len(), 1);
+	let kept = state.standing("p-close").unwrap();
 	assert_eq!(
-		state.approvals()[0].chose,
+		kept.chose,
 		Choice::Variant {
 			variant: "b".to_owned(),
-			rule: "calm-close".to_owned()
+			rule: "lively-close".to_owned()
 		}
+	);
+	assert_eq!(state.rules().collect::<Vec<_>>(), ["lively-close"]);
+	assert_eq!(state.offers().len(), 3);
+}
+
+#[test]
+fn a_pick_names_an_offer_made_and_one_of_its_variants() {
+	assert_eq!(
+		refused(&offered(), approve("p-close", &json!({ "kind": "variant", "variant": "d" }))),
+		Refusal::PreviewVariant {
+			preview: "p-close".to_owned(),
+			variant: "d".to_owned()
+		}
+	);
+	assert_eq!(
+		refused(&offered(), approve("p-open", &json!({ "kind": "variant", "variant": "a" }))),
+		Refusal::PreviewUnknown { preview: "p-open".to_owned() }
+	);
+	assert_eq!(
+		refused(&green_lit(), approve("p-close", &json!({ "kind": "else", "said": "neither, slower" }))),
+		Refusal::PreviewUnknown { preview: "p-close".to_owned() },
+		"no offer, no pick"
+	);
+}
+
+#[test]
+fn a_pick_changes_only_by_moving_the_standing_one() {
+	let mut values = offered();
+	values.push(approve("p-close", &json!({ "kind": "else", "said": "neither, slower" })));
+	let again = approve("p-close", &json!({ "kind": "variant", "variant": "a" }));
+	assert_eq!(refused(&values, again.clone()), Refusal::PreviewAgain { preview: "p-close".to_owned() });
+	let mut moves_nothing = again.clone();
+	moves_nothing["moves"] = json!("p");
+	assert_eq!(refused(&values, moves_nothing), Refusal::MovesUnknown { preview: "p".to_owned() });
+	let mut changed = again;
+	changed["moves"] = json!("p-close");
+	values.push(changed);
+	let state = state_of(&values);
+	assert_eq!(
+		state.standing("p-close").unwrap().chose,
+		Choice::Variant {
+			variant: "a".to_owned(),
+			rule: "calm-close".to_owned()
+		},
+		"the latest pick stands; the first stays kept in the log"
 	);
 	assert_eq!(state.rules().collect::<Vec<_>>(), ["calm-close"]);
 }
 
 #[test]
-fn a_pick_of_a_variant_the_preview_never_offered_is_refused() {
-	let refusal = refused(&green_lit(), approve("p-close", &json!({ "kind": "variant", "variant": "c", "rule": "loud-close" })));
+fn an_offer_is_made_once_and_only_once_green_lit() {
+	assert_eq!(refused(&offered(), offer("p", &[("a", "x"), ("b", "y")])), Refusal::OfferAgain { preview: "p".to_owned() });
 	assert_eq!(
-		refusal,
-		Refusal::PreviewVariant {
-			preview: "p-close".to_owned(),
-			variant: "c".to_owned()
+		refused(&[topic(), version(1, &json!([]))], offer("p", &[("a", "x"), ("b", "y")])),
+		Refusal::OutOfPhase {
+			phase: Phase::Podcast,
+			event: Kind::Offer
 		}
 	);
-	let mut unoffered = approve("p-close", &json!({ "kind": "else", "said": "neither, slower" }));
-	unoffered["recommended"] = json!("z");
+	let mut by_owner = offer("q", &[("a", "x"), ("b", "y")]);
+	by_owner["by"] = json!("owner");
 	assert_eq!(
-		refused(&green_lit(), unoffered),
-		Refusal::PreviewVariant {
-			preview: "p-close".to_owned(),
-			variant: "z".to_owned()
+		refused(&green_lit(), by_owner),
+		Refusal::Author {
+			event: Kind::Offer,
+			by: "owner".to_owned()
 		}
 	);
 }
 
 #[test]
-fn a_preview_is_approved_once() {
-	let mut values = green_lit();
-	values.push(approve("p-close", &json!({ "kind": "else", "said": "neither, slower" })));
-	let again = approve("p-close", &json!({ "kind": "variant", "variant": "a", "rule": "calm-close" }));
-	assert_eq!(refused(&values, again), Refusal::PreviewAgain { preview: "p-close".to_owned() });
+fn an_offer_is_what_the_cards_schema_takes() {
+	let good = offer("q", &[("a", "x"), ("b", "y")]);
+	assert!(parse(good.clone()).is_ok());
+	for broken in [
+		offer("q", &[("a", "x")]),
+		offer("q", &[("a", "x"), ("b", "y"), ("c", "z"), ("d", "w")]),
+		offer("q", &[("a", "x"), ("a", "y")]),
+		offer("q", &[("a", "x"), ("b", "x")]),
+		offer("Q Q", &[("a", "x"), ("b", "y")]),
+	] {
+		assert!(parse(broken).is_err());
+	}
+	let mut unrecommended = good.clone();
+	unrecommended["offer"]["recommended"] = json!("z");
+	assert!(parse(unrecommended).is_err());
+	let mut long = good.clone();
+	long["offer"]["about"] = json!("x".repeat(81));
+	assert!(parse(long).is_err());
+	let mut twice = good.clone();
+	twice["offer"]["variants"][0]["callouts"] = json!(["same", "same "]);
+	assert!(parse(twice).is_err(), "callouts are each once, trimmed");
+	let mut padded = good;
+	padded["offer"]["about"] = json!("  a heading  ");
+	assert!(parse(padded).is_ok(), "trimmed first, as zod's trim reads it");
 }
 
 #[test]
@@ -288,8 +367,8 @@ fn the_green_light_needs_the_newest_version_measured_and_under_the_bound() {
 fn notes_name_a_turn_of_the_newest_version_its_words_once_and_approved_rules() {
 	let notes =
 		|turn: &str, words: &Value, rules: &Value| json!({ "event": "notes", "by": "agent", "at": "2026-11-26T10:07:00.000Z", "turn": turn, "words": words, "rules": rules });
-	let mut lit = green_lit();
-	lit.push(approve("p-close", &json!({ "kind": "variant", "variant": "a", "rule": "calm-close" })));
+	let mut lit = offered();
+	lit.push(approve("p-close", &json!({ "kind": "variant", "variant": "a" })));
 	let calm = json!(["calm-close"]);
 	assert_eq!(
 		refused(&lit, notes("t9", &json!([{ "at": 0, "stress": 1 }]), &calm)),
@@ -330,8 +409,8 @@ fn notes_name_a_turn_of_the_newest_version_its_words_once_and_approved_rules() {
 fn a_turn_whose_words_the_record_does_not_hold_takes_no_notes() {
 	let mut untranscribed = version(1, &json!([]));
 	untranscribed["version"]["turns"][0] = json!({ "id": "t1", "speaker": "owner", "voice": "owner", "take": "take-1" });
-	let mut lit = vec![topic(), untranscribed, heard(1, 60_000), green_light(1)];
-	lit.push(approve("p", &json!({ "kind": "variant", "variant": "a", "rule": "r" })));
+	let mut lit = vec![topic(), untranscribed, heard(1, 60_000), green_light(1), offer("p", &[("a", "r"), ("b", "r2")])];
+	lit.push(approve("p", &json!({ "kind": "variant", "variant": "a" })));
 	let notes = json!({ "event": "notes", "by": "agent", "at": "2026-11-26T10:07:00.000Z", "turn": "t1", "words": [{ "at": 0, "stress": 1 }], "rules": ["r"] });
 	assert_eq!(refused(&lit, notes), Refusal::NotesWord { turn: "t1".to_owned(), at: 0 });
 }
@@ -398,16 +477,20 @@ fn a_flag_lands_on_the_version_the_owner_heard() {
 
 #[test]
 fn a_rule_already_set_is_set_again_only_by_naming_the_approval_it_moves() {
-	let mut set = green_lit();
-	set.push(approve("p-close", &json!({ "kind": "variant", "variant": "a", "rule": "calm-close" })));
-	let again = approve("p-close-2", &json!({ "kind": "variant", "variant": "b", "rule": "calm-close" }));
+	let mut set = offered();
+	set.push(approve("p-close", &json!({ "kind": "variant", "variant": "a" })));
+	// p-close-2's b sets calm-close too.
+	let again = approve("p-close-2", &json!({ "kind": "variant", "variant": "b" }));
 	assert_eq!(refused(&set, again.clone()), Refusal::RuleAgain { rule: "calm-close".to_owned() });
 	let mut wrong = again.clone();
-	wrong["moves"] = json!("p-other");
-	assert_eq!(refused(&set, wrong), Refusal::RuleAgain { rule: "calm-close".to_owned() });
+	wrong["moves"] = json!("p");
+	assert_eq!(refused(&set, wrong), Refusal::MovesUnknown { preview: "p".to_owned() });
 	let mut moving = again;
 	moving["moves"] = json!("p-close");
-	assert!(state_of(&set).step(&event(moving)).is_ok());
+	set.push(moving);
+	let state = state_of(&set);
+	assert!(state.standing("p-close").is_none(), "the moved approval no longer stands");
+	assert_eq!(state.rules().collect::<Vec<_>>(), ["calm-close"]);
 }
 
 #[test]
@@ -441,11 +524,11 @@ fn an_event_is_exactly_its_kinds_fields() {
 	assert!(parse(local).is_err());
 	assert!(parse(json!({ "event": "edit", "at": "2026-11-26T10:01:00Z" })).is_err());
 	assert!(parse(json!({ "event": "point", "by": "owner", "at": "2026-11-26T10:01:00Z" })).is_err());
-	let mut thrice = approve("p", &json!({ "kind": "else", "said": "neither" }));
-	thrice["offered"] = json!(["a", "a"]);
-	assert!(parse(thrice).is_err());
+	let mut restated = approve("p", &json!({ "kind": "else", "said": "neither" }));
+	restated["offered"] = json!(["a", "b"]);
+	assert!(parse(restated).is_err(), "an approval names the offer, never restates it");
 	let mut set = approve("p", &json!({ "kind": "variant", "variant": "a" }));
-	assert!(parse(set.clone()).is_err());
+	assert!(parse(set.clone()).is_ok());
 	set["chose"] = json!({ "kind": "variant", "variant": "a", "rule": "r", "value": 3 });
 	assert!(parse(set).is_err(), "a pick sets a rule, never a value");
 }

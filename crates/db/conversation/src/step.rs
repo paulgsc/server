@@ -20,9 +20,12 @@
 //!   of the newest version only, under [`MOST_MS`], notes only once
 //!   green-lit, on a turn of the newest version whose words the record holds,
 //!   each word once and inside the turn, following at least one rule and
-//!   only rules an approval set, and each preview approved once, naming only
-//!   the variants it offered, setting a rule already set only by naming the
-//!   approval it moves (`rule-again`).
+//!   only rules a standing approval set, each offer made once (`offer-again`)
+//!   and only once green-lit, and each pick naming an offer made
+//!   (`preview-unknown`) and one of its variants (`preview-variant`),
+//!   changing a standing pick only by moving it (`moves-unknown`,
+//!   `preview-again`), and setting a rule another preview's pick set only by
+//!   moving that one (`rule-again`) (C1582).
 //! - **The content rules that rest on some-ui's closed vocabularies** (the
 //!   cast and its roles, each character's emotions, the flag kinds' voices,
 //!   scopes and answers, Kokoro's voices, how one version's turns differ from
@@ -55,6 +58,16 @@ pub const POINTS_MOST: usize = 40;
 /// green-lit at, as home measured it.
 pub const MOST_MS: u64 = 20 * 60_000;
 
+/// The bounds of an offer (`PreviewOfferSchema`, C1582): its heading, a
+/// variant's title, how many callouts and each one's length.
+const OFFER_ABOUT_MOST: usize = 80;
+const OFFER_TITLE_MOST: usize = 60;
+const OFFER_CALLOUTS_MOST: usize = 12;
+const OFFER_CALLOUT_MOST: usize = 80;
+
+/// `CONVERSATION_POLICY.noteMost`: the owner's own words on a preview.
+const SAID_MOST: usize = 4000;
+
 /// `AUTHORS`: who writes a record's events (C1581).
 pub const AUTHORS: [&str; 3] = ["owner", "agent", "home"];
 
@@ -85,7 +98,7 @@ impl Phase {
 			Self::Drafting => &[Kind::Point, Kind::Version],
 			Self::Podcast => &[Kind::Point, Kind::Flag, Kind::Heard, Kind::GreenLight],
 			Self::Flagged => &[Kind::Point, Kind::Flag, Kind::Withdraw, Kind::Version, Kind::Heard],
-			Self::GreenLit => &[Kind::Notes, Kind::Approve],
+			Self::GreenLit => &[Kind::Notes, Kind::Offer, Kind::Approve],
 		}
 	}
 }
@@ -102,12 +115,13 @@ pub enum Kind {
 	Heard,
 	GreenLight,
 	Notes,
+	Offer,
 	Approve,
 }
 
 impl Kind {
 	/// Every kind, in the schema's order.
-	pub const ALL: [Self; 9] = [
+	pub const ALL: [Self; 10] = [
 		Self::Topic,
 		Self::Point,
 		Self::Version,
@@ -116,6 +130,7 @@ impl Kind {
 		Self::Heard,
 		Self::GreenLight,
 		Self::Notes,
+		Self::Offer,
 		Self::Approve,
 	];
 
@@ -132,6 +147,7 @@ impl Kind {
 			Self::Heard => "heard",
 			Self::GreenLight => "green-light",
 			Self::Notes => "notes",
+			Self::Offer => "offer",
 			Self::Approve => "approve",
 		}
 	}
@@ -144,7 +160,7 @@ impl Kind {
 	pub const fn authors(self) -> &'static [&'static str] {
 		match self {
 			Self::Topic | Self::Point | Self::Flag | Self::Withdraw | Self::GreenLight | Self::Approve => &["owner"],
-			Self::Version | Self::Notes => &["agent"],
+			Self::Version | Self::Notes | Self::Offer => &["agent"],
 			Self::Heard => &["home"],
 		}
 	}
@@ -165,7 +181,8 @@ impl Kind {
 			Self::Withdraw => &["flag"],
 			Self::Heard => &["version", "ms"],
 			Self::Notes => &["turn", "words", "rules"],
-			Self::Approve => &["preview", "offered", "recommended", "chose"],
+			Self::Offer => &["offer"],
+			Self::Approve => &["preview", "chose"],
 		}
 	}
 
@@ -205,6 +222,9 @@ pub enum Refusal {
 	NotesTurn { turn: String },
 	NotesWord { turn: String, at: u64 },
 	NotesRule { rule: String },
+	OfferAgain { preview: String },
+	PreviewUnknown { preview: String },
+	MovesUnknown { preview: String },
 	PreviewAgain { preview: String },
 	RuleAgain { rule: String },
 	PreviewVariant { preview: String, variant: String },
@@ -226,11 +246,11 @@ pub struct Event {
 }
 
 impl Event {
-	/// The approval it is, if it is one.
+	/// The offer it makes, if it is one.
 	#[must_use]
-	pub const fn approval(&self) -> Option<&Approval> {
+	pub const fn offer(&self) -> Option<&Offer> {
 		match &self.body {
-			Body::Approve(approval) => Some(approval),
+			Body::Offer(offer) => Some(offer),
 			_ => None,
 		}
 	}
@@ -247,7 +267,8 @@ enum Body {
 	Heard { version: u64, ms: u64 },
 	GreenLight { version: u64 },
 	Notes { turn: String, words: Vec<u64>, rules: Vec<String> },
-	Approve(Approval),
+	Offer(Offer),
+	Approve(Pick),
 }
 
 /// What a flag covers (`FlagScopeSchema`).
@@ -279,21 +300,57 @@ struct Turn {
 	words: Option<usize>,
 }
 
-/// An approval (`KeptApproval`), with when it was kept.
+/// A preview the agent offers the owner (`offer`, C1582): what it bundles,
+/// its two or three variants, and the one recommended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Offer {
+	pub preview: String,
+	pub about: String,
+	pub recommended: String,
+	pub variants: Vec<OfferVariant>,
+}
+
+/// One variant of an offer: its name, what its clip calls out, and the rule
+/// picking it sets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OfferVariant {
+	pub variant: String,
+	pub title: String,
+	pub callouts: Vec<String>,
+	pub rule: String,
+}
+
+/// The owner's pick on an offer, as sent (`approve`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pick {
+	preview: String,
+	chose: Picked,
+	moves: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum Picked {
+	Variant { variant: String },
+	Else { said: String },
+}
+
+/// An approval as kept (`KeptApproval`): the preview, what the owner chose
+/// with the rule it set, and the approval it moves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Approval {
 	pub preview: String,
-	pub offered: Vec<String>,
-	pub recommended: String,
-	/// `PreviewChoice`, as sent.
 	pub chose: Choice,
-	/// The approval of the same rule it moves, by its preview.
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub moves: Option<String>,
 }
 
-/// What the owner chose on a preview (`PreviewChoiceSchema`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+/// What the owner chose on a preview: a variant and the rule it set, or
+/// something else in their own words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Choice {
 	Variant { variant: String, rule: String },
 	Else { said: String },
@@ -319,7 +376,10 @@ pub struct State {
 	flags: Vec<KeptFlag>,
 	/// Each measured version and how long it runs.
 	heard: Vec<(u64, u64)>,
-	approvals: Vec<Approval>,
+	offers: Vec<Offer>,
+	/// Each preview's standing approval (`standingApprovals`), in the order
+	/// first set: a later approval that moves one takes its place.
+	standing: Vec<Approval>,
 }
 
 impl Default for State {
@@ -339,7 +399,8 @@ impl State {
 			latest: None,
 			flags: Vec::new(),
 			heard: Vec::new(),
-			approvals: Vec::new(),
+			offers: Vec::new(),
+			standing: Vec::new(),
 		}
 	}
 
@@ -348,16 +409,22 @@ impl State {
 		self.phase
 	}
 
-	/// Each approval, in the order kept.
+	/// Each offer, in the order made.
 	#[must_use]
-	pub fn approvals(&self) -> &[Approval] {
-		&self.approvals
+	pub fn offers(&self) -> &[Offer] {
+		&self.offers
 	}
 
-	/// The rules the owner's approvals set, in the order set
+	/// `preview`'s standing approval, if the owner has picked on it.
+	#[must_use]
+	pub fn standing(&self, preview: &str) -> Option<&Approval> {
+		self.standing.iter().find(|approval| approval.preview == preview)
+	}
+
+	/// The rules the standing approvals set, in their order
 	/// (`approvedRules`).
 	fn rules(&self) -> impl Iterator<Item = &str> {
-		self.approvals.iter().filter_map(|approval| match &approval.chose {
+		self.standing.iter().filter_map(|approval| match &approval.chose {
 			Choice::Variant { rule, .. } => Some(rule.as_str()),
 			Choice::Else { .. } => None,
 		})
@@ -467,7 +534,13 @@ impl State {
 				self.phase = Phase::GreenLit;
 			}
 			Body::Notes { turn, words, rules } => self.notes(turn, words, rules, out_of_phase)?,
-			Body::Approve(approval) => self.approve(approval)?,
+			Body::Offer(offer) => {
+				if self.offers.iter().any(|kept| kept.preview == offer.preview) {
+					return Err(Refusal::OfferAgain { preview: offer.preview.clone() });
+				}
+				self.offers.push(offer.clone());
+			}
+			Body::Approve(pick) => self.approve(pick)?,
 		}
 		self.seq += 1;
 		Ok(())
@@ -538,31 +611,59 @@ impl State {
 		Ok(())
 	}
 
-	/// An approval: of a preview once, naming only the variants it offered.
-	fn approve(&mut self, approval: &Approval) -> Result<(), Refusal> {
-		if self.approvals.iter().any(|kept| kept.preview == approval.preview) {
-			return Err(Refusal::PreviewAgain {
-				preview: approval.preview.clone(),
-			});
-		}
-		let chosen = match &approval.chose {
-			Choice::Variant { variant, .. } => Some(variant),
-			Choice::Else { .. } => None,
+	/// An approval (C1582), in `stepConversation`'s order: of an offer made,
+	/// naming one of its variants, moving only a standing approval, of a
+	/// preview not yet standing unless it moves itself, and setting a rule
+	/// another preview's standing approval set only by moving that one.
+	fn approve(&mut self, pick: &Pick) -> Result<(), Refusal> {
+		let preview = &pick.preview;
+		let Some(offer) = self.offers.iter().find(|offer| &offer.preview == preview) else {
+			return Err(Refusal::PreviewUnknown { preview: preview.clone() });
 		};
-		if let Some(named) = std::iter::once(&approval.recommended).chain(chosen).find(|named| !approval.offered.contains(named)) {
-			return Err(Refusal::PreviewVariant {
-				preview: approval.preview.clone(),
-				variant: named.clone(),
-			});
+		let chose = match &pick.chose {
+			Picked::Variant { variant } => {
+				let Some(offered) = offer.variants.iter().find(|v| &v.variant == variant) else {
+					return Err(Refusal::PreviewVariant {
+						preview: preview.clone(),
+						variant: variant.clone(),
+					});
+				};
+				Choice::Variant {
+					variant: variant.clone(),
+					rule: offered.rule.clone(),
+				}
+			}
+			Picked::Else { said } => Choice::Else { said: said.clone() },
+		};
+		if let Some(moves) = &pick.moves {
+			if self.standing(moves).is_none() {
+				return Err(Refusal::MovesUnknown { preview: moves.clone() });
+			}
 		}
-		// A rule already set is set again only by an approval naming the one it moves.
-		if let Choice::Variant { rule, .. } = &approval.chose {
-			let set_by = self.approvals.iter().find(|kept| matches!(&kept.chose, Choice::Variant { rule: set, .. } if set == rule));
-			if set_by.is_some_and(|kept| approval.moves.as_ref() != Some(&kept.preview)) {
+		if self.standing(preview).is_some() && pick.moves.as_ref() != Some(preview) {
+			return Err(Refusal::PreviewAgain { preview: preview.clone() });
+		}
+		if let Choice::Variant { rule, .. } = &chose {
+			let set_by = self
+				.standing
+				.iter()
+				.find(|kept| &kept.preview != preview && matches!(&kept.chose, Choice::Variant { rule: set, .. } if set == rule));
+			if set_by.is_some_and(|kept| pick.moves.as_ref() != Some(&kept.preview)) {
 				return Err(Refusal::RuleAgain { rule: rule.clone() });
 			}
 		}
-		self.approvals.push(approval.clone());
+		let approval = Approval {
+			preview: preview.clone(),
+			chose,
+			moves: pick.moves.clone(),
+		};
+		if let Some(moves) = pick.moves.as_ref().filter(|moves| *moves != preview) {
+			self.standing.retain(|kept| &kept.preview != moves);
+		}
+		match self.standing.iter_mut().find(|kept| &kept.preview == preview) {
+			Some(kept) => *kept = approval,
+			None => self.standing.push(approval),
+		}
 		Ok(())
 	}
 
@@ -843,45 +944,78 @@ fn body(kind: Kind, object: &Map<String, Value>) -> Result<Body, Vec<Problem>> {
 				rules,
 			}
 		}
-		Kind::Approve => Body::Approve(approval(object)?),
+		Kind::Offer => Body::Offer(offer(object)?),
+		Kind::Approve => Body::Approve(pick(object)?),
 	})
 }
 
-/// What home reads of an approval (`approve`).
-fn approval(object: &Map<String, Value>) -> Result<Approval, Vec<Problem>> {
+/// What home reads of an approval (`approve`, C1582).
+fn pick(object: &Map<String, Value>) -> Result<Pick, Vec<Problem>> {
 	let preview: String = field(object, "preview")?;
-	let offered: Vec<String> = field(object, "offered")?;
-	let recommended: String = field(object, "recommended")?;
-	let chose: Choice = field(object, "chose")?;
-	if !(2..=PREVIEW_VARIANTS_MOST).contains(&offered.len()) {
-		return Err(problem("offered", "is two or three variants"));
-	}
-	if offered.iter().enumerate().any(|(i, variant)| offered[..i].contains(variant)) {
-		return Err(problem("offered", "a variant is offered twice"));
-	}
-	let names = std::iter::once(&preview).chain(&offered).chain(std::iter::once(&recommended));
-	let chosen: Vec<&String> = match &chose {
-		Choice::Variant { variant, rule } => vec![variant, rule],
-		Choice::Else { said } => {
-			if said.trim().is_empty() {
-				return Err(problem("chose.said", "is the owner's words"));
-			}
-			Vec::new()
-		}
-	};
-	if !names.chain(chosen).all(|name| is_name(name)) {
-		return Err(problem("approve", "names each preview, variant and rule in 1 to 64 characters"));
-	}
+	let chose: Picked = field(object, "chose")?;
 	let moves: Option<String> = if object.contains_key("moves") { Some(field(object, "moves")?) } else { None };
-	if moves.as_deref().is_some_and(|moves| !is_name(moves)) {
-		return Err(problem("moves", "is a preview's id"));
+	if !is_id(&preview) || moves.as_deref().is_some_and(|moves| !is_id(moves)) {
+		return Err(problem("preview", "is a preview's id"));
 	}
-	Ok(Approval {
-		preview,
-		offered,
-		recommended,
-		chose,
-		moves,
+	match &chose {
+		Picked::Variant { variant } if !is_id(variant) => return Err(problem("chose.variant", "is a variant's id")),
+		Picked::Else { said } if !fits(said, SAID_MOST) => return Err(problem("chose.said", "is the owner's words, at most 4,000 characters")),
+		Picked::Variant { .. } | Picked::Else { .. } => {}
+	}
+	Ok(Pick { preview, chose, moves })
+}
+
+/// zod's `z.string().trim().min(1).max(most)`: trimmed, then 1 to `most`
+/// characters.
+fn fits(text: &str, most: usize) -> bool {
+	let trimmed = text.trim();
+	!trimmed.is_empty() && trimmed.chars().count() <= most
+}
+
+/// Each of `items` once.
+fn distinct<T: PartialEq>(items: &[T]) -> bool {
+	items.iter().enumerate().all(|(i, item)| !items[..i].contains(item))
+}
+
+/// What home reads of an offer (`offer`, C1582): `PreviewOfferSchema`'s
+/// bounds, each line trimmed first.
+fn offer(object: &Map<String, Value>) -> Result<Offer, Vec<Problem>> {
+	let offer: Offer = field(object, "offer")?;
+	let variants = &offer.variants;
+	let ids: Vec<&str> = variants.iter().map(|v| v.variant.as_str()).collect();
+	let rules: Vec<&str> = variants.iter().map(|v| v.rule.trim()).collect();
+	let good = is_id(&offer.preview)
+		&& fits(&offer.about, OFFER_ABOUT_MOST)
+		&& (2..=PREVIEW_VARIANTS_MOST).contains(&variants.len())
+		&& ids.iter().all(|id| is_id(id))
+		&& distinct(&ids)
+		&& distinct(&rules)
+		&& ids.contains(&offer.recommended.as_str())
+		&& variants.iter().all(|v| {
+			let callouts: Vec<&str> = v.callouts.iter().map(|c| c.trim()).collect();
+			fits(&v.title, OFFER_TITLE_MOST)
+				&& fits(&v.rule, NAME_MOST)
+				&& (1..=OFFER_CALLOUTS_MOST).contains(&callouts.len())
+				&& v.callouts.iter().all(|c| fits(c, OFFER_CALLOUT_MOST))
+				&& distinct(&callouts)
+		});
+	if !good {
+		return Err(problem("offer", "is not an offer PreviewOfferSchema takes"));
+	}
+	Ok(Offer {
+		about: offer.about.trim().to_owned(),
+		variants: offer
+			.variants
+			.iter()
+			.map(|v| OfferVariant {
+				variant: v.variant.clone(),
+				title: v.title.trim().to_owned(),
+				callouts: v.callouts.iter().map(|c| c.trim().to_owned()).collect(),
+				rule: v.rule.trim().to_owned(),
+			})
+			.collect(),
+		preview: offer.preview,
+		recommended: offer.recommended,
 	})
 }
 

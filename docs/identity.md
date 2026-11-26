@@ -2851,8 +2851,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     conversation (paulgsc/server#1243, HOST16-S; paulgsc/some-ui C1535): the
     topic and points the owner gave, each podcast version the agent wrote, the
     owner's flags and withdrawals, home's measure of a version's audio, the
-    green light, the agent's emotion notes and the owner's preview approvals,
-    each as sent, numbered in its log, with when it reached home. The topic,
+    green light, the agent's emotion notes and preview offers, and the owner's
+    preview approvals, each as sent, numbered in its log, with when it reached
+    home. The topic,
     flags and notes are the owner's own words about their work. A point or an
     owner's turn names a take by its voice note id only: the audio and its
     transcript stay where home keeps them (invariant 23), and nothing here
@@ -2863,12 +2864,13 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     `POST /conversations/:id/events` and read only by `GET /conversations/:id`
     and `GET /conversations/:id/previews`, each a session's for its own subject
     (a paired phone's or a browser's). A conversation's previews are its
-    subject's too: files under `renders/conversation/<subject>/<id>/`, read
+    subject's too: their clips are files under
+    `renders/conversation/<subject>/<id>/`, read
     only by `GET /conversations/:id/previews` and
     `GET /conversations/:id/previews/:preview/:variant/video`, each for the
     caller's own subject, so another subject's are a `404`. An event is kept only after the kept log
-    and it replay through `conversation_repo::step`, and an approval only for a
-    preview home offers as it offers it (docs/conversations.md). Nothing of a
+    and it replay through `conversation_repo::step`, and an offer only once
+    home holds its clips (docs/conversations.md). Nothing of a
     record reaches a log line: each handler records only `otel.kind`
     (invariant 6).
     *Enforced by* `conversation_repo`'s
@@ -2879,8 +2881,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     `handlers::conversations`'
     `every_route_needs_a_session_and_an_id_that_is_none_is_not_found`,
     `a_refused_event_answers_why_and_writes_nothing` and
-    `an_approval_is_kept_only_for_a_preview_home_offers_as_it_offers_it`; and
-    `conversations`' `another_subjects_previews_are_none_of_the_callers`.
+    `an_offer_is_kept_only_once_its_clips_are_on_home_and_a_pick_names_it`; and
+    `conversations`' `another_subjects_clips_are_none_of_the_callers`.
     *Not enforced:* that nothing else writes or reads the table, which
     `git grep -n conversation_event -- '*.rs'` shows today; and that a take
     a record names is one home holds, which is not checked.

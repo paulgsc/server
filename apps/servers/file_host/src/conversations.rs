@@ -1,71 +1,44 @@
-//! A conversation's previews, as home keeps them (HOST16-S, paulgsc/server#1243;
-//! paulgsc/some-ui#3558).
+//! A conversation's previews, as home serves them (HOST16-S, paulgsc/server#1243;
+//! paulgsc/some-ui#3558, C1582).
 //!
 //! After the green light the agent proposes the video's signature by the
-//! rules the owner approved, and where a rule is new or in doubt it renders a
+//! rules the owner approved, and where a rule is new or in doubt it offers a
 //! preview: two or three muted, looping variants, each with what is in it
 //! called out, one recommended. The owner watches them on the phone and
 //! picks one, which sets a rule, or says what else they want (the owner's
-//! guard on paulgsc/some-ui#3521: the owner never sets a value). The pick is
-//! an `approve` event in the conversation's record (`conversation_repo`).
+//! guard on paulgsc/some-ui#3521: the owner never sets a value).
 //!
-//! Generated assets live only on home and are served by URL (C1029), so a
-//! preview is files, kept in no table. They are the subject's, as the record
-//! is: a conversation's id is unique only within its subject, so every read
-//! takes the subject and finds the folder under it (`subject-<hex>`, an id no
-//! person chose), and another subject's previews are a `404`:
+//! **The record is the one source.** The offer is the agent's `offer` event
+//! and the pick the owner's `approve` event, both in the conversation's
+//! record (`conversation_repo`). Only the clips are files, since generated
+//! assets live only on home and are served by URL (C1029):
 //!
 //! ```text
-//! renders/conversation/<subject>/<conversation>/<preview>/preview.json   some-ui.conversation-preview/1:
-//!     { schema, preview, about, recommended, variants: [{ variant, title, rule, callouts }] }
-//! renders/conversation/<subject>/<conversation>/<preview>/<variant>.mp4  each variant's video
+//! renders/conversation/<subject>/<conversation>/<preview>/<variant>.mp4
 //! ```
 //!
-//! The renderer writes `preview.json` last, so a preview is listed once its
-//! manifest is there and every variant's video beside it: before that it is
-//! still being made and is not offered. A manifest that does not read is
-//! named in the answer (`unreadable`), never left out unsaid. Every id is a
-//! `showId` (`conversation_repo::step::is_id`), so no name from a request or
-//! a manifest reaches a path but as one plain segment.
+//! They are the subject's, as the record is: a conversation's id is unique
+//! only within its subject, so every read takes the subject and finds the
+//! folder under it (`subject-<hex>`, an id no person chose), and another
+//! subject's clips are a `404`. Home keeps an offer only once every one of
+//! its clips is there ([`unrendered`]), so the renderer writes the clips and
+//! the agent offers after. Every id is a `showId`
+//! (`conversation_repo::step::is_id`), so no name reaches a path but as one
+//! plain segment.
 //!
-//! Nothing prunes a conversation's previews: the record names each one an
+//! Nothing prunes a conversation's clips: the record names each one an
 //! approval was given on, and the owner may watch it again.
 
-use conversation_repo::step::{is_id, Approval, Choice, PREVIEW_VARIANTS_MOST};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use conversation_repo::step::{is_id, Approval, Offer, State};
+use serde::Serialize;
+use std::path::PathBuf;
 
-/// Where the renderer keeps each conversation's previews:
+/// Where the renderer keeps each conversation's clips:
 /// `${STORAGE}/renders/conversation`.
 pub const RENDERS_FOLDER: &str = "/app/dbs/renders/conversation";
 
-/// A preview's manifest, in its folder.
-pub const MANIFEST: &str = "preview.json";
-
-/// The manifest's schema tag. Its shape is the one the phone's card renders
-/// (paulgsc/some-ui `packages/video-render/src/preview-offer.ts`,
-/// `PreviewOfferSchema`, #3575), named as home's files name it.
-pub const MANIFEST_SCHEMA: &str = "some-ui.conversation-preview/1";
-
-/// The largest manifest home reads.
-const MANIFEST_CEILING: u64 = 64 * 1024;
-
-/// The most callouts one variant has: "what's in it", a short list.
-const CALLOUTS_MOST: usize = 12;
-
-/// `PreviewOfferSchema`'s bounds (paulgsc/some-ui `preview-offer.ts`):
-/// the most characters of the heading, of a variant's title, of one callout,
-/// and of a name.
-const ABOUT_MOST: usize = 80;
-const TITLE_MOST: usize = 60;
-const CALLOUT_MOST: usize = 80;
-const NAME_MOST: usize = 64;
-
-/// The most previews one conversation lists.
-const PREVIEWS_MOST: usize = 200;
-
-/// The folder a conversation's previews are in: [`Folder::home`] on home, a
-/// temporary folder in tests.
+/// The folder a subject's conversations' clips are in: [`Folder::home`] on
+/// home, a temporary folder in tests.
 #[derive(Debug, Clone)]
 pub struct Folder(pub PathBuf);
 
@@ -76,40 +49,44 @@ impl Folder {
 		Self(PathBuf::from(RENDERS_FOLDER))
 	}
 
-	/// `subject`'s folder of `conversation`, when both are ids.
-	fn of(&self, subject: &str, conversation: &str) -> Option<PathBuf> {
-		(is_id(subject) && is_id(conversation)).then(|| self.0.join(subject).join(conversation))
-	}
-
-	/// The video of `variant` of `preview` of `subject`'s `conversation`,
-	/// when every name is an id.
+	/// The clip of `variant` of `preview` of `subject`'s `conversation`, when
+	/// every name is an id.
 	#[must_use]
 	pub fn video(&self, subject: &str, conversation: &str, preview: &str, variant: &str) -> Option<PathBuf> {
-		let folder = self.of(subject, conversation)?;
-		(is_id(preview) && is_id(variant)).then(|| folder.join(preview).join(String::from(variant) + ".mp4"))
+		[subject, conversation, preview, variant]
+			.iter()
+			.all(|name| is_id(name))
+			.then(|| self.0.join(subject).join(conversation).join(preview).join(String::from(variant) + ".mp4"))
 	}
 }
 
-/// A manifest as the renderer writes it.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-	schema: String,
-	preview: String,
-	/// The card's heading: what the preview bundles.
-	about: String,
-	recommended: String,
-	variants: Vec<ManifestVariant>,
+/// Why home refuses an offer the record's step would take: a clip it names
+/// is not on home.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "why", rename_all = "kebab-case")]
+pub enum Unrendered {
+	OfferUnrendered { offer: String, variant: String },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ManifestVariant {
-	variant: String,
-	/// The variant's name on the card.
-	title: String,
-	rule: String,
-	callouts: Vec<String>,
+/// The first variant of `offer` whose clip home does not hold for
+/// `subject`'s `conversation`, if any.
+///
+/// # Errors
+/// The drive's error, but a clip that is not there.
+pub async fn unrendered(folder: &Folder, subject: &str, conversation: &str, offer: &Offer) -> std::io::Result<Option<Unrendered>> {
+	for variant in &offer.variants {
+		let missing = Unrendered::OfferUnrendered {
+			offer: offer.preview.clone(),
+			variant: variant.variant.clone(),
+		};
+		let Some(clip) = folder.video(subject, conversation, &offer.preview, &variant.variant) else {
+			return Ok(Some(missing));
+		};
+		if !tokio::fs::try_exists(&clip).await? {
+			return Ok(Some(missing));
+		}
+	}
+	Ok(None)
 }
 
 /// One variant a preview offers.
@@ -122,14 +99,20 @@ pub struct Variant {
 	pub rule: String,
 	/// What is in it, as the clip calls each out.
 	pub callouts: Vec<String>,
-	/// Its video's path on home, under the API.
+	/// Its clip's path on home, under the API.
 	pub video: String,
 }
 
-/// The record's approval of a preview.
+/// The owner's standing pick on a preview.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Approved {
-	pub chose: Choice,
+	pub chose: conversation_repo::step::Choice,
+}
+
+impl From<&Approval> for Approved {
+	fn from(approval: &Approval) -> Self {
+		Self { chose: approval.chose.clone() }
+	}
 }
 
 /// One preview a conversation offers.
@@ -139,214 +122,57 @@ pub struct Preview {
 	/// The card's heading: what the preview bundles.
 	pub about: String,
 	pub recommended: String,
-	/// Two or three, in the manifest's order.
+	/// Two or three, in the offer's order.
 	pub variants: Vec<Variant>,
-	/// The owner's pick, once the record holds one.
+	/// The owner's standing pick, once the record holds one.
 	pub approved: Option<Approved>,
 }
 
 /// `GET /conversations/:id/previews`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Previews {
-	/// By id.
+	/// In the order offered.
 	pub previews: Vec<Preview>,
-	/// Each preview whose manifest is there but does not read, by id.
+	/// Each offer whose clips home no longer holds, by id: offered, but not
+	/// shown, since its videos would not play.
 	pub unreadable: Vec<String>,
 }
 
-/// zod's `z.string().trim().min(1).max(most)`: trimmed, then 1 to `most`
-/// characters.
-fn fits(text: &str, most: usize) -> bool {
-	let trimmed = text.trim();
-	!trimmed.is_empty() && trimmed.chars().count() <= most
-}
-
-/// The manifest's offer, checked: its own id, two or three variants each an
-/// id once, the recommended one of them, and its heading and each title,
-/// rule and callout a short line.
-fn offer(manifest: Manifest, preview: &str) -> Option<Offer> {
-	let names: Vec<&str> = manifest.variants.iter().map(|v| v.variant.as_str()).collect();
-	let good = manifest.schema == MANIFEST_SCHEMA
-		&& manifest.preview == preview
-		&& (2..=PREVIEW_VARIANTS_MOST).contains(&names.len())
-		&& names.iter().enumerate().all(|(i, name)| is_id(name) && !names[..i].contains(name))
-		&& names.contains(&manifest.recommended.as_str())
-		&& fits(&manifest.about, ABOUT_MOST)
-		&& manifest
-			.variants
-			.iter()
-			.all(|v| fits(&v.title, TITLE_MOST) && fits(&v.rule, NAME_MOST) && (1..=CALLOUTS_MOST).contains(&v.callouts.len()) && v.callouts.iter().all(|c| fits(c, CALLOUT_MOST)));
-	good.then(|| Offer {
-		about: manifest.about.trim().to_owned(),
-		recommended: manifest.recommended,
-		variants: manifest
-			.variants
-			.into_iter()
-			.map(|v| ManifestVariant {
-				title: v.title.trim().to_owned(),
-				rule: v.rule.trim().to_owned(),
-				callouts: v.callouts.iter().map(|c| c.trim().to_owned()).collect(),
-				variant: v.variant,
-			})
-			.collect(),
-	})
-}
-
-/// A ready preview's offer, as its manifest says it.
-struct Offer {
-	about: String,
-	recommended: String,
-	variants: Vec<ManifestVariant>,
-}
-
-/// What reading one preview's folder found.
-enum Read {
-	/// Still being made: no manifest yet, or a variant's video not there.
-	Making,
-	Unreadable,
-	Ready(Offer),
-}
-
-async fn read_one(folder: &Path, preview: &str) -> std::io::Result<Read> {
-	let manifest = folder.join(MANIFEST);
-	let size = match tokio::fs::metadata(&manifest).await {
-		Ok(meta) => meta.len(),
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Read::Making),
-		Err(err) => return Err(err),
-	};
-	if size > MANIFEST_CEILING {
-		return Ok(Read::Unreadable);
-	}
-	let bytes = tokio::fs::read(&manifest).await?;
-	let Ok(parsed) = serde_json::from_slice::<Manifest>(&bytes) else {
-		return Ok(Read::Unreadable);
-	};
-	let Some(offer) = offer(parsed, preview) else {
-		return Ok(Read::Unreadable);
-	};
-	for variant in &offer.variants {
-		if !tokio::fs::try_exists(folder.join(String::from(&variant.variant) + ".mp4")).await? {
-			return Ok(Read::Making);
-		}
-	}
-	Ok(Read::Ready(offer))
-}
-
-/// The previews `conversation` offers, each with the record's approval of it
-/// (`approvals`, from the replayed log).
+/// The previews `subject`'s `conversation` offers, from its replayed record
+/// (`state`): each offer with its clips' URLs and its standing approval.
 ///
 /// # Errors
-/// The drive's error reading the folder or a manifest. A conversation home
-/// holds no folder for offers none.
-pub async fn previews(folder: &Folder, subject: &str, conversation: &str, approvals: &[Approval]) -> std::io::Result<Previews> {
+/// The drive's error reading a clip's folder.
+pub async fn previews(folder: &Folder, subject: &str, conversation: &str, state: &State) -> std::io::Result<Previews> {
 	let mut out = Previews {
 		previews: Vec::new(),
 		unreadable: Vec::new(),
 	};
-	let Some(root) = folder.of(subject, conversation) else {
-		return Ok(out);
-	};
-	let mut entries = match tokio::fs::read_dir(&root).await {
-		Ok(entries) => entries,
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-		Err(err) => return Err(err),
-	};
-	let mut ids = Vec::new();
-	while let Some(entry) = entries.next_entry().await? {
-		let name = entry.file_name();
-		if let Some(name) = name.to_str().filter(|name| is_id(name)) {
-			if entry.file_type().await?.is_dir() {
-				ids.push(name.to_owned());
-			}
+	for offer in state.offers() {
+		if unrendered(folder, subject, conversation, offer).await?.is_some() {
+			out.unreadable.push(offer.preview.clone());
+			continue;
 		}
-	}
-	ids.sort_unstable();
-	ids.truncate(PREVIEWS_MOST);
-	for id in ids {
-		match read_one(&root.join(&id), &id).await? {
-			Read::Making => {}
-			Read::Unreadable => out.unreadable.push(id),
-			Read::Ready(Offer { about, recommended, variants }) => {
-				let approved = approvals.iter().find(|a| a.preview == id).map(|a| Approved { chose: a.chose.clone() });
-				let variants = variants
-					.into_iter()
-					.map(|v| Variant {
-						video: String::from(crate::API_V1_BASE_PATH) + "/conversations/" + conversation + "/previews/" + &id + "/" + &v.variant + "/video",
-						variant: v.variant,
-						title: v.title,
-						rule: v.rule,
-						callouts: v.callouts,
-					})
-					.collect();
-				out.previews.push(Preview {
-					preview: id,
-					about,
-					recommended,
-					variants,
-					approved,
-				});
-			}
-		}
+		let variants = offer
+			.variants
+			.iter()
+			.map(|v| Variant {
+				video: String::from(crate::API_V1_BASE_PATH) + "/conversations/" + conversation + "/previews/" + &offer.preview + "/" + &v.variant + "/video",
+				variant: v.variant.clone(),
+				title: v.title.clone(),
+				rule: v.rule.clone(),
+				callouts: v.callouts.clone(),
+			})
+			.collect();
+		out.previews.push(Preview {
+			preview: offer.preview.clone(),
+			about: offer.about.clone(),
+			recommended: offer.recommended.clone(),
+			variants,
+			approved: state.standing(&offer.preview).map(Approved::from),
+		});
 	}
 	Ok(out)
-}
-
-/// Why home refuses an approval the record's step would take: the preview
-/// it names is not one home offers as it says.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "why", rename_all = "kebab-case")]
-pub enum Unoffered {
-	/// Home offers no such preview of this conversation.
-	PreviewUnknown { preview: String },
-	/// Its `offered`, `recommended` or a variant's rule is not what home's
-	/// preview offers.
-	PreviewOffer { preview: String },
-}
-
-/// When a preview last changed: its manifest's time, or `None` while it has
-/// none.
-///
-/// One `stat` of `subject`'s `preview` of `conversation`, so a check made
-/// before a write can be confirmed inside the write's transaction without
-/// reading the preview again.
-///
-/// # Errors
-/// The drive's error, but a manifest that is not there.
-pub async fn stamp(folder: &Folder, subject: &str, conversation: &str, preview: &str) -> std::io::Result<Option<std::time::SystemTime>> {
-	let Some(root) = folder.of(subject, conversation).filter(|_| is_id(preview)) else {
-		return Ok(None);
-	};
-	match tokio::fs::metadata(root.join(preview).join(MANIFEST)).await {
-		Ok(meta) => meta.modified().map(Some),
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-		Err(err) => Err(err),
-	}
-}
-
-/// Whether `approval` names a preview of `subject`'s `conversation` home
-/// offers, exactly as it offers it.
-///
-/// # Errors
-/// The drive's error reading the preview.
-pub async fn offered(folder: &Folder, subject: &str, conversation: &str, approval: &Approval) -> std::io::Result<Result<(), Unoffered>> {
-	let preview = &approval.preview;
-	let unknown = Unoffered::PreviewUnknown { preview: preview.clone() };
-	let Some(root) = folder.of(subject, conversation).filter(|_| is_id(preview)) else {
-		return Ok(Err(unknown));
-	};
-	let Offer { recommended, variants, .. } = match read_one(&root.join(preview), preview).await {
-		Ok(Read::Ready(offer)) => offer,
-		Ok(Read::Making | Read::Unreadable) => return Ok(Err(unknown)),
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Err(unknown)),
-		Err(err) => return Err(err),
-	};
-	let names: Vec<&str> = variants.iter().map(|v| v.variant.as_str()).collect();
-	let rule_holds = match &approval.chose {
-		Choice::Variant { variant, rule } => variants.iter().any(|v| &v.variant == variant && &v.rule == rule),
-		Choice::Else { .. } => true,
-	};
-	let same = approval.offered.iter().map(String::as_str).eq(names.iter().copied()) && approval.recommended == recommended && rule_holds;
-	Ok(if same { Ok(()) } else { Err(Unoffered::PreviewOffer { preview: preview.clone() }) })
 }
 
 #[cfg(test)]

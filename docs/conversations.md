@@ -8,7 +8,7 @@ previews the owner approves from (#3558). paulgsc/server#1243 is the story.
 
 ```text
 GET  /api/v1/conversations/:id                                   the record: { schema, id, events }
-GET  /api/v1/conversations/:id/previews                          { previews: [{ preview, about, recommended, variants, approved }], unreadable }
+GET  /api/v1/conversations/:id/previews                          { previews: [{ preview, about, recommended, variants: [{ variant, title, rule, callouts, video }], approved }], unreadable }
 GET  /api/v1/conversations/:id/previews/:preview/:variant/video  a variant's muted loop, with ranges
 POST /api/v1/conversations/:id/events                            201 { kept, events } | 200 the same, a resend | 409 { refused, at } | 422
 ```
@@ -18,12 +18,12 @@ POST /api/v1/conversations/:id/events                            201 { kept, eve
 - **The step** is `conversation_repo::step`: home's replay of the record's rules, under the
   record's own names for phases, events and refusals, so the phone reads a `409`'s `refused`
   with `refusalLine`.
-- **The previews** are files the renderer leaves at
-  `renders/conversation/<subject>/<id>/<preview>/preview.json` (`some-ui.conversation-preview/1`:
-  `{ schema, preview, about, recommended, variants: [{ variant, title, rule, callouts }] }`,
-  the card's `PreviewOfferSchema`) beside each `<variant>.mp4`, written manifest last
-  (`file_host::conversations`). A preview is offered once its manifest and every variant's
-  video are there.
+- **The previews** are the record's own (C1582): the agent's `offer` event holds a preview's
+  heading, its two or three variants (each a title, its callouts and the rule picking it sets)
+  and the one recommended; the owner's `approve` names the preview and the variant, or says
+  something else. Only the clips are files, at
+  `renders/conversation/<subject>/<id>/<preview>/<variant>.mp4` (`file_host::conversations`),
+  and home keeps an offer only once every one of its clips is there.
 
 ## Why a table of its own (reaching inward first)
 
@@ -68,8 +68,9 @@ record, from 1, with no gap.
    version the owner heard and on a turn or speaker it has. It holds a withdrawal of an open
    flag only, the measure and green light of the newest version, under twenty minutes, notes
    only once green-lit, on the newest version's turns whose words the record holds, within
-   them and following at least one approved rule, and each preview approved once, from what
-   it offered, a rule set again only by naming the approval it moves.
+   them and following at least one approved rule, each offer made once and only once green-lit, and
+   each pick naming an offer made and one of its variants, changing a standing pick only by
+   moving it (`moves`), and setting a rule another preview's pick set only by moving that one.
    Home does not port the content rules that rest on some-ui's closed vocabularies: the cast
    and its roles, each character's emotions, the flag kinds' voices, scopes and answers,
    Kokoro's voices, and how one version's turns differ from the last's. Home keeps `/2`
@@ -82,29 +83,29 @@ record, from 1, with no gap.
    list names it as trusted. some-ui's contract harness (`conversations.contract.ts`, which
    lands once these routes are in its snapshot) holds refusals both sides share, against a
    real `file_host`.
-5. **An approval names a preview home offers, exactly as home offers it.** Beyond the step,
-   home answers `409` `preview-unknown` for a preview it has no ready files for. It answers
-   `preview-offer` when the event's `offered` (in home's order), `recommended`, or the chosen
-   variant's `rule` is not the manifest's. So no rule is set from a preview the owner never
-   watched. *Enforced by* `an_approval_names_a_preview_exactly_as_home_offers_it` and
-   `an_approval_is_kept_only_for_a_preview_home_offers_as_it_offers_it`.
+5. **An offer names clips home holds.** Beyond the step, home answers `409`
+   `offer-unrendered` (`{ offer, variant }`) for an offer whose variant's clip is not under the
+   subject's folder, so an approval can never name a video home cannot play. The renderer
+   writes the clips; the agent offers after. Nothing prunes a clip, and a clip gone since is
+   named in the list's `unreadable`, never shown broken. *Enforced by*
+   `an_offer_needs_every_clip_on_home_and_one_gone_is_named` and
+   `an_offer_is_kept_only_once_its_clips_are_on_home_and_a_pick_names_it`.
 6. **Previews are the subject's, and every name that reaches a path is one plain segment.** A
    conversation's id is unique only within its subject, so its previews live under the
    subject's folder, and every read (the list, an approval's check, a video) takes the caller's
    subject: another subject's are a `404`. The subject's, a conversation's, a preview's and a
    variant's id on home are each a `showId` (`^[a-z0-9][a-z0-9-]{0,63}$`); any other is `404`,
-   or is not listed. *Enforced by* `another_subjects_previews_are_none_of_the_callers` and
+   or is not listed. *Enforced by* `another_subjects_clips_are_none_of_the_callers` and
    `a_video_is_only_ever_one_plain_segment_per_name`.
 7. **Nothing of a record reaches a log line.** Each handler records only `otel.kind`. A
    drive error logs its kind, never a path.
-8. **A manifest reads as the card's `PreviewOfferSchema` reads it.** Its bounds are that
-   schema's: a heading of at most 80 characters, a title of 60, 1 to 12 callouts of 80, names
-   of 64, each trimmed first, 2 or 3 variants each once with the recommended one among them;
-   home also holds preview and variant ids to a `showId`, since they name folders. A manifest
-   past any of them is `unreadable`, never offered. *Not enforced:* parity with the schema,
-   which the follow-up's shared fixtures hold.
-9. **A write holds no file open under its lock.** An approval's preview is read before
-   `BEGIN IMMEDIATE`, and confirmed inside it by one `stat` of its manifest, read again only
-   if it changed.
+8. **An offer reads as the card's `PreviewOfferSchema` reads it.** Its bounds are that
+   schema's: a heading of at most 80 characters, a title of 60, 1 to 12 distinct callouts of
+   80, rules of 64, each trimmed first, and 2 or 3 variants, each id and each rule once, with
+   the recommended one among them; preview and variant ids are each a `showId`, since they
+   name folders. *Not enforced:* parity with the schema, which the follow-up's shared fixtures
+   hold.
+9. **A write holds no file open under its lock.** An offer's clips are looked for before
+   `BEGIN IMMEDIATE`; nothing prunes a clip, so one found then is there when it is kept.
 10. **Home keeps `/2` records only.** `POST` takes one `/2` event at a time, so a `/1` record
     lifted into `/2` (`lifted`) never comes through home, and `GET` never answers one.

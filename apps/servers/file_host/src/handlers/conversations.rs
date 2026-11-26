@@ -12,7 +12,7 @@
 //!
 //! Nothing of a record reaches a log: each handler records only `otel.kind`.
 
-use crate::conversations::{self, Folder, Previews, Unoffered};
+use crate::conversations::{self, Folder, Previews, Unrendered};
 use crate::subject::SubjectId;
 use crate::FileHostError;
 use axum::{
@@ -86,7 +86,7 @@ async fn previews_of(db: &SqlitePool, subject: &str, folder: &Folder, conversati
 	let mut conn = db.acquire().await?;
 	let state = conversation_repo::state(&mut conn, subject, conversation).await.map_err(stored)?;
 	drop(conn);
-	conversations::previews(folder, subject, conversation, state.approvals()).await.map_err(|err| drive(&err))
+	conversations::previews(folder, subject, conversation, &state).await.map_err(|err| drive(&err))
 }
 
 /// `GET /conversations/:id/previews/:preview/:variant/video`: the variant's
@@ -125,13 +125,13 @@ fn refused<R: Serialize>(refusal: R, at: usize) -> Response {
 /// event, the body, at the log's end.
 ///
 /// It is kept once the record's step takes it after the kept log, in one
-/// `BEGIN IMMEDIATE` transaction. An approval must also name a preview home
-/// offers, exactly as home offers it ([`conversations::offered`]).
+/// `BEGIN IMMEDIATE` transaction. An offer must also name clips home holds
+/// ([`conversations::unrendered`]).
 ///
 /// `201 { kept, events }` when kept; `200` with the same when the body is
 /// the log's last event already (a retried send keeps nothing twice); `409
 /// { refused, at }` when the step refuses it, with its `ConversationRefusal`,
-/// or home offers no such preview (`preview-unknown`, `preview-offer`). A
+/// or an offer names a clip home does not hold (`offer-unrendered`). A
 /// refused event writes nothing.
 ///
 /// # Errors
@@ -153,14 +153,11 @@ async fn post(db: &SqlitePool, subject: &str, folder: &Folder, conversation: &st
 	}
 	let value: Value = serde_json::from_slice(body).map_err(|_unreadable| FileHostError::unprocessable_entity([("body", "is not JSON")]))?;
 	let event = step::parse(value).map_err(FileHostError::unprocessable_entity)?;
-	// An approval's preview is read before the write lock is taken, and
-	// confirmed inside it by one `stat`: no file is read while it is held.
-	let offer = match event.approval() {
-		Some(approval) => {
-			let stamp = conversations::stamp(folder, subject, conversation, &approval.preview).await.map_err(|err| drive(&err))?;
-			let offer = conversations::offered(folder, subject, conversation, approval).await.map_err(|err| drive(&err))?;
-			Some((approval, stamp, offer))
-		}
+	// An offer's clips are looked for before the write lock is taken, so no
+	// file is touched while it is held. Nothing prunes a clip, so one found
+	// here is still there when the event is kept.
+	let unrendered = match event.offer() {
+		Some(offer) => conversations::unrendered(folder, subject, conversation, offer).await.map_err(|err| drive(&err))?,
 		None => None,
 	};
 	let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -171,17 +168,9 @@ async fn post(db: &SqlitePool, subject: &str, folder: &Folder, conversation: &st
 		Err(ConversationError::Refused { at, refusal }) => return Ok(refused::<Refusal>(refusal, at)),
 		Err(err) => return Err(stored(err)),
 	};
-	if let Some((approval, stamp, offer)) = offer {
-		let now_stamp = conversations::stamp(folder, subject, conversation, &approval.preview).await.map_err(|err| drive(&err))?;
-		// The preview changed since it was read: read it again (rare).
-		let offer = if now_stamp == stamp {
-			offer
-		} else {
-			conversations::offered(folder, subject, conversation, approval).await.map_err(|err| drive(&err))?
-		};
-		if let Err(unoffered) = offer {
-			return Ok(refused::<Unoffered>(unoffered, at));
-		}
+	// The record's step decides first; then home's own check of the clips.
+	if let Some(unrendered) = unrendered {
+		return Ok(refused::<Unrendered>(unrendered, at));
 	}
 	let kept: Kept = conversation_repo::insert(&mut tx, subject, conversation, &event, at, &now).await.map_err(stored)?;
 	tx.commit().await?;

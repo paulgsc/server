@@ -26,6 +26,15 @@ fn green_lit() -> Vec<Value> {
 		} }),
 		json!({ "event": "heard", "by": "home", "at": "2026-11-26T10:04:00.000Z", "version": 1, "ms": 60_000 }),
 		json!({ "event": "green-light", "by": "owner", "at": "2026-11-26T10:05:00.000Z", "version": 1 }),
+		json!({ "event": "offer", "by": "agent", "at": "2026-11-26T10:05:30.000Z", "offer": {
+			"preview": "p-close",
+			"about": "How the essay closes",
+			"recommended": "a",
+			"variants": [
+				{ "variant": "a", "title": "Calm", "callouts": ["the close is slower"], "rule": "calm-close" },
+				{ "variant": "b", "title": "Lively", "callouts": ["the close is quicker"], "rule": "lively-close" }
+			]
+		} }),
 	]
 }
 
@@ -35,9 +44,7 @@ fn approve(variant: &str) -> Value {
 		"by": "owner",
 		"at": "2026-11-26T10:06:00.000Z",
 		"preview": "p-close",
-		"offered": ["a", "b"],
-		"recommended": "a",
-		"chose": { "kind": "variant", "variant": variant, "rule": "calm-close" }
+		"chose": { "kind": "variant", "variant": variant }
 	})
 }
 
@@ -80,7 +87,7 @@ async fn a_refused_event_changes_nothing() {
 	let refused = put(&pool, A, approve("c")).await.unwrap_err();
 	match refused {
 		ConversationError::Refused { at, refusal } => {
-			assert_eq!(at, 4);
+			assert_eq!(at, 5);
 			assert_eq!(
 				refusal,
 				step::Refusal::PreviewVariant {
@@ -92,10 +99,10 @@ async fn a_refused_event_changes_nothing() {
 		other => panic!("refused as {other}"),
 	}
 	let out_of_phase = json!({ "event": "point", "by": "owner", "at": "2026-11-26T10:07:00.000Z", "take": "late" });
-	assert!(matches!(put(&pool, A, out_of_phase).await, Err(ConversationError::Refused { at: 4, .. })));
+	assert!(matches!(put(&pool, A, out_of_phase).await, Err(ConversationError::Refused { at: 5, .. })));
 	assert_eq!(rows(&pool).await, before, "a refused event writes nothing");
 	let replayed = state(&mut pool.acquire().await.unwrap(), A, C).await.unwrap();
-	assert!(replayed.approvals().is_empty(), "the replayed log holds no refused approval");
+	assert!(replayed.standing("p-close").is_none(), "the replayed log holds no refused approval");
 }
 
 #[tokio::test]
@@ -104,8 +111,8 @@ async fn a_retried_event_is_kept_once_and_a_second_approval_is_refused() {
 	for value in green_lit() {
 		put(&pool, A, value).await.unwrap();
 	}
-	assert_eq!(put(&pool, A, approve("b")).await.unwrap(), (Change::Added, Kept { kept: 4, events: 5 }));
-	assert_eq!(put(&pool, A, approve("b")).await.unwrap(), (Change::Unchanged, Kept { kept: 4, events: 5 }));
+	assert_eq!(put(&pool, A, approve("b")).await.unwrap(), (Change::Added, Kept { kept: 5, events: 6 }));
+	assert_eq!(put(&pool, A, approve("b")).await.unwrap(), (Change::Unchanged, Kept { kept: 5, events: 6 }));
 	assert!(matches!(
 		put(&pool, A, approve("a")).await,
 		Err(ConversationError::Refused {
@@ -113,7 +120,7 @@ async fn a_retried_event_is_kept_once_and_a_second_approval_is_refused() {
 			..
 		})
 	));
-	assert_eq!(rows(&pool).await.len(), 5);
+	assert_eq!(rows(&pool).await.len(), 6);
 }
 
 #[tokio::test]
@@ -137,7 +144,7 @@ async fn the_table_is_append_only_gapless_and_leaves_with_the_account() {
 	assert!(sqlx::query("UPDATE conversation_event SET at = 'x'").execute(&pool).await.is_err(), "an UPDATE is refused");
 	let gap = "INSERT INTO conversation_event (subject_id, conversation_id, seq, event, at, body, stored_at) VALUES (?1, ?2, 9, 'notes', 'now', '{\"event\":\"notes\",\"at\":\"now\"}', 'now')";
 	assert!(sqlx::query(gap).bind(A).bind(C).execute(&pool).await.is_err(), "a gap in the log is refused");
-	let mismatch = "INSERT INTO conversation_event (subject_id, conversation_id, seq, event, at, body, stored_at) VALUES (?1, ?2, 5, 'notes', 'now', '{\"event\":\"approve\",\"at\":\"now\"}', 'now')";
+	let mismatch = "INSERT INTO conversation_event (subject_id, conversation_id, seq, event, at, body, stored_at) VALUES (?1, ?2, 6, 'notes', 'now', '{\"event\":\"approve\",\"at\":\"now\"}', 'now')";
 	assert!(sqlx::query(mismatch).bind(A).bind(C).execute(&pool).await.is_err(), "the body's kind is the row's");
 	sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, x'01')")
 		.bind(A)

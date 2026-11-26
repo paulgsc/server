@@ -32,7 +32,7 @@
 --                      a-z, 0-9 and `-`, not starting with `-`).
 --   seq             -- the event's place in the log, from 1, with no gap:
 --                      its order, never a clock (`at` is the writer's).
---   event           -- its kind, the schema's nine.
+--   event           -- its kind, the schema's ten.
 --   at              -- when the writer says it happened, as sent.
 --   body            -- the whole event as JSON, as sent; its `event` and
 --                      `at` are the columns'.
@@ -41,7 +41,7 @@ CREATE TABLE conversation_event (
     subject_id      TEXT    NOT NULL,
     conversation_id TEXT    NOT NULL CHECK (length(conversation_id) BETWEEN 1 AND 64 AND conversation_id NOT GLOB '*[^a-z0-9-]*' AND substr(conversation_id, 1, 1) <> '-'),
     seq             INTEGER NOT NULL CHECK (seq >= 1),
-    event           TEXT    NOT NULL CHECK (event IN ('topic', 'point', 'version', 'flag', 'withdraw', 'heard', 'green-light', 'notes', 'approve')),
+    event           TEXT    NOT NULL CHECK (event IN ('topic', 'point', 'version', 'flag', 'withdraw', 'heard', 'green-light', 'notes', 'offer', 'approve')),
     at              TEXT    NOT NULL,
     body            TEXT    NOT NULL CHECK (json_valid(body) AND json_type(body) = 'object' AND json_extract(body, '$.event') = event AND json_extract(body, '$.at') = at),
     stored_at       TEXT    NOT NULL,

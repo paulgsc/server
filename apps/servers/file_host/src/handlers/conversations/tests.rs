@@ -108,15 +108,13 @@ fn green_lit() -> Vec<Value> {
 	]
 }
 
-fn approve(preview: &str, variant: &str, rule: &str) -> Value {
+fn approve(preview: &str, variant: &str) -> Value {
 	json!({
 		"event": "approve",
 		"by": "owner",
 		"at": "2026-11-26T10:06:00.000Z",
 		"preview": preview,
-		"offered": ["a", "b"],
-		"recommended": "a",
-		"chose": { "kind": "variant", "variant": variant, "rule": rule }
+		"chose": { "kind": "variant", "variant": variant }
 	})
 }
 
@@ -204,58 +202,46 @@ async fn a_refused_event_answers_why_and_writes_nothing() {
 }
 
 #[tokio::test]
-async fn an_approval_is_kept_only_for_a_preview_home_offers_as_it_offers_it() {
+async fn an_offer_is_kept_only_once_its_clips_are_on_home_and_a_pick_names_it() {
 	let state = state().await;
 	let dir = tempfile::tempdir().unwrap();
 	let folder = Folder(dir.path().to_owned());
-	crate::conversations::tests::render(dir.path(), "p-close", &[("a", "calm-close"), ("b", "lively-close")], "a");
+	let post_as = |subject: &'static str, event: Value| {
+		let (pool, folder) = (state.pool.clone(), folder.clone());
+		async move { answer(post(&pool, subject, &folder, "c", event.to_string().as_bytes()).await.unwrap()).await }
+	};
 	for event in green_lit() {
-		assert_eq!(
-			post(&state.pool, "subject-a", &folder, "c", event.to_string().as_bytes()).await.unwrap().status(),
-			StatusCode::CREATED
-		);
+		assert_eq!(post_as("subject-a", event).await.0, StatusCode::CREATED);
 	}
-	let unknown = answer(
-		post(&state.pool, "subject-a", &folder, "c", approve("p-open", "a", "warm").to_string().as_bytes())
-			.await
-			.unwrap(),
-	)
-	.await;
+	let offer = crate::conversations::tests::offer("p-close");
 	assert_eq!(
-		unknown,
-		(StatusCode::CONFLICT, json!({ "refused": { "why": "preview-unknown", "preview": "p-open" }, "at": 4 }))
-	);
-	let unoffered = answer(
-		post(&state.pool, "subject-a", &folder, "c", approve("p-close", "c", "loud").to_string().as_bytes())
-			.await
-			.unwrap(),
-	)
-	.await;
-	assert_eq!(
-		unoffered,
+		post_as("subject-a", offer.clone()).await,
 		(
 			StatusCode::CONFLICT,
-			json!({ "refused": { "why": "preview-variant", "preview": "p-close", "variant": "c" }, "at": 4 })
+			json!({ "refused": { "why": "offer-unrendered", "offer": "p-close", "variant": "a" }, "at": 4 })
 		),
-		"the record's step refuses a variant the event never offered"
+		"the renderer writes the clips first"
 	);
-	let other_rule = answer(
-		post(&state.pool, "subject-a", &folder, "c", approve("p-close", "b", "calm-close").to_string().as_bytes())
-			.await
-			.unwrap(),
-	)
-	.await;
+	crate::conversations::tests::render(dir.path(), "p-close", &["a", "b"]);
+	assert_eq!(post_as("subject-a", offer.clone()).await, (StatusCode::CREATED, json!({ "kept": 4, "events": 5 })));
 	assert_eq!(
-		other_rule,
-		(StatusCode::CONFLICT, json!({ "refused": { "why": "preview-offer", "preview": "p-close" }, "at": 4 }))
+		post_as("subject-a", approve("p-open", "a")).await,
+		(StatusCode::CONFLICT, json!({ "refused": { "why": "preview-unknown", "preview": "p-open" }, "at": 5 }))
 	);
-	assert_eq!(rows(&state.pool).await, 4, "a refused approval writes nothing");
-	let picked = post(&state.pool, "subject-a", &folder, "c", approve("p-close", "b", "lively-close").to_string().as_bytes())
-		.await
-		.unwrap();
-	assert_eq!(answer(picked).await, (StatusCode::CREATED, json!({ "kept": 4, "events": 5 })));
-	let theirs = answer(post(&state.pool, "subject-b", &folder, "c", green_lit()[0].to_string().as_bytes()).await.unwrap()).await;
-	assert_eq!(theirs.0, StatusCode::CREATED, "subject B's own conversation c");
+	assert_eq!(
+		post_as("subject-a", approve("p-close", "c")).await,
+		(
+			StatusCode::CONFLICT,
+			json!({ "refused": { "why": "preview-variant", "preview": "p-close", "variant": "c" }, "at": 5 })
+		),
+		"a variant the offer never made"
+	);
+	assert_eq!(rows(&state.pool).await, 5, "a refused event writes nothing");
+	assert_eq!(
+		post_as("subject-a", approve("p-close", "b")).await,
+		(StatusCode::CREATED, json!({ "kept": 5, "events": 6 }))
+	);
+	assert_eq!(post_as("subject-b", green_lit()[0].clone()).await.0, StatusCode::CREATED, "subject B's own conversation c");
 	assert!(
 		previews_of(&state.pool, "subject-b", &folder, "c").await.unwrap().previews.is_empty(),
 		"A's previews are none of B's"
@@ -264,7 +250,7 @@ async fn an_approval_is_kept_only_for_a_preview_home_offers_as_it_offers_it() {
 	let shown = serde_json::to_value(&listed).unwrap();
 	assert_eq!(
 		shown["previews"][0]["approved"],
-		json!({ "chose": { "kind": "variant", "variant": "b", "rule": "lively-close" } })
+		json!({ "chose": { "kind": "variant", "variant": "b", "rule": "p-close-lively" } })
 	);
 	assert_eq!(shown["previews"][0]["variants"][1]["video"], json!("/api/v1/conversations/c/previews/p-close/b/video"));
 }
