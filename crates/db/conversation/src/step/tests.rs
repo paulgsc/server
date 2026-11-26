@@ -540,3 +540,131 @@ fn a_refused_step_leaves_the_state_as_it_was() {
 	assert!(after.step(&event(approve("p", &json!({ "kind": "variant", "variant": "c", "rule": "r" })))).is_err());
 	assert_eq!(before, after);
 }
+
+/// Every `why` home's step can answer: `Refusal`'s cases. A refusal of
+/// `stepConversation` named here is one home must answer the same way; any
+/// other is a rule home trusts the writers for (docs/conversations.md,
+/// invariant 4).
+const HELD: [&str; 28] = [
+	"stale",
+	"author",
+	"out-of-phase",
+	"too-many-points",
+	"point-again",
+	"version-number",
+	"unanswered",
+	"answer-unknown",
+	"answer-twice",
+	"answer-kinds",
+	"flag-again",
+	"flag-version",
+	"turn-unknown",
+	"flag-speaker-unknown",
+	"flag-not-open",
+	"heard-version",
+	"heard-again",
+	"unheard",
+	"too-long",
+	"green-light-version",
+	"notes-turn",
+	"notes-word",
+	"notes-rule",
+	"offer-again",
+	"preview-unknown",
+	"moves-unknown",
+	"preview-again",
+	"rule-again",
+];
+
+/// paulgsc/some-ui's `conversationCorpus` (`pnpm dump:conversation-refusals`),
+/// kept here and held to that dump by `scripts/check_client_fixtures.py`.
+const CORPUS: &str = include_str!("../../testdata/conversation_refusals.snapshot.json");
+
+#[test]
+fn home_answers_the_records_step_as_it_does_wherever_home_holds_the_rule() {
+	let corpus: Value = serde_json::from_str(CORPUS).unwrap();
+	assert_eq!(corpus["schema"], json!("some-ui.conversation-refusals/1"));
+	let alphabet = corpus["alphabet"].as_object().unwrap();
+	let cases = corpus["cases"].as_array().unwrap();
+	assert!(cases.len() > 1000, "the corpus walks every state to its depth");
+	let mut held_seen: Vec<String> = Vec::new();
+	let mut problems: Vec<String> = Vec::new();
+	for case in cases {
+		let id = case["id"].as_str().unwrap();
+		let mut state = State::new();
+		for name in case["path"].as_array().unwrap() {
+			let value = alphabet[name.as_str().unwrap()].clone();
+			match parse(value).map(|event| state.step(&event)) {
+				Ok(Ok(next)) => state = next,
+				// The record's step took this event, so home must too.
+				Ok(Err(refusal)) => {
+					problems.push(String::from(id) + ": home refuses " + name.as_str().unwrap() + " on the path, as " + &serde_json::to_value(refusal).unwrap().to_string())
+				}
+				Err(problems_found) => problems.push(String::from(id) + ": home cannot read " + name.as_str().unwrap() + ": " + &problems_found[0].0),
+			}
+		}
+		let next = alphabet[case["next"].as_str().unwrap()].clone();
+		let home = match parse(next) {
+			Ok(event) => match state.step(&event) {
+				Ok(_) => None,
+				Err(refusal) => Some(serde_json::to_value(refusal).unwrap()),
+			},
+			Err(found) => Some(json!({ "why": "unreadable", "field": found[0].0 })),
+		};
+		let theirs = &case["refusal"];
+		let why = theirs["why"].as_str();
+		match why {
+			// The record's step takes it: so does home.
+			None => {
+				if let Some(home) = home {
+					problems.push(String::from(id) + ": taken by the record's step, refused by home as " + &home.to_string());
+				}
+			}
+			// A rule home holds: the same refusal, field for field.
+			Some(why) if HELD.contains(&why) => {
+				held_seen.push(why.to_owned());
+				if home.as_ref() != Some(theirs) {
+					problems.push(
+						String::from(id)
+							+ ": the record's step refuses it as "
+							+ &theirs.to_string()
+							+ ", home as "
+							+ &home.map_or_else(|| String::from("taken"), |home| home.to_string()),
+					);
+				}
+			}
+			// A rule home trusts the writers for: home may take it.
+			Some(_) => {}
+		}
+	}
+	assert!(
+		problems.is_empty(),
+		"{} of {} cases differ; the first: {:#?}",
+		problems.len(),
+		cases.len(),
+		&problems[..problems.len().min(10)]
+	);
+	let unreached: Vec<&str> = HELD.iter().copied().filter(|why| !held_seen.iter().any(|seen| seen == why)).collect();
+	// Forty points, and a flag on a speaker no version has, are beyond the walk.
+	assert_eq!(unreached, ["too-many-points", "flag-speaker-unknown"], "the corpus reaches every other rule home holds");
+}
+
+#[test]
+fn home_reads_an_offer_as_the_cards_schema_does() {
+	let corpus: Value = serde_json::from_str(CORPUS).unwrap();
+	let probes = corpus["offers"].as_array().unwrap();
+	assert!(probes.len() >= 20, "the corpus probes each of the offer's bounds");
+	let differ: Vec<String> = probes
+		.iter()
+		.filter(|probe| parse(probe["event"].clone()).is_ok() != probe["takes"].as_bool().unwrap())
+		.map(|probe| {
+			String::from(probe["id"].as_str().unwrap())
+				+ if probe["takes"].as_bool().unwrap() {
+					": the schema takes it, home refuses it"
+				} else {
+					": the schema refuses it, home takes it"
+				}
+		})
+		.collect();
+	assert!(differ.is_empty(), "{differ:#?}");
+}

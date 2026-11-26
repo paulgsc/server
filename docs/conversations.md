@@ -78,11 +78,17 @@ record, from 1, with no gap.
    lists would drift from the first. Every writer runs `stepConversation` before it sends, and
    home trusts it for those. So an event home refuses is one `stepConversation` refuses, with
    the same `why`, while an event home keeps may still break a content rule a writer skipped.
-   *Enforced by* `conversation_repo::step`'s tests, one per rule. *Not enforced:* parity with
-   `stepConversation`, which a rule added on some-ui's side breaks until home ports it or this
-   list names it as trusted. some-ui's contract harness (`conversations.contract.ts`, which
-   lands once these routes are in its snapshot) holds refusals both sides share, against a
-   real `file_host`.
+   *Enforced by* `conversation_repo::step`'s tests, one per rule, and by
+   `home_answers_the_records_step_as_it_does_wherever_home_holds_the_rule`. That test
+   replays some-ui's refusal corpus (`conversationCorpus`, `pnpm dump:conversation-refusals`:
+   every state an alphabet of events reaches, to a depth, and the TS step's answer to every
+   event there). For each case, what the TS step takes home takes, and a refusal under a rule
+   home holds is home's refusal field for field; a refusal under a rule home trusts the
+   writers for may be taken. Home keeps a copy (`crates/db/conversation/testdata/`), and
+   `scripts/check_client_fixtures.py` (routes.yml) fails a copy that is not some-ui's dump,
+   so a rule changed on either side fails here. *Not enforced:* a rule the corpus's alphabet
+   never reaches (forty points, a flag on a speaker no version has), which only this repo's
+   own tests hold.
 5. **An offer names clips home holds.** Beyond the step, home answers `409`
    `offer-unrendered` (`{ offer, variant }`) for an offer whose variant's clip is not under the
    subject's folder, so an approval can never name a video home cannot play. The renderer
@@ -103,8 +109,8 @@ record, from 1, with no gap.
    schema's: a heading of at most 80 characters, a title of 60, 1 to 12 distinct callouts of
    80, rules of 64, each trimmed first, and 2 or 3 variants, each id and each rule once, with
    the recommended one among them; preview and variant ids are each a `showId`, since they
-   name folders. *Not enforced:* parity with the schema, which the follow-up's shared fixtures
-   hold.
+   name folders. *Enforced by* `home_reads_an_offer_as_the_cards_schema_does`, which reads each
+   of the refusal corpus's offer probes (at and past every bound) as `PreviewOfferSchema` does.
 9. **A write holds no file open under its lock.** An offer's clips are looked for before
    `BEGIN IMMEDIATE`; nothing prunes a clip, so one found then is there when it is kept.
 10. **Home keeps `/2` records only.** `POST` takes one `/2` event at a time, so a `/1` record

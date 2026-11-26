@@ -10,6 +10,9 @@ compares each copy with a fresh dump of what it copies:
       activity_catalog.snapshot.json         <- dump:activity-catalog
       session_duration_policy.snapshot.json  <- dump:session-duration-policy
 
+    here (crates/db/conversation/testdata/)   some-ui (`pnpm dump:*`)
+      conversation_refusals.snapshot.json    <- dump:conversation-refusals
+
     some-ui (found by file name)              here (`cargo run --bin ...`)
       provisioned-session.snapshot.json      <- dump-provisioned-session
       proposed-session.snapshot.json         <- dump-proposed-session
@@ -47,6 +50,10 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTDATA = REPO_ROOT / "crates" / "db" / "activity" / "testdata"
+# The record's step as a corpus (HOST16-S): `conversation_repo::step`'s
+# tests replay every case and answer as some-ui's `stepConversation` does
+# wherever home holds the rule.
+CONVERSATION_TESTDATA = REPO_ROOT / "crates" / "db" / "conversation" / "testdata"
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,7 @@ class Pair:
 PAIRS = (
 	Pair("activity catalog", "some-ui's", "activity-catalog.json", copy_here=TESTDATA / "activity_catalog.snapshot.json"),
 	Pair("session duration policy", "some-ui's", "session-duration-policy.json", copy_here=TESTDATA / "session_duration_policy.snapshot.json"),
+	Pair("conversation refusals", "some-ui's", "conversation-refusals.json", copy_here=CONVERSATION_TESTDATA / "conversation_refusals.snapshot.json"),
 	Pair("provisioned session", "the server's", "provisioned-session.json", copy_in_some_ui="provisioned-session.snapshot.json"),
 	Pair("proposed session", "the server's", "proposed-session.json", copy_in_some_ui="proposed-session.snapshot.json"),
 	Pair("game scenarios", "the server's", "game-scenarios.json", copy_in_some_ui="game-scenarios.snapshot.json"),
