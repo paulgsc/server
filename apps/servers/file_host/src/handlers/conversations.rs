@@ -53,26 +53,19 @@ fn stored(err: ConversationError) -> FileHostError {
 	}
 }
 
-/// The body of `GET /conversations`.
-#[derive(Debug, Serialize)]
-pub struct Conversations {
-	pub conversations: Vec<conversation_repo::Listed>,
-}
-
 /// `GET /conversations`: the caller's conversations, newest first by the
 /// log's own order, at most `conversation_repo::LIST_MOST`, each with its
 /// topic cut short, its phase, and how many previews were offered and how
-/// many have a standing pick.
+/// many have a standing pick; and in `unreadable`, the id of each whose kept
+/// log does not replay, left out and logged at error.
 ///
 /// # Errors
-/// 401 without a session, and 500 for a storage failure or a kept log that
-/// does not replay.
+/// 401 without a session, and 500 for a storage failure.
 #[axum::debug_handler(state = crate::AppState)]
 #[instrument(name = "conversations_list", skip_all, fields(otel.kind = "server"))]
-pub async fn list_conversations(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<Conversations>, FileHostError> {
+pub async fn list_conversations(subject: SubjectId, State(db): State<SqlitePool>) -> Result<Json<conversation_repo::Listing>, FileHostError> {
 	let mut conn = db.acquire().await?;
-	let conversations = conversation_repo::list(&mut conn, subject.as_str()).await.map_err(stored)?;
-	Ok(Json(Conversations { conversations }))
+	Ok(Json(conversation_repo::list(&mut conn, subject.as_str()).await.map_err(stored)?))
 }
 
 /// `GET /conversations/:id`: the record as `some-ui.conversation/2` keeps

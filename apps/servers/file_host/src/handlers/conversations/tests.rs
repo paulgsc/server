@@ -173,7 +173,7 @@ async fn the_list_is_the_callers_own_newest_first() {
 	let app = module().into_table_router().with_state(state.clone());
 	assert_eq!(
 		send(&app, Method::GET, "/conversations", Some(&phone), None).await,
-		(StatusCode::OK, json!({ "conversations": [] }))
+		(StatusCode::OK, json!({ "conversations": [], "unreadable": [] }))
 	);
 	for conversation in ["older", "newer"] {
 		let path = String::from("/conversations/") + conversation + "/events";
@@ -192,7 +192,10 @@ async fn the_list_is_the_callers_own_newest_first() {
 	let listed = |id: &str, phase: &str| json!({ "id": id, "topic": "why the record is a log", "phase": phase, "offers": 0, "standing": 0 });
 	assert_eq!(
 		send(&app, Method::GET, "/conversations", Some(&phone), None).await,
-		(StatusCode::OK, json!({ "conversations": [listed("newer", "drafting"), listed("older", "drafting")] })),
+		(
+			StatusCode::OK,
+			json!({ "conversations": [listed("newer", "drafting"), listed("older", "drafting")], "unreadable": [] })
+		),
 		"another subject's are none of the caller's"
 	);
 }

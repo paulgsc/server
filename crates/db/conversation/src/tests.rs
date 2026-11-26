@@ -188,7 +188,9 @@ async fn a_subjects_conversations_are_listed_newest_first_by_the_logs_order() {
 	}
 	put_in("first", approve("b")).await;
 	put(&pool, B, topic("someone else's")).await.unwrap();
-	let listed = super::list(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+	let listing = super::list(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+	assert!(listing.unreadable.is_empty());
+	let listed = listing.conversations;
 	let ids: Vec<&str> = listed.iter().map(|c| c.id.as_str()).collect();
 	assert_eq!(ids, ["first", "second"], "first was kept to last, so it is newest; B's are none of A's");
 	assert_eq!(listed[0].topic, "The first conversation");
@@ -209,7 +211,33 @@ async fn the_list_is_bounded() {
 		append(&mut tx, A, &id, &event, NOW).await.unwrap();
 		tx.commit().await.unwrap();
 	}
-	let listed = super::list(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+	let listed = super::list(&mut pool.acquire().await.unwrap(), A).await.unwrap().conversations;
 	assert_eq!(listed.len(), usize::try_from(super::LIST_MOST).unwrap());
 	assert_eq!(listed[0].id, String::from("c") + &(super::LIST_MOST + 2).to_string(), "the newest first");
+}
+
+#[tokio::test]
+async fn a_log_that_does_not_replay_is_named_and_hides_no_other() {
+	let pool = pool().await;
+	let topic = json!({ "event": "topic", "by": "owner", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "a topic" } });
+	for id in ["fine", "broken"] {
+		let event = step::parse(topic.clone()).unwrap();
+		let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+		append(&mut tx, A, id, &event, NOW).await.unwrap();
+		tx.commit().await.unwrap();
+	}
+	// A second topic, which the step refuses once drafting: only a write
+	// around the repo could keep it.
+	sqlx::query("INSERT INTO conversation_event (subject_id, conversation_id, seq, event, at, body, stored_at) VALUES (?1, 'broken', 2, 'topic', ?2, ?3, ?4)")
+		.bind(A)
+		.bind("2026-11-26T10:00:00.000Z")
+		.bind(topic.to_string())
+		.bind(NOW)
+		.execute(&pool)
+		.await
+		.unwrap();
+	let listing = super::list(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+	assert_eq!(listing.unreadable, ["broken"]);
+	let ids: Vec<&str> = listing.conversations.iter().map(|c| c.id.as_str()).collect();
+	assert_eq!(ids, ["fine"]);
 }

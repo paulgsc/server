@@ -7,7 +7,7 @@ A conversation essay is settled as a podcast and then signed as a video (paulgsc
 previews the owner approves from (#3558). paulgsc/server#1243 is the story.
 
 ```text
-GET  /api/v1/conversations                                       { conversations: [{ id, topic, phase, offers, standing }] }, newest first, at most 50
+GET  /api/v1/conversations                                       { conversations: [{ id, topic, phase, offers, standing }], unreadable }, newest first, at most 50
 GET  /api/v1/conversations/:id                                   the record: { schema, id, events }
 GET  /api/v1/conversations/:id/previews                          { previews: [{ preview, about, recommended, variants: [{ variant, title, rule, callouts, video }], approved }], unreadable }
 GET  /api/v1/conversations/:id/previews/:preview/:variant/video  a variant's muted loop, with ranges
@@ -115,6 +115,8 @@ record, from 1, with no gap.
     ordered by when each one's newest event was kept: SQLite's `rowid`, which grows with each
     insert, never an event's `at` (invariant 2). Each is its replayed log's phase, the
     previews offered and how many have a standing pick, and its topic trimmed and cut to 80
-    characters with `…`. It reads and writes nothing else. *Enforced by* `conversation_repo`'s
-    `a_subjects_conversations_are_listed_newest_first_by_the_logs_order` and
-    `the_list_is_bounded`, and `handlers::conversations`' `the_list_is_the_callers_own_newest_first`.
+    characters with `…`. A conversation whose kept log does not replay is left out and its id
+    named in `unreadable`, logged at error by where it stops (never its id or words, invariant
+    7), so one broken log never hides the rest. It reads and writes nothing else. *Enforced by*
+    `conversation_repo`'s `a_subjects_conversations_are_listed_newest_first_by_the_logs_order`,
+    `the_list_is_bounded` and `a_log_that_does_not_replay_is_named_and_hides_no_other`, and `handlers::conversations`' `the_list_is_the_callers_own_newest_first`.

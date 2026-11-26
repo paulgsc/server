@@ -2,7 +2,7 @@
 //! it offers (HOST16-S, paulgsc/server#1243; paulgsc/some-ui#3558).
 //!
 //! ```text
-//! GET  /conversations                                       → { conversations: [{ id, topic, phase, offers, standing }] }, newest first, at most 50
+//! GET  /conversations                                       → { conversations: [{ id, topic, phase, offers, standing }], unreadable }, newest first, at most 50
 //! GET  /conversations/:id                                   → the record: { schema, id, events }
 //! GET  /conversations/:id/previews                          → { previews: [{ preview, about, recommended, variants, approved }], unreadable }
 //! GET  /conversations/:id/previews/:preview/:variant/video  → the variant's video, streamed, with ranges

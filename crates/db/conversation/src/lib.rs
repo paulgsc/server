@@ -181,18 +181,30 @@ fn cut(text: &str, most: usize) -> String {
 	String::from(kept.trim_end()) + "…"
 }
 
+/// What [`list`] answers: the conversations that replay, and the ids of
+/// those that do not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Listing {
+	pub conversations: Vec<Listed>,
+	/// Each conversation whose kept log does not replay: left out, never
+	/// hiding the rest, and logged at error.
+	pub unreadable: Vec<String>,
+}
+
 /// `subject`'s conversations, newest first, at most [`LIST_MOST`]: each
 /// with its topic, phase, offers and standing picks, from its replayed log.
 ///
 /// Newest is by the log's own order, never a clock: a conversation's `seq`
 /// counts from 1 in each, so the list orders by when each conversation's
 /// newest row was kept (SQLite's `rowid`, which grows with each insert and
-/// which a `VACUUM` renumbers in the same order).
+/// which a `VACUUM` renumbers in the same order). A conversation whose log
+/// does not replay is named in [`Listing::unreadable`] and logged at error
+/// (by where it stops, never its id or words), so one broken log never hides
+/// the others.
 ///
 /// # Errors
-/// Any `sqlx` failure, and [`ConversationError::Unreplayable`] for a kept
-/// log that does not replay.
-pub async fn list(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Listed>, ConversationError> {
+/// Any `sqlx` failure.
+pub async fn list(conn: &mut SqliteConnection, subject: &str) -> Result<Listing, ConversationError> {
 	let ids = sqlx::query_scalar!(
 		"SELECT conversation_id FROM conversation_event WHERE subject_id = ?1 GROUP BY conversation_id ORDER BY MAX(rowid) DESC LIMIT ?2",
 		subject,
@@ -200,23 +212,37 @@ pub async fn list(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<List
 	)
 	.fetch_all(&mut *conn)
 	.await?;
-	let mut listed = Vec::with_capacity(ids.len());
+	let mut listing = Listing {
+		conversations: Vec::with_capacity(ids.len()),
+		unreadable: Vec::new(),
+	};
 	for id in ids {
-		let values = values(conn, subject, &id).await?;
-		// A kept log opens with its topic: the step takes nothing else first.
-		let Some(topic) = values.first().and_then(|first| first["topic"]["said"].as_str()).map(|said| cut(said, LIST_TOPIC_MOST)) else {
-			return Err(ConversationError::Unreplayable { at: 0 });
-		};
-		let (_, state) = replay(values)?;
-		listed.push(Listed {
-			topic,
-			phase: state.phase(),
-			offers: state.offers().len(),
-			standing: state.standing_count(),
-			id,
-		});
+		match listed(conn, subject, &id).await {
+			Ok(conversation) => listing.conversations.push(conversation),
+			Err(ConversationError::Unreplayable { at }) => {
+				tracing::error!(at, "a kept conversation log does not replay; the list leaves it out");
+				listing.unreadable.push(id);
+			}
+			Err(err) => return Err(err),
+		}
 	}
-	Ok(listed)
+	Ok(listing)
+}
+
+async fn listed(conn: &mut SqliteConnection, subject: &str, id: &str) -> Result<Listed, ConversationError> {
+	let values = values(conn, subject, id).await?;
+	// A kept log opens with its topic: the step takes nothing else first.
+	let Some(topic) = values.first().and_then(|first| first["topic"]["said"].as_str()).map(|said| cut(said, LIST_TOPIC_MOST)) else {
+		return Err(ConversationError::Unreplayable { at: 0 });
+	};
+	let (_, state) = replay(values)?;
+	Ok(Listed {
+		id: id.to_owned(),
+		topic,
+		phase: state.phase(),
+		offers: state.offers().len(),
+		standing: state.standing_count(),
+	})
 }
 
 /// What [`prepare`] found: the event is the log's last already, or it is
