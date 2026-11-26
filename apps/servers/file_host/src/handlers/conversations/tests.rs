@@ -186,16 +186,16 @@ async fn a_refused_event_answers_why_and_writes_nothing() {
 		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&extra)).await.0,
 		StatusCode::UNPROCESSABLE_ENTITY
 	);
-	let mut stale = json!({ "event": "point", "at": "2026-11-26T10:01:00.000Z", "take": "take-1", "basis": 0 });
+	let mut old_read = json!({ "event": "point", "at": "2026-11-26T10:01:00.000Z", "take": "take-1", "basis": 0 });
 	assert_eq!(
-		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&stale)).await,
+		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&old_read)).await,
 		(StatusCode::CONFLICT, json!({ "refused": { "why": "stale", "basis": 0, "seq": 1 }, "at": 1 })),
 		"a write against an older log is refused by number"
 	);
-	stale["basis"] = json!(1);
-	stale["at"] = json!("2020-01-01T00:00:00.000Z");
+	old_read["basis"] = json!(1);
+	old_read["at"] = json!("2020-01-01T00:00:00.000Z");
 	assert_eq!(
-		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&stale)).await,
+		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&old_read)).await,
 		(StatusCode::CREATED, json!({ "kept": 1, "events": 2 })),
 		"a writer's clock is never compared"
 	);
