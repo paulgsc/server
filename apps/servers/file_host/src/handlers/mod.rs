@@ -12,6 +12,7 @@ pub mod auth;
 pub mod cards_essays;
 pub mod clips;
 pub mod compat;
+pub mod conversations;
 pub mod db;
 pub mod episode_notes;
 pub mod feed_videos;

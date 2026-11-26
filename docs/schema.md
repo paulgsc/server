@@ -115,7 +115,9 @@ the seed). They are classified by today's code, and the call may move them.
      `studio_take_move`, `mailbox_transcript` and `game_bite`, and `stage_want.item_key` for
      the transcriber's stage;
    - `mailbox_leetype_log.session_id` → `leetype_session_event.session_id`;
-   - `studio_friction.sitting_id` → `studio_sitting_event.sitting_id`.
+   - `studio_friction.sitting_id` → `studio_sitting_event.sitting_id`;
+   - the takes a `conversation_event`'s body names (a point's `take`, an owner's turn's `take`)
+     → `voice_note`, by its `note_id`.
 
    A `sessions` row the owner deletes leaves its outcomes behind, on purpose: the migration says
    outcomes outlive their session. An `activities` row would need a seed migration to retire it.

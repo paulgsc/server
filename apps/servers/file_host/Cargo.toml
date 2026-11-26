@@ -156,6 +156,7 @@ studio_video_repo = { workspace = true }
 reflection_repo = { workspace = true }
 drama_prompt_repo = { workspace = true }
 episode_note_repo = { workspace = true }
+conversation_repo = { workspace = true }
 leetype_round_repo = { workspace = true }
 learner_shelf_repo = { workspace = true }
 # Only `src/bin/record_leetype_runs.rs` uses it; `tests/leetype_runs.rs`

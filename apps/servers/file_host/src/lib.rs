@@ -16,6 +16,7 @@ pub mod clips;
 pub(crate) mod config;
 pub mod contention;
 pub mod contract;
+pub mod conversations;
 pub mod db;
 pub(crate) mod deploy;
 pub(crate) mod error;

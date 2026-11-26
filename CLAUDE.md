@@ -189,7 +189,10 @@ append-only table keeps its trigger, and nothing rewrites one outside a listed d
 a shared stage (`crate::stage`, a node other pipelines wait on) it is `docs/shared-stages.md`,
 "Invariants": read over the whole queue, never the batch, a time not an age, the bound is
 policy. For Studio takes on the conveyor (`studio_take_move`, `voice_repo::conveyor`) it is
-`docs/conveyor.md`, "Invariants": moves are ordered by their number, never by a clock. Those
+`docs/conveyor.md`, "Invariants": moves are ordered by their number, never by a clock. For a
+conversation essay's record and its previews (`conversation_event`, `conversation_repo::step`)
+it is `docs/conversations.md`, "Invariants": a refused event is never kept, and home holds
+the record's structural rules exactly and only those. Those
 sections are the source of truth;
 this list is only a pointer to them. If the change
 would break one, **stop and raise it** on the issue or PR. Name the invariant and the shape that

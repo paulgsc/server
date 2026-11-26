@@ -1,0 +1,28 @@
+[package]
+name = "conversation_repo"
+description = "A conversation essay's record: an append-only log of some-ui.conversation/2 events per conversation, replayed before each append — storage layer"
+readme = "README.md"
+categories = ["database"]
+keywords = ["conversation", "record", "sqlite", "repository"]
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-native-tls", "sqlite"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
