@@ -29,8 +29,9 @@
 //! - **The content rules that rest on some-ui's closed vocabularies** (the
 //!   cast and its roles, each character's emotions, the flag kinds' voices,
 //!   scopes and answers, Kokoro's voices, how one version's turns differ from
-//!   the last's, and a /1 record's lift, which home never keeps) are not ported: they would be a second copy of those lists
-//!   that drifts from the first. Every writer runs `stepConversation` before
+//!   the last's, and a /1 record's lift, which home never keeps) are not
+//!   ported: they would be a second copy of those lists that drifts from the
+//!   first. Every writer runs `stepConversation` before
 //!   it sends (the phone, Studio and the agent all do), and home trusts it for
 //!   those. `docs/conversations.md` names the split and its invariant.
 //!

@@ -2853,8 +2853,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     owner's flags and withdrawals, home's measure of a version's audio, the
     green light, the agent's emotion notes and preview offers, and the owner's
     preview approvals, each as sent, numbered in its log, with when it reached
-    home. The topic,
-    flags and notes are the owner's own words about their work. A point or an
+    home. The topic, flags and notes are the owner's own words about their
+    work. A point or an
     owner's turn names a take by its voice note id only: the audio and its
     transcript stay where home keeps them (invariant 23), and nothing here
     points at them. An event is never updated (a trigger aborts an `UPDATE`)
@@ -2865,14 +2865,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     and `GET /conversations/:id/previews`, each a session's for its own subject
     (a paired phone's or a browser's). A conversation's previews are its
     subject's too: their clips are files under
-    `renders/conversation/<subject>/<id>/`, read
-    only by `GET /conversations/:id/previews` and
+    `renders/conversation/<subject>/<id>/`, read only by
+    `GET /conversations/:id/previews` and
     `GET /conversations/:id/previews/:preview/:variant/video`, each for the
-    caller's own subject, so another subject's are a `404`. An event is kept only after the kept log
-    and it replay through `conversation_repo::step`, and an offer only once
-    home holds its clips (docs/conversations.md). Nothing of a
-    record reaches a log line: each handler records only `otel.kind`
-    (invariant 6).
+    caller's own subject, so another subject's are a `404`. An event is kept
+    only after the kept log and it replay through `conversation_repo::step`,
+    and an offer only once home holds its clips (docs/conversations.md).
+    Nothing of a record reaches a log line: each handler records only
+    `otel.kind` (invariant 6).
     *Enforced by* `conversation_repo`'s
     `each_event_is_kept_at_the_logs_end_and_the_record_reads_back_as_sent`,
     `a_refused_event_changes_nothing`, `each_subject_keeps_its_own_log`,
