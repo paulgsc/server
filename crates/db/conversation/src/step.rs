@@ -587,14 +587,13 @@ impl State {
 					kind: (*foreign).to_owned(),
 				});
 			}
-			let done = match answered.iter().position(|(answered_id, _)| *answered_id == flag.id) {
-				Some(at) => &mut answered[at].1,
-				None => {
-					answered.push((flag.id.as_str(), Vec::new()));
-					let last = answered.len() - 1;
-					&mut answered[last].1
-				}
+			let at = if let Some(at) = answered.iter().position(|(answered_id, _)| *answered_id == flag.id) {
+				at
+			} else {
+				answered.push((flag.id.as_str(), Vec::new()));
+				answered.len() - 1
 			};
+			let done = &mut answered[at].1;
 			if kinds.iter().any(|kind| done.contains(kind)) {
 				return Err(Refusal::AnswerTwice { flag: flag.id.clone() });
 			}
@@ -844,42 +843,45 @@ fn body(kind: Kind, object: &Map<String, Value>) -> Result<Body, Vec<Problem>> {
 				rules,
 			}
 		}
-		Kind::Approve => {
-			let preview: String = field(object, "preview")?;
-			let offered: Vec<String> = field(object, "offered")?;
-			let recommended: String = field(object, "recommended")?;
-			let chose: Choice = field(object, "chose")?;
-			if !(2..=PREVIEW_VARIANTS_MOST).contains(&offered.len()) {
-				return Err(problem("offered", "is two or three variants"));
+		Kind::Approve => Body::Approve(approval(object)?),
+	})
+}
+
+/// What home reads of an approval (`approve`).
+fn approval(object: &Map<String, Value>) -> Result<Approval, Vec<Problem>> {
+	let preview: String = field(object, "preview")?;
+	let offered: Vec<String> = field(object, "offered")?;
+	let recommended: String = field(object, "recommended")?;
+	let chose: Choice = field(object, "chose")?;
+	if !(2..=PREVIEW_VARIANTS_MOST).contains(&offered.len()) {
+		return Err(problem("offered", "is two or three variants"));
+	}
+	if offered.iter().enumerate().any(|(i, variant)| offered[..i].contains(variant)) {
+		return Err(problem("offered", "a variant is offered twice"));
+	}
+	let names = std::iter::once(&preview).chain(&offered).chain(std::iter::once(&recommended));
+	let chosen: Vec<&String> = match &chose {
+		Choice::Variant { variant, rule } => vec![variant, rule],
+		Choice::Else { said } => {
+			if said.trim().is_empty() {
+				return Err(problem("chose.said", "is the owner's words"));
 			}
-			if offered.iter().enumerate().any(|(i, variant)| offered[..i].contains(variant)) {
-				return Err(problem("offered", "a variant is offered twice"));
-			}
-			let names = std::iter::once(&preview).chain(&offered).chain(std::iter::once(&recommended));
-			let chosen: Vec<&String> = match &chose {
-				Choice::Variant { variant, rule } => vec![variant, rule],
-				Choice::Else { said } => {
-					if said.trim().is_empty() {
-						return Err(problem("chose.said", "is the owner's words"));
-					}
-					Vec::new()
-				}
-			};
-			if !names.chain(chosen).all(|name| is_name(name)) {
-				return Err(problem("approve", "names each preview, variant and rule in 1 to 64 characters"));
-			}
-			let moves: Option<String> = if object.contains_key("moves") { Some(field(object, "moves")?) } else { None };
-			if moves.as_deref().is_some_and(|moves| !is_name(moves)) {
-				return Err(problem("moves", "is a preview's id"));
-			}
-			Body::Approve(Approval {
-				preview,
-				offered,
-				recommended,
-				chose,
-				moves,
-			})
+			Vec::new()
 		}
+	};
+	if !names.chain(chosen).all(|name| is_name(name)) {
+		return Err(problem("approve", "names each preview, variant and rule in 1 to 64 characters"));
+	}
+	let moves: Option<String> = if object.contains_key("moves") { Some(field(object, "moves")?) } else { None };
+	if moves.as_deref().is_some_and(|moves| !is_name(moves)) {
+		return Err(problem("moves", "is a preview's id"));
+	}
+	Ok(Approval {
+		preview,
+		offered,
+		recommended,
+		chose,
+		moves,
 	})
 }
 

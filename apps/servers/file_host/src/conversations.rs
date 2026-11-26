@@ -303,10 +303,12 @@ pub enum Unoffered {
 	PreviewOffer { preview: String },
 }
 
-/// When `subject`'s preview `preview` of `conversation` last changed: its
-/// manifest's time, or `None` while it has none. One `stat`, so a check
-/// made before a write can be confirmed inside the write's transaction
-/// without reading the preview again.
+/// When a preview last changed: its manifest's time, or `None` while it has
+/// none.
+///
+/// One `stat` of `subject`'s `preview` of `conversation`, so a check made
+/// before a write can be confirmed inside the write's transaction without
+/// reading the preview again.
 ///
 /// # Errors
 /// The drive's error, but a manifest that is not there.
