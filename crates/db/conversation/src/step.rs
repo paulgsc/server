@@ -672,8 +672,8 @@ impl State {
 	/// answered.
 	fn answers_hold(&self, version: &Version) -> Result<(), Refusal> {
 		let open: Vec<&KeptFlag> = self.open_flags().collect();
-		// The kinds of each flag answered so far.
-		let mut answered: Vec<(&str, Vec<&str>)> = Vec::new();
+		// Each (flag, kind) answered so far.
+		let mut answered: Vec<(&str, &str)> = Vec::new();
 		for (id, named) in &version.answers {
 			let Some(flag) = open.iter().find(|flag| &flag.id == id) else {
 				return Err(Refusal::AnswerUnknown { flag: id.clone() });
@@ -688,22 +688,12 @@ impl State {
 					kind: (*foreign).to_owned(),
 				});
 			}
-			let at = if let Some(at) = answered.iter().position(|(answered_id, _)| *answered_id == flag.id) {
-				at
-			} else {
-				answered.push((flag.id.as_str(), Vec::new()));
-				answered.len() - 1
-			};
-			let done = &mut answered[at].1;
-			if kinds.iter().any(|kind| done.contains(kind)) {
+			if kinds.iter().any(|kind| answered.contains(&(flag.id.as_str(), *kind))) {
 				return Err(Refusal::AnswerTwice { flag: flag.id.clone() });
 			}
-			done.extend(kinds);
+			answered.extend(kinds.iter().map(|kind| (flag.id.as_str(), *kind)));
 		}
-		let whole = |flag: &&KeptFlag| {
-			let done = answered.iter().find(|(id, _)| *id == flag.id).map_or(&[][..], |(_, kinds)| kinds.as_slice());
-			flag.kinds.iter().all(|kind| done.contains(&kind.as_str()))
-		};
+		let whole = |flag: &&KeptFlag| flag.kinds.iter().all(|kind| answered.contains(&(flag.id.as_str(), kind.as_str())));
 		open
 			.iter()
 			.find(|flag| !whole(flag))
