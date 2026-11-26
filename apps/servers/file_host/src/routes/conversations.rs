@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! GET  /conversations/:id                                   → the record: { schema, id, events }
-//! GET  /conversations/:id/previews                          → { previews: [{ preview, recommended, variants, approved }], unreadable }
+//! GET  /conversations/:id/previews                          → { previews: [{ preview, about, recommended, variants, approved }], unreadable }
 //! GET  /conversations/:id/previews/:preview/:variant/video  → the variant's video, streamed, with ranges
 //! POST /conversations/:id/events                            → 201 { kept, events }; 200 for the log's last again; 409 { refused, at }
 //! ```

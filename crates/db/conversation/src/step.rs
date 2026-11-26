@@ -9,8 +9,9 @@
 //! fall in two kinds:
 //!
 //! - **The log's own structure,** held here exactly as `stepConversation`
-//!   holds it, under its names: which events each phase accepts
-//!   (`CONVERSATION_ACCEPTS`), time order, a point once and at most
+//!   holds it, under its names: an event written against the log as it
+//!   stands (`basis`, else `stale`), which events each phase accepts
+//!   (`CONVERSATION_ACCEPTS`), a point once and at most
 //!   [`POINTS_MOST`], each version numbered next and answering every open
 //!   flag once, a flag once and on a turn or speaker the newest version has,
 //!   a withdrawal of an open flag only, the measure and the green light of
@@ -29,6 +30,12 @@
 //! So an event home refuses is one `stepConversation` refuses too, with the
 //! same `why` and fields, and when an event breaks more than one rule home
 //! names the first of those it holds.
+//!
+//! **Order is the log's, never a clock** (paulgsc/some-ui C1580;
+//! docs/conveyor.md invariant 2). An event's `at` is its writer's clock,
+//! kept and never compared. Its place is its index in the log, and a writer
+//! that names `basis`, the events the log held when it wrote, is refused as
+//! `stale` when the log has moved since.
 
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
@@ -154,8 +161,8 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "why", rename_all = "kebab-case")]
 pub enum Refusal {
+	Stale { basis: u64, seq: u64 },
 	OutOfPhase { phase: Phase, event: Kind },
-	OutOfTime { since: String, at: String },
 	TooManyPoints,
 	PointAgain { take: String },
 	VersionNumber { expected: u64, got: u64 },
@@ -182,9 +189,10 @@ pub enum Refusal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
 	pub kind: Kind,
-	/// `at`, as sent.
+	/// `at`, as sent: the writer's clock, never compared.
 	pub at: String,
-	instant: DateTime<FixedOffset>,
+	/// How many events the log held when the writer wrote it, if it says.
+	basis: Option<u64>,
 	body: Body,
 	/// The whole event, as sent.
 	pub value: Value,
@@ -273,8 +281,8 @@ struct KeptFlag {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
 	phase: Phase,
-	/// The newest event's time, as sent and as an instant.
-	since: Option<(String, DateTime<FixedOffset>)>,
+	/// How many events the log holds: the next event's place.
+	seq: u64,
 	points: Vec<String>,
 	latest: Option<Version>,
 	flags: Vec<KeptFlag>,
@@ -295,7 +303,7 @@ impl State {
 	pub const fn new() -> Self {
 		Self {
 			phase: Phase::New,
-			since: None,
+			seq: 0,
 			points: Vec::new(),
 			latest: None,
 			flags: Vec::new(),
@@ -350,20 +358,17 @@ impl State {
 	}
 
 	fn apply(&mut self, event: &Event) -> Result<(), Refusal> {
+		if let Some(basis) = event.basis {
+			if basis != self.seq {
+				return Err(Refusal::Stale { basis, seq: self.seq });
+			}
+		}
 		let out_of_phase = Refusal::OutOfPhase {
 			phase: self.phase,
 			event: event.kind,
 		};
 		if !self.phase.accepts().contains(&event.kind) {
 			return Err(out_of_phase);
-		}
-		if let Some((since, instant)) = &self.since {
-			if event.kind != Kind::Topic && event.instant < *instant {
-				return Err(Refusal::OutOfTime {
-					since: since.clone(),
-					at: event.at.clone(),
-				});
-			}
 		}
 		match &event.body {
 			Body::Topic => {
@@ -427,7 +432,7 @@ impl State {
 			Body::Notes { turn, words, rules } => self.notes(turn, words, rules, out_of_phase)?,
 			Body::Approve(approval) => self.approve(approval)?,
 		}
-		self.since = Some((event.at.clone(), event.instant));
+		self.seq += 1;
 		Ok(())
 	}
 
@@ -566,7 +571,8 @@ pub fn is_id(text: &str) -> bool {
 		&& bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-/// `z.iso.datetime()`: an RFC 3339 time in UTC, written with `Z`.
+/// `z.iso.datetime()`: an RFC 3339 time in UTC, written with `Z`. Read only
+/// to hold the field to its shape: no rule compares it.
 fn instant(text: &str) -> Result<DateTime<FixedOffset>, Vec<Problem>> {
 	let refused = || problem("at", "is an ISO-8601 time in UTC");
 	if !text.ends_with('Z') {
@@ -787,10 +793,10 @@ pub fn parse(value: Value) -> Result<Event, Vec<Problem>> {
 	let Some(at) = object.get("at").and_then(Value::as_str) else {
 		return Err(problem("at", "is missing"));
 	};
-	let instant = instant(at)?;
+	instant(at)?;
 	let mut problems: Vec<Problem> = Vec::new();
 	for name in object.keys() {
-		if !["event", "at"].contains(&name.as_str()) && !kind.fields().contains(&name.as_str()) && !kind.optional().contains(&name.as_str()) {
+		if !["event", "at", "basis"].contains(&name.as_str()) && !kind.fields().contains(&name.as_str()) && !kind.optional().contains(&name.as_str()) {
 			problems.push((name.clone(), "is not a field of this kind of event"));
 		}
 	}
@@ -802,9 +808,10 @@ pub fn parse(value: Value) -> Result<Event, Vec<Problem>> {
 	if !problems.is_empty() {
 		return Err(problems);
 	}
+	let basis = if object.contains_key("basis") { Some(field::<u64>(object, "basis")?) } else { None };
 	let body = body(kind, object)?;
 	let at = at.to_owned();
-	Ok(Event { kind, at, instant, body, value })
+	Ok(Event { kind, at, basis, body, value })
 }
 
 #[cfg(test)]

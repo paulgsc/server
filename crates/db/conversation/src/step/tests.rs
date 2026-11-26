@@ -179,16 +179,27 @@ fn the_refusals_serialize_as_the_records_step_names_them() {
 }
 
 #[test]
-fn an_event_dated_before_the_last_is_out_of_time() {
+fn order_is_the_logs_and_a_writers_clock_is_never_compared() {
 	let mut early = point("take-2");
 	early["at"] = json!("2026-11-26T09:00:00.000Z");
-	assert_eq!(
-		state_of(&[topic()]).step(&event(early)).unwrap_err(),
-		Refusal::OutOfTime {
-			since: "2026-11-26T10:00:00.000Z".to_owned(),
-			at: "2026-11-26T09:00:00.000Z".to_owned()
-		}
-	);
+	assert!(state_of(&[topic()]).step(&event(early)).is_ok(), "an event dated before the last is kept in its place");
+}
+
+#[test]
+fn an_event_written_against_an_older_log_is_stale() {
+	let mut on_one = point("take-1");
+	on_one["basis"] = json!(1);
+	let after_topic = state_of(&[topic()]);
+	assert!(after_topic.step(&event(on_one.clone())).is_ok(), "written against the log as it stands");
+	let lit = state_of(&green_lit());
+	assert_eq!(lit.step(&event(on_one)).unwrap_err(), Refusal::Stale { basis: 1, seq: 5 });
+	// The basis is checked before the phase: a stale approval is stale, not out of phase.
+	let mut first = approve("p", &json!({ "kind": "else", "said": "neither" }));
+	first["basis"] = json!(3);
+	assert_eq!(state_of(&[]).step(&event(first)).unwrap_err(), Refusal::Stale { basis: 3, seq: 0 });
+	let mut topic_first = topic();
+	topic_first["basis"] = json!(0);
+	assert!(State::new().step(&event(topic_first)).is_ok(), "the first event, a topic, is written against 0");
 }
 
 #[test]

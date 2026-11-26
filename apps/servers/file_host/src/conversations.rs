@@ -13,7 +13,8 @@
 //! preview is files, kept no table:
 //!
 //! ```text
-//! renders/conversation/<conversation>/<preview>/preview.json   some-ui.conversation-preview/1
+//! renders/conversation/<conversation>/<preview>/preview.json   some-ui.conversation-preview/1:
+//!     { schema, preview, about, recommended, variants: [{ variant, title, rule, callouts }] }
 //! renders/conversation/<conversation>/<preview>/<variant>.mp4  each variant's video
 //! ```
 //!
@@ -38,8 +39,9 @@ pub const RENDERS_FOLDER: &str = "/app/dbs/renders/conversation";
 /// A preview's manifest, in its folder.
 pub const MANIFEST: &str = "preview.json";
 
-/// The manifest's schema (paulgsc/some-ui
-/// `packages/video-render/src/conversation-preview.ts`).
+/// The manifest's schema tag. Its shape is the one the phone's card renders
+/// (paulgsc/some-ui `packages/video-render/src/preview-offer.ts`,
+/// `PreviewOfferSchema`, #3575), named as home's files name it.
 pub const MANIFEST_SCHEMA: &str = "some-ui.conversation-preview/1";
 
 /// The largest manifest home reads.
@@ -83,6 +85,8 @@ impl Folder {
 struct Manifest {
 	schema: String,
 	preview: String,
+	/// The card's heading: what the preview bundles.
+	about: String,
 	recommended: String,
 	variants: Vec<ManifestVariant>,
 }
@@ -91,6 +95,8 @@ struct Manifest {
 #[serde(deny_unknown_fields)]
 struct ManifestVariant {
 	variant: String,
+	/// The variant's name on the card.
+	title: String,
 	rule: String,
 	callouts: Vec<String>,
 }
@@ -99,6 +105,8 @@ struct ManifestVariant {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Variant {
 	pub variant: String,
+	/// Its name on the card.
+	pub title: String,
 	/// The rule a pick of it sets.
 	pub rule: String,
 	/// What is in it, as the clip calls each out.
@@ -117,6 +125,8 @@ pub struct Approved {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Preview {
 	pub preview: String,
+	/// The card's heading: what the preview bundles.
+	pub about: String,
 	pub recommended: String,
 	/// Two or three, in the manifest's order.
 	pub variants: Vec<Variant>,
@@ -138,20 +148,32 @@ fn fits(text: &str, most: usize) -> bool {
 }
 
 /// The manifest's offer, checked: its own id, two or three variants each an
-/// id once, the recommended one of them, and each rule and callout a short
-/// line.
-fn offer(manifest: Manifest, preview: &str) -> Option<(String, Vec<ManifestVariant>)> {
+/// id once, the recommended one of them, and its heading and each title,
+/// rule and callout a short line.
+fn offer(manifest: Manifest, preview: &str) -> Option<Offer> {
 	let names: Vec<&str> = manifest.variants.iter().map(|v| v.variant.as_str()).collect();
 	let good = manifest.schema == MANIFEST_SCHEMA
 		&& manifest.preview == preview
 		&& (2..=PREVIEW_VARIANTS_MOST).contains(&names.len())
 		&& names.iter().enumerate().all(|(i, name)| is_id(name) && !names[..i].contains(name))
 		&& names.contains(&manifest.recommended.as_str())
+		&& fits(&manifest.about, CALLOUT_MOST)
 		&& manifest
 			.variants
 			.iter()
-			.all(|v| fits(&v.rule, 64) && (1..=CALLOUTS_MOST).contains(&v.callouts.len()) && v.callouts.iter().all(|c| fits(c, CALLOUT_MOST)));
-	good.then_some((manifest.recommended, manifest.variants))
+			.all(|v| fits(&v.title, 64) && fits(&v.rule, 64) && (1..=CALLOUTS_MOST).contains(&v.callouts.len()) && v.callouts.iter().all(|c| fits(c, CALLOUT_MOST)));
+	good.then_some(Offer {
+		about: manifest.about,
+		recommended: manifest.recommended,
+		variants: manifest.variants,
+	})
+}
+
+/// A ready preview's offer, as its manifest says it.
+struct Offer {
+	about: String,
+	recommended: String,
+	variants: Vec<ManifestVariant>,
 }
 
 /// What reading one preview's folder found.
@@ -159,7 +181,7 @@ enum Read {
 	/// Still being made: no manifest yet, or a variant's video not there.
 	Making,
 	Unreadable,
-	Ready(String, Vec<ManifestVariant>),
+	Ready(Offer),
 }
 
 async fn read_one(folder: &Path, preview: &str) -> std::io::Result<Read> {
@@ -176,15 +198,15 @@ async fn read_one(folder: &Path, preview: &str) -> std::io::Result<Read> {
 	let Ok(parsed) = serde_json::from_slice::<Manifest>(&bytes) else {
 		return Ok(Read::Unreadable);
 	};
-	let Some((recommended, variants)) = offer(parsed, preview) else {
+	let Some(offer) = offer(parsed, preview) else {
 		return Ok(Read::Unreadable);
 	};
-	for variant in &variants {
+	for variant in &offer.variants {
 		if !tokio::fs::try_exists(folder.join(String::from(&variant.variant) + ".mp4")).await? {
 			return Ok(Read::Making);
 		}
 	}
-	Ok(Read::Ready(recommended, variants))
+	Ok(Read::Ready(offer))
 }
 
 /// The previews `conversation` offers, each with the record's approval of it
@@ -222,19 +244,21 @@ pub async fn previews(folder: &Folder, conversation: &str, approvals: &[Approval
 		match read_one(&root.join(&id), &id).await? {
 			Read::Making => {}
 			Read::Unreadable => out.unreadable.push(id),
-			Read::Ready(recommended, variants) => {
+			Read::Ready(Offer { about, recommended, variants }) => {
 				let approved = approvals.iter().find(|a| a.preview == id).map(|a| Approved { chose: a.chose.clone() });
 				let variants = variants
 					.into_iter()
 					.map(|v| Variant {
 						video: String::from(crate::API_V1_BASE_PATH) + "/conversations/" + conversation + "/previews/" + &id + "/" + &v.variant + "/video",
 						variant: v.variant,
+						title: v.title,
 						rule: v.rule,
 						callouts: v.callouts,
 					})
 					.collect();
 				out.previews.push(Preview {
 					preview: id,
+					about,
 					recommended,
 					variants,
 					approved,
@@ -268,8 +292,8 @@ pub async fn offered(folder: &Folder, conversation: &str, approval: &Approval) -
 	if !is_id(conversation) || !is_id(preview) {
 		return Ok(Err(unknown));
 	}
-	let (recommended, variants) = match read_one(&folder.of(conversation).join(preview), preview).await {
-		Ok(Read::Ready(recommended, variants)) => (recommended, variants),
+	let Offer { recommended, variants, .. } = match read_one(&folder.of(conversation).join(preview), preview).await {
+		Ok(Read::Ready(offer)) => offer,
 		Ok(Read::Making | Read::Unreadable) => return Ok(Err(unknown)),
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Err(unknown)),
 		Err(err) => return Err(err),

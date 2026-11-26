@@ -186,7 +186,20 @@ async fn a_refused_event_answers_why_and_writes_nothing() {
 		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&extra)).await.0,
 		StatusCode::UNPROCESSABLE_ENTITY
 	);
-	assert_eq!(rows(&state.pool).await, 1);
+	let mut stale = json!({ "event": "point", "at": "2026-11-26T10:01:00.000Z", "take": "take-1", "basis": 0 });
+	assert_eq!(
+		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&stale)).await,
+		(StatusCode::CONFLICT, json!({ "refused": { "why": "stale", "basis": 0, "seq": 1 }, "at": 1 })),
+		"a write against an older log is refused by number"
+	);
+	stale["basis"] = json!(1);
+	stale["at"] = json!("2020-01-01T00:00:00.000Z");
+	assert_eq!(
+		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&stale)).await,
+		(StatusCode::CREATED, json!({ "kept": 1, "events": 2 })),
+		"a writer's clock is never compared"
+	);
+	assert_eq!(rows(&state.pool).await, 2);
 }
 
 #[tokio::test]

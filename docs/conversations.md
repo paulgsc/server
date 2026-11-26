@@ -8,7 +8,7 @@ previews the owner approves from (#3558). paulgsc/server#1243 is the story.
 
 ```text
 GET  /api/v1/conversations/:id                                   the record: { schema, id, events }
-GET  /api/v1/conversations/:id/previews                          { previews: [{ preview, recommended, variants, approved }], unreadable }
+GET  /api/v1/conversations/:id/previews                          { previews: [{ preview, about, recommended, variants, approved }], unreadable }
 GET  /api/v1/conversations/:id/previews/:preview/:variant/video  a variant's muted loop, with ranges
 POST /api/v1/conversations/:id/events                            201 { kept, events } | 200 the same, a resend | 409 { refused, at } | 422
 ```
@@ -19,9 +19,11 @@ POST /api/v1/conversations/:id/events                            201 { kept, eve
   record's own names for phases, events and refusals, so the phone reads a `409`'s `refused`
   with `refusalLine`.
 - **The previews** are files the renderer leaves at
-  `renders/conversation/<id>/<preview>/preview.json` (`some-ui.conversation-preview/1`) beside
-  each `<variant>.mp4`, written manifest last (`file_host::conversations`). A preview is
-  offered once its manifest and every variant's video are there.
+  `renders/conversation/<id>/<preview>/preview.json` (`some-ui.conversation-preview/1`:
+  `{ schema, preview, about, recommended, variants: [{ variant, title, rule, callouts }] }`,
+  the card's `PreviewOfferSchema`) beside each `<variant>.mp4`, written manifest last
+  (`file_host::conversations`). A preview is offered once its manifest and every variant's
+  video are there.
 
 ## Why a table of its own (reaching inward first)
 
@@ -43,15 +45,23 @@ record, from 1, with no gap.
    `the_table_is_append_only_gapless_and_leaves_with_the_account` and
    `the_migration_round_trips_and_refuses_to_drop_a_record`, and by `handlers::conversations`'
    `a_refused_event_answers_why_and_writes_nothing`.
-2. **An event's place is its number, with no gap.** `seq` is the next in its log (a trigger
-   refuses any other), and the replay reads events in that order. *Enforced by*
-   `the_table_is_append_only_gapless_and_leaves_with_the_account`.
+2. **An event's place is its number, never a clock** (paulgsc/some-ui C1580, as
+   docs/conveyor.md invariant 2). `seq` is the next in its log (a trigger refuses any other),
+   and the replay reads events in that order. An event's `at` is its writer's clock, kept and
+   never compared, since the log's writers (the phone, Studio, the agent in the cloud) each
+   have their own. A writer that names `basis`, how many events the log held when it wrote,
+   is refused `stale` (`{ why, basis, seq }`) when the log has moved since: a pick made on an
+   old read is refused, never kept after an event it did not see. *Enforced by*
+   `the_table_is_append_only_gapless_and_leaves_with_the_account`,
+   `an_event_written_against_an_older_log_is_stale`,
+   `order_is_the_logs_and_a_writers_clock_is_never_compared` and
+   `a_refused_event_answers_why_and_writes_nothing`.
 3. **A resend keeps nothing twice.** An event equal to the log's last is answered `200` at its
    index, and nothing is written. So a pick the phone sends again after a lost answer is not
    refused as a second approval. *Enforced by*
    `a_retried_event_is_kept_once_and_a_second_approval_is_refused`.
-4. **Home holds the log's structural rules exactly, and only those.** Home holds which events
-   each phase takes, time order, and points once and at most forty. It holds each version
+4. **Home holds the log's structural rules exactly, and only those.** Home holds `basis`, which
+   events each phase takes, and points once and at most forty. It holds each version
    numbered next and answering every open flag once, and each flag once, on a turn or speaker
    the newest version has. It holds a withdrawal of an open flag only, the measure and green
    light of the newest version, under twenty minutes, notes on the newest version's turns
@@ -64,8 +74,9 @@ record, from 1, with no gap.
    the same `why`, while an event home keeps may still break a content rule a writer skipped.
    *Enforced by* `conversation_repo::step`'s tests, one per rule. *Not enforced:* parity with
    `stepConversation`, which a rule added on some-ui's side breaks until home ports it or this
-   list names it as trusted. some-ui's contract harness (`conversations.contract.ts`) holds the
-   refusals both sides share, against a real `file_host`.
+   list names it as trusted. some-ui's contract harness (`conversations.contract.ts`, which
+   lands once these routes are in its snapshot) holds refusals both sides share, against a
+   real `file_host`.
 5. **An approval names a preview home offers, exactly as home offers it.** Beyond the step,
    home answers `409` `preview-unknown` for a preview it has no ready files for. It answers
    `preview-offer` when the event's `offered` (in home's order), `recommended`, or the chosen
@@ -77,13 +88,3 @@ record, from 1, with no gap.
    is not listed. *Enforced by* `a_video_is_only_ever_one_plain_segment_per_name`.
 7. **Nothing of a record reaches a log line.** Each handler records only `otel.kind`. A
    drive error logs its kind, never a path.
-
-## Known hazard: the record's time order compares writers' clocks
-
-`stepConversation` refuses an event dated before the log's newest (`out-of-time`), and home
-holds the same rule (invariant 4). The log has more than one writer: the phone, Studio, and
-the agent in a cloud session. So a writer whose clock runs behind another's is refused until
-its clock passes the other's. That is the same class of wedge docs/conveyor.md invariant 2
-records from paulgsc/server#839. Until the schema decides otherwise, a writer dates an event
-no earlier than the record's newest `at`, which it reads from `GET /conversations/:id`. Raised
-on paulgsc/server#1243 for the coordinator and the owner.

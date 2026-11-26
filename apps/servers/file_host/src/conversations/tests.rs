@@ -13,8 +13,9 @@ pub(crate) fn render(root: &Path, preview: &str, variants: &[(&str, &str)], reco
 	let manifest = json!({
 		"schema": "some-ui.conversation-preview/1",
 		"preview": preview,
+		"about": "How one scene gives way to the next",
 		"recommended": recommended,
-		"variants": variants.iter().map(|(variant, rule)| json!({ "variant": variant, "rule": rule, "callouts": ["Mochi leans in", "the close is slower"] })).collect::<Vec<Value>>()
+		"variants": variants.iter().map(|(variant, rule)| json!({ "variant": variant, "title": variant.to_uppercase(), "rule": rule, "callouts": ["Mochi leans in", "the close is slower"] })).collect::<Vec<Value>>()
 	});
 	std::fs::write(folder.join(MANIFEST), manifest.to_string()).unwrap();
 }
@@ -47,6 +48,8 @@ async fn a_conversation_lists_its_ready_previews_by_id_with_the_records_approval
 	assert_eq!(ids, ["p-close", "p-open"]);
 	let close = &listed.previews[0];
 	assert_eq!(close.recommended, "a");
+	assert_eq!(close.about, "How one scene gives way to the next");
+	assert_eq!(close.variants[1].title, "B");
 	assert_eq!(close.variants.len(), 3);
 	assert_eq!(close.variants[2].rule, "playful-close");
 	assert_eq!(close.variants[2].video, "/api/v1/conversations/c/previews/p-close/c/video");
