@@ -17,21 +17,22 @@ async fn pool() -> SqlitePool {
 
 fn green_lit() -> Vec<Value> {
 	vec![
-		json!({ "event": "topic", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "why the record is a log" } }),
-		json!({ "event": "version", "at": "2026-11-26T10:02:00.000Z", "version": {
+		json!({ "event": "topic", "by": "owner", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "why the record is a log" } }),
+		json!({ "event": "version", "by": "agent", "at": "2026-11-26T10:02:00.000Z", "version": {
 			"n": 1,
 			"speakers": [{ "id": "tin", "character": "tin-owlet", "voice": { "kind": "kokoro" } }],
 			"turns": [{ "id": "t1", "speaker": "tin", "voice": "kokoro", "said": "a line" }],
 			"answers": []
 		} }),
-		json!({ "event": "heard", "at": "2026-11-26T10:04:00.000Z", "version": 1, "ms": 60_000 }),
-		json!({ "event": "green-light", "at": "2026-11-26T10:05:00.000Z", "version": 1 }),
+		json!({ "event": "heard", "by": "home", "at": "2026-11-26T10:04:00.000Z", "version": 1, "ms": 60_000 }),
+		json!({ "event": "green-light", "by": "owner", "at": "2026-11-26T10:05:00.000Z", "version": 1 }),
 	]
 }
 
 fn approve(variant: &str) -> Value {
 	json!({
 		"event": "approve",
+		"by": "owner",
 		"at": "2026-11-26T10:06:00.000Z",
 		"preview": "p-close",
 		"offered": ["a", "b"],
@@ -90,7 +91,7 @@ async fn a_refused_event_changes_nothing() {
 		}
 		other => panic!("refused as {other}"),
 	}
-	let out_of_phase = json!({ "event": "point", "at": "2026-11-26T10:07:00.000Z", "take": "late" });
+	let out_of_phase = json!({ "event": "point", "by": "owner", "at": "2026-11-26T10:07:00.000Z", "take": "late" });
 	assert!(matches!(put(&pool, A, out_of_phase).await, Err(ConversationError::Refused { at: 4, .. })));
 	assert_eq!(rows(&pool).await, before, "a refused event writes nothing");
 	let replayed = state(&mut pool.acquire().await.unwrap(), A, C).await.unwrap();

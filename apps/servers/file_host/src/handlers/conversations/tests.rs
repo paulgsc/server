@@ -91,26 +91,27 @@ async fn answer(response: Response) -> (StatusCode, Value) {
 }
 
 fn topic() -> Value {
-	json!({ "event": "topic", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "why the record is a log" } })
+	json!({ "event": "topic", "by": "owner", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "why the record is a log" } })
 }
 
 fn green_lit() -> Vec<Value> {
 	vec![
 		topic(),
-		json!({ "event": "version", "at": "2026-11-26T10:02:00.000Z", "version": {
+		json!({ "event": "version", "by": "agent", "at": "2026-11-26T10:02:00.000Z", "version": {
 			"n": 1,
 			"speakers": [{ "id": "tin", "character": "tin-owlet", "voice": { "kind": "kokoro" } }],
 			"turns": [{ "id": "t1", "speaker": "tin", "voice": "kokoro", "said": "a line" }],
 			"answers": []
 		} }),
-		json!({ "event": "heard", "at": "2026-11-26T10:04:00.000Z", "version": 1, "ms": 60_000 }),
-		json!({ "event": "green-light", "at": "2026-11-26T10:05:00.000Z", "version": 1 }),
+		json!({ "event": "heard", "by": "home", "at": "2026-11-26T10:04:00.000Z", "version": 1, "ms": 60_000 }),
+		json!({ "event": "green-light", "by": "owner", "at": "2026-11-26T10:05:00.000Z", "version": 1 }),
 	]
 }
 
 fn approve(preview: &str, variant: &str, rule: &str) -> Value {
 	json!({
 		"event": "approve",
+		"by": "owner",
 		"at": "2026-11-26T10:06:00.000Z",
 		"preview": preview,
 		"offered": ["a", "b"],
@@ -172,7 +173,7 @@ async fn a_refused_event_answers_why_and_writes_nothing() {
 	let phone = bearer(&state).await;
 	let app = module().into_table_router().with_state(state.clone());
 	send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&topic())).await;
-	let lit = json!({ "event": "green-light", "at": "2026-11-26T10:05:00.000Z", "version": 1 });
+	let lit = json!({ "event": "green-light", "by": "owner", "at": "2026-11-26T10:05:00.000Z", "version": 1 });
 	assert_eq!(
 		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&lit)).await,
 		(
@@ -186,7 +187,7 @@ async fn a_refused_event_answers_why_and_writes_nothing() {
 		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&extra)).await.0,
 		StatusCode::UNPROCESSABLE_ENTITY
 	);
-	let mut old_read = json!({ "event": "point", "at": "2026-11-26T10:01:00.000Z", "take": "take-1", "basis": 0 });
+	let mut old_read = json!({ "event": "point", "by": "owner", "at": "2026-11-26T10:01:00.000Z", "take": "take-1", "basis": 0 });
 	assert_eq!(
 		send(&app, Method::POST, "/conversations/c/events", Some(&phone), Some(&old_read)).await,
 		(StatusCode::CONFLICT, json!({ "refused": { "why": "stale", "basis": 0, "seq": 1 }, "at": 1 })),

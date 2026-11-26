@@ -6,16 +6,17 @@ fn event(value: Value) -> super::Event {
 }
 
 fn topic() -> Value {
-	json!({ "event": "topic", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "why the record is a log" } })
+	json!({ "event": "topic", "by": "owner", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "why the record is a log" } })
 }
 
 fn point(take: &str) -> Value {
-	json!({ "event": "point", "at": "2026-11-26T10:01:00.000Z", "take": take })
+	json!({ "event": "point", "by": "owner", "at": "2026-11-26T10:01:00.000Z", "take": take })
 }
 
 fn version(n: u64, answers: &Value) -> Value {
 	json!({
 		"event": "version",
+		"by": "agent",
 		"at": "2026-11-26T10:02:00.000Z",
 		"version": {
 			"n": n,
@@ -32,21 +33,27 @@ fn version(n: u64, answers: &Value) -> Value {
 	})
 }
 
+/// A flag on version 1.
 fn flag(id: &str, turn: &str) -> Value {
-	json!({ "event": "flag", "at": "2026-11-26T10:03:00.000Z", "flag": { "id": id, "on": { "scope": "turn", "turn": turn }, "kinds": ["too-fast"] } })
+	flag_on(1, id, turn)
+}
+
+fn flag_on(version: u64, id: &str, turn: &str) -> Value {
+	json!({ "event": "flag", "by": "owner", "at": "2026-11-26T10:03:00.000Z", "version": version, "flag": { "id": id, "on": { "scope": "turn", "turn": turn }, "kinds": ["too-fast"] } })
 }
 
 fn heard(version: u64, ms: u64) -> Value {
-	json!({ "event": "heard", "at": "2026-11-26T10:04:00.000Z", "version": version, "ms": ms })
+	json!({ "event": "heard", "by": "home", "at": "2026-11-26T10:04:00.000Z", "version": version, "ms": ms })
 }
 
 fn green_light(version: u64) -> Value {
-	json!({ "event": "green-light", "at": "2026-11-26T10:05:00.000Z", "version": version })
+	json!({ "event": "green-light", "by": "owner", "at": "2026-11-26T10:05:00.000Z", "version": version })
 }
 
 fn approve(preview: &str, chose: &Value) -> Value {
 	json!({
 		"event": "approve",
+		"by": "owner",
 		"at": "2026-11-26T10:06:00.000Z",
 		"preview": preview,
 		"offered": ["a", "b"],
@@ -250,7 +257,7 @@ fn a_flag_is_raised_once_on_what_the_newest_version_has() {
 #[test]
 fn a_withdrawal_takes_back_an_open_flag_only() {
 	let flagged = vec![topic(), version(1, &json!([])), flag("f", "t1")];
-	let withdraw = |flag: &str| json!({ "event": "withdraw", "at": "2026-11-26T10:03:30.000Z", "flag": flag });
+	let withdraw = |flag: &str| json!({ "event": "withdraw", "by": "owner", "at": "2026-11-26T10:03:30.000Z", "flag": flag });
 	assert_eq!(refused(&flagged, withdraw("g")), Refusal::FlagNotOpen { flag: "g".to_owned() });
 	let mut values = flagged;
 	values.push(withdraw("f"));
@@ -279,29 +286,149 @@ fn the_green_light_needs_the_newest_version_measured_and_under_the_bound() {
 
 #[test]
 fn notes_name_a_turn_of_the_newest_version_its_words_once_and_approved_rules() {
-	let notes = |turn: &str, words: &Value, rules: &Value| json!({ "event": "notes", "at": "2026-11-26T10:07:00.000Z", "turn": turn, "words": words, "rules": rules });
-	let lit = green_lit();
+	let notes =
+		|turn: &str, words: &Value, rules: &Value| json!({ "event": "notes", "by": "agent", "at": "2026-11-26T10:07:00.000Z", "turn": turn, "words": words, "rules": rules });
+	let mut lit = green_lit();
+	lit.push(approve("p-close", &json!({ "kind": "variant", "variant": "a", "rule": "calm-close" })));
+	let calm = json!(["calm-close"]);
 	assert_eq!(
-		refused(&lit, notes("t9", &json!([{ "at": 0, "stress": 1 }]), &json!([]))),
+		refused(&lit, notes("t9", &json!([{ "at": 0, "stress": 1 }]), &calm)),
 		Refusal::NotesTurn { turn: "t9".to_owned() }
 	);
 	// t1's transcript has three words.
 	assert_eq!(
-		refused(&lit, notes("t1", &json!([{ "at": 3, "stress": 1 }]), &json!([]))),
+		refused(&lit, notes("t1", &json!([{ "at": 3, "stress": 1 }]), &calm)),
 		Refusal::NotesWord { turn: "t1".to_owned(), at: 3 }
 	);
 	assert_eq!(
-		refused(&lit, notes("t1", &json!([{ "at": 1, "stress": 1 }, { "at": 1, "stress": 0 }]), &json!([]))),
+		refused(&lit, notes("t1", &json!([{ "at": 1, "stress": 1 }, { "at": 1, "stress": 0 }]), &calm)),
 		Refusal::NotesWord { turn: "t1".to_owned(), at: 1 }
 	);
 	assert_eq!(
-		refused(&lit, notes("t1", &json!([{ "at": 1, "stress": 1 }]), &json!(["calm-close"]))),
-		Refusal::NotesRule { rule: "calm-close".to_owned() }
+		refused(&lit, notes("t1", &json!([{ "at": 1, "stress": 1 }]), &json!(["lively-close"]))),
+		Refusal::NotesRule { rule: "lively-close".to_owned() }
 	);
-	let mut approved = lit;
-	approved.push(approve("p-close", &json!({ "kind": "variant", "variant": "a", "rule": "calm-close" })));
-	approved.push(notes("t1", &json!([{ "at": 2, "stress": 1 }]), &json!(["calm-close"])));
-	assert_eq!(state_of(&approved).phase(), Phase::GreenLit);
+	assert!(
+		parse(notes("t1", &json!([{ "at": 1, "stress": 1 }]), &json!([]))).is_err(),
+		"notes follow at least one rule"
+	);
+	let mut kept = lit.clone();
+	kept.push(notes("t1", &json!([{ "at": 2, "stress": 1 }]), &calm));
+	assert_eq!(state_of(&kept).phase(), Phase::GreenLit);
+	// Notes come only once the conversation is green-lit.
+	let podcast = vec![topic(), version(1, &json!([]))];
+	assert_eq!(
+		refused(&podcast, notes("t1", &json!([{ "at": 0, "stress": 1 }]), &calm)),
+		Refusal::OutOfPhase {
+			phase: Phase::Podcast,
+			event: Kind::Notes
+		}
+	);
+}
+
+#[test]
+fn a_turn_whose_words_the_record_does_not_hold_takes_no_notes() {
+	let mut untranscribed = version(1, &json!([]));
+	untranscribed["version"]["turns"][0] = json!({ "id": "t1", "speaker": "owner", "voice": "owner", "take": "take-1" });
+	let mut lit = vec![topic(), untranscribed, heard(1, 60_000), green_light(1)];
+	lit.push(approve("p", &json!({ "kind": "variant", "variant": "a", "rule": "r" })));
+	let notes = json!({ "event": "notes", "by": "agent", "at": "2026-11-26T10:07:00.000Z", "turn": "t1", "words": [{ "at": 0, "stress": 1 }], "rules": ["r"] });
+	assert_eq!(refused(&lit, notes), Refusal::NotesWord { turn: "t1".to_owned(), at: 0 });
+}
+
+#[test]
+fn each_kind_of_event_has_its_author() {
+	let mut by_agent = topic();
+	by_agent["by"] = json!("agent");
+	assert_eq!(
+		State::new().step(&event(by_agent)).unwrap_err(),
+		Refusal::Author {
+			event: Kind::Topic,
+			by: "agent".to_owned()
+		}
+	);
+	let mut owner_heard = heard(1, 5);
+	owner_heard["by"] = json!("owner");
+	assert_eq!(
+		refused(&[topic(), version(1, &json!([]))], owner_heard),
+		Refusal::Author {
+			event: Kind::Heard,
+			by: "owner".to_owned()
+		}
+	);
+	let mut nobody = topic();
+	nobody["by"] = json!("someone");
+	assert!(parse(nobody).is_err());
+	let mut unsaid = topic();
+	unsaid.as_object_mut().unwrap().remove("by");
+	assert!(parse(unsaid).is_err(), "every event names its author");
+	// After `stale`, before the phase.
+	let mut stale_agent = approve("p", &json!({ "kind": "else", "said": "neither" }));
+	stale_agent["by"] = json!("agent");
+	stale_agent["basis"] = json!(2);
+	assert_eq!(State::new().step(&event(stale_agent.clone())).unwrap_err(), Refusal::Stale { basis: 2, seq: 0 });
+	stale_agent["basis"] = json!(0);
+	assert_eq!(
+		State::new().step(&event(stale_agent)).unwrap_err(),
+		Refusal::Author {
+			event: Kind::Approve,
+			by: "agent".to_owned()
+		}
+	);
+}
+
+#[test]
+fn a_flag_lands_on_the_version_the_owner_heard() {
+	let two = vec![
+		topic(),
+		version(1, &json!([])),
+		flag("f", "t1"),
+		version(2, &json!([{ "flag": "f", "how": "conditioned" }])),
+	];
+	assert_eq!(
+		refused(&two, flag_on(1, "g", "t1")),
+		Refusal::FlagVersion {
+			flag: "g".to_owned(),
+			expected: 2,
+			got: 1
+		}
+	);
+	assert!(state_of(&two).step(&event(flag_on(2, "g", "t1"))).is_ok());
+}
+
+#[test]
+fn a_rule_already_set_is_set_again_only_by_naming_the_approval_it_moves() {
+	let mut set = green_lit();
+	set.push(approve("p-close", &json!({ "kind": "variant", "variant": "a", "rule": "calm-close" })));
+	let again = approve("p-close-2", &json!({ "kind": "variant", "variant": "b", "rule": "calm-close" }));
+	assert_eq!(refused(&set, again.clone()), Refusal::RuleAgain { rule: "calm-close".to_owned() });
+	let mut wrong = again.clone();
+	wrong["moves"] = json!("p-other");
+	assert_eq!(refused(&set, wrong), Refusal::RuleAgain { rule: "calm-close".to_owned() });
+	let mut moving = again;
+	moving["moves"] = json!("p-close");
+	assert!(state_of(&set).step(&event(moving)).is_ok());
+}
+
+#[test]
+fn a_flag_of_several_kinds_is_answered_kind_by_kind() {
+	let mut two_kinds = flag("f", "t1");
+	two_kinds["flag"]["kinds"] = json!(["too-fast", "too-quiet"]);
+	let flagged = vec![topic(), version(1, &json!([])), two_kinds];
+	let half = json!([{ "flag": "f", "kinds": ["too-fast"], "how": "conditioned" }]);
+	assert_eq!(refused(&flagged, version(2, &half)), Refusal::Unanswered { flag: "f".to_owned() });
+	let both = json!([{ "flag": "f", "kinds": ["too-fast"], "how": "conditioned" }, { "flag": "f", "kinds": ["too-quiet"], "how": "conditioned" }]);
+	assert!(state_of(&flagged).step(&event(version(2, &both))).is_ok());
+	let foreign = json!([{ "flag": "f", "kinds": ["echo"], "how": "rewrote", "turns": ["t2"] }]);
+	assert_eq!(
+		refused(&flagged, version(2, &foreign)),
+		Refusal::AnswerKinds {
+			flag: "f".to_owned(),
+			kind: "echo".to_owned()
+		}
+	);
+	let twice = json!([{ "flag": "f", "how": "conditioned" }, { "flag": "f", "kinds": ["too-quiet"], "how": "conditioned" }]);
+	assert_eq!(refused(&flagged, version(2, &twice)), Refusal::AnswerTwice { flag: "f".to_owned() });
 }
 
 #[test]
@@ -313,7 +440,7 @@ fn an_event_is_exactly_its_kinds_fields() {
 	local["at"] = json!("2026-11-26T10:01:00+01:00");
 	assert!(parse(local).is_err());
 	assert!(parse(json!({ "event": "edit", "at": "2026-11-26T10:01:00Z" })).is_err());
-	assert!(parse(json!({ "event": "point", "at": "2026-11-26T10:01:00Z" })).is_err());
+	assert!(parse(json!({ "event": "point", "by": "owner", "at": "2026-11-26T10:01:00Z" })).is_err());
 	let mut thrice = approve("p", &json!({ "kind": "else", "said": "neither" }));
 	thrice["offered"] = json!(["a", "a"]);
 	assert!(parse(thrice).is_err());

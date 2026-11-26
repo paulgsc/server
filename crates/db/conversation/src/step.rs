@@ -10,19 +10,23 @@
 //!
 //! - **The log's own structure,** held here exactly as `stepConversation`
 //!   holds it, under its names: an event written against the log as it
-//!   stands (`basis`, else `stale`), which events each phase accepts
-//!   (`CONVERSATION_ACCEPTS`), a point once and at most
-//!   [`POINTS_MOST`], each version numbered next and answering every open
-//!   flag once, a flag once and on a turn or speaker the newest version has,
-//!   a withdrawal of an open flag only, the measure and the green light of
-//!   the newest version only, under [`MOST_MS`], a notes event on a turn of
-//!   the newest version, each word once and inside the turn, following only
-//!   rules an approval set, and each preview approved once, naming only the
-//!   variants it offered.
+//!   stands (`basis`, else `stale`), by its kind's author (`EVENT_AUTHORS`,
+//!   else `author`), which events each phase accepts
+//!   (`CONVERSATION_ACCEPTS`), a point once and at most [`POINTS_MOST`], each
+//!   version numbered next and answering every kind of every open flag once
+//!   (`answer-kinds`, `answer-twice`, `unanswered`), a flag once, on the
+//!   version the owner heard (`flag-version`) and on a turn or speaker it
+//!   has, a withdrawal of an open flag only, the measure and the green light
+//!   of the newest version only, under [`MOST_MS`], notes only once
+//!   green-lit, on a turn of the newest version whose words the record holds,
+//!   each word once and inside the turn, following at least one rule and
+//!   only rules an approval set, and each preview approved once, naming only
+//!   the variants it offered, setting a rule already set only by naming the
+//!   approval it moves (`rule-again`).
 //! - **The content rules that rest on some-ui's closed vocabularies** (the
 //!   cast and its roles, each character's emotions, the flag kinds' voices,
 //!   scopes and answers, Kokoro's voices, how one version's turns differ from
-//!   the last's) are not ported: they would be a second copy of those lists
+//!   the last's, and a /1 record's lift, which home never keeps) are not ported: they would be a second copy of those lists
 //!   that drifts from the first. Every writer runs `stepConversation` before
 //!   it sends (the phone, Studio and the agent all do), and home trusts it for
 //!   those. `docs/conversations.md` names the split and its invariant.
@@ -51,6 +55,9 @@ pub const POINTS_MOST: usize = 40;
 /// green-lit at, as home measured it.
 pub const MOST_MS: u64 = 20 * 60_000;
 
+/// `AUTHORS`: who writes a record's events (C1581).
+pub const AUTHORS: [&str; 3] = ["owner", "agent", "home"];
+
 /// `PREVIEW_VARIANTS_MOST`: the most variants one preview offers.
 pub const PREVIEW_VARIANTS_MOST: usize = 3;
 
@@ -76,8 +83,8 @@ impl Phase {
 		match self {
 			Self::New => &[Kind::Topic],
 			Self::Drafting => &[Kind::Point, Kind::Version],
-			Self::Podcast => &[Kind::Point, Kind::Flag, Kind::Heard, Kind::GreenLight, Kind::Notes],
-			Self::Flagged => &[Kind::Point, Kind::Flag, Kind::Withdraw, Kind::Version, Kind::Heard, Kind::Notes],
+			Self::Podcast => &[Kind::Point, Kind::Flag, Kind::Heard, Kind::GreenLight],
+			Self::Flagged => &[Kind::Point, Kind::Flag, Kind::Withdraw, Kind::Version, Kind::Heard],
 			Self::GreenLit => &[Kind::Notes, Kind::Approve],
 		}
 	}
@@ -129,28 +136,42 @@ impl Kind {
 		}
 	}
 
+	/// `EVENT_AUTHORS`: who may write an event of this kind (C1581). The
+	/// owner never sets a value: they give the topic and points, flag,
+	/// withdraw, green-light and approve; the agent writes versions and
+	/// notes; home measures.
+	#[must_use]
+	pub const fn authors(self) -> &'static [&'static str] {
+		match self {
+			Self::Topic | Self::Point | Self::Flag | Self::Withdraw | Self::GreenLight | Self::Approve => &["owner"],
+			Self::Version | Self::Notes => &["agent"],
+			Self::Heard => &["home"],
+		}
+	}
+
 	#[must_use]
 	pub fn parse(name: &str) -> Option<Self> {
 		Self::ALL.into_iter().find(|kind| kind.as_str() == name)
 	}
 
-	/// The fields an event of this kind has, beside `event` and `at`: each
-	/// required, but `notes`' `rules`.
+	/// The fields an event of this kind has, beside `event`, `at` and `by`:
+	/// each required.
 	const fn fields(self) -> &'static [&'static str] {
 		match self {
 			Self::Topic => &["topic"],
 			Self::Point => &["take"],
 			Self::Version | Self::GreenLight => &["version"],
-			Self::Flag | Self::Withdraw => &["flag"],
+			Self::Flag => &["version", "flag"],
+			Self::Withdraw => &["flag"],
 			Self::Heard => &["version", "ms"],
-			Self::Notes => &["turn", "words"],
+			Self::Notes => &["turn", "words", "rules"],
 			Self::Approve => &["preview", "offered", "recommended", "chose"],
 		}
 	}
 
 	const fn optional(self) -> &'static [&'static str] {
 		match self {
-			Self::Notes => &["rules"],
+			Self::Approve => &["moves"],
 			_ => &[],
 		}
 	}
@@ -162,6 +183,7 @@ impl Kind {
 #[serde(tag = "why", rename_all = "kebab-case")]
 pub enum Refusal {
 	Stale { basis: u64, seq: u64 },
+	Author { event: Kind, by: String },
 	OutOfPhase { phase: Phase, event: Kind },
 	TooManyPoints,
 	PointAgain { take: String },
@@ -169,7 +191,9 @@ pub enum Refusal {
 	Unanswered { flag: String },
 	AnswerUnknown { flag: String },
 	AnswerTwice { flag: String },
+	AnswerKinds { flag: String, kind: String },
 	FlagAgain { flag: String },
+	FlagVersion { flag: String, expected: u64, got: u64 },
 	TurnUnknown { flag: String, turn: String },
 	FlagSpeakerUnknown { flag: String, speaker: String },
 	FlagNotOpen { flag: String },
@@ -182,6 +206,7 @@ pub enum Refusal {
 	NotesWord { turn: String, at: u64 },
 	NotesRule { rule: String },
 	PreviewAgain { preview: String },
+	RuleAgain { rule: String },
 	PreviewVariant { preview: String, variant: String },
 }
 
@@ -193,6 +218,8 @@ pub struct Event {
 	pub at: String,
 	/// How many events the log held when the writer wrote it, if it says.
 	basis: Option<u64>,
+	/// Who wrote it (`AUTHORS`): `owner`, `agent` or `home`.
+	pub by: String,
 	body: Body,
 	/// The whole event, as sent.
 	pub value: Value,
@@ -215,7 +242,7 @@ enum Body {
 	Topic,
 	Point { take: String },
 	Version(Version),
-	Flag { id: String, on: Scope },
+	Flag { version: u64, id: String, on: Scope, kinds: Vec<String> },
 	Withdraw { flag: String },
 	Heard { version: u64, ms: u64 },
 	GreenLight { version: u64 },
@@ -238,8 +265,9 @@ struct Version {
 	n: u64,
 	speakers: Vec<String>,
 	turns: Vec<Turn>,
-	/// Each answer's flag, in order; an `unasked` change names none.
-	answers: Vec<String>,
+	/// Each answer's flag and the kinds it names (else all the flag's), in
+	/// order; an `unasked` change names none.
+	answers: Vec<(String, Option<Vec<String>>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +287,8 @@ pub struct Approval {
 	pub recommended: String,
 	/// `PreviewChoice`, as sent.
 	pub chose: Choice,
+	/// The approval of the same rule it moves, by its preview.
+	pub moves: Option<String>,
 }
 
 /// What the owner chose on a preview (`PreviewChoiceSchema`).
@@ -273,6 +303,7 @@ pub enum Choice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct KeptFlag {
 	id: String,
+	kinds: Vec<String>,
 	version: u64,
 	withdrawn: bool,
 }
@@ -363,6 +394,12 @@ impl State {
 				return Err(Refusal::Stale { basis, seq: self.seq });
 			}
 		}
+		if !event.kind.authors().contains(&event.by.as_str()) {
+			return Err(Refusal::Author {
+				event: event.kind,
+				by: event.by.clone(),
+			});
+		}
 		let out_of_phase = Refusal::OutOfPhase {
 			phase: self.phase,
 			event: event.kind,
@@ -392,7 +429,7 @@ impl State {
 				self.latest = Some(version.clone());
 				self.phase = Phase::Podcast;
 			}
-			Body::Flag { id, on } => self.flag(id, on, out_of_phase)?,
+			Body::Flag { version, id, on, kinds } => self.flag(*version, id, on, kinds, out_of_phase)?,
 			Body::Withdraw { flag } => {
 				if !self.open_flags().any(|open| &open.id == flag) {
 					return Err(Refusal::FlagNotOpen { flag: flag.clone() });
@@ -437,13 +474,21 @@ impl State {
 	}
 
 	/// A flag on the newest version: once, on a turn or speaker it has.
-	fn flag(&mut self, id: &str, on: &Scope, out_of_phase: Refusal) -> Result<(), Refusal> {
+	fn flag(&mut self, version: u64, id: &str, on: &Scope, kinds: &[String], out_of_phase: Refusal) -> Result<(), Refusal> {
 		if self.flags.iter().any(|flag| flag.id == id) {
 			return Err(Refusal::FlagAgain { flag: id.to_owned() });
 		}
 		let Some(latest) = &self.latest else {
 			return Err(out_of_phase);
 		};
+		// A flag lands on the version the owner heard, or nowhere.
+		if version != latest.n {
+			return Err(Refusal::FlagVersion {
+				flag: id.to_owned(),
+				expected: latest.n,
+				got: version,
+			});
+		}
 		match on {
 			Scope::Turn(turn) if !latest.turns.iter().any(|t| &t.id == turn) => {
 				return Err(Refusal::TurnUnknown {
@@ -459,9 +504,9 @@ impl State {
 			}
 			Scope::Turn(_) | Scope::Speaker(_) | Scope::Conversation => {}
 		}
-		let version = latest.n;
 		self.flags.push(KeptFlag {
 			id: id.to_owned(),
+			kinds: kinds.to_vec(),
 			version,
 			withdrawn: false,
 		});
@@ -483,7 +528,8 @@ impl State {
 		};
 		let mut seen = Vec::with_capacity(words.len());
 		for &at in words {
-			let outside = found.words.is_some_and(|count| usize::try_from(at).map_or(true, |at| at >= count));
+			// A turn whose words the record does not hold takes no notes.
+			let outside = found.words.is_none_or(|count| usize::try_from(at).map_or(true, |at| at >= count));
 			if seen.contains(&at) || outside {
 				return Err(Refusal::NotesWord { turn: turn.to_owned(), at });
 			}
@@ -509,6 +555,13 @@ impl State {
 				variant: named.clone(),
 			});
 		}
+		// A rule already set is set again only by an approval naming the one it moves.
+		if let Choice::Variant { rule, .. } = &approval.chose {
+			let set_by = self.approvals.iter().find(|kept| matches!(&kept.chose, Choice::Variant { rule: set, .. } if set == rule));
+			if set_by.is_some_and(|kept| approval.moves.as_ref() != Some(&kept.preview)) {
+				return Err(Refusal::RuleAgain { rule: rule.clone() });
+			}
+		}
 		self.approvals.push(approval.clone());
 		Ok(())
 	}
@@ -517,21 +570,44 @@ impl State {
 	/// flag of the version before, each once, and every open flag is
 	/// answered.
 	fn answers_hold(&self, version: &Version) -> Result<(), Refusal> {
-		let open: Vec<&str> = self.open_flags().map(|flag| flag.id.as_str()).collect();
-		let mut answered: Vec<&str> = Vec::new();
-		for flag in &version.answers {
-			if !open.contains(&flag.as_str()) {
-				return Err(Refusal::AnswerUnknown { flag: flag.clone() });
+		let open: Vec<&KeptFlag> = self.open_flags().collect();
+		// The kinds of each flag answered so far.
+		let mut answered: Vec<(&str, Vec<&str>)> = Vec::new();
+		for (id, named) in &version.answers {
+			let Some(flag) = open.iter().find(|flag| &flag.id == id) else {
+				return Err(Refusal::AnswerUnknown { flag: id.clone() });
+			};
+			// The kinds this answers: those it names, else all of the flag's.
+			let kinds: Vec<&str> = named
+				.as_ref()
+				.map_or_else(|| flag.kinds.iter().map(String::as_str).collect(), |named| named.iter().map(String::as_str).collect());
+			if let Some(foreign) = kinds.iter().find(|kind| !flag.kinds.iter().any(|own| own == *kind)) {
+				return Err(Refusal::AnswerKinds {
+					flag: flag.id.clone(),
+					kind: (*foreign).to_owned(),
+				});
 			}
-			if answered.contains(&flag.as_str()) {
-				return Err(Refusal::AnswerTwice { flag: flag.clone() });
+			let done = match answered.iter().position(|(answered_id, _)| *answered_id == flag.id) {
+				Some(at) => &mut answered[at].1,
+				None => {
+					answered.push((flag.id.as_str(), Vec::new()));
+					let last = answered.len() - 1;
+					&mut answered[last].1
+				}
+			};
+			if kinds.iter().any(|kind| done.contains(kind)) {
+				return Err(Refusal::AnswerTwice { flag: flag.id.clone() });
 			}
-			answered.push(flag);
+			done.extend(kinds);
 		}
+		let whole = |flag: &&KeptFlag| {
+			let done = answered.iter().find(|(id, _)| *id == flag.id).map_or(&[][..], |(_, kinds)| kinds.as_slice());
+			flag.kinds.iter().all(|kind| done.contains(&kind.as_str()))
+		};
 		open
-			.into_iter()
-			.find(|flag| !answered.contains(flag))
-			.map_or(Ok(()), |flag| Err(Refusal::Unanswered { flag: flag.to_owned() }))
+			.iter()
+			.find(|flag| !whole(flag))
+			.map_or(Ok(()), |flag| Err(Refusal::Unanswered { flag: flag.id.clone() }))
 	}
 }
 
@@ -632,12 +708,14 @@ struct ReadsWire {
 struct AnswerWire {
 	how: String,
 	flag: Option<String>,
+	kinds: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 struct FlagWire {
 	id: String,
 	on: ScopeWire,
+	kinds: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -678,10 +756,17 @@ fn version(value: VersionWire) -> Result<Version, Vec<Problem>> {
 	}
 	let mut answers = Vec::with_capacity(value.answers.len());
 	for answer in value.answers {
+		if answer
+			.kinds
+			.as_ref()
+			.is_some_and(|kinds| kinds.is_empty() || kinds.iter().enumerate().any(|(i, kind)| kinds[..i].contains(kind)))
+		{
+			return Err(problem("version.answers", "an answer's kinds are at least one, each once"));
+		}
 		match (answer.how.as_str(), answer.flag) {
-			("unasked", None) => {}
-			("unasked", Some(_)) => return Err(problem("version.answers", "an unasked change names no flag")),
-			(_, Some(flag)) => answers.push(flag),
+			("unasked", None) if answer.kinds.is_none() => {}
+			("unasked", _) => return Err(problem("version.answers", "an unasked change names no flag")),
+			(_, Some(flag)) => answers.push((flag, answer.kinds)),
 			(_, None) => return Err(problem("version.answers", "an answer names its flag")),
 		}
 	}
@@ -709,12 +794,24 @@ fn body(kind: Kind, object: &Map<String, Value>) -> Result<Body, Vec<Problem>> {
 			if !is_name(&flag.id) {
 				return Err(problem("flag.id", "is a name of 1 to 64 characters"));
 			}
+			if flag.kinds.is_empty() || flag.kinds.iter().enumerate().any(|(i, kind)| flag.kinds[..i].contains(kind)) {
+				return Err(problem("flag.kinds", "names at least one kind, each once"));
+			}
+			let version: u64 = field(object, "version")?;
+			if version < 1 {
+				return Err(problem("version", "is a number from 1"));
+			}
 			let on = match flag.on {
 				ScopeWire::Turn { turn } => Scope::Turn(turn),
 				ScopeWire::Speaker { speaker } => Scope::Speaker(speaker),
 				ScopeWire::Conversation {} => Scope::Conversation,
 			};
-			Body::Flag { id: flag.id, on }
+			Body::Flag {
+				version,
+				id: flag.id,
+				on,
+				kinds: flag.kinds,
+			}
 		}
 		Kind::Withdraw => Body::Withdraw { flag: field(object, "flag")? },
 		Kind::Heard => {
@@ -737,7 +834,10 @@ fn body(kind: Kind, object: &Map<String, Value>) -> Result<Body, Vec<Problem>> {
 			if words.is_empty() {
 				return Err(problem("words", "names at least one word"));
 			}
-			let rules: Vec<String> = if object.contains_key("rules") { field(object, "rules")? } else { Vec::new() };
+			let rules: Vec<String> = field(object, "rules")?;
+			if rules.is_empty() {
+				return Err(problem("rules", "names at least one rule an approval set"));
+			}
 			Body::Notes {
 				turn: field(object, "turn")?,
 				words: words.into_iter().map(|word| word.at).collect(),
@@ -768,11 +868,16 @@ fn body(kind: Kind, object: &Map<String, Value>) -> Result<Body, Vec<Problem>> {
 			if !names.chain(chosen).all(|name| is_name(name)) {
 				return Err(problem("approve", "names each preview, variant and rule in 1 to 64 characters"));
 			}
+			let moves: Option<String> = if object.contains_key("moves") { Some(field(object, "moves")?) } else { None };
+			if moves.as_deref().is_some_and(|moves| !is_name(moves)) {
+				return Err(problem("moves", "is a preview's id"));
+			}
 			Body::Approve(Approval {
 				preview,
 				offered,
 				recommended,
 				chose,
+				moves,
 			})
 		}
 	})
@@ -796,7 +901,7 @@ pub fn parse(value: Value) -> Result<Event, Vec<Problem>> {
 	instant(at)?;
 	let mut problems: Vec<Problem> = Vec::new();
 	for name in object.keys() {
-		if !["event", "at", "basis"].contains(&name.as_str()) && !kind.fields().contains(&name.as_str()) && !kind.optional().contains(&name.as_str()) {
+		if !["event", "at", "basis", "by"].contains(&name.as_str()) && !kind.fields().contains(&name.as_str()) && !kind.optional().contains(&name.as_str()) {
 			problems.push((name.clone(), "is not a field of this kind of event"));
 		}
 	}
@@ -809,9 +914,13 @@ pub fn parse(value: Value) -> Result<Event, Vec<Problem>> {
 		return Err(problems);
 	}
 	let basis = if object.contains_key("basis") { Some(field::<u64>(object, "basis")?) } else { None };
+	let by: String = field(object, "by")?;
+	if !AUTHORS.contains(&by.as_str()) {
+		return Err(problem("by", "is the owner, the agent or home"));
+	}
 	let body = body(kind, object)?;
 	let at = at.to_owned();
-	Ok(Event { kind, at, basis, body, value })
+	Ok(Event { kind, at, basis, by, body, value })
 }
 
 #[cfg(test)]

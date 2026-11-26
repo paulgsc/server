@@ -60,15 +60,20 @@ record, from 1, with no gap.
    index, and nothing is written. So a pick the phone sends again after a lost answer is not
    refused as a second approval. *Enforced by*
    `a_retried_event_is_kept_once_and_a_second_approval_is_refused`.
-4. **Home holds the log's structural rules exactly, and only those.** Home holds `basis`, which
-   events each phase takes, and points once and at most forty. It holds each version
-   numbered next and answering every open flag once, and each flag once, on a turn or speaker
-   the newest version has. It holds a withdrawal of an open flag only, the measure and green
-   light of the newest version, under twenty minutes, notes on the newest version's turns
-   within their words and approved rules, and each preview approved once, from what it offered.
+4. **Home holds the log's structural rules exactly, and only those** (to C1581). Home holds
+   `basis` (`stale`), each kind's author (`EVENT_AUTHORS`: the owner's topic, points, flags,
+   withdrawals, green light and approvals, the agent's versions and notes, home's measure),
+   which events each phase takes, and points once and at most forty. It holds each version
+   numbered next and answering every kind of every open flag once, and each flag once, on the
+   version the owner heard and on a turn or speaker it has. It holds a withdrawal of an open
+   flag only, the measure and green light of the newest version, under twenty minutes, notes
+   only once green-lit, on the newest version's turns whose words the record holds, within
+   them and following at least one approved rule, and each preview approved once, from what
+   it offered, a rule set again only by naming the approval it moves.
    Home does not port the content rules that rest on some-ui's closed vocabularies: the cast
    and its roles, each character's emotions, the flag kinds' voices, scopes and answers,
-   Kokoro's voices, and how one version's turns differ from the last's. A second copy of those
+   Kokoro's voices, and how one version's turns differ from the last's. Home keeps `/2`
+   records only, so a `/1` record's lift (`lifted`) is never one of its rules. A second copy of those
    lists would drift from the first. Every writer runs `stepConversation` before it sends, and
    home trusts it for those. So an event home refuses is one `stepConversation` refuses, with
    the same `why`, while an event home keeps may still break a content rule a writer skipped.

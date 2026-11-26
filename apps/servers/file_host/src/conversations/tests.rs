@@ -26,6 +26,7 @@ fn approval(preview: &str, offered: &[&str], recommended: &str, chose: Choice) -
 		offered: offered.iter().map(|v| (*v).to_owned()).collect(),
 		recommended: recommended.to_owned(),
 		chose,
+		moves: None,
 	}
 }
 
