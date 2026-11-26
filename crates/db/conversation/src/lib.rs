@@ -196,7 +196,7 @@ pub struct Listing {
 ///
 /// Newest is by the log's own order, never a clock: a conversation's `seq`
 /// counts from 1 in each, so the list orders by when each conversation's
-/// newest row was kept (SQLite's `rowid`, which grows with each insert and
+/// newest row was kept (the `rowid` of `SQLite`, which grows with each insert and
 /// which a `VACUUM` renumbers in the same order). A conversation whose log
 /// does not replay is named in [`Listing::unreadable`] and logged at error
 /// (by where it stops, never its id or words), so one broken log never hides

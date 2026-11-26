@@ -418,7 +418,7 @@ impl State {
 
 	/// How many previews have a standing approval.
 	#[must_use]
-	pub fn standing_count(&self) -> usize {
+	pub const fn standing_count(&self) -> usize {
 		self.standing.len()
 	}
 

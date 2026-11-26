@@ -53,9 +53,10 @@ fn stored(err: ConversationError) -> FileHostError {
 	}
 }
 
-/// `GET /conversations`: the caller's conversations, newest first by the
-/// log's own order, at most `conversation_repo::LIST_MOST`, each with its
-/// topic cut short, its phase, and how many previews were offered and how
+/// `GET /conversations`: the caller's conversations, newest first.
+///
+/// By the log's own order, at most `conversation_repo::LIST_MOST`, each with
+/// its topic cut short, its phase, and how many previews were offered and how
 /// many have a standing pick; and in `unreadable`, the id of each whose kept
 /// log does not replay, left out and logged at error.
 ///
