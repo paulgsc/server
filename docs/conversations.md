@@ -62,7 +62,7 @@ record, from 1, with no gap.
    `a_retried_event_is_kept_once_and_a_second_approval_is_refused`.
 4. **Home holds the log's structural rules exactly, and only those** (to C1581). Home holds
    `basis` (`stale`), each kind's author (`EVENT_AUTHORS`: the owner's topic, points, flags,
-   withdrawals, green light and approvals, the agent's versions and notes, home's measure),
+   withdrawals, green light and approvals, the agent's versions, notes and offers, home's measure),
    which events each phase takes, and points once and at most forty. It holds each version
    numbered next and answering every kind of every open flag once, and each flag once, on the
    version the owner heard and on a turn or speaker it has. It holds a withdrawal of an open
