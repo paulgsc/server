@@ -167,3 +167,49 @@ async fn the_migration_round_trips_and_refuses_to_drop_a_record() {
 	assert!(MIGRATOR.undo(&pool, PREVIOUS_MIGRATION).await.is_err(), "down refuses a table holding an event");
 	assert_eq!(tables().fetch_one(&pool).await.unwrap(), 1);
 }
+
+#[tokio::test]
+async fn a_subjects_conversations_are_listed_newest_first_by_the_logs_order() {
+	let pool = pool().await;
+	let put_in = |conversation: &'static str, value: Value| {
+		let pool = pool.clone();
+		async move {
+			let event = step::parse(value).unwrap();
+			let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+			append(&mut tx, A, conversation, &event, NOW).await.unwrap();
+			tx.commit().await.unwrap();
+		}
+	};
+	let topic = |said: &str| json!({ "event": "topic", "by": "owner", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": said } });
+	put_in("first", topic("The first conversation")).await;
+	put_in("second", topic(&"a long topic ".repeat(10))).await;
+	for value in green_lit().into_iter().skip(1) {
+		put_in("first", value).await;
+	}
+	put_in("first", approve("b")).await;
+	put(&pool, B, topic("someone else's")).await.unwrap();
+	let listed = super::list(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+	let ids: Vec<&str> = listed.iter().map(|c| c.id.as_str()).collect();
+	assert_eq!(ids, ["first", "second"], "first was kept to last, so it is newest; B's are none of A's");
+	assert_eq!(listed[0].topic, "The first conversation");
+	assert_eq!(listed[0].phase, step::Phase::GreenLit);
+	assert_eq!((listed[0].offers, listed[0].standing), (1, 1));
+	assert_eq!(listed[1].topic.chars().count(), super::LIST_TOPIC_MOST);
+	assert!(listed[1].topic.ends_with('…'));
+	assert_eq!(listed[1].phase, step::Phase::Drafting);
+}
+
+#[tokio::test]
+async fn the_list_is_bounded() {
+	let pool = pool().await;
+	for n in 0..(super::LIST_MOST + 3) {
+		let id = String::from("c") + &n.to_string();
+		let event = step::parse(json!({ "event": "topic", "by": "owner", "at": "2026-11-26T10:00:00.000Z", "topic": { "said": "a topic" } })).unwrap();
+		let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+		append(&mut tx, A, &id, &event, NOW).await.unwrap();
+		tx.commit().await.unwrap();
+	}
+	let listed = super::list(&mut pool.acquire().await.unwrap(), A).await.unwrap();
+	assert_eq!(listed.len(), usize::try_from(super::LIST_MOST).unwrap());
+	assert_eq!(listed[0].id, String::from("c") + &(super::LIST_MOST + 2).to_string(), "the newest first");
+}

@@ -416,6 +416,12 @@ impl State {
 		&self.offers
 	}
 
+	/// How many previews have a standing approval.
+	#[must_use]
+	pub fn standing_count(&self) -> usize {
+		self.standing.len()
+	}
+
 	/// `preview`'s standing approval, if the owner has picked on it.
 	#[must_use]
 	pub fn standing(&self, preview: &str) -> Option<&Approval> {

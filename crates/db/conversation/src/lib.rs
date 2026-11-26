@@ -152,6 +152,73 @@ pub async fn state(conn: &mut SqliteConnection, subject: &str, conversation: &st
 	Ok(replay(values)?.1)
 }
 
+/// The most conversations [`list`] answers.
+pub const LIST_MOST: i64 = 50;
+
+/// The most characters of a topic as [`list`] shows it.
+pub const LIST_TOPIC_MOST: usize = 80;
+
+/// One conversation as [`list`] shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Listed {
+	pub id: String,
+	/// The topic's words, cut to [`LIST_TOPIC_MOST`] characters with `…`.
+	pub topic: String,
+	pub phase: step::Phase,
+	/// How many previews the agent offered.
+	pub offers: usize,
+	/// How many of them have the owner's standing pick.
+	pub standing: usize,
+}
+
+/// `text` cut to `most` characters, trimmed, with `…` when it was cut.
+fn cut(text: &str, most: usize) -> String {
+	let text = text.trim();
+	if text.chars().count() <= most {
+		return text.to_owned();
+	}
+	let kept: String = text.chars().take(most.saturating_sub(1)).collect();
+	String::from(kept.trim_end()) + "…"
+}
+
+/// `subject`'s conversations, newest first, at most [`LIST_MOST`]: each
+/// with its topic, phase, offers and standing picks, from its replayed log.
+///
+/// Newest is by the log's own order, never a clock: a conversation's `seq`
+/// counts from 1 in each, so the list orders by when each conversation's
+/// newest row was kept (SQLite's `rowid`, which grows with each insert and
+/// which a `VACUUM` renumbers in the same order).
+///
+/// # Errors
+/// Any `sqlx` failure, and [`ConversationError::Unreplayable`] for a kept
+/// log that does not replay.
+pub async fn list(conn: &mut SqliteConnection, subject: &str) -> Result<Vec<Listed>, ConversationError> {
+	let ids = sqlx::query_scalar!(
+		"SELECT conversation_id FROM conversation_event WHERE subject_id = ?1 GROUP BY conversation_id ORDER BY MAX(rowid) DESC LIMIT ?2",
+		subject,
+		LIST_MOST
+	)
+	.fetch_all(&mut *conn)
+	.await?;
+	let mut listed = Vec::with_capacity(ids.len());
+	for id in ids {
+		let values = values(conn, subject, &id).await?;
+		// A kept log opens with its topic: the step takes nothing else first.
+		let Some(topic) = values.first().and_then(|first| first["topic"]["said"].as_str()).map(|said| cut(said, LIST_TOPIC_MOST)) else {
+			return Err(ConversationError::Unreplayable { at: 0 });
+		};
+		let (_, state) = replay(values)?;
+		listed.push(Listed {
+			topic,
+			phase: state.phase(),
+			offers: state.offers().len(),
+			standing: state.standing_count(),
+			id,
+		});
+	}
+	Ok(listed)
+}
+
 /// What [`prepare`] found: the event is the log's last already, or it is
 /// the next, which the step takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

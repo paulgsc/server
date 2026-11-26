@@ -7,6 +7,7 @@ A conversation essay is settled as a podcast and then signed as a video (paulgsc
 previews the owner approves from (#3558). paulgsc/server#1243 is the story.
 
 ```text
+GET  /api/v1/conversations                                       { conversations: [{ id, topic, phase, offers, standing }] }, newest first, at most 50
 GET  /api/v1/conversations/:id                                   the record: { schema, id, events }
 GET  /api/v1/conversations/:id/previews                          { previews: [{ preview, about, recommended, variants: [{ variant, title, rule, callouts, video }], approved }], unreadable }
 GET  /api/v1/conversations/:id/previews/:preview/:variant/video  a variant's muted loop, with ranges
@@ -109,3 +110,11 @@ record, from 1, with no gap.
    `BEGIN IMMEDIATE`; nothing prunes a clip, so one found then is there when it is kept.
 10. **Home keeps `/2` records only.** `POST` takes one `/2` event at a time, so a `/1` record
     lifted into `/2` (`lifted`) never comes through home, and `GET` never answers one.
+11. **The list is the subject's, newest by the log's order, and bounded** (paulgsc/server#1249).
+    `GET /conversations` answers the caller's conversations only, at most `LIST_MOST` (50),
+    ordered by when each one's newest event was kept: SQLite's `rowid`, which grows with each
+    insert, never an event's `at` (invariant 2). Each is its replayed log's phase, the
+    previews offered and how many have a standing pick, and its topic trimmed and cut to 80
+    characters with `…`. It reads and writes nothing else. *Enforced by* `conversation_repo`'s
+    `a_subjects_conversations_are_listed_newest_first_by_the_logs_order` and
+    `the_list_is_bounded`, and `handlers::conversations`' `the_list_is_the_callers_own_newest_first`.
