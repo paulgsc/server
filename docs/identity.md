@@ -2861,7 +2861,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     and never deleted but with the account, by both the sweep and the
     migration's trigger (invariant 12). Rolling back the migration that creates
     it fails once it holds a row. It is written only by
-    `POST /conversations/:id/events` and read only by `GET /conversations/:id`
+    `POST /conversations/:id/events` and read only by `GET /conversations` (the
+    subject's own list, newest first, at most 50), `GET /conversations/:id`
     and `GET /conversations/:id/previews`, each a session's for its own subject
     (a paired phone's or a browser's). A conversation's previews are its
     subject's too: their clips are files under

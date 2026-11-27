@@ -127,8 +127,9 @@ async fn every_route_needs_a_session_and_an_id_that_is_none_is_not_found() {
 	let state = state().await;
 	let phone = bearer(&state).await;
 	let app = module().into_table_router().with_state(state);
-	assert_eq!(module().descriptors().count(), 4);
+	assert_eq!(module().descriptors().count(), 5);
 	for (method, path) in [
+		(Method::GET, "/conversations"),
 		(Method::GET, "/conversations/c"),
 		(Method::GET, "/conversations/c/previews"),
 		(Method::GET, "/conversations/c/previews/p/a/video"),
@@ -163,6 +164,40 @@ async fn an_event_is_kept_once_and_the_record_reads_back_as_sent() {
 	assert_eq!(status, StatusCode::OK);
 	assert_eq!(record, json!({ "schema": "some-ui.conversation/2", "id": "c", "events": green_lit() }));
 	assert_eq!(rows(&state.pool).await, 4);
+}
+
+#[tokio::test]
+async fn the_list_is_the_callers_own_newest_first() {
+	let state = state().await;
+	let phone = bearer(&state).await;
+	let app = module().into_table_router().with_state(state.clone());
+	assert_eq!(
+		send(&app, Method::GET, "/conversations", Some(&phone), None).await,
+		(StatusCode::OK, json!({ "conversations": [], "unreadable": [] }))
+	);
+	for conversation in ["older", "newer"] {
+		let path = String::from("/conversations/") + conversation + "/events";
+		assert_eq!(send(&app, Method::POST, &path, Some(&phone), Some(&topic())).await.0, StatusCode::CREATED);
+	}
+	sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES ('subject-b', x'62')")
+		.execute(&state.pool)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO conversation_event (subject_id, conversation_id, seq, event, at, body, stored_at) VALUES ('subject-b', 'theirs', 1, 'topic', ?1, ?2, ?1)")
+		.bind("2026-11-26T10:00:00.000Z")
+		.bind(topic().to_string())
+		.execute(&state.pool)
+		.await
+		.unwrap();
+	let listed = |id: &str, phase: &str| json!({ "id": id, "topic": "why the record is a log", "phase": phase, "offers": 0, "standing": 0 });
+	assert_eq!(
+		send(&app, Method::GET, "/conversations", Some(&phone), None).await,
+		(
+			StatusCode::OK,
+			json!({ "conversations": [listed("newer", "drafting"), listed("older", "drafting")], "unreadable": [] })
+		),
+		"another subject's are none of the caller's"
+	);
 }
 
 #[tokio::test]
