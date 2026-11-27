@@ -325,6 +325,12 @@ steps! {
 	/// could not read (a storage error); the `cards_essay_render_*` gauges are
 	/// unknown (`NaN`) while it is open (#1227).
 	CardsEssaysObserve => CardsEssays, "observe", open;
+	/// Open: the phrase shelf's intents did not read or embed at start
+	/// (`meaning::MeaningContext::from_config`, paulgsc/server#1261), so the
+	/// phrase lookup answers `503` while the take library's meaning index runs
+	/// on; it stays open until a release with a shelf that reads. The meaning
+	/// index is the transcriber's, so it is the transcriber's step.
+	PhraseIndex => HomeTranscription, "phrase_index", open;
 }
 
 /// Starts every `failures_total{process, step}` series at 0, once at boot.

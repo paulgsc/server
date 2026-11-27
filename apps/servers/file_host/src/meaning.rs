@@ -180,7 +180,10 @@ fn unknown(spec: &serde_json::Value, tokenizer: &Tokenizer) -> Option<u32> {
 #[derive(Clone)]
 pub struct MeaningContext {
 	pub model: Arc<dyn Embed>,
-	pub phrases: Arc<Phrases>,
+	/// `None` when the shelf did not read or embed at start: the lookup then
+	/// answers `503`, and the take library's search runs on
+	/// ([`phrase_index`]).
+	pub phrases: Option<Arc<Phrases>>,
 }
 
 impl std::fmt::Debug for MeaningContext {
@@ -201,6 +204,10 @@ impl MeaningContext {
 	/// `TRANSCRIBE_ENABLED` without its model is: the only symptom of an
 	/// index that is never written is a search that quietly says `words`.
 	///
+	/// A phrase shelf that does not read or embed ([`phrase_index`]) is not
+	/// one: it is held open as a failure, and only the phrase lookup goes
+	/// without.
+	///
 	/// # Errors
 	/// `MEANING_ENABLED` without `TRANSCRIBE_ENABLED`, or with a model that
 	/// does not load ([`StaticModel::load`]).
@@ -214,15 +221,37 @@ impl MeaningContext {
 			"MEANING_ENABLED is set but TRANSCRIBE_ENABLED is not: the transcriber's pass writes the meaning index"
 		);
 		let model = StaticModel::load(Path::new(DIR), MODEL)?;
-		let phrases = Phrases::index(&model)?;
-		info!(model = MODEL, "the take library's meaning index is enabled, and holds the phrase shelf's intents");
-		Ok(Some(Self::new(Arc::new(model), Arc::new(phrases))))
+		let phrases = phrase_index(crate::phrases::INTENTS, &model);
+		info!(model = MODEL, phrases = phrases.is_some(), "the take library's meaning index is enabled");
+		Ok(Some(Self::new(Arc::new(model), phrases)))
 	}
 
-	/// The index of `model`, holding `phrases`, which `model` embedded.
+	/// The index of `model`, holding `phrases`, which `model` embedded, if
+	/// they did.
 	#[must_use]
-	pub fn new(model: Arc<dyn Embed>, phrases: Arc<Phrases>) -> Self {
+	pub fn new(model: Arc<dyn Embed>, phrases: Option<Arc<Phrases>>) -> Self {
 		Self { model, phrases }
+	}
+}
+
+/// The shelf `text` holds, embedded by `model`, or `None` when it does not
+/// read or embed.
+///
+/// `None` is held open as `failure::Step::PhraseIndex` and logged by why (a
+/// phrase's id at most, never a hunch): a shelf a release got wrong takes
+/// down the phrase lookup alone, never the server or the take library's
+/// search.
+pub fn phrase_index(text: &str, model: &dyn Embed) -> Option<Arc<Phrases>> {
+	match Phrases::from_text(text, model) {
+		Ok(phrases) => {
+			crate::failure::open(crate::failure::Step::PhraseIndex, 0);
+			Some(Arc::new(phrases))
+		}
+		Err(err) => {
+			crate::failure::open(crate::failure::Step::PhraseIndex, 1);
+			tracing::error!(cause = %err, "the phrase shelf's intents did not index: the phrase lookup answers 503");
+			None
+		}
 	}
 }
 

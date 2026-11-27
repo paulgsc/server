@@ -9,7 +9,8 @@
 //!   call C1605): some-ui's phrase shelf
 //!   (`packages/ui/topik/src/lib/topik/phrases/shelf.ts`), each phrase's id
 //!   and its English intents, copied here with the commit it was copied from
-//!   and compiled in. A phrase reaches home with a release. The phone and
+//!   and compiled in. A phrase reaches home with a release; a copy that does
+//!   not index takes down the lookup alone (`meaning::phrase_index`). The phone and
 //!   home may hold different shelves for a while, and each side is safe: the
 //!   phone drops a phrase id its build does not hold, and home names only
 //!   phrases in its copy.
@@ -153,7 +154,7 @@ impl Phrases {
 	/// The phrases a hunch whose words embed to `words` finds: each phrase
 	/// whose nearest intent's cosine is at least [`THRESHOLD`] and within
 	/// [`NEAR`] of the best phrase's, closest first (as near as each other, in
-	/// the shelf's order). Empty is a miss.
+	/// the shelf's order, as far as floats tell a tie). Empty is a miss.
 	#[must_use]
 	pub fn look_up(&self, words: &[f32]) -> Vec<&str> {
 		let mut scores: Vec<(&str, f32)> = Vec::new();
@@ -250,8 +251,10 @@ pub(crate) mod tests {
 		// two words of three, 0.67, below the threshold and NEAR.
 		assert_eq!(look_up("find my phone"), ["ph.where-is-my-phone"]);
 		// "my phone" is 0.82 to both "where my phone" and "lost my phone":
-		// tied, so both, in the shelf's order.
-		assert_eq!(look_up("my phone"), ["ph.where-is-my-phone", "ph.lost-my-phone"]);
+		// tied, so both, in either order, as floats may break a tie.
+		let mut tied = look_up("my phone");
+		tied.sort_unstable();
+		assert_eq!(tied, ["ph.lost-my-phone", "ph.where-is-my-phone"]);
 		// "eat with me" is the second phrase's own intent.
 		assert_eq!(look_up("eat with me"), ["ph.shall-we-eat-together"]);
 	}

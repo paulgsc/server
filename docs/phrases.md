@@ -19,9 +19,13 @@ a runtime over a port to home). This doc is home's.
   `apps/servers/file_host/src/phrases/intents.json` is a copy of the shelf's
   ids and intents, in `some-ui.phrase-intents/1`, with the shelf commit it
   was copied from in `source`. It is compiled in, so a phrase reaches home
-  with a release, and a copy that does not read (a phrase named twice, one
-  with no intent, an intent the model knows none of the words of) stops the
-  server at start rather than answering wrong. Each side tolerates the other
+  with a release. A copy that does not read (a phrase named twice, one with
+  no intent, an intent the model knows none of the words of) takes down the
+  lookup alone: it answers `503` (the phone reads it as unreached and keeps
+  the hunch to send again), the take library's search runs on, and the
+  failure is held open as `failures_open{process="home-transcription",
+  step="phrase_index"}`, which `HomeFailuresOpen` tells the owner of, until
+  a release with a shelf that reads (`meaning::phrase_index`). Each side tolerates the other
   being ahead: the phone drops a phrase id its build does not hold, and home
   names only phrases in its copy.
 - **The lookup:** `POST /api/v1/phrases/lookup`, a paired phone's, body

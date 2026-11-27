@@ -38,7 +38,8 @@ pub struct Asked {
 /// 401 without a session and 403 but from a paired phone; 422 naming `words`
 /// (empty once trimmed, or over 200 characters), `hunch` (not 1 to 64 of
 /// `A-Z a-z 0-9 _ . : -`) or `body` (not that JSON); 503
-/// `feature_not_configured` while the meaning index is off, since home can
+/// `feature_not_configured` while the meaning index is off, or the phrase
+/// shelf did not index at start (`meaning::phrase_index`), since home can
 /// then tell no hunch's phrases and keeps none; 500 for a storage failure,
 /// and then nothing was kept.
 #[axum::debug_handler(state = crate::AppState)]
@@ -61,8 +62,9 @@ pub async fn post_lookup(
 		return Err(FileHostError::unprocessable_entity(problems));
 	}
 	let meaning = meaning.ok_or(FileHostError::FeatureNotConfigured("the meaning index (MEANING_ENABLED)"))?;
+	let shelf = meaning.phrases.as_ref().ok_or(FileHostError::FeatureNotConfigured("the phrase shelf's index"))?;
 	let words = asked.words.trim();
-	let phrases: Vec<String> = meaning.phrases.look_up(&meaning.model.embed(words)).into_iter().map(str::to_owned).collect();
+	let phrases: Vec<String> = shelf.look_up(&meaning.model.embed(words)).into_iter().map(str::to_owned).collect();
 	if !phrases.is_empty() {
 		return Ok(Json(Lookup::Hit { phrases }));
 	}

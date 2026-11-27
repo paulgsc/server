@@ -55,7 +55,7 @@ impl FromRef<TestState> for AuthContext {
 fn meaning() -> MeaningContext {
 	let model = Words(VOCABULARY);
 	let phrases = Phrases::from_text(SHELF, &model).unwrap();
-	MeaningContext::new(Arc::new(model), Arc::new(phrases))
+	MeaningContext::new(Arc::new(model), Some(Arc::new(phrases)))
 }
 
 async fn state(meaning: Option<MeaningContext>) -> TestState {
@@ -119,12 +119,13 @@ async fn a_hunch_an_intent_says_is_a_hit_and_keeps_nothing() {
 	let app = app(state.clone());
 	let (status, answer) = look_up(&app, Some(&phone), &asked("  Where my phone ", HUNCH)).await;
 	assert_eq!((status, answer), (StatusCode::OK, json!({"kind": "hit", "phrases": ["ph.where-is-my-phone"]})));
+	// "my phone" is as near "where my phone" as "lost my phone": both come,
+	// in either order, since a tie is as close as floats make it.
 	let (status, answer) = look_up(&app, Some(&phone), &asked("my phone", HUNCH)).await;
-	assert_eq!(
-		(status, answer),
-		(StatusCode::OK, json!({"kind": "hit", "phrases": ["ph.where-is-my-phone", "ph.lost-my-phone"]})),
-		"close runners-up come too, closest first"
-	);
+	assert_eq!((status, &answer["kind"]), (StatusCode::OK, &json!("hit")), "{answer}");
+	let mut hits: Vec<&str> = answer["phrases"].as_array().unwrap().iter().map(|id| id.as_str().unwrap()).collect();
+	hits.sort_unstable();
+	assert_eq!(hits, ["ph.lost-my-phone", "ph.where-is-my-phone"], "close runners-up come too");
 	assert!(kept(&state.pool).await.is_empty());
 }
 
@@ -197,4 +198,36 @@ async fn with_the_meaning_index_off_home_answers_unavailable_and_keeps_nothing()
 		"{answer}"
 	);
 	assert!(kept(&state.pool).await.is_empty());
+}
+
+/// A shelf that does not index leaves the meaning index up and the lookup
+/// answering `503`, which the phone reads as unreached, with the failure
+/// held open; one that does closes it.
+#[tokio::test]
+async fn a_shelf_that_does_not_index_takes_down_the_lookup_alone_and_is_held_open() {
+	use crate::failure::{held, Step};
+	use metrics_util::debugging::DebuggingRecorder;
+	let recorder = DebuggingRecorder::new();
+	let snapshotter = recorder.snapshotter();
+	let _recording = metrics::set_default_local_recorder(&recorder);
+
+	let model: Arc<dyn voice_repo::meaning::Embed> = Arc::new(Words(VOCABULARY));
+	let unknown = r#"{"schema": "some-ui.phrase-intents/1", "source": "test", "phrases": [{"id": "ph.a", "intents": ["good morning"]}]}"#;
+	let phrases = crate::meaning::phrase_index(unknown, &*model);
+	assert!(phrases.is_none());
+	assert_eq!(held::open(&snapshotter, Step::PhraseIndex), Some(1.0), "held open");
+
+	let state = state(Some(MeaningContext::new(Arc::clone(&model), phrases))).await;
+	let phone = session(&state, A, Carrier::Bearer).await;
+	let app = app(state.clone());
+	let (status, answer) = look_up(&app, Some(&phone), &asked("how do I say I'm sleepy", HUNCH)).await;
+	assert_eq!(
+		(status, &answer["error"]["code"]),
+		(StatusCode::SERVICE_UNAVAILABLE, &json!("feature_not_configured")),
+		"{answer}"
+	);
+	assert!(kept(&state.pool).await.is_empty(), "nothing kept: the phone sends it again");
+
+	assert!(crate::meaning::phrase_index(SHELF, &*model).is_some());
+	assert_eq!(held::open(&snapshotter, Step::PhraseIndex), Some(0.0), "closed by a shelf that reads");
 }

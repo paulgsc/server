@@ -2262,7 +2262,7 @@ mod tests {
 			&*model,
 		)
 		.unwrap();
-		state.meaning = Some(MeaningContext::new(model, std::sync::Arc::new(phrases)));
+		state.meaning = Some(MeaningContext::new(model, Some(std::sync::Arc::new(phrases))));
 		let pool = state.pool.clone();
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state.clone());
