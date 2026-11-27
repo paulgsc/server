@@ -337,7 +337,7 @@ async fn keep(
 		_ => Indexed::NoWords,
 	};
 	if let (Kept::Added(_), Outcome::Heard { text, .. }) = (&kept, &attempt.outcome) {
-		keep_unmatched(&mut tx, (meaning, phrases), subject, note_id, text, now).await?;
+		keep_unmatched(&mut tx, (meaning, phrases), subject, note_id, text).await?;
 	}
 	tx.commit().await?;
 	Ok((kept, indexed, verdict))
@@ -345,8 +345,9 @@ async fn keep(
 
 /// When `subject`'s note `note_id` is a spoken hunch, looks up the words
 /// heard in it, `text`, as `POST /phrases/lookup` would, and on a miss keeps
-/// the hunch under its `ref`, once (`korean_repo::hunch::keep`); a hit, or
-/// words that are nothing once trimmed, keep nothing.
+/// the hunch under its `ref`, once (`korean_repo::hunch::keep`), asked when
+/// the phone recorded it; a hit, or words that are nothing once trimmed, keep
+/// nothing.
 ///
 /// Without the shelf's index (the meaning index off, or a shelf that did not
 /// index), the hunch is kept as unmatched: a note is heard once, so nothing
@@ -362,9 +363,9 @@ async fn keep_unmatched(
 	subject: &str,
 	note_id: &str,
 	text: &str,
-	now: &str,
 ) -> Result<(), VoiceError> {
-	let Some(hunch) = voice_repo::hunch_of(&mut *conn, subject, note_id).await? else {
+	// Asked when the owner said it, however long the hearing waited.
+	let Some((hunch, recorded_at)) = voice_repo::hunch_of(&mut *conn, subject, note_id).await? else {
 		return Ok(());
 	};
 	let Some(words) = crate::phrases::heard_words(text) else {
@@ -375,7 +376,7 @@ async fn keep_unmatched(
 		_ => false,
 	};
 	if !hit {
-		korean_repo::hunch::keep(conn, subject, &hunch, &words, now).await?;
+		korean_repo::hunch::keep(conn, subject, &hunch, &words, &recorded_at).await?;
 	}
 	Ok(())
 }
@@ -1171,27 +1172,43 @@ mod tests {
 		assert_eq!(done.kept, ["heard"; 3]);
 		assert_eq!(
 			hunches(&pool).await,
-			[(A.into(), "run-2".into(), "how do I say I'm sleepy".into(), "2026-11-27T03:12:00.000Z".into())],
-			"the miss alone, trimmed, under its ref"
+			[(A.into(), "run-2".into(), "how do I say I'm sleepy".into(), "2026-11-27T03:10:00.000Z".into())],
+			"the miss alone, trimmed, under its ref, asked when it was recorded, not heard"
 		);
 	}
 
 	/// The phone's lookup and home's of the same hunch keep it once, as the
-	/// phone sent it, in either order.
+	/// first of the two kept it, in either order.
 	#[tokio::test]
-	async fn the_phones_lookup_and_homes_keep_a_hunch_once() {
+	async fn the_phones_lookup_and_homes_keep_a_hunch_once_in_either_order() {
 		let pool = pool().await;
-		hunch_note(&pool, A, "h1", "run-1", b"say:how do I say I'm sleepy").await;
-		korean_repo::hunch::keep(&mut pool.acquire().await.unwrap(), A, "run-1", "how do I say sleepy", "2026-11-27T03:11:00.000Z")
-			.await
-			.unwrap();
+		let phone = |hunch: &'static str| {
+			let pool = pool.clone();
+			async move {
+				korean_repo::hunch::keep(&mut pool.acquire().await.unwrap(), A, hunch, "how do I say sleepy", "2026-11-27T03:11:00.000Z")
+					.await
+					.unwrap()
+			}
+		};
 		let cancel = CancellationToken::new();
 		let fake = Fake::new(&cancel);
+
+		// The phone first, then home's hearing.
+		hunch_note(&pool, A, "h1", "run-1", b"say:how do I say I'm sleepy").await;
+		assert_eq!(phone("run-1").await, korean_repo::hunch::Kept::Added);
 		looking(&pool, &fake, &cancel).await;
+		// Home's hearing first, then the phone.
+		hunch_note(&pool, A, "h2", "run-2", b"say:how do I say I'm sleepy").await;
+		looking(&pool, &fake, &cancel).await;
+		assert_eq!(phone("run-2").await, korean_repo::hunch::Kept::Already);
+
 		assert_eq!(
 			hunches(&pool).await,
-			[(A.into(), "run-1".into(), "how do I say sleepy".into(), "2026-11-27T03:11:00.000Z".into())],
-			"the phone's, unchanged"
+			[
+				(A.into(), "run-1".into(), "how do I say sleepy".into(), "2026-11-27T03:11:00.000Z".into()),
+				(A.into(), "run-2".into(), "how do I say I'm sleepy".into(), "2026-11-27T03:10:00.000Z".into()),
+			],
+			"one each, the first's"
 		);
 	}
 
@@ -1205,8 +1222,9 @@ mod tests {
 		hunch_note(&pool, A, "h2", "run-2", b"say:   ").await;
 		let cancel = CancellationToken::new();
 		let fake = Fake::new(&cancel);
-		pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
-		assert_eq!(hunches(&pool).await, [(A.into(), "run-1".into(), "my phone".into(), "2026-10-25T16:00:00.000Z".into())]);
+		let done = pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		assert_eq!(done.kept, ["heard"; 2], "blank words are heard, not silent: the guard is the words'");
+		assert_eq!(hunches(&pool).await, [(A.into(), "run-1".into(), "my phone".into(), "2026-11-27T03:10:00.000Z".into())]);
 	}
 
 	/// ST32 (docs/take-library.md): with a meaning model, a take heard gets

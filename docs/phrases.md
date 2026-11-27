@@ -42,7 +42,10 @@ a runtime over a port to home). This doc is home's.
   hearing, and keeps a miss under the note's `ref` the same way
   (`transcribe::pass`), so a hunch whose phone left mid-take, could not
   reach home, or stopped waiting is still kept. The phone's own lookup of
-  the same hunch, before or after, changes nothing. Without the shelf's
+  the same hunch, before or after, changes nothing. `asked_at` is when the
+  owner asked: when home answered, for the phone's lookup, and when the
+  phone recorded the take, for home's hearing, however long the hearing
+  waited (a backlog, or a take heard again). Without the shelf's
   index (the meaning index off, or a shelf that did not index), a heard hunch
   is kept as unmatched: it is heard once, so nothing would look it up later,
   and the record comes before precision. Heard words are trimmed

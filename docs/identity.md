@@ -2895,7 +2895,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     KPLAY's shop that home's meaning index matched to no Korean phrase
     (paulgsc/server#1261, KP4; docs/phrases.md): the phone's name for the
     hunch, the owner's words as typed or as home heard them (at most 200
-    characters, trimmed), and when home kept it. Nothing else: no vector, no
+    characters, trimmed), and when it was asked (`asked_at`): when home
+    answered the phone's lookup, or, kept from a hearing, when the phone
+    recorded the take, however long the hearing waited. Nothing else: no vector, no
     score, no take. A spoken hunch's take is a voice note of kind `hunch`
     (invariant 23) whose `ref` is the same name, heard in English and never
     told a phrase, and nothing here points at it. It is written only by
@@ -2926,7 +2928,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     `only_a_paired_phone_looks_up` and
     `with_the_meaning_index_off_home_answers_unavailable_and_keeps_nothing`;
     and `transcribe::pass`' `a_heard_hunch_that_no_phrase_does_is_kept_by_home_itself`
-    and `the_phones_lookup_and_homes_keep_a_hunch_once`.
+    `the_phones_lookup_and_homes_keep_a_hunch_once_in_either_order` and
+    `without_the_shelfs_index_a_heard_hunch_is_kept_as_unmatched`.
     *Not enforced:* that nothing else writes or reads the table, which
     `git grep -n phrase_hunch -- '*.rs'` shows today.
 
