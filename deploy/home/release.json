@@ -1,11 +1,11 @@
 {
-  "serial": 181,
-  "server_commit": "28145e5a2cfffd0cff8e9fab75144ba905a9205e",
+  "serial": 182,
+  "server_commit": "30852c4acb8b17646cf85caae1c39175db3e9c49",
   "services": {
     "blackbox-exporter": {"image": "prom/blackbox-exporter:v0@sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13"},
     "cadvisor": {"image": "gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57"},
     "dashboard-builder": {"image": "pgathondu/dashboard-builder:9f7548d5441d839bd0134d7db527e75748867bae@sha256:11ad799995080d7c038760bf5a490bd06d9248453cfeeb39d6fac5ae75647384"},
-    "file-host": {"image": "pgathondu/server:73b245a354a2b66993f3466580e47f1b24aea841@sha256:d71aedc5a50835834a781cfd9bd70601a77626c5b182bfb1aac3c63c307f2a8a"},
+    "file-host": {"image": "pgathondu/server:28145e5a2cfffd0cff8e9fab75144ba905a9205e@sha256:59bcba440762359cd774762890b488ccde871901e84d08857f0d21d40cf2aed6"},
     "grafana": {"image": "grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2"},
     "kokoro": {"image": "pgathondu/kokoro:9f7548d5441d839bd0134d7db527e75748867bae@sha256:4090a4009b94da98e8ead3518dee8bcb2a40b5828db7db86b67a235f3a51845d"},
     "metabase": {"image": "metabase/metabase:v0.65.x@sha256:06b66bf50d5b46ad632a836aeb62149eaab768033f9d3dae72ad4b10e6427590"},
