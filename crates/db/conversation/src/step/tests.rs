@@ -545,7 +545,7 @@ fn a_refused_step_leaves_the_state_as_it_was() {
 /// `stepConversation` named here is one home must answer the same way; any
 /// other is a rule home trusts the writers for (docs/conversations.md,
 /// invariant 4).
-const HELD: [&str; 28] = [
+const HELD: [&str; 29] = [
 	"stale",
 	"author",
 	"out-of-phase",
@@ -571,6 +571,7 @@ const HELD: [&str; 28] = [
 	"notes-rule",
 	"offer-again",
 	"preview-unknown",
+	"preview-variant",
 	"moves-unknown",
 	"preview-again",
 	"rule-again",
