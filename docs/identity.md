@@ -2905,7 +2905,8 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     answers; and the transcriber's pass (`transcribe::pass`), which looks up
     the words it heard in a `hunch` note in the transaction that keeps the
     hearing, under the deletion hold (invariant 9), so a hunch whose phone
-    left before its words came back is kept too. A hit writes nothing
+    left before its words came back is kept too, and kept as unmatched
+    when home has no shelf's index to look it up by. A hit writes nothing
     either way, and the second to come of the two changes nothing. The asked words are embedded on that request's path and
     their vector kept nowhere. A row is never updated (a trigger aborts an
     `UPDATE`) and never deleted but with the account, by both the sweep and

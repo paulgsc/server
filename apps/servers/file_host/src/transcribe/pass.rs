@@ -34,7 +34,9 @@
 //!   (`crate::phrases`) in the transaction that keeps its hearing, and a
 //!   miss is kept once under its `ref` (`korean_repo::hunch`), so a hunch
 //!   whose phone left before the words came back is still kept. The phone's
-//!   own lookup of the same hunch then changes nothing. A lookup is an
+//!   own lookup of the same hunch then changes nothing. Without the shelf's
+//!   index a heard hunch is kept as unmatched: it is heard once, and the
+//!   record comes before precision. A lookup is an
 //!   embedding and a scan of the shelf's few dozen intents, so it lengthens
 //!   no transaction past its write, and it adds no clock, lane or bound.
 //! - **A busy box is nobody's fault** (L1, paulgsc/server#706). Each hearing
@@ -334,8 +336,8 @@ async fn keep(
 		(Kept::Added(_), Outcome::Heard { .. } | Outcome::Silent, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
 		_ => Indexed::NoWords,
 	};
-	if let (Kept::Added(_), Outcome::Heard { text, .. }, Some(embed), Some(phrases)) = (&kept, &attempt.outcome, meaning, phrases) {
-		keep_unmatched(&mut tx, (embed, phrases), subject, note_id, text, now).await?;
+	if let (Kept::Added(_), Outcome::Heard { text, .. }) = (&kept, &attempt.outcome) {
+		keep_unmatched(&mut tx, (meaning, phrases), subject, note_id, text, now).await?;
 	}
 	tx.commit().await?;
 	Ok((kept, indexed, verdict))
@@ -346,12 +348,17 @@ async fn keep(
 /// the hunch under its `ref`, once (`korean_repo::hunch::keep`); a hit, or
 /// words that are nothing once trimmed, keep nothing.
 ///
+/// Without the shelf's index (the meaning index off, or a shelf that did not
+/// index), the hunch is kept as unmatched: a note is heard once, so nothing
+/// would look it up later, and the record comes before precision. A hunch
+/// that would have matched costs the routine that reads them a look.
+///
 /// # Errors
 /// Any `sqlx` failure, which rolls the hearing back with it: the next pass
 /// hears the note again, so neither is lost.
 async fn keep_unmatched(
 	conn: &mut sqlx::SqliteConnection,
-	(embed, phrases): (&dyn Embed, &Phrases),
+	(meaning, phrases): (Option<&dyn Embed>, Option<&Phrases>),
 	subject: &str,
 	note_id: &str,
 	text: &str,
@@ -363,7 +370,11 @@ async fn keep_unmatched(
 	let Some(words) = crate::phrases::heard_words(text) else {
 		return Ok(());
 	};
-	if phrases.look_up(&embed.embed(&words)).is_empty() {
+	let hit = match (meaning, phrases) {
+		(Some(embed), Some(phrases)) => !phrases.look_up(&embed.embed(&words)).is_empty(),
+		_ => false,
+	};
+	if !hit {
 		korean_repo::hunch::keep(conn, subject, &hunch, &words, now).await?;
 	}
 	Ok(())
@@ -1166,8 +1177,7 @@ mod tests {
 	}
 
 	/// The phone's lookup and home's of the same hunch keep it once, as the
-	/// phone sent it, in either order; and without the shelf's index home
-	/// keeps nothing of its own.
+	/// phone sent it, in either order.
 	#[tokio::test]
 	async fn the_phones_lookup_and_homes_keep_a_hunch_once() {
 		let pool = pool().await;
@@ -1183,10 +1193,20 @@ mod tests {
 			[(A.into(), "run-1".into(), "how do I say sleepy".into(), "2026-11-27T03:11:00.000Z".into())],
 			"the phone's, unchanged"
 		);
+	}
 
-		hunch_note(&pool, B, "h2", "run-2", b"say:how do I say I'm sleepy").await;
+	/// Without the shelf's index a heard hunch is kept as unmatched, words that
+	/// would have matched included: it is heard once, so nothing would look it
+	/// up later. Nothing heard keeps nothing.
+	#[tokio::test]
+	async fn without_the_shelfs_index_a_heard_hunch_is_kept_as_unmatched() {
+		let pool = pool().await;
+		hunch_note(&pool, A, "h1", "run-1", b"say:my phone").await;
+		hunch_note(&pool, A, "h2", "run-2", b"say:   ").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
 		pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
-		assert_eq!(hunches(&pool).await.len(), 1, "no shelf's index, nothing of home's own");
+		assert_eq!(hunches(&pool).await, [(A.into(), "run-1".into(), "my phone".into(), "2026-10-25T16:00:00.000Z".into())]);
 	}
 
 	/// ST32 (docs/take-library.md): with a meaning model, a take heard gets
