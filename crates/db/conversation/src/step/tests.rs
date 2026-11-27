@@ -541,10 +541,13 @@ fn a_refused_step_leaves_the_state_as_it_was() {
 	assert_eq!(before, after);
 }
 
-/// Every `why` home's step can answer: `Refusal`'s cases. A refusal of
-/// `stepConversation` named here is one home must answer the same way; any
-/// other is a rule home trusts the writers for (docs/conversations.md,
-/// invariant 4).
+/// Every `why` home's step can answer: `Refusal`'s cases, which [`held`]
+/// names. A refusal of `stepConversation` named here is one home must
+/// answer the same way; any other is a rule home trusts the writers for
+/// (docs/conversations.md, invariant 4). It must list every `Refusal`
+/// case: one left out would be counted as trusted and never compared, so
+/// the corpus test fails a refusal of home's that [`held`] names and this
+/// list lacks.
 const HELD: [&str; 29] = [
 	"stale",
 	"author",
@@ -576,6 +579,63 @@ const HELD: [&str; 29] = [
 	"preview-again",
 	"rule-again",
 ];
+
+/// `refusal`'s `why`, by an exhaustive match: a `Refusal` case added
+/// without an arm here fails to compile, beside [`HELD`], which must gain it
+/// too.
+const fn held(refusal: &Refusal) -> &'static str {
+	match refusal {
+		Refusal::Stale { .. } => "stale",
+		Refusal::Author { .. } => "author",
+		Refusal::OutOfPhase { .. } => "out-of-phase",
+		Refusal::TooManyPoints => "too-many-points",
+		Refusal::PointAgain { .. } => "point-again",
+		Refusal::VersionNumber { .. } => "version-number",
+		Refusal::Unanswered { .. } => "unanswered",
+		Refusal::AnswerUnknown { .. } => "answer-unknown",
+		Refusal::AnswerTwice { .. } => "answer-twice",
+		Refusal::AnswerKinds { .. } => "answer-kinds",
+		Refusal::FlagAgain { .. } => "flag-again",
+		Refusal::FlagVersion { .. } => "flag-version",
+		Refusal::TurnUnknown { .. } => "turn-unknown",
+		Refusal::FlagSpeakerUnknown { .. } => "flag-speaker-unknown",
+		Refusal::FlagNotOpen { .. } => "flag-not-open",
+		Refusal::HeardVersion { .. } => "heard-version",
+		Refusal::HeardAgain { .. } => "heard-again",
+		Refusal::Unheard { .. } => "unheard",
+		Refusal::TooLong { .. } => "too-long",
+		Refusal::GreenLightVersion { .. } => "green-light-version",
+		Refusal::NotesTurn { .. } => "notes-turn",
+		Refusal::NotesWord { .. } => "notes-word",
+		Refusal::NotesRule { .. } => "notes-rule",
+		Refusal::OfferAgain { .. } => "offer-again",
+		Refusal::PreviewUnknown { .. } => "preview-unknown",
+		Refusal::MovesUnknown { .. } => "moves-unknown",
+		Refusal::PreviewAgain { .. } => "preview-again",
+		Refusal::RuleAgain { .. } => "rule-again",
+		Refusal::PreviewVariant { .. } => "preview-variant",
+	}
+}
+
+#[test]
+fn held_names_each_refusal_as_it_serializes_and_lists_them_all() {
+	let mut named: Vec<&str> = HELD.to_vec();
+	named.sort_unstable();
+	named.dedup();
+	assert_eq!(named.len(), HELD.len(), "each case once");
+	// One value of each case: what `held` names must be its serialized `why`.
+	for refusal in [
+		Refusal::TooManyPoints,
+		Refusal::Stale { basis: 1, seq: 2 },
+		Refusal::PreviewVariant {
+			preview: String::from("p"),
+			variant: String::from("v"),
+		},
+	] {
+		assert_eq!(serde_json::to_value(&refusal).unwrap()["why"], json!(held(&refusal)));
+		assert!(HELD.contains(&held(&refusal)));
+	}
+}
 
 /// paulgsc/some-ui's `conversationCorpus` (`pnpm dump:conversation-refusals`),
 /// kept here and held to that dump by `scripts/check_client_fixtures.py`.
@@ -610,7 +670,12 @@ fn home_answers_the_records_step_as_it_does_wherever_home_holds_the_rule() {
 		let home = match parse(next) {
 			Ok(event) => match state.step(&event) {
 				Ok(_) => None,
-				Err(refusal) => Some(serde_json::to_value(refusal).unwrap()),
+				Err(refusal) => {
+					if !HELD.contains(&held(&refusal)) {
+						problems.push(String::from(id) + ": home refuses it as " + held(&refusal) + ", which HELD does not list");
+					}
+					Some(serde_json::to_value(refusal).unwrap())
+				}
 			},
 			Err(found) => Some(json!({ "why": "unreadable", "field": found[0].0 })),
 		};
@@ -636,8 +701,14 @@ fn home_answers_the_records_step_as_it_does_wherever_home_holds_the_rule() {
 					);
 				}
 			}
-			// A rule home trusts the writers for: home may take it.
-			Some(_) => {}
+			// A rule home trusts the writers for: home may take it, and if it
+			// refuses, it is with the same `why` (docs/conversations.md,
+			// invariant 4).
+			Some(why) => {
+				if let Some(home) = home.filter(|home| home["why"].as_str() != Some(why)) {
+					problems.push(String::from(id) + ": the record's step refuses it as " + &theirs.to_string() + ", home under another rule, as " + &home.to_string());
+				}
+			}
 		}
 	}
 	assert!(
