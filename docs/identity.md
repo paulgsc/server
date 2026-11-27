@@ -2899,10 +2899,14 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     score, no take. A spoken hunch's take is a voice note of kind `hunch`
     (invariant 23) whose `ref` is the same name, heard in English and never
     told a phrase, and nothing here points at it. It is written only by
-    `POST /phrases/lookup`, a paired phone's for its own subject, in the
-    request that answers `kept` and before it answers, once per hunch
-    however often the phone sends it (`korean_repo::hunch::keep`); a hit
-    writes nothing. The asked words are embedded on that request's path and
+    `korean_repo::hunch::keep`, once per hunch however often it is called,
+    from two places, each for its own subject: `POST /phrases/lookup`, a
+    paired phone's, in the request that answers `kept` and before it
+    answers; and the transcriber's pass (`transcribe::pass`), which looks up
+    the words it heard in a `hunch` note in the transaction that keeps the
+    hearing, under the deletion hold (invariant 9), so a hunch whose phone
+    left before its words came back is kept too. A hit writes nothing
+    either way, and the second to come of the two changes nothing. The asked words are embedded on that request's path and
     their vector kept nowhere. A row is never updated (a trigger aborts an
     `UPDATE`) and never deleted but with the account, by both the sweep and
     the migration's trigger (invariant 12); rolling back the migration that
@@ -2919,7 +2923,9 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     `a_miss_is_kept_in_the_answer_once_however_often_it_is_sent`,
     `a_lookup_out_of_shape_is_refused_by_what_is_wrong_and_keeps_nothing`,
     `only_a_paired_phone_looks_up` and
-    `with_the_meaning_index_off_home_answers_unavailable_and_keeps_nothing`.
+    `with_the_meaning_index_off_home_answers_unavailable_and_keeps_nothing`;
+    and `transcribe::pass`' `a_heard_hunch_that_no_phrase_does_is_kept_by_home_itself`
+    and `the_phones_lookup_and_homes_keep_a_hunch_once`.
     *Not enforced:* that nothing else writes or reads the table, which
     `git grep -n phrase_hunch -- '*.rs'` shows today.
 

@@ -163,6 +163,9 @@ pub struct TranscribeContext {
 	/// embeds the words of each take it hears, in the transaction that keeps
 	/// the hearing, and catches up on takes heard before (`pass`).
 	pub meaning: Option<Arc<dyn Embed>>,
+	/// The phrase shelf's index, when the meaning index holds one: each pass
+	/// looks up each hunch it hears, and keeps a miss (`pass`).
+	pub phrases: Option<Arc<crate::phrases::Phrases>>,
 }
 
 impl TranscribeContext {
@@ -193,6 +196,7 @@ impl TranscribeContext {
 			deadline: DEADLINE,
 			deletion,
 			meaning: meaning.map(|meaning| Arc::clone(&meaning.model)),
+			phrases: meaning.and_then(|meaning| meaning.phrases.clone()),
 		}))
 	}
 }
@@ -268,7 +272,8 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 					// Each transcript heard wakes the mailbox's pass as soon as
 					// it is kept, not when the batch ends (MBP2).
 					let filed = || outbox.filed();
-					let result = pass::run_once_telling(&db, &engine, meaning, &context.deletion, context.deadline, (&mut guard, &mut turn), &cancel, &crate::mailbox::pass::now, &filed).await;
+					let phrases = context.phrases.as_deref();
+					let result = pass::run_once_telling(&db, &engine, (meaning, phrases), &context.deletion, context.deadline, (&mut guard, &mut turn), &cancel, &crate::mailbox::pass::now, &filed).await;
 					crate::metrics::transcribe::record_pass(result.is_ok());
 					log_pass(&result);
 				}

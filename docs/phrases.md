@@ -37,6 +37,16 @@ a runtime over a port to home). This doc is home's.
   (`phrase_hunch`, `korean_repo::hunch`) before it answers `kept`, so a miss
   is never lost between two calls, and a hunch sent again under its name is
   kept once. A hit keeps nothing.
+- **Home looks up a hunch it hears, too.** The transcriber's pass looks
+  up the words it heard in a `hunch` note, in the transaction that keeps the
+  hearing, and keeps a miss under the note's `ref` the same way
+  (`transcribe::pass`), so a hunch whose phone left mid-take, could not
+  reach home, or stopped waiting is still kept. The phone's own lookup of
+  the same hunch, before or after, changes nothing. Heard words are trimmed
+  and cut to the 200 characters a hunch holds. A storage failure rolls the
+  hearing back with it, and the next pass hears the note again. It adds no
+  clock, lane or bound to the pass (docs/home-compute.md): one read by the
+  note's key and a scan of the shelf's few dozen intents.
 - **Hearing a spoken hunch uses the routes every voice note uses.** A spoken
   hunch is a voice note of kind `hunch`, its `ref` the hunch's name:
   `PUT /voice-notes/:id?of=hunch&ref=<hunch>`, `POST
@@ -87,8 +97,9 @@ take library's doc says, and a new call for the numbers.
 1. **Home decides, and holds the numbers.** The phone never sends a
    threshold or a target phrase, and the route takes no field but `words` and
    `hunch` (an unknown field is a `422`).
-2. **A miss is kept before `kept` is answered, once per hunch.** *Held by*
-   `handlers::phrases`' tests and `korean_repo::hunch`'s.
+2. **A miss is kept before `kept` is answered, once per hunch,** and a
+   heard hunch's miss in its hearing's transaction. *Held by*
+   `handlers::phrases`' tests, `transcribe::pass`' and `korean_repo::hunch`'s.
 3. **The shelf on home is the synced file, and only it.** No route or table
    writes a phrase's intents; a new phrase is a new copy of the file in a
    release.
