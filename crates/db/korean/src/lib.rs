@@ -26,6 +26,8 @@
 //!   those routes), which the phone sends once paired. A
 //!   `git grep -n korean_entry -- '*.rs'` shows no other writer.
 
+pub mod hunch;
+
 use curriculum_repo::{content_hash, is_plain_key};
 use serde::Serialize;
 use serde_json::value::RawValue;

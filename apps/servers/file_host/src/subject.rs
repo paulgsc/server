@@ -284,6 +284,10 @@ pub const SUBJECT_SCOPED_TABLES: &[(&str, &str)] = &[
 		"each next scene's prompt the owner's phone asked for and sent home (paulgsc/some-ui#2179): the prompt's markdown as written, which holds the scene asked for and the last drama's review in the owner's words, its stamp, and when it reached home; see docs/identity.md invariant 31",
 	),
 	(
+		"phrase_hunch",
+		"each hunch no Korean phrase did that the owner asked home (paulgsc/server#1261, KPLAY's KP4): the phone's name for the hunch, the owner's words as typed or as home heard them, and when home kept it; a spoken hunch's take is a voice note named by the same hunch, and nothing here points at it; see docs/identity.md invariant 41",
+	),
+	(
 		"conversation_event",
 		"each event of the owner's conversation essays' records (paulgsc/server#1243, HOST16-S): the topic and points the owner gave, each podcast version the agent wrote, the owner's flags and withdrawals, home's measure of a version's audio, the green light, the agent's emotion notes and the owner's preview approvals, each as sent, with when it reached home; a take is named by its id only; see docs/identity.md invariant 40",
 	),

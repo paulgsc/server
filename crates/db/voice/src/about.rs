@@ -64,6 +64,9 @@ pub enum Detail {
 	Soundbite { how: String },
 	/// A grammar-lens line read aloud: the line.
 	Lens { line: String },
+	/// A hunch said on KPLAY's shop: the phone's name for it, the one its
+	/// lookup sent (paulgsc/server#1261).
+	Hunch { hunch: String },
 	/// A `LeetType` answer: the session file and its screen.
 	Leetype { file: String, screen: Option<String> },
 	/// A note said on a Rust Rounds card, a week's ticket or a pasted error.
@@ -209,6 +212,7 @@ pub fn about(of: Of, of_ref: &str, idea: Option<(String, String)>) -> About {
 		Of::Scene => plain(of.as_str(), Detail::Scene { prompt: of_ref.to_owned() }),
 		Of::Soundbite => plain(of.as_str(), Detail::Soundbite { how: of_ref.to_owned() }),
 		Of::Lens => plain(of.as_str(), Detail::Lens { line: of_ref.to_owned() }),
+		Of::Hunch => plain(of.as_str(), Detail::Hunch { hunch: of_ref.to_owned() }),
 		Of::Game => About {
 			key: key(of.as_str(), of_ref),
 			detail: Detail::Game(Box::new(GameAbout {
@@ -550,6 +554,7 @@ mod tests {
 		assert_eq!(key(Of::RustRound, "indexing-01:a"), "rust-round:indexing-01");
 		assert_eq!(key(Of::Interview, "2026-w47:read:home-first"), "interview:2026-w47");
 		assert_eq!(key(Of::Leetype, "f1:s2"), "leetype:f1");
+		assert_eq!(key(Of::Hunch, "0b9c1f0e-5a3f-4c1e-9d6b-2f1d8e7a6c5b-1"), "hunch:0b9c1f0e-5a3f-4c1e-9d6b-2f1d8e7a6c5b-1");
 
 		assert_eq!(
 			about(Of::Studio, "loose", Some(("i9".into(), "what".into()))).detail,

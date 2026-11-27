@@ -14,7 +14,10 @@
 //!   take's words in the transaction that keeps its hearing, and catches up
 //!   on the takes heard before the index existed; `GET /voice-notes/takes?q=`
 //!   embeds the asked words on the request's path (`handlers::voice`).
-//!   `voice_repo::meaning` keeps and reads the vectors.
+//!   `voice_repo::meaning` keeps and reads the vectors. The phrase shelf's
+//!   intents are embedded once, at start, beside them (`crate::phrases`,
+//!   paulgsc/server#1261), and `POST /phrases/lookup` embeds a hunch's words
+//!   on its request's path (docs/phrases.md).
 //! - **Nothing it makes reaches a log line.** Neither the words, the
 //!   asked words nor a vector: [`StaticModel::embed`] logs nothing, and
 //!   what fails at start names a file, never a text.
@@ -29,6 +32,7 @@
 //! server runs (500,353 tokens × 256 × 4 bytes); the tokenizer about
 //! 20 MB. Loading reads both once, at start.
 
+use crate::phrases::Phrases;
 use crate::Config;
 use anyhow::Context as _;
 use safetensors::{tensor::Dtype, SafeTensors};
@@ -170,11 +174,25 @@ fn unknown(spec: &serde_json::Value, tokenizer: &Tokenizer) -> Option<u32> {
 	model.get("unk_token").and_then(serde_json::Value::as_str).and_then(|token| tokenizer.token_to_id(token))
 }
 
-/// The model, or `None` when the deployment has not turned the meaning
-/// index on.
-#[derive(Clone, Debug)]
+/// The model, and the phrase shelf's intents it embedded
+/// (`crate::phrases`), or `None` when the deployment has not turned the
+/// meaning index on.
+#[derive(Clone)]
 pub struct MeaningContext {
-	pub model: Arc<StaticModel>,
+	pub model: Arc<dyn Embed>,
+	/// `None` when the shelf did not read or embed at start: the lookup then
+	/// answers `503`, and the take library's search runs on
+	/// ([`phrase_index`]).
+	pub phrases: Option<Arc<Phrases>>,
+}
+
+impl std::fmt::Debug for MeaningContext {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("MeaningContext")
+			.field("model", &self.model.model())
+			.field("phrases", &self.phrases)
+			.finish()
+	}
 }
 
 impl MeaningContext {
@@ -185,6 +203,10 @@ impl MeaningContext {
 	/// transcriber, or without a model that loads, is a hard error, as
 	/// `TRANSCRIBE_ENABLED` without its model is: the only symptom of an
 	/// index that is never written is a search that quietly says `words`.
+	///
+	/// A phrase shelf that does not read or embed ([`phrase_index`]) is not
+	/// one: it is held open as a failure, and only the phrase lookup goes
+	/// without.
 	///
 	/// # Errors
 	/// `MEANING_ENABLED` without `TRANSCRIBE_ENABLED`, or with a model that
@@ -199,8 +221,37 @@ impl MeaningContext {
 			"MEANING_ENABLED is set but TRANSCRIBE_ENABLED is not: the transcriber's pass writes the meaning index"
 		);
 		let model = StaticModel::load(Path::new(DIR), MODEL)?;
-		info!(model = MODEL, "the take library's meaning index is enabled");
-		Ok(Some(Self { model: Arc::new(model) }))
+		let phrases = phrase_index(crate::phrases::INTENTS, &model);
+		info!(model = MODEL, phrases = phrases.is_some(), "the take library's meaning index is enabled");
+		Ok(Some(Self::new(Arc::new(model), phrases)))
+	}
+
+	/// The index of `model`, holding `phrases`, which `model` embedded, if
+	/// they did.
+	#[must_use]
+	pub fn new(model: Arc<dyn Embed>, phrases: Option<Arc<Phrases>>) -> Self {
+		Self { model, phrases }
+	}
+}
+
+/// The shelf `text` holds, embedded by `model`, or `None` when it does not
+/// read or embed.
+///
+/// `None` is held open as `failure::Step::PhraseIndex` and logged by why (a
+/// phrase's id at most, never a hunch): a shelf a release got wrong takes
+/// down the phrase lookup alone, never the server or the take library's
+/// search.
+pub fn phrase_index(text: &str, model: &dyn Embed) -> Option<Arc<Phrases>> {
+	match Phrases::from_text(text, model) {
+		Ok(phrases) => {
+			crate::failure::open(crate::failure::Step::PhraseIndex, 0);
+			Some(Arc::new(phrases))
+		}
+		Err(err) => {
+			crate::failure::open(crate::failure::Step::PhraseIndex, 1);
+			tracing::error!(cause = %err, "the phrase shelf's intents did not index: the phrase lookup answers 503");
+			None
+		}
 	}
 }
 

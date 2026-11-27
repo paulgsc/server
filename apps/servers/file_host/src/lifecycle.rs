@@ -181,6 +181,7 @@ const TABLE_LIFECYCLE: &[(&str, Lifecycle, &str)] = &[
 	("pd_fill", AppendOnly, "each Playoff Delta fill as home first kept it (FEED4); never deleted"),
 	("pd_video_deletion", AppendOnly, "a receipt per step of a Playoff Delta video going; never deleted"),
 	("pd_video_link", AppendOnly, "each Playoff Delta video's YouTube link; never deleted"),
+	("phrase_hunch", AppendOnly, "each hunch no phrase did, as the owner asked it (KP4); deleted only with its account"),
 	(
 		"presence_leases",
 		Ephemeral,

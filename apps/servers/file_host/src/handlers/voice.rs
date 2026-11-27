@@ -80,7 +80,6 @@ use voice_repo::{
 	delete::{self as deletion, Deleted, Receipt, SWITCHED_ON},
 	fast_track::{Act as FastAct, Acted as FastActed},
 	kept::{KindKept, NoteKept, WeekKept},
-	meaning::Embed as _,
 	set_aside::SetAside,
 	takes::{Ask, Library},
 	transcript::{Hearing, Transcript},
@@ -2257,9 +2256,13 @@ mod tests {
 	#[tokio::test]
 	async fn a_paired_phone_searches_its_takes_by_meaning() {
 		let mut state = state().await;
-		state.meaning = Some(MeaningContext {
-			model: std::sync::Arc::new(crate::meaning::tests::fixture()),
-		});
+		let model = std::sync::Arc::new(crate::meaning::tests::fixture());
+		let phrases = crate::phrases::Phrases::from_text(
+			r#"{"schema": "some-ui.phrase-intents/1", "source": "test", "phrases": [{"id": "ph.brand", "intents": ["the brand"]}]}"#,
+			&*model,
+		)
+		.unwrap();
+		state.meaning = Some(MeaningContext::new(model, Some(std::sync::Arc::new(phrases))));
 		let pool = state.pool.clone();
 		let phone = session(&state, A, Carrier::Bearer).await;
 		let app = app(state.clone());
