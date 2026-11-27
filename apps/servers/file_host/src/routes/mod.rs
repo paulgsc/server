@@ -21,6 +21,7 @@ pub mod leetype_files;
 pub mod leetype_log;
 pub mod metrics;
 pub mod outcomes;
+pub mod phrases;
 pub mod presence;
 pub mod previews;
 pub mod push;

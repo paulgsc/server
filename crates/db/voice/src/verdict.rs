@@ -126,8 +126,9 @@ pub struct Verdict {
 /// its source has one.
 ///
 /// One arm per kind, and no wildcard, so a new kind says its language before
-/// it compiles. A Rust Rounds answer and an interview take are English, and so
-/// is a Studio take of a script's scene (`<project>:<shot>:<take>`) or of a
+/// it compiles. A Rust Rounds answer, an interview take and a shop's hunch (the
+/// owner says in English what they want to say in Korean, paulgsc/server#1261)
+/// are English, and so is a Studio take of a script's scene (`<project>:<shot>:<take>`) or of a
 /// spoken card's part (`spoken:<card>.<part>`): each is read or said for an
 /// English video (the owner, 2026-11-21, paulgsc/some-ui#3339, after a spoken
 /// card's take was heard as German). Every other kind, and a Studio idea's
@@ -138,7 +139,7 @@ pub struct Verdict {
 pub fn expected_language(of_kind: &str, of_ref: &str) -> Option<&'static str> {
 	let of = crate::Of::named(of_kind)?;
 	let english = match of {
-		crate::Of::RustRound | crate::Of::Interview => true,
+		crate::Of::RustRound | crate::Of::Interview | crate::Of::Hunch => true,
 		crate::Of::Studio => crate::about::studio_script_or_spoken(of_ref),
 		crate::Of::Reflection | crate::Of::Jobs | crate::Of::Scene | crate::Of::Game | crate::Of::Soundbite | crate::Of::Lens | crate::Of::Leetype => false,
 	};
@@ -555,6 +556,7 @@ mod tests {
 	fn a_take_is_english_when_its_source_is_and_a_reflection_never_is() {
 		assert_eq!(expected_language("rust-round", "2026-w47:QM-311"), Some("en"));
 		assert_eq!(expected_language("interview", "2026-w47:about-you"), Some("en"));
+		assert_eq!(expected_language("hunch", "0b9c1f0e-5a3f-4c1e-9d6b-2f1d8e7a6c5b-1"), Some("en"));
 		assert_eq!(expected_language("studio", "build-journal-ep04:s3:2"), Some("en"), "a script's scene");
 		assert_eq!(expected_language("studio", "spoken:sc1a2b3c.0"), Some("en"), "a spoken card's part");
 		assert_eq!(expected_language("studio", "idea:i1:q2"), None, "an idea's answer");

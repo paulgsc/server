@@ -68,7 +68,7 @@ pub mod verdict;
 
 use crate::auth::DeletionLock;
 use crate::call_weeks::lane::Held;
-use crate::meaning::{MeaningContext, StaticModel};
+use crate::meaning::MeaningContext;
 use crate::{AppState, Config};
 use engine::{Cancelled, Decode, Hear, Heard, Whisper};
 use std::path::PathBuf;
@@ -162,7 +162,7 @@ pub struct TranscribeContext {
 	/// The take library's meaning model, when `MEANING_ENABLED`: each pass
 	/// embeds the words of each take it hears, in the transaction that keeps
 	/// the hearing, and catches up on takes heard before (`pass`).
-	pub meaning: Option<Arc<StaticModel>>,
+	pub meaning: Option<Arc<dyn Embed>>,
 }
 
 impl TranscribeContext {
@@ -264,7 +264,7 @@ fn spawn(state: &AppState, context: TranscribeContext) {
 				}
 				_ = ticker.tick() => {
 					crate::metrics::transcribe::record_pass_started();
-					let meaning = context.meaning.as_deref().map(|model| model as &dyn Embed);
+					let meaning = context.meaning.as_deref();
 					// Each transcript heard wakes the mailbox's pass as soon as
 					// it is kept, not when the batch ends (MBP2).
 					let filed = || outbox.filed();

@@ -215,6 +215,7 @@ above the button that deletes (invariant 22):
 | Drama prompts | `drama_prompt` |
 | Notes on the feeds' episodes | `episode_note` |
 | Conversation essays' records: topics, points, podcast versions, flags, the green light, emotion notes and preview approvals | `conversation_event` |
+| Hunches no Korean phrase did, as the owner typed or said them on KPLAY's shop | `phrase_hunch` |
 | Voice notes, game bites included | `voice_note`, `voice_note_audio`, `voice_transcript`, `voice_transcript_word`, `voice_transcript_verdict`, `voice_note_attention`, `voice_note_hear_again_supersedes`, `voice_note_meaning`, `game_bite`, `bite_match`, `bite_mapping`, `studio_take_on_drive`, `voice_note_set_aside`, `studio_take_move`, `voice_note_deletion`, `stage_want`, `voice_note_fast_track` |
 | What the phone noted beside a soundbite or a LeetType spoken answer | `study_note` |
 | Rust Rounds' rounds, weeks sent, card-era log and work spans | `rust_round`, `rust_week_sent`, `rust_week_draft`, `rust_week_final`, `rust_week_paste`, `rust_round_log`, `rust_work_span_event` |
@@ -1269,7 +1270,7 @@ nowhere is marked as such and belongs to review.
     `voice_note` describes each voice note the phone sends home
     (paulgsc/server#460): what it was said for (`reflection`, `jobs`,
     `scene`, `game`, `studio`, `soundbite`, `lens`, `leetype`,
-    `rust-round` or `interview`) and which one, when the phone recorded it and when it reached
+    `rust-round`, `interview` or `hunch`) and which one, when the phone recorded it and when it reached
     home, its container (`audio/webm`, `audio/ogg` or `audio/mp4`), its size
     and SHA-256. `voice_note_audio` holds its bytes as the phone sent them,
     written in the same transaction. **A game bite is a voice note** (owner,
@@ -2887,6 +2888,40 @@ the way `CLAUDE.md`'s "Drift is loud" asks.
     *Not enforced:* that nothing else writes or reads the table, which
     `git grep -n conversation_event -- '*.rs'` shows today; and that a take
     a record names is one home holds, which is not checked.
+
+41. **A hunch no phrase did is the owner's own words: kept once, in the
+    answer that misses, subject-scoped, never logged, and only with its
+    account does it go.** `phrase_hunch` keeps each hunch the owner asked
+    KPLAY's shop that home's meaning index matched to no Korean phrase
+    (paulgsc/server#1261, KP4; docs/phrases.md): the phone's name for the
+    hunch, the owner's words as typed or as home heard them (at most 200
+    characters, trimmed), and when home kept it. Nothing else: no vector, no
+    score, no take. A spoken hunch's take is a voice note of kind `hunch`
+    (invariant 23) whose `ref` is the same name, heard in English and never
+    told a phrase, and nothing here points at it. It is written only by
+    `POST /phrases/lookup`, a paired phone's for its own subject, in the
+    request that answers `kept` and before it answers, once per hunch
+    however often the phone sends it (`korean_repo::hunch::keep`); a hit
+    writes nothing. The asked words are embedded on that request's path and
+    their vector kept nowhere. A row is never updated (a trigger aborts an
+    `UPDATE`) and never deleted but with the account, by both the sweep and
+    the migration's trigger (invariant 12); rolling back the migration that
+    creates it fails once it holds a row. Nothing of a hunch reaches a log
+    line: the handler records only `otel.kind` (invariant 6). Nothing reads
+    it yet: the routine that writes phrases from the hunches (KP5) is
+    paulgsc/some-ui#2853's next step, and it must keep this invariant when it
+    does.
+    *Enforced by* `korean_repo::hunch`'s
+    `a_hunch_is_kept_once_however_often_it_is_sent`, `each_subject_keeps_its_own`,
+    `the_table_is_append_only_bounded_and_leaves_with_the_account` and
+    `the_migration_round_trips_and_refuses_to_drop_a_hunch`; and
+    `handlers::phrases`' `a_hunch_an_intent_says_is_a_hit_and_keeps_nothing`,
+    `a_miss_is_kept_in_the_answer_once_however_often_it_is_sent`,
+    `a_lookup_out_of_shape_is_refused_by_what_is_wrong_and_keeps_nothing`,
+    `only_a_paired_phone_looks_up` and
+    `with_the_meaning_index_off_home_answers_unavailable_and_keeps_nothing`.
+    *Not enforced:* that nothing else writes or reads the table, which
+    `git grep -n phrase_hunch -- '*.rs'` shows today.
 
 ## What is still exposed
 

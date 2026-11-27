@@ -201,6 +201,13 @@ kinds! {
 	/// an answer to one of the week's questions, or a teleprompter card read
 	/// aloud. Its `ref` as [`is_interview_ref`] says.
 	Interview => "interview",
+	/// A hunch said on KPLAY's shop (paulgsc/server#1261, KP4): what the
+	/// owner wants to say in Korean, said in English. Its `ref` is the
+	/// phone's name for the hunch (`korean_repo::hunch::is_hunch`'s shape,
+	/// within the rule every `ref` meets), the one its lookup sends, so a
+	/// hunch no phrase did finds its take by it. Heard in English, never told
+	/// a phrase ([`crate::verdict::expected_language`]).
+	Hunch => "hunch",
 }
 
 impl Of {
@@ -721,7 +728,7 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 	if of.is_none() {
 		problems.push((
 			"of",
-			"not what a note is said for: reflection, jobs, scene, game, studio, soundbite, lens, leetype, rust-round or interview",
+			"not what a note is said for: reflection, jobs, scene, game, studio, soundbite, lens, leetype, rust-round, interview or hunch",
 		));
 	}
 	let of_ref = said.of_ref.filter(|of_ref| is_name(of_ref, MAX_REF_CHARS));
@@ -738,6 +745,10 @@ pub fn describe(id: &str, said: Said<'_>, body: &[u8]) -> Result<Note, Vec<Probl
 		}
 		(Some(Of::Interview), Some(of_ref)) if !is_interview_ref(of_ref) => {
 			problems.push(("ref", "not what an interview take is said for: <week>:<question> or <week>:read:<card>"));
+			None
+		}
+		(Some(Of::Hunch), Some(of_ref)) if !is_name(of_ref, MAX_ID_CHARS) => {
+			problems.push(("ref", "not the hunch's name: 1 to 64 letters, digits, '-', '_', '.' or ':'"));
 			None
 		}
 		(_, of_ref) => of_ref,
@@ -1016,11 +1027,14 @@ pub async fn put_note(conn: &mut SqliteConnection, subject: &str, note: &Note, b
 ///   paired phone, so the owner can hear what they would delete (the owner,
 ///   2026-11-13, on paulgsc/some-ui#2473 (issuecomment-6861770728), MY-DATA).
 ///
+/// - [`Of::Hunch`]: as every other kind, under the same ruling: a spoken
+///   hunch is a recording home keeps (paulgsc/server#1261, KP4).
+///
 /// So every kind is played back, and still only to the note's own subject's
 /// paired phone. The kinds are listed one by one, not taken from every
 /// [`Of`], so a kind added later is not played back until someone lists it
 /// and says why.
-pub const PLAYED_BACK: [Of; 10] = [
+pub const PLAYED_BACK: [Of; 11] = [
 	Of::Reflection,
 	Of::Jobs,
 	Of::Scene,
@@ -1031,6 +1045,7 @@ pub const PLAYED_BACK: [Of; 10] = [
 	Of::Leetype,
 	Of::RustRound,
 	Of::Interview,
+	Of::Hunch,
 ];
 
 /// What home holds of a note's audio short of its bytes: its container and
@@ -1155,6 +1170,9 @@ mod tests {
 	const BEFORE_TAKES: i64 = 20_261_101_000_400;
 	/// The migration before `rust-round` was a note's kind.
 	const BEFORE_RUST_ROUND: i64 = 20_261_101_002_600;
+	/// The migration before `hunch` was a note's kind
+	/// (`20261127000200_add_hunch_to_voice_note`).
+	const BEFORE_HUNCH: i64 = 20_261_127_000_100;
 	/// The migration before `interview` was a note's kind.
 	const BEFORE_INTERVIEW: i64 = 20_261_113_000_500;
 	const NOW: &str = "2026-10-25T03:00:00.000Z";
@@ -2358,19 +2376,44 @@ mod tests {
 	/// Every kind a note is said for, by the name the phone sends and the
 	/// CHECK holds; and the kinds whose audio home gives back, listed by hand
 	/// so a kind added later stays home until it is listed (IW1,
-	/// paulgsc/some-ui#2932, adds `interview` to both).
+	/// paulgsc/some-ui#2932, adds `interview` to both; KP4,
+	/// paulgsc/server#1261, adds `hunch` to both).
 	#[test]
 	fn the_kinds_and_the_kinds_played_back_are_pinned() {
 		assert_eq!(
 			Of::ALL.map(Of::as_str),
-			["reflection", "jobs", "scene", "game", "studio", "soundbite", "lens", "leetype", "rust-round", "interview"]
+			[
+				"reflection",
+				"jobs",
+				"scene",
+				"game",
+				"studio",
+				"soundbite",
+				"lens",
+				"leetype",
+				"rust-round",
+				"interview",
+				"hunch"
+			]
 		);
 		for of in Of::ALL {
 			assert_eq!(Of::named(of.as_str()), Some(of));
 		}
 		assert_eq!(
 			PLAYED_BACK.map(Of::as_str),
-			["reflection", "jobs", "scene", "game", "studio", "soundbite", "lens", "leetype", "rust-round", "interview"]
+			[
+				"reflection",
+				"jobs",
+				"scene",
+				"game",
+				"studio",
+				"soundbite",
+				"lens",
+				"leetype",
+				"rust-round",
+				"interview",
+				"hunch"
+			]
 		);
 	}
 
@@ -2405,6 +2448,80 @@ mod tests {
 			assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["ref"], "{bad}");
 		}
 		assert!(describe("l1", said_take("lens", "about-you"), b"said").is_ok(), "the rule is the interview's alone");
+	}
+
+	/// The rebuild that widened `voice_note` for `hunch` (KP4,
+	/// paulgsc/server#1261) keeps every note held before it, row for row,
+	/// still append-only, with both its indexes, still leaving with the
+	/// account; going back refuses once a hunch is held, and loses nothing.
+	#[tokio::test]
+	async fn the_notes_rebuilt_for_hunch_keep_every_row_held_before() {
+		let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+		MIGRATOR.run(&pool).await.unwrap();
+		MIGRATOR.undo(&pool, BEFORE_HUNCH).await.unwrap();
+		sqlx::query("INSERT INTO account (subject_id, user_handle) VALUES (?1, ?2)")
+			.bind(A)
+			.bind(A.as_bytes())
+			.execute(&pool)
+			.await
+			.unwrap();
+		let insert = |id: &'static str, of: &'static str, of_ref: &'static str| {
+			sqlx::query(
+				"INSERT INTO voice_note (subject_id, note_id, of_kind, of_ref, recorded_at, content_type, size, sha256, stored_at)
+				 VALUES (?1, ?2, ?3, ?4, 'then', 'audio/webm', 1, 'abc', 'now')",
+			)
+			.bind(A)
+			.bind(id)
+			.bind(of)
+			.bind(of_ref)
+		};
+		assert!(insert("h0", "hunch", "h-1").execute(&pool).await.is_err(), "before the rebuild a hunch is refused");
+		for (id, of, of_ref) in [
+			("n1", "reflection", "session-7f2a"),
+			("n2", "studio", "ep04:s1:1"),
+			("n3", "interview", "2026-w47:about-you"),
+			("n4", "rust-round", "2026-w46:QM-311"),
+		] {
+			insert(id, of, of_ref).execute(&pool).await.unwrap();
+		}
+		let held = || {
+			sqlx::query_as::<_, (String, String, String, String, String, i64, String, String)>(
+				"SELECT subject_id, note_id, of_kind, of_ref, recorded_at, size, sha256, stored_at FROM voice_note ORDER BY note_id",
+			)
+		};
+		let before = held().fetch_all(&pool).await.unwrap();
+		assert_eq!(before.len(), 4);
+		MIGRATOR.run(&pool).await.unwrap();
+		assert_eq!(held().fetch_all(&pool).await.unwrap(), before, "every row, as it was");
+
+		insert("h1", "hunch", "0b9c1f0e-5a3f-4c1e-9d6b-2f1d8e7a6c5b-1").execute(&pool).await.unwrap();
+		let refused = sqlx::query("UPDATE voice_note SET of_ref = 'x'").execute(&pool).await;
+		assert!(refused.unwrap_err().to_string().contains("append-only"), "still append-only");
+		let indexes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('voice_note_by_stored_at', 'voice_note_by_ref')")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(indexes, 2, "the transcriber's and the reconciler's indexes are back");
+
+		assert!(MIGRATOR.undo(&pool, BEFORE_HUNCH).await.is_err(), "a held hunch refuses the rollback");
+		assert_eq!(rows(&pool, "voice_note").await, 5, "and nothing went");
+
+		sqlx::query("DELETE FROM account WHERE subject_id = ?1").bind(A).execute(&pool).await.unwrap();
+		assert_eq!(rows(&pool, "voice_note").await, 0, "still leaves with the account");
+	}
+
+	/// KP4 (paulgsc/server#1261): a spoken hunch names the hunch its lookup
+	/// sends, which a hunch no phrase did is kept under, so its `ref` is no
+	/// longer than a hunch's name may be.
+	#[test]
+	fn a_hunch_names_the_hunch_its_lookup_sends() {
+		let hunch = "0b9c1f0e-5a3f-4c1e-9d6b-2f1d8e7a6c5b-1";
+		let note = describe("h1", said_take("hunch", hunch), b"said").unwrap();
+		assert_eq!((note.of, note.of_ref.as_str()), (Of::Hunch, hunch));
+		assert!(describe("h1", said_take("hunch", &"a".repeat(64)), b"said").is_ok());
+		let refused = describe("h1", said_take("hunch", &"a".repeat(65)), b"said").unwrap_err();
+		assert_eq!(refused.iter().map(|(field, _)| *field).collect::<Vec<_>>(), ["ref"]);
+		assert!(describe("l1", said_take("lens", &"a".repeat(65)), b"said").is_ok(), "the rule is the hunch's alone");
 	}
 
 	/// An interview take is kept as a note like any other, and its audio is

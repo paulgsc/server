@@ -1,0 +1,119 @@
+{
+  "schema": "some-ui.phrase-intents/1",
+  "source": "some-ui:packages/ui/topik/src/lib/topik/phrases/shelf.ts@bd78ac0f94216167bde685a898c30ed7592deb37",
+  "phrases": [
+    {
+      "id": "ph.where-is-my-phone",
+      "intents": [
+        "where's my phone",
+        "where did I put my phone",
+        "I can't find my phone"
+      ]
+    },
+    {
+      "id": "ph.rained-so-stayed-home",
+      "intents": [
+        "because it rained, I stayed home",
+        "it rained, so I stayed in",
+        "I stayed home because of the rain"
+      ]
+    },
+    {
+      "id": "ph.shall-we-eat-together",
+      "intents": [
+        "shall we eat together",
+        "want to eat with me",
+        "let's eat together"
+      ]
+    },
+    {
+      "id": "ph.this-is-really-good",
+      "intents": [
+        "this is really good",
+        "oh, this is delicious",
+        "wow, this tastes great"
+      ]
+    },
+    {
+      "id": "ph.please-sit-here",
+      "intents": [
+        "please sit here",
+        "have a seat here",
+        "sit down here"
+      ]
+    },
+    {
+      "id": "ph.cold-so-shall-we-go-in",
+      "intents": [
+        "it's cold, so shall we go in",
+        "it's cold, let's go inside",
+        "shall we go in, since it's cold"
+      ]
+    },
+    {
+      "id": "ph.i-dont-really-know",
+      "intents": [
+        "I don't really know",
+        "I'm not sure",
+        "I couldn't say"
+      ]
+    },
+    {
+      "id": "ph.its-okay",
+      "intents": [
+        "it's okay",
+        "I'm fine",
+        "no worries",
+        "that's all right"
+      ]
+    },
+    {
+      "id": "ph.bit-busy-today",
+      "intents": [
+        "I'm a bit busy today",
+        "today's a busy one",
+        "I'm kind of busy today"
+      ]
+    },
+    {
+      "id": "ph.did-you-eat",
+      "intents": [
+        "did you eat",
+        "have you eaten",
+        "how are you doing"
+      ]
+    },
+    {
+      "id": "ph.pricey-but-good",
+      "intents": [
+        "it's pricey but it's good",
+        "expensive, but tasty",
+        "it costs a lot, but it's delicious"
+      ]
+    },
+    {
+      "id": "ph.going-to-eat",
+      "intents": [
+        "I'm going to eat",
+        "I'm off to get food",
+        "I'm heading out for a meal"
+      ]
+    },
+    {
+      "id": "ph.will-it-rain-tomorrow",
+      "intents": [
+        "will it rain tomorrow",
+        "I wonder if it'll rain tomorrow",
+        "is it going to rain tomorrow"
+      ]
+    },
+    {
+      "id": "ph.i-didnt-know",
+      "intents": [
+        "I didn't know",
+        "I had no idea",
+        "I wasn't aware"
+      ]
+    }
+  ]
+}

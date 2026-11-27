@@ -37,6 +37,7 @@ pub mod migrate;
 pub mod net;
 pub mod nudge;
 pub mod pd_fills;
+pub mod phrases;
 pub mod previews;
 #[cfg(test)]
 mod privacy;

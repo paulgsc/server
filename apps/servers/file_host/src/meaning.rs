@@ -14,7 +14,10 @@
 //!   take's words in the transaction that keeps its hearing, and catches up
 //!   on the takes heard before the index existed; `GET /voice-notes/takes?q=`
 //!   embeds the asked words on the request's path (`handlers::voice`).
-//!   `voice_repo::meaning` keeps and reads the vectors.
+//!   `voice_repo::meaning` keeps and reads the vectors. The phrase shelf's
+//!   intents are embedded once, at start, beside them (`crate::phrases`,
+//!   paulgsc/server#1261), and `POST /phrases/lookup` embeds a hunch's words
+//!   on its request's path (docs/phrases.md).
 //! - **Nothing it makes reaches a log line.** Neither the words, the
 //!   asked words nor a vector: [`StaticModel::embed`] logs nothing, and
 //!   what fails at start names a file, never a text.
@@ -29,6 +32,7 @@
 //! server runs (500,353 tokens × 256 × 4 bytes); the tokenizer about
 //! 20 MB. Loading reads both once, at start.
 
+use crate::phrases::Phrases;
 use crate::Config;
 use anyhow::Context as _;
 use safetensors::{tensor::Dtype, SafeTensors};
@@ -170,11 +174,22 @@ fn unknown(spec: &serde_json::Value, tokenizer: &Tokenizer) -> Option<u32> {
 	model.get("unk_token").and_then(serde_json::Value::as_str).and_then(|token| tokenizer.token_to_id(token))
 }
 
-/// The model, or `None` when the deployment has not turned the meaning
-/// index on.
-#[derive(Clone, Debug)]
+/// The model, and the phrase shelf's intents it embedded
+/// (`crate::phrases`), or `None` when the deployment has not turned the
+/// meaning index on.
+#[derive(Clone)]
 pub struct MeaningContext {
-	pub model: Arc<StaticModel>,
+	pub model: Arc<dyn Embed>,
+	pub phrases: Arc<Phrases>,
+}
+
+impl std::fmt::Debug for MeaningContext {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("MeaningContext")
+			.field("model", &self.model.model())
+			.field("phrases", &self.phrases)
+			.finish()
+	}
 }
 
 impl MeaningContext {
@@ -199,8 +214,15 @@ impl MeaningContext {
 			"MEANING_ENABLED is set but TRANSCRIBE_ENABLED is not: the transcriber's pass writes the meaning index"
 		);
 		let model = StaticModel::load(Path::new(DIR), MODEL)?;
-		info!(model = MODEL, "the take library's meaning index is enabled");
-		Ok(Some(Self { model: Arc::new(model) }))
+		let phrases = Phrases::index(&model)?;
+		info!(model = MODEL, "the take library's meaning index is enabled, and holds the phrase shelf's intents");
+		Ok(Some(Self::new(Arc::new(model), Arc::new(phrases))))
+	}
+
+	/// The index of `model`, holding `phrases`, which `model` embedded.
+	#[must_use]
+	pub fn new(model: Arc<dyn Embed>, phrases: Arc<Phrases>) -> Self {
+		Self { model, phrases }
 	}
 }
 
