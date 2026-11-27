@@ -29,6 +29,16 @@
 //!   (`voice_repo::meaning::unindexed`), each in its own transaction under
 //!   the deletion hold. Embedding is a lookup per token, so neither holds a
 //!   transaction longer than its write.
+//! - **A heard hunch is looked up where it is heard** (paulgsc/server#1261,
+//!   KP4): a `hunch` note's words are looked up against the phrase shelf
+//!   (`crate::phrases`) in the transaction that keeps its hearing, and a
+//!   miss is kept once under its `ref` (`korean_repo::hunch`), so a hunch
+//!   whose phone left before the words came back is still kept. The phone's
+//!   own lookup of the same hunch then changes nothing. Without the shelf's
+//!   index a heard hunch is kept as unmatched: it is heard once, and the
+//!   record comes before precision. A lookup is an
+//!   embedding and a scan of the shelf's few dozen intents, so it lengthens
+//!   no transaction past its write, and it adds no clock, lane or bound.
 //! - **A busy box is nobody's fault** (L1, paulgsc/server#706). Each hearing
 //!   is bracketed by a [`crate::contention::Window`]: a `deadline` reached while
 //!   the box's CPU was contended is kept as nothing, so it never uses up one
@@ -44,6 +54,7 @@ use super::turn::Turn;
 use super::verbatim;
 use crate::auth::DeletionLock;
 use crate::contention::{Excuse, Guard, Window};
+use crate::phrases::Phrases;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -99,7 +110,7 @@ pub async fn run_once<H: Hear>(
 	cancel: &CancellationToken,
 	now: &(dyn Fn() -> String + Sync),
 ) -> Result<Pass, VoiceError> {
-	run_once_telling(db, hear, meaning, deletion, per_note, (guard, &mut Turn::unbounded()), cancel, now, &|| {}).await
+	run_once_telling(db, hear, (meaning, None), deletion, per_note, (guard, &mut Turn::unbounded()), cancel, now, &|| {}).await
 }
 
 /// Whether `note` is a fast-tracked take's one try (marked, never tried by
@@ -118,7 +129,9 @@ fn first_try(guard: &Guard<(String, String)>, note: &transcript::Waiting) -> boo
 	note.urgency == Urgency::FastTrack && !excused
 }
 
-/// [`run_once`], calling `heard` as soon as each note heard is kept.
+/// [`run_once`], calling `heard` as soon as each note heard is kept, and
+/// with the phrase shelf's index beside the model, looking each heard hunch
+/// up (the module doc).
 ///
 /// A transcript is then committed and on its way to the
 /// mailbox, so its pass need not wait for the rest of the batch, or for a
@@ -130,7 +143,7 @@ fn first_try(guard: &Guard<(String, String)>, note: &transcript::Waiting) -> boo
 pub async fn run_once_telling<H: Hear>(
 	db: &SqlitePool,
 	hear: &Arc<H>,
-	meaning: Option<&dyn Embed>,
+	(meaning, phrases): (Option<&dyn Embed>, Option<&Phrases>),
 	deletion: &DeletionLock,
 	per_note: Duration,
 	(guard, turn): (&mut Guard<(String, String)>, &mut Turn),
@@ -215,7 +228,7 @@ pub async fn run_once_telling<H: Hear>(
 			took_ms: i64::try_from(took.as_millis()).unwrap_or(i64::MAX),
 		};
 		let judge = |n: i64| super::verdict::judge(&attempt.outcome, measures.as_ref(), expected, n >= ATTEMPTS);
-		let (kept, indexed, verdict) = keep(db, deletion, meaning, &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
+		let (kept, indexed, verdict) = keep(db, deletion, (meaning, phrases), &note.subject, &note.note_id, &attempt, &judge, &now()).await?;
 		if let Kept::Added(_) = kept {
 			crate::metrics::transcribe::record_attempt(&attempt.outcome, took);
 			super::log_attempt(kind, note.verbatim, took, attempt.duration_ms, attempted.work);
@@ -290,12 +303,13 @@ async fn tell_backlog(db: &SqlitePool, keys: Keys<'_>) -> Result<(), VoiceError>
 /// `keep_attempt` checks the note is still held in the transaction that
 /// writes, and the hold keeps a deletion from landing between the two. A
 /// take heard gets its vector in the same transaction, when there is a
-/// `meaning` model, and a final attempt its verdict (HEARD1).
+/// `meaning` model, a hunch heard its lookup when there are `phrases` too,
+/// and a final attempt its verdict (HEARD1).
 #[allow(clippy::too_many_arguments)] // the attempt, whose it is, and what goes with it
 async fn keep(
 	db: &SqlitePool,
 	deletion: &DeletionLock,
-	meaning: Option<&dyn Embed>,
+	(meaning, phrases): (Option<&dyn Embed>, Option<&Phrases>),
 	subject: &str,
 	note_id: &str,
 	attempt: &Attempt<'_>,
@@ -322,8 +336,49 @@ async fn keep(
 		(Kept::Added(_), Outcome::Heard { .. } | Outcome::Silent, Some(embed)) => meaning::index(&mut tx, subject, note_id, embed).await?,
 		_ => Indexed::NoWords,
 	};
+	if let (Kept::Added(_), Outcome::Heard { text, .. }) = (&kept, &attempt.outcome) {
+		keep_unmatched(&mut tx, (meaning, phrases), subject, note_id, text).await?;
+	}
 	tx.commit().await?;
 	Ok((kept, indexed, verdict))
+}
+
+/// When `subject`'s note `note_id` is a spoken hunch, looks up the words
+/// heard in it, `text`, as `POST /phrases/lookup` would, and on a miss keeps
+/// the hunch under its `ref`, once (`korean_repo::hunch::keep`), asked when
+/// the phone recorded it; a hit, or words that are nothing once trimmed, keep
+/// nothing.
+///
+/// Without the shelf's index (the meaning index off, or a shelf that did not
+/// index), the hunch is kept as unmatched: a note is heard once, so nothing
+/// would look it up later, and the record comes before precision. A hunch
+/// that would have matched costs the routine that reads them a look.
+///
+/// # Errors
+/// Any `sqlx` failure, which rolls the hearing back with it: the next pass
+/// hears the note again, so neither is lost.
+async fn keep_unmatched(
+	conn: &mut sqlx::SqliteConnection,
+	(meaning, phrases): (Option<&dyn Embed>, Option<&Phrases>),
+	subject: &str,
+	note_id: &str,
+	text: &str,
+) -> Result<(), VoiceError> {
+	// Asked when the owner said it, however long the hearing waited.
+	let Some((hunch, recorded_at)) = voice_repo::hunch_of(&mut *conn, subject, note_id).await? else {
+		return Ok(());
+	};
+	let Some(words) = crate::phrases::heard_words(text) else {
+		return Ok(());
+	};
+	let hit = match (meaning, phrases) {
+		(Some(embed), Some(phrases)) => !phrases.look_up(&embed.embed(&words)).is_empty(),
+		_ => false,
+	};
+	if !hit {
+		korean_repo::hunch::keep(conn, subject, &hunch, &words, &recorded_at).await?;
+	}
+	Ok(())
 }
 
 /// Gives up to [`BATCH`] takes heard before `embed`'s index existed their
@@ -420,7 +475,10 @@ mod tests {
 				_ => Outcome::Heard {
 					language: String::from("en"),
 					language_p: 0.97,
-					text: String::from(SAID),
+					// `say:<words>` is heard as the words; anything else as SAID.
+					text: audio
+						.strip_prefix(b"say:")
+						.map_or_else(|| String::from(SAID), |said| String::from_utf8_lossy(said).into_owned()),
 					words: Vec::new(),
 				},
 			};
@@ -661,17 +719,17 @@ mod tests {
 		let lock = DeletionLock::default();
 		let now = || String::from("2026-10-25T16:00:00.000Z");
 		let per_note = Duration::from_secs(60);
-		let first = super::run_once_telling(&pool, &fake, None, &lock, per_note, (&mut calm(), &mut turn), &cancel, &now, &|| {})
+		let first = super::run_once_telling(&pool, &fake, (None, None), &lock, per_note, (&mut calm(), &mut turn), &cancel, &now, &|| {})
 			.await
 			.unwrap();
 		assert_eq!((first.kept.len(), first.gave_way), (0, true), "the turn is given before the next note: {first:?}");
-		let giving = super::run_once_telling(&pool, &fake, None, &lock, per_note, (&mut calm(), &mut turn), &cancel, &now, &|| {})
+		let giving = super::run_once_telling(&pool, &fake, (None, None), &lock, per_note, (&mut calm(), &mut turn), &cancel, &now, &|| {})
 			.await
 			.unwrap();
 		assert_eq!((giving.kept.len(), giving.gave_way), (0, false), "still giving, said once: {giving:?}");
 		assert!(fake.heard().is_empty(), "nothing heard while the turn is given");
 		interactive.set_batch_waits(false);
-		let after = super::run_once_telling(&pool, &fake, None, &lock, per_note, (&mut calm(), &mut turn), &cancel, &now, &|| {})
+		let after = super::run_once_telling(&pool, &fake, (None, None), &lock, per_note, (&mut calm(), &mut turn), &cancel, &now, &|| {})
 			.await
 			.unwrap();
 		assert_eq!(after.kept, ["heard"; 3], "no render waits: every note heard");
@@ -707,7 +765,7 @@ mod tests {
 		let mut turn = super::Turn::with(Duration::ZERO, Duration::from_secs(3600), Some(interactive.clone()));
 		let lock = DeletionLock::default();
 		let now = || String::from("2026-10-25T16:00:00.000Z");
-		let done = super::run_once_telling(&pool, &fake, None, &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
+		let done = super::run_once_telling(&pool, &fake, (None, None), &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
 			.await
 			.unwrap();
 		assert_eq!((done.kept.len(), done.gave_way), (1, true), "the chosen take heard, then the turn given: {done:?}");
@@ -759,7 +817,7 @@ mod tests {
 		let mut turn = super::Turn::with(Duration::ZERO, Duration::from_secs(3600), Some(interactive.clone()));
 		let lock = DeletionLock::default();
 		let now = || String::from("2026-10-25T16:00:00.000Z");
-		let done = super::run_once_telling(pool, &fake, None, &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
+		let done = super::run_once_telling(pool, &fake, (None, None), &lock, Duration::from_secs(60), (&mut calm(), &mut turn), &cancel, &now, &|| {})
 			.await
 			.unwrap();
 		assert!(done.gave_way, "{done:?}");
@@ -880,7 +938,7 @@ mod tests {
 		let done = super::run_once_telling(
 			&pool,
 			&fake,
-			None,
+			(None, None),
 			&DeletionLock::default(),
 			Duration::from_secs(60),
 			(&mut calm(), &mut super::Turn::unbounded()),
@@ -1053,6 +1111,120 @@ mod tests {
 			.fetch_all(pool)
 			.await
 			.unwrap()
+	}
+
+	/// A spoken hunch `id`, said for `hunch`, whose audio is `audio`.
+	async fn hunch_note(pool: &SqlitePool, subject: &str, id: &str, hunch: &str, audio: &[u8]) {
+		let said = Said {
+			of: Some("hunch"),
+			of_ref: Some(hunch),
+			at: Some("2026-11-27T03:10:00Z"),
+			content_type: Some("audio/webm"),
+			bite: SaidBite::default(),
+		};
+		let mut tx = pool.begin().await.unwrap();
+		put_note(&mut tx, subject, &describe(id, said, audio).unwrap(), audio, "2026-11-27T03:10:01.000Z")
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+	}
+
+	/// A pass with the meaning model and the phrase shelf's index.
+	async fn looking(pool: &SqlitePool, fake: &Arc<Fake>, cancel: &CancellationToken) -> Pass {
+		use crate::phrases::tests::{Words, SHELF, VOCABULARY};
+		let model = Words(VOCABULARY);
+		let phrases = crate::phrases::Phrases::from_text(SHELF, &model).unwrap();
+		super::run_once_telling(
+			pool,
+			fake,
+			(Some(&model), Some(&phrases)),
+			&DeletionLock::default(),
+			Duration::from_secs(60),
+			(&mut calm(), &mut super::Turn::unbounded()),
+			cancel,
+			&|| String::from("2026-11-27T03:12:00.000Z"),
+			&|| {},
+		)
+		.await
+		.unwrap()
+	}
+
+	async fn hunches(pool: &SqlitePool) -> Vec<(String, String, String, String)> {
+		sqlx::query_as("SELECT subject_id, hunch, words, asked_at FROM phrase_hunch ORDER BY subject_id, hunch")
+			.fetch_all(pool)
+			.await
+			.unwrap()
+	}
+
+	/// KP4 (paulgsc/server#1261): a hunch home hears is looked up where it is
+	/// heard, so one whose phone left before the words came back is still
+	/// kept: a miss once under its `ref`, a hit not at all, and a note of
+	/// any other kind never, whatever it says.
+	#[tokio::test]
+	async fn a_heard_hunch_that_no_phrase_does_is_kept_by_home_itself() {
+		let pool = pool().await;
+		hunch_note(&pool, A, "h1", "run-1", b"say:  my phone ").await;
+		hunch_note(&pool, A, "h2", "run-2", b"say:  how do I say I'm sleepy ").await;
+		said_for(&pool, A, "r1", "reflection", "2026-11-27T03:11:00.000Z", b"say:how do I say I'm sleepy").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let done = looking(&pool, &fake, &cancel).await;
+		assert_eq!(done.kept, ["heard"; 3]);
+		assert_eq!(
+			hunches(&pool).await,
+			[(A.into(), "run-2".into(), "how do I say I'm sleepy".into(), "2026-11-27T03:10:00.000Z".into())],
+			"the miss alone, trimmed, under its ref, asked when it was recorded, not heard"
+		);
+	}
+
+	/// The phone's lookup and home's of the same hunch keep it once, as the
+	/// first of the two kept it, in either order.
+	#[tokio::test]
+	async fn the_phones_lookup_and_homes_keep_a_hunch_once_in_either_order() {
+		let pool = pool().await;
+		let phone = |hunch: &'static str| {
+			let pool = pool.clone();
+			async move {
+				korean_repo::hunch::keep(&mut pool.acquire().await.unwrap(), A, hunch, "how do I say sleepy", "2026-11-27T03:11:00.000Z")
+					.await
+					.unwrap()
+			}
+		};
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+
+		// The phone first, then home's hearing.
+		hunch_note(&pool, A, "h1", "run-1", b"say:how do I say I'm sleepy").await;
+		assert_eq!(phone("run-1").await, korean_repo::hunch::Kept::Added);
+		looking(&pool, &fake, &cancel).await;
+		// Home's hearing first, then the phone.
+		hunch_note(&pool, A, "h2", "run-2", b"say:how do I say I'm sleepy").await;
+		looking(&pool, &fake, &cancel).await;
+		assert_eq!(phone("run-2").await, korean_repo::hunch::Kept::Already);
+
+		assert_eq!(
+			hunches(&pool).await,
+			[
+				(A.into(), "run-1".into(), "how do I say sleepy".into(), "2026-11-27T03:11:00.000Z".into()),
+				(A.into(), "run-2".into(), "how do I say I'm sleepy".into(), "2026-11-27T03:10:00.000Z".into()),
+			],
+			"one each, the first's"
+		);
+	}
+
+	/// Without the shelf's index a heard hunch is kept as unmatched, words that
+	/// would have matched included: it is heard once, so nothing would look it
+	/// up later. Nothing heard keeps nothing.
+	#[tokio::test]
+	async fn without_the_shelfs_index_a_heard_hunch_is_kept_as_unmatched() {
+		let pool = pool().await;
+		hunch_note(&pool, A, "h1", "run-1", b"say:my phone").await;
+		hunch_note(&pool, A, "h2", "run-2", b"say:   ").await;
+		let cancel = CancellationToken::new();
+		let fake = Fake::new(&cancel);
+		let done = pass(&pool, &fake, Duration::from_secs(60), &cancel).await;
+		assert_eq!(done.kept, ["heard"; 2], "blank words are heard, not silent: the guard is the words'");
+		assert_eq!(hunches(&pool).await, [(A.into(), "run-1".into(), "my phone".into(), "2026-11-27T03:10:00.000Z".into())]);
 	}
 
 	/// ST32 (docs/take-library.md): with a meaning model, a take heard gets

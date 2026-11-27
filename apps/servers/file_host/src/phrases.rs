@@ -173,6 +173,19 @@ impl Phrases {
 	}
 }
 
+/// The words a hunch heard in a take is looked up and kept by.
+///
+/// `text` trimmed, and cut to its first
+/// [`korean_repo::hunch::MAX_WORDS_CHARS`] characters, as a hunch's words are
+/// held, so a long take is kept by its start rather than not at all; `None`
+/// for nothing heard.
+#[must_use]
+pub fn heard_words(text: &str) -> Option<String> {
+	let words: String = text.trim().chars().take(korean_repo::hunch::MAX_WORDS_CHARS).collect();
+	let words = words.trim_end();
+	(!words.is_empty()).then(|| words.to_owned())
+}
+
 /// Home's answer to a hunch's words, as the shop's port reads it
 /// (some-ui's `packages/ui/topik/src/lib/topik/shop`, `Lookup`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -304,6 +317,16 @@ pub(crate) mod tests {
 			refused(&one(r#"{"id": "ph.a", "intents": ["good morning"]}"#)),
 			"the model knows none of an intent's words, of ph.a"
 		);
+	}
+
+	#[test]
+	fn words_heard_are_trimmed_and_cut_to_what_a_hunch_holds() {
+		assert_eq!(super::heard_words("  where my phone \n").as_deref(), Some("where my phone"));
+		assert_eq!(super::heard_words("   "), None);
+		let long = String::from(" ") + &"가".repeat(250);
+		let cut = super::heard_words(&long).unwrap();
+		assert_eq!(cut.chars().count(), 200);
+		assert!(korean_repo::hunch::is_words(&cut));
 	}
 
 	#[test]

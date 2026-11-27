@@ -1058,6 +1058,31 @@ pub struct AudioHead {
 	pub sha256: String,
 }
 
+/// The hunch `subject`'s note `note_id` was said for, if it is a spoken one.
+///
+/// That is a [`Of::Hunch`] note's `ref`, the phone's name for the hunch
+/// (paulgsc/server#1261), and when the phone recorded it. `None` for a note
+/// of any other kind, or none.
+///
+/// One read by the note's key. `file_host`'s transcriber reads it in the
+/// transaction that keeps a hunch's hearing, to look the words up itself.
+///
+/// # Errors
+/// Any `sqlx` failure.
+pub async fn hunch_of(conn: &mut SqliteConnection, subject: &str, note_id: &str) -> Result<Option<(String, String)>, VoiceError> {
+	let hunch = Of::Hunch.as_str();
+	let row = sqlx::query!(
+		r#"SELECT of_ref AS "of_ref!: String", recorded_at AS "recorded_at!: String" FROM voice_note
+		   WHERE subject_id = ?1 AND note_id = ?2 AND of_kind = ?3"#,
+		subject,
+		note_id,
+		hunch
+	)
+	.fetch_optional(&mut *conn)
+	.await?;
+	Ok(row.map(|row| (row.of_ref, row.recorded_at)))
+}
+
 /// The head of `subject`'s note `note_id`'s audio when it is said for `of`.
 ///
 /// `None` for a note the subject does not hold, another subject's included,

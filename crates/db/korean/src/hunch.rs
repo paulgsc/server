@@ -4,9 +4,11 @@
 //!
 //! `20261127000100_create_phrase_hunch.up.sql` records the design; in short:
 //!
-//! - **Kept in the answer.** `file_host`'s `POST /phrases/lookup` calls
+//! - **Kept where it is missed.** `file_host`'s `POST /phrases/lookup` calls
 //!   [`keep`] in the request that answers `kept`, so a miss is never lost
-//!   between two calls. Nothing else writes the table.
+//!   between two calls, and `file_host`'s transcriber in the transaction
+//!   that keeps a spoken hunch's hearing, so one whose phone stopped waiting
+//!   is kept too. Nothing else writes the table.
 //! - **Once per hunch.** The phone names each hunch (its shop runtime's id and
 //!   the hunch's number), the same each time it is sent again, and [`keep`]
 //!   keeps the first and changes nothing after.
@@ -55,15 +57,19 @@ pub enum Kept {
 	Already,
 }
 
-/// Keeps `subject`'s hunch `hunch`, the owner's `words` (trimmed), as of
-/// `now`; a hunch kept before is left as it was.
+/// Keeps `subject`'s hunch `hunch`, the owner's `words` (trimmed), asked
+/// `at`; a hunch kept before is left as it was.
 ///
-/// The caller checks `hunch` and `words` ([`is_hunch`], [`is_words`]); the
-/// schema refuses either out of shape.
+/// `at` is when the owner asked it: when home answered, for the route, and
+/// when the phone recorded the take, for the transcriber. The caller checks
+/// `hunch` and `words`: the route with [`is_hunch`] and [`is_words`], the
+/// transcriber by the note's `ref` (`voice_repo::describe` holds a hunch's to
+/// a hunch's name) and `file_host::phrases::heard_words`. The schema refuses
+/// either out of shape.
 ///
 /// # Errors
 /// Any `sqlx` failure; nothing is written then.
-pub async fn keep(conn: &mut SqliteConnection, subject: &str, hunch: &str, words: &str, now: &str) -> Result<Kept, sqlx::Error> {
+pub async fn keep(conn: &mut SqliteConnection, subject: &str, hunch: &str, words: &str, at: &str) -> Result<Kept, sqlx::Error> {
 	let words = words.trim();
 	let added = sqlx::query!(
 		"INSERT INTO phrase_hunch (subject_id, hunch, words, asked_at) VALUES (?1, ?2, ?3, ?4)
@@ -71,7 +77,7 @@ pub async fn keep(conn: &mut SqliteConnection, subject: &str, hunch: &str, words
 		subject,
 		hunch,
 		words,
-		now
+		at
 	)
 	.execute(&mut *conn)
 	.await?
