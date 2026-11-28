@@ -29,8 +29,12 @@
 //!    when the key changed (so the worktree is a new path), every service
 //!    that mounts from `${REPO_ROOT}`. Untracked state (`file_host`'s data,
 //!    logs and config, Grafana's built dashboards) is mounted from the
-//!    owner's checkout, `STATE_ROOT` (C344; RL10). `file_host` applies its
-//!    migrations as it starts, after a verified backup (AS16).
+//!    owner's checkout, `STATE_ROOT` (C344; RL10). Compose runs
+//!    `file-host-migrate` (`file_host --migrate`, a one-shot on `file-host`'s
+//!    own image) to completion before it starts `file-host`: it applies the
+//!    migrations once Litestream's replica has caught up to the database,
+//!    its backup (AS16; C1620). A migrate step that refuses or fails exits
+//!    non-zero, `up` fails, and the step is named below.
 //! 6. **Gates every service, up to `--ready-timeout` seconds**: `healthy`
 //!    where it has a healthcheck, a one-shot (restart policy `no`) once it
 //!    has exited 0, otherwise running with no restart for
@@ -67,21 +71,28 @@ use std::{
 	process::{Command, Stdio},
 };
 
+/// file-host's migrate step: the compose service whose log says the backup
+/// a migrating run took (`file_host --migrate`, `infra/compose/file_host.yml`).
+pub(crate) const MIGRATE: &str = "file-host-migrate";
+
 /// file-host's compose service and its `container_name`.
 /// `the_service_is_the_compose_files` holds these to
 /// `infra/compose/file_host.yml`.
 pub(crate) const FILE_HOST: &str = "file-host";
 pub(crate) const CONTAINER: &str = "file-host-server";
 
-/// The bound on every service becoming ready, in seconds. `file_host` copies
-/// the database and applies its migrations before it listens, so the
-/// healthcheck's `start_period` (`infra/compose/file_host.yml`, 300 s) covers
-/// that work: no failed probe counts during it, and the first that passes
-/// reads healthy. The bound is above `start_period`, so a slow migrating
-/// start is never taken for a bad release. A start that exits or restarts
-/// fails at once, whatever the bound, so only a release that hangs costs all
-/// of it. `the_bound_outlasts_the_start_period` holds the two together.
-pub(crate) const DEFAULT_READY_TIMEOUT: f64 = 360.0;
+/// The bound on every service becoming ready, in seconds, counted once `up`
+/// has returned. The migrations are not in it: compose runs
+/// `file-host-migrate` to completion inside `up`, before it starts
+/// `file-host` (C1620: a start that copied the database first outlasted the
+/// old 360 s and rolled release 186 back). So the healthcheck's
+/// `start_period` (`infra/compose/file_host.yml`, 120 s) is a start's own
+/// work, and no failed probe counts during it. The bound is above it, so a
+/// slow start is never taken for a bad release. A start that exits or
+/// restarts fails at once, whatever the bound, so only a release that hangs
+/// costs all of it. `the_bound_outlasts_the_start_period` holds the two
+/// together.
+pub(crate) const DEFAULT_READY_TIMEOUT: f64 = 180.0;
 pub(crate) const POLL_SECONDS: f64 = 2.0;
 
 pub(crate) const EXIT_DEPLOYED: u8 = 0;
@@ -89,8 +100,9 @@ pub(crate) const EXIT_NOT_DEPLOYED: u8 = 1;
 pub(crate) const EXIT_ROLLED_BACK: u8 = 2;
 pub(crate) const EXIT_NOTHING_READY: u8 = 3;
 
-/// What `file_host` prints at start when it took a backup
-/// (`apps/servers/file_host/src/main.rs`, `migrate_on_start`).
+/// What the migrate step prints when it took a backup
+/// (`apps/servers/file_host/src/main.rs`, `migrate_step`): on home,
+/// Litestream's replica at the TXID it had caught up to, with its restore.
 pub(crate) const BACKUP_LINE: &str = "migrate: backed up to ";
 
 /// How many failed releases the state directory remembers.
@@ -550,7 +562,7 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 	let unreadable_record = recorded.is_some() && previous.is_none();
 	say(&format!("deploy: {service} did not come up: {reason}"));
 	let lines = host.logs(&service);
-	let backup = backup_from(&host.logs(FILE_HOST));
+	let backup = backup_from(&host.logs(MIGRATE));
 	for line in &lines[lines.len().saturating_sub(5)..] {
 		say(&format!("deploy: its log: {line}"));
 	}
@@ -607,7 +619,7 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 	}
 }
 
-/// The backup `file_host` took at this start, from its log, if it took one.
+/// The backup the migrate step took this pass, from its log, if it took one.
 pub(crate) fn backup_from(lines: &[String]) -> Option<String> {
 	let mut found = None;
 	for line in lines {
@@ -624,8 +636,8 @@ pub(crate) const DATABASE_NOTE: &str = "The database stays where the migrations 
 
 pub(crate) fn stuck_note(backup: Option<&str>) -> String {
 	let restore = backup.map_or_else(
-		|| "This start took no backup that its log names. ".to_owned(),
-		|backup| format!("This start backed the database up to {backup} (on the host, under ${{STORAGE}}/backups). "),
+		|| "The migrate step took no backup that its log names. ".to_owned(),
+		|backup| format!("The migrate step backed the database up to {backup}, on the host under ${{STORAGE}}. "),
 	);
 	format!(
 		"{restore}It is never restored automatically: every write since it would leave the live database. \
@@ -1839,6 +1851,21 @@ mod tests {
 	}
 
 	#[test]
+	fn backup_from_reads_the_migrate_steps_replica() {
+		let lines = [
+			"migrate: backed up to Litestream's replica at TXID 0000000000001234, 2026-11-28T00:04:54Z (restore: litestream restore -txid 0000000000001234) (verified)",
+			"migrate: applied 1 (…)",
+		]
+		.map(str::to_owned);
+		let backup = backup_from(&lines).unwrap();
+		assert!(
+			backup.starts_with("Litestream's replica at TXID 0000000000001234") && backup.ends_with("-txid 0000000000001234)"),
+			"{backup}"
+		);
+		assert!(stuck_note(Some(&backup)).contains("litestream restore -txid 0000000000001234"));
+	}
+
+	#[test]
 	fn backup_from_reads_file_hosts_start() {
 		let lines = [
 			"migrate: backed up to /app/dbs/backups/hopium-20261110T120000Z-before-20261110000100.db (verified)",
@@ -1951,6 +1978,60 @@ mod tests {
 			"{said:?}"
 		);
 		assert!(host.calls.iter().any(|call| call == "logs dashboard-builder"), "its log is shown: {:?}", host.calls);
+	}
+
+	/// `three`, with file-host-migrate, the one-shot file-host waits on.
+	fn with_migrate(migrate: Behaviour) -> Vec<(&'static str, Behaviour, &'static str, &'static str)> {
+		let mut spec = three(ready_after(0.0), ready_after(0.0));
+		spec.push((MIGRATE, migrate, "", ""));
+		spec
+	}
+
+	/// C1620: a migrate step that refuses (a replica not caught up) or fails
+	/// is named, its log shown, and the release put back whole; the database
+	/// note still says it stays where the migrations put it.
+	#[test]
+	fn a_migrate_step_that_fails_rolls_back_whole_and_names_it() {
+		let mut host = serving(&with_migrate(one_shot(1.0, 0)));
+		host.clock.sleep(10.0);
+		publish(&mut host, "c2", 2, &with_migrate(one_shot(5.0, 1)));
+		host.log = vec!["Error: migrate: Litestream's replica (its control socket /run/litestream/control.sock) is not caught up".to_owned()];
+		let (outcome, said) = run_deploy_with(&mut host, &Options::default());
+		assert_eq!(outcome.code, EXIT_ROLLED_BACK, "{said:?}");
+		assert_eq!(outcome.serving, Some(1));
+		assert_eq!(ups(&host), ["up 2", "up 1"]);
+		assert_eq!(host.running["file-host"].0, "sha256:file-host-1");
+		assert!(
+			said_any(
+				&said,
+				"file-host-migrate did not come up: envctl up failed (its reason is above); the one-shot: the container is exited (code 1)"
+			),
+			"{said:?}"
+		);
+		assert!(host.calls.iter().any(|call| call == "logs file-host-migrate"), "{:?}", host.calls);
+		assert!(said_any(&said, "its log: Error: migrate: Litestream's replica"), "{said:?}");
+		assert!(said_any(&said, DATABASE_NOTE), "{said:?}");
+	}
+
+	/// The migrate step backed up and migrated, then the server never came
+	/// up, nor did the previous release: the note names the step's backup.
+	#[test]
+	fn when_nothing_comes_up_the_note_names_the_migrate_steps_backup() {
+		let backup = "Litestream's replica at TXID 0000000000001234, 2026-11-28T00:04:54Z (restore: litestream restore -txid 0000000000001234)";
+		let mut spec = with_migrate(one_shot(1.0, 0));
+		spec[0].1 = never_ready();
+		let mut host = serving(&spec);
+		publish(&mut host, "c2", 2, &spec);
+		host.log = vec![format!("{BACKUP_LINE}{backup} (verified)")];
+		let (code, said) = run_deploy(&mut host);
+		assert_eq!(code, EXIT_NOTHING_READY, "{said:?}");
+		let text = said.join("\n");
+		assert!(
+			text.contains("The migrate step backed the database up to Litestream's replica at TXID 0000000000001234"),
+			"{text}"
+		);
+		assert!(text.contains("never restored automatically"), "{text}");
+		assert!(host.calls.iter().any(|call| call == "logs file-host-migrate"), "{:?}", host.calls);
 	}
 
 	#[test]
@@ -2591,5 +2672,22 @@ mod tests {
 		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 		let release = crate::release::read(&repo, "home").unwrap().unwrap();
 		assert!(release.services.contains_key(FILE_HOST));
+
+		// C1620: file-host starts only once its migrate step has finished,
+		// and that step is a one-shot on file-host's own image.
+		assert!(
+			block[1].contains(&["      ", MIGRATE, ":\n        condition: service_completed_successfully\n"].concat()),
+			"{}",
+			&block[1]
+		);
+		let pattern = ["(?m)^  ", &regex::escape(MIGRATE), ":\n((?:    .*\n|[ \t]*\n)+)"].concat();
+		let step = regex::Regex::new(&pattern).unwrap().captures(&text).unwrap();
+		assert!(step[1].contains("    restart: 'no'\n"), "{}", &step[1]);
+		assert!(
+			step[1].contains("command: ['--migrate', '--replica-socket', '/run/litestream/control.sock', '--replica-dir', '/app/dbs/litestream/hopium']"),
+			"{}",
+			&step[1]
+		);
+		assert_eq!(release.services[MIGRATE], release.services[FILE_HOST]);
 	}
 }

@@ -171,7 +171,7 @@ that adds it.
 
 | Class | Services | What it means today |
 |---|---|---|
-| **Protected** | `file-host`, `nats`, `redis`, `prometheus`, `grafana`, `node_exporter`, `cadvisor` | Home's state, and the path that tells the owner what happened: Prometheus evaluates the alerts, Grafana delivers them, node_exporter and cAdvisor count the kills. Killed last. |
+| **Protected** | `file-host`, `file-host-migrate`, `litestream`, `nats`, `redis`, `prometheus`, `grafana`, `node_exporter`, `cadvisor` | Home's state, and the path that tells the owner what happened: Prometheus evaluates the alerts, Grafana delivers them, node_exporter and cAdvisor count the kills. `litestream` replicates file_host's database to its backup, and `file-host-migrate` is file-host's own migrate step, a one-shot run before it on every `up` (C1620). Killed last. |
 | **Interactive** | `rust-runner`, `orchestrator`, `www`, `resume-render`, `home-deploy` | Short work someone may be waiting on. The default. `www` serves every page of the web app and each call it proxies to file_host while someone is on it; `resume-render` renders a résumé while the owner waits, and does nothing between. Anything that runs inside `file-host` takes its class and adds no service: the voice-note transcriber, which would be interactive on its own, and every worker loop file_host runs. `home-deploy` is a host systemd unit, not a container (`nix/modules/home-deploy.nix`): it runs for minutes, only when a client needs a newer server (README.md, "Deploying to home"), and a client is waiting on it. |
 | **Tooling** | `metabase`, `redisinsight`, `dashboard-builder`, `redis-exporter`, `nats-exporter`, `process-exporter`, `blackbox-exporter` | For looking at home; nothing is owed by them. |
 | **Batch**, the lowest | `render`, `kokoro` | Long work with deadlines in days, and nobody waiting by the minute. Killed first. `render` and `kokoro` take a quarter of the default CPU weight (`cpu_shares: 256`), so any other service gets the CPU first when it is contended. |
@@ -558,9 +558,10 @@ How much to reserve for them is decided with the refusal below, from home's
 published facts.
 
 It warns and never refuses. **Planned** (#709): a refusal, once home's
-facts are published nightly (part 1). The caps total 23.63 GiB (www's
-256 MiB and resume-render's 1 GiB joined with R8, #853); `ollama`'s 8 GiB
-left with it (#705, D3).
+facts are published nightly (part 1). The caps total 25.13 GiB (www's
+256 MiB and resume-render's 1 GiB joined with R8, #853; Litestream's
+512 MiB and `file-host-migrate`'s 1 GiB with C1620, though the step has
+exited before `file-host` starts); `ollama`'s 8 GiB left with it (#705, D3).
 
 ## What a kill costs
 

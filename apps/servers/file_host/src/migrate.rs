@@ -1,14 +1,26 @@
-//! `file_host` applies its own migrations when it starts, with a verified
-//! backup first (AS16, #563).
+//! `file_host --migrate` applies its migrations, with a verified backup
+//! first (AS16, #563), as its own step: home's `file-host-migrate`, a
+//! one-shot compose service on `file_host`'s own image, which `file-host`
+//! waits on (`condition: service_completed_successfully`,
+//! `infra/compose/file_host.yml`). The server itself never migrates and
+//! never copies the database: its start only reads that the schema is
+//! current ([`require_current`]) and refuses to serve one behind its build.
 //!
-//! Before this, applying migrations was an operator step nobody's deploy
+//! Before AS16, applying migrations was an operator step nobody's deploy
 //! took: on 2026-10-30 home pulled an image five migrations ahead of its
-//! database (#559), and the game feed, game bites and the storage sample
-//! stayed broken until someone ran `sqlx migrate run` by hand. Now `main.rs`
-//! calls [`bring_current`] before it opens its pool, on every start: the
-//! deploy's (`make home-deploy`, `envctl deploy`, AS18 #564), a
-//! reboot's, a restart's, `make up`'s and `make dev`'s alike, so no start
-//! path can skip it.
+//! database (#559). Until 2026-11-28 the server ran [`bring_current`] itself
+//! on every start, a `VACUUM INTO` copy of the whole database first; on
+//! 6.68 GB that copy took 6 min 38 s, the healthcheck marked the start
+//! unhealthy, and home's deploy of release 186 rolled back (C1620). Now
+//! every start path still migrates, or refuses to serve:
+//!
+//! - `make up`, `make home-deploy` (`envctl deploy`): compose runs
+//!   `file-host-migrate` before it starts `file-host`, every `up`.
+//! - `make dev`: runs `file_host --migrate --backup-copy` before it serves.
+//! - a restart or a reboot: Docker starts `file-host` again on the image
+//!   whose migrate step already ran, so its schema is current; if it is not
+//!   (a step that never ran, a hand-made container), [`require_current`]
+//!   refuses the start, naming `--migrate`.
 //!
 //! [`bring_current`] does, in order:
 //!
@@ -20,37 +32,57 @@
 //!    the backup.
 //! 2. **Nothing pending, nothing done.** An up-to-date database (or one ahead
 //!    of this build, the ordinary state after a rollback: `schema`) takes no
-//!    backup, so an ordinary restart costs one read.
-//! 3. **Backs up, and verifies the backup.** `VACUUM INTO` writes a
-//!    consistent copy to `<database dir>/backups/<stem>-<UTC
-//!    time>-before-<first pending version>.db` (on home,
-//!    `${STORAGE}/backups`). The copy is opened read-only and must pass
-//!    `PRAGMA integrity_check` and hold every migration the live database
-//!    had applied. Every migrating run is held to this, not only one whose
-//!    migrations drop or rebuild a table: telling those apart from the SQL
-//!    is a guess, and the one that dropped a table (`drop_sharing_choice`)
-//!    looked like any other file (owner, 2026-11-10: a backup on every
-//!    migrating run, on the database's own disk).
+//!    backup, so an ordinary `up` costs one read.
+//! 3. **Backs up, and verifies the backup** ([`Backup`]). Every migrating run
+//!    is held to this, not only one whose migrations drop or rebuild a
+//!    table: telling those apart from the SQL is a guess, and the one that
+//!    dropped a table (`drop_sharing_choice`) looked like any other file
+//!    (owner, 2026-11-10: a backup on every migrating run, on the
+//!    database's own disk).
+//!    - **On home, Litestream's replica** ([`Backup::Replica`]). Litestream
+//!      runs beside `file-host` (`infra/compose/litestream.yml`) and
+//!      replicates the database continuously to `${STORAGE}/litestream`, on
+//!      the same disk. The step asks it, over its control socket, to sync
+//!      and wait until the replica holds the database's newest transaction
+//!      (`POST /sync`, `wait`), then waits, writing nothing, until a
+//!      level-1 file of the replica ends at or after that TXID, so the TXID
+//!      outlives Litestream's level 0 (`replica`, C1621). Only then is
+//!      anything applied. That end is the backup: `litestream restore -txid
+//!      <it>` gives back the database as it was before the migrations, for
+//!      as long as Litestream's retention keeps it
+//!      (`infra/litestream/litestream.yml`, a discard site). A replica not
+//!      sealed within [`REPLICA_WITHIN`] refuses the run.
+//!    - **Elsewhere, a copy** ([`Backup::Copy`], `make dev`'s small
+//!      database, which no replicator watches): `VACUUM INTO` writes a
+//!      consistent copy to `<database dir>/backups/<stem>-<UTC
+//!      time>-before-<first pending version>.db`, opened read-only, which
+//!      must pass `PRAGMA integrity_check` and hold every migration the live
+//!      database had applied.
 //! 4. **Applies** [`MIGRATOR`](crate::schema::MIGRATOR)'s pending migrations,
 //!    each in its own transaction, then reads the drift back: anything
 //!    still pending is a failure.
-//! 5. **Prunes** its own backups beyond the newest `keep`
+//! 5. **Prunes** its own copies in `backups/` beyond the newest `keep`
 //!    ([`DEFAULT_KEEP_BACKUPS`], five: the owner's, 2026-11-10), after every
-//!    run, failed or not: a failing migration is retried by each restart,
-//!    and each attempt takes a backup, so only pruning then too keeps them at
-//!    `keep`. The newest, the one this run took, is never removed.
+//!    run, failed or not: a failing migration is retried by each `up`, and
+//!    each attempt of a copying run takes a copy, so only pruning then too
+//!    keeps them at `keep`. The newest, the one this run took, is never
+//!    removed. A replica run takes no copy, so on home this only ever bounds
+//!    the copies the server took before 2026-11-28.
 //!    **This is a discard site** ([`prune`]): a backup holds every row the
 //!    database held when it was taken, a deleted account's included, and it
-//!    is gone once five newer migrating starts have each taken theirs
-//!    (`docs/identity.md`, invariant 9).
+//!    is gone once five newer copying runs have each taken theirs
+//!    (`docs/identity.md`, invariant 9). Litestream's retention is the
+//!    other, for the replica.
 //!
-//! Any failure is an `Err`, and `main.rs` exits non-zero with it, so no
-//! build serves on a schema half applied: the deploy sees the container
-//! fail and puts the previous image back (`envctl deploy`). The
-//! migrations before the one that failed stay applied; a database ahead of
-//! its binary is one the old `file_host` serves (`schema`). The database is
-//! never restored automatically (owner, 2026-11-10); restoring a backup is
-//! README.md's manual step, "Deploying to home".
+//! Any failure is an `Err`, and `--migrate` exits non-zero with it, so
+//! compose does not start the build that needed it, and the deploy puts the
+//! previous release back (`envctl deploy`). The migrations before the one
+//! that failed stay applied; a database ahead of its binary is one the old
+//! `file_host` serves (`schema`). The database is never restored
+//! automatically (owner, 2026-11-10); restoring a backup is README.md's
+//! manual step, "Deploying to home".
+
+mod replica;
 
 use crate::schema::{drift, Drift};
 use chrono::{DateTime, Utc};
@@ -60,6 +92,7 @@ use sqlx::SqlitePool;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
 
 /// How many of its own backups a run keeps, by default: the newest five.
 ///
@@ -72,13 +105,72 @@ pub const DEFAULT_KEEP_BACKUPS: u16 = 5;
 /// The directory beside the database the backups go to, by default.
 pub const BACKUP_DIR: &str = "backups";
 
+/// How long a migrating run waits for Litestream's replica to catch up
+/// before it refuses: 15 minutes. Caught up is ordinarily a second away,
+/// since Litestream syncs every second; the bound is for the first start
+/// beside a new replica, whose first sync uploads the whole database (6.68
+/// GB on 2026-11-28, to the same disk), and for a Litestream that is down,
+/// which this turns into a refusal rather than a step that never ends. A
+/// policy constant, not a variable (#617).
+pub const REPLICA_WITHIN: Duration = Duration::from_secs(15 * 60);
+
+/// Where a migrating run's backup comes from (the module doc, step 3).
+#[derive(Debug, Clone)]
+pub enum Backup {
+	/// Litestream's replica, which must have caught up to the database:
+	/// home's (`--replica-socket`).
+	Replica {
+		/// Litestream's control socket.
+		socket: PathBuf,
+		/// The replica's directory, as Litestream's configuration names it
+		/// (`replica.path`), whose `ltx/1/` is read.
+		replica: PathBuf,
+		/// How long to wait for it: [`REPLICA_WITHIN`] in the binary.
+		within: Duration,
+	},
+	/// A verified `VACUUM INTO` copy, for a database no replicator watches
+	/// (`--backup-copy`, `make dev`'s).
+	Copy {
+		/// Where copies go; `<database dir>/backups` when `None`.
+		dir: Option<PathBuf>,
+	},
+}
+
+/// The backup a migrating run took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Taken {
+	/// A verified copy, at this path.
+	Copy(PathBuf),
+	/// Litestream's replica, caught up to this TXID before anything was
+	/// applied: `litestream restore -txid <it>` is the database as it was.
+	Replica {
+		/// The database's TXID, which the replica had reached.
+		txid: u64,
+		/// When it had.
+		at: DateTime<Utc>,
+	},
+}
+
+impl std::fmt::Display for Taken {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Copy(path) => write!(f, "{}", path.display()),
+			Self::Replica { txid, at } => write!(
+				f,
+				"Litestream's replica at TXID {txid:016x}, {} (restore: litestream restore -txid {txid:016x})",
+				at.format("%Y-%m-%dT%H:%M:%SZ")
+			),
+		}
+	}
+}
+
 /// What one run is asked to do.
 #[derive(Debug, Clone)]
 pub struct Options {
 	/// The database, as `sqlite://<path>`.
 	pub database_url: String,
-	/// Where backups go; `<database dir>/backups` when `None`.
-	pub backup_dir: Option<PathBuf>,
+	/// Where the backup comes from.
+	pub backup: Backup,
 	/// How many of this binary's backups to keep, at least one.
 	pub keep: usize,
 	/// A new host: create the database if no file is there, and migrate one
@@ -96,9 +188,9 @@ pub enum Outcome {
 	},
 	/// Migrations were applied.
 	Applied {
-		/// The verified copy taken first; `None` only for a database `init`
-		/// had just created, which held nothing to copy.
-		backup: Option<PathBuf>,
+		/// The verified backup taken first; `None` only for a database
+		/// `init` had just created, which held nothing to back up.
+		backup: Option<Taken>,
 		/// What was applied, oldest first, as `"<version> <description>"`.
 		applied: Vec<String>,
 		/// Backups removed beyond `keep`.
@@ -120,7 +212,7 @@ impl Outcome {
 			Self::Applied { backup, applied, pruned } => {
 				if let Some(backup) = backup {
 					let mut line = String::from("backed up to ");
-					line.push_str(&backup.display().to_string());
+					line.push_str(&backup.to_string());
 					line.push_str(" (verified)");
 					lines.push(line);
 				}
@@ -163,20 +255,24 @@ pub enum Refused {
 	Backup { path: PathBuf, source: sqlx::Error },
 	#[error("the backup {path} does not verify, so nothing was applied (it was removed): {reason}")]
 	Unverified { path: PathBuf, reason: String },
-	#[error("applying migrations failed: {source}. The ones before it stay applied; {}", backup_note(.backup.as_deref()))]
-	Apply { backup: Option<PathBuf>, source: MigrateError },
+	#[error("Litestream's replica (its control socket {socket}) holds no restorable TXID of the database as it is, so nothing was applied: {reason}")]
+	Replica { socket: PathBuf, reason: String },
+	#[error("applying migrations failed: {source}. The ones before it stay applied; {}", backup_note(.backup.as_ref()))]
+	Apply { backup: Option<Taken>, source: MigrateError },
 	#[error("after applying, the database is still not current: {0}")]
 	StillBehind(Drift),
 	#[error("could not prune old backups in {path}: {source}")]
 	Prune { path: PathBuf, source: std::io::Error },
+	#[error("the database is behind this build, so it is not served: {0}")]
+	Behind(Drift),
 }
 
-fn backup_note(backup: Option<&Path>) -> String {
+fn backup_note(backup: Option<&Taken>) -> String {
 	backup.map_or_else(
 		|| String::from("there was no database to back up"),
-		|path| {
+		|taken| {
 			let mut note = String::from("the database as it was before this run is ");
-			note.push_str(&path.display().to_string());
+			note.push_str(&taken.to_string());
 			note
 		},
 	)
@@ -216,6 +312,41 @@ async fn bring_current_at(options: &Options, migrator: &Migrator, now: DateTime<
 	result
 }
 
+/// What the server's start checks before it opens its pool: a database is
+/// there, has been migrated, has not drifted, and has nothing pending for
+/// this build (one ahead of it, after a rollback, is served: `schema`). It
+/// reads `_sqlx_migrations` and writes nothing, creating no file.
+///
+/// # Errors
+///
+/// [`Refused::NoDatabase`], [`Refused::NeverMigrated`], [`Refused::Drift`]
+/// or [`Refused::Behind`], or one that could not open or read it.
+pub async fn require_current(database_url: &str, migrator: &Migrator) -> Result<(), Refused> {
+	let open = |source| Refused::Open {
+		url: database_url.to_owned(),
+		source,
+	};
+	let connect = crate::db::connect_options(database_url).map_err(open)?.create_if_missing(false);
+	let path = connect.get_filename().to_path_buf();
+	if !path.exists() {
+		return Err(Refused::NoDatabase(path));
+	}
+	let pool = SqlitePoolOptions::new().max_connections(1).connect_with(connect).await.map_err(open)?;
+	let read = drift(&pool, migrator).await.map_err(Refused::Read);
+	pool.close().await;
+	let drift = read?;
+	if drift.never_migrated {
+		return Err(Refused::NeverMigrated(path));
+	}
+	if !drift.failed.is_empty() || !drift.modified.is_empty() {
+		return Err(Refused::Drift(drift));
+	}
+	if !drift.pending.is_empty() {
+		return Err(Refused::Behind(drift));
+	}
+	Ok(())
+}
+
 async fn migrate(pool: &SqlitePool, path: &Path, existed: bool, options: &Options, migrator: &Migrator, now: DateTime<Utc>) -> Result<Outcome, Refused> {
 	let before = drift(pool, migrator).await.map_err(Refused::Read)?;
 	if before.never_migrated && !options.init {
@@ -225,10 +356,10 @@ async fn migrate(pool: &SqlitePool, path: &Path, existed: bool, options: &Option
 		return Err(Refused::Drift(before));
 	}
 
-	let backup_dir = options
-		.backup_dir
-		.clone()
-		.unwrap_or_else(|| path.parent().unwrap_or_else(|| Path::new(".")).join(BACKUP_DIR));
+	let backup_dir = match &options.backup {
+		Backup::Copy { dir: Some(dir) } => dir.clone(),
+		Backup::Copy { dir: None } | Backup::Replica { .. } => path.parent().unwrap_or_else(|| Path::new(".")).join(BACKUP_DIR),
+	};
 	let stem = path.file_stem().map_or_else(|| String::from("database"), |stem| stem.to_string_lossy().into_owned());
 
 	if before.pending.is_empty() {
@@ -237,8 +368,18 @@ async fn migrate(pool: &SqlitePool, path: &Path, existed: bool, options: &Option
 	}
 
 	let backup = if existed {
-		let first = before.pending.first().and_then(|name| name.split(' ').next()).unwrap_or("unknown");
-		Some(back_up(pool, &backup_dir, &stem, first, now).await?)
+		Some(match &options.backup {
+			Backup::Copy { .. } => {
+				let first = before.pending.first().and_then(|name| name.split(' ').next()).unwrap_or("unknown");
+				Taken::Copy(back_up(pool, &backup_dir, &stem, first, now).await?)
+			}
+			Backup::Replica { socket, replica, within } => {
+				let txid = replica::sealed(socket, path, replica, *within)
+					.await
+					.map_err(|reason| Refused::Replica { socket: socket.clone(), reason })?;
+				Taken::Replica { txid, at: now }
+			}
+		})
 	} else {
 		None
 	};
@@ -406,7 +547,7 @@ mod tests {
 		url.push_str(&dir.join("hopium.db").to_string_lossy());
 		Options {
 			database_url: url,
-			backup_dir: None,
+			backup: Backup::Copy { dir: None },
 			keep: usize::from(DEFAULT_KEEP_BACKUPS),
 			init: false,
 		}
@@ -464,7 +605,9 @@ mod tests {
 		};
 		assert_eq!(applied.len(), 5, "{applied:?}");
 		assert!(pruned.is_empty());
-		let backup = backup.unwrap();
+		let Some(Taken::Copy(backup)) = backup else {
+			panic!("expected a copy, got {backup:?}");
+		};
 		let first_pending = up_versions()[up_versions().len() - 5].to_string();
 		assert!(backup.ends_with(backup_name("hopium", &first_pending, at(0))), "{}", backup.display());
 
@@ -685,6 +828,133 @@ mod tests {
 			panic!("nothing was pending");
 		};
 		assert_eq!(pruned, [backup_dir.join("hopium-20261031T120003Z-before-1.db")]);
+	}
+
+	/// A stand-in for Litestream's control socket that answers every ask
+	/// with `answer`, as its `POST /sync` does.
+	fn litestream(socket: &Path, answer: &'static str) {
+		use tokio::io::{AsyncReadExt, AsyncWriteExt};
+		let listener = tokio::net::UnixListener::bind(socket).unwrap();
+		tokio::spawn(async move {
+			loop {
+				let (mut stream, _) = listener.accept().await.unwrap();
+				let mut asked = vec![0; 4096];
+				stream.read(&mut asked).await.unwrap();
+				let response = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{answer}", answer.len());
+				stream.write_all(response.as_bytes()).await.unwrap();
+				stream.shutdown().await.unwrap();
+			}
+		});
+	}
+
+	/// A home run's options, its replica's level 1 ending at `sealed`.
+	fn replica(dir: &Path, within: Duration, sealed: u64) -> Options {
+		let level_one = dir.join("litestream").join("ltx").join("1");
+		std::fs::create_dir_all(&level_one).unwrap();
+		std::fs::write(level_one.join(format!("{:016x}-{sealed:016x}.ltx", 1)), "").unwrap();
+		Options {
+			backup: Backup::Replica {
+				socket: dir.join("control.sock"),
+				replica: dir.join("litestream"),
+				within,
+			},
+			..options(dir)
+		}
+	}
+
+	/// Home's run (C1620): the backup is Litestream's replica, caught up
+	/// first, and no copy of the database is made.
+	#[tokio::test]
+	async fn on_home_the_caught_up_replica_is_the_backup_and_nothing_is_copied() {
+		let dir = tempfile::tempdir().unwrap();
+		let options = replica(dir.path(), Duration::from_secs(10), 4660);
+		database_behind(&options, 2).await.close().await;
+		litestream(&dir.path().join("control.sock"), r#"{"status":"synced","txid":4660,"replicated_txid":4660}"#);
+
+		let Outcome::Applied { backup, applied, .. } = bring_current_at(&options, &MIGRATOR, at(0)).await.unwrap() else {
+			panic!("two migrations were pending");
+		};
+		assert_eq!(backup, Some(Taken::Replica { txid: 4660, at: at(0) }));
+		assert_eq!(applied.len(), 2);
+		assert!(backups(dir.path()).is_empty(), "no copy is taken");
+		let said = Outcome::Applied {
+			backup,
+			applied,
+			pruned: Vec::new(),
+		}
+		.lines();
+		assert!(
+			said[0].starts_with("backed up to Litestream's replica at TXID 0000000000001234") && said[0].contains("litestream restore -txid 0000000000001234"),
+			"{said:?}"
+		);
+		let pool = open(&options).await;
+		assert!(drift(&pool, &MIGRATOR).await.unwrap().is_current());
+	}
+
+	/// A replica that is not caught up (here, no Litestream at all) is no
+	/// backup: refused at the bound, and nothing is applied.
+	#[tokio::test]
+	async fn a_replica_not_caught_up_applies_nothing() {
+		let dir = tempfile::tempdir().unwrap();
+		let options = replica(dir.path(), Duration::from_millis(1200), 1);
+		database_behind(&options, 1).await.close().await;
+
+		let refused = bring_current_at(&options, &MIGRATOR, at(0)).await.unwrap_err();
+		assert!(matches!(refused, Refused::Replica { .. }), "{refused}");
+		assert!(refused.to_string().contains("nothing was applied"), "{refused}");
+		let pool = open(&options).await;
+		assert_eq!(drift(&pool, &MIGRATOR).await.unwrap().pending.len(), 1);
+	}
+
+	/// With nothing pending, a replica run asks Litestream nothing: an
+	/// ordinary `up` costs one read, whether or not Litestream is up.
+	#[tokio::test]
+	async fn nothing_pending_asks_the_replica_nothing() {
+		let dir = tempfile::tempdir().unwrap();
+		let options = replica(dir.path(), Duration::from_secs(60), 1);
+		let pool = open(&options).await;
+		MIGRATOR.run(&pool).await.unwrap();
+		pool.close().await;
+		assert_eq!(bring_current_at(&options, &MIGRATOR, at(0)).await.unwrap(), Outcome::Current { pruned: Vec::new() });
+	}
+
+	/// The server's start (`main.rs`): it serves a current database or one
+	/// ahead of its build, and refuses one missing, never migrated, drifted
+	/// or behind, creating nothing.
+	#[tokio::test]
+	async fn the_start_serves_only_a_database_that_is_not_behind() {
+		let dir = tempfile::tempdir().unwrap();
+		let options = options(dir.path());
+		let refused = require_current(&options.database_url, &MIGRATOR).await.unwrap_err();
+		assert!(matches!(refused, Refused::NoDatabase(_)), "{refused}");
+		assert!(!dir.path().join("hopium.db").exists(), "the start creates no database");
+
+		open(&options).await.close().await;
+		let refused = require_current(&options.database_url, &MIGRATOR).await.unwrap_err();
+		assert!(matches!(refused, Refused::NeverMigrated(_)), "{refused}");
+		std::fs::remove_file(dir.path().join("hopium.db")).unwrap();
+
+		let pool = database_behind(&options, 1).await;
+		let refused = require_current(&options.database_url, &MIGRATOR).await.unwrap_err();
+		assert!(matches!(refused, Refused::Behind(_)), "{refused}");
+		assert!(refused.to_string().contains("file_host --migrate"), "{refused}");
+
+		MIGRATOR.run(&pool).await.unwrap();
+		require_current(&options.database_url, &MIGRATOR).await.unwrap();
+		sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (99991231000000, 'from the future', TRUE, X'00', 0)")
+			.execute(&pool)
+			.await
+			.unwrap();
+		require_current(&options.database_url, &MIGRATOR).await.unwrap();
+
+		sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = ?")
+			.bind(up_versions()[0])
+			.execute(&pool)
+			.await
+			.unwrap();
+		pool.close().await;
+		let refused = require_current(&options.database_url, &MIGRATOR).await.unwrap_err();
+		assert!(matches!(refused, Refused::Drift(_)), "{refused}");
 	}
 
 	/// What the metrics sweep reads: only this module's backups count.

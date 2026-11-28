@@ -267,12 +267,41 @@ pub struct Config {
 	#[arg(long, help_heading = "Server")]
 	pub port_file: Option<std::path::PathBuf>,
 
-	/// A new host, once: create the database when no file is there, and
-	/// migrate one that has never been migrated. Without it, `file_host`
-	/// refuses both at start (`migrate`, AS16 #563), since both are what a
-	/// volume that is not mounted looks like. A flag, not a variable, as
-	/// `--port-fallback` is: no deployment file can leave it on.
-	#[arg(long, default_value_t = false, help_heading = "Server")]
+	/// Apply this build's migrations, after a verified backup, then exit
+	/// (`migrate`, AS16 #563): home's `file-host-migrate` step, which compose
+	/// runs before `file-host` (`infra/compose/file_host.yml`), and `make
+	/// dev`'s first. The server never migrates: its start refuses a database
+	/// behind its build (`migrate::require_current`). A flag, as
+	/// `--health-check` is.
+	#[arg(long, default_value_t = false, help_heading = "Migrate")]
+	pub migrate: bool,
+
+	/// With `--migrate`: Litestream's control socket. The backup is its
+	/// replica, which must catch up to the database, at a TXID its level 1
+	/// keeps, before anything is applied (`migrate::Backup::Replica`):
+	/// home's. A flag, set in the compose file, so no deployment file can
+	/// drop it.
+	#[arg(long, requires_all = ["migrate", "replica_dir"], conflicts_with = "backup_copy", help_heading = "Migrate")]
+	pub replica_socket: Option<std::path::PathBuf>,
+
+	/// With `--replica-socket`: the replica's directory, as Litestream's
+	/// configuration names it (`infra/litestream/litestream.yml`), whose
+	/// level-1 files say which TXIDs it can restore.
+	#[arg(long, requires = "replica_socket", help_heading = "Migrate")]
+	pub replica_dir: Option<std::path::PathBuf>,
+
+	/// With `--migrate`: the backup is a verified `VACUUM INTO` copy of the
+	/// whole database (`migrate::Backup::Copy`), for one no replicator
+	/// watches: `make dev`'s.
+	#[arg(long, default_value_t = false, requires = "migrate", help_heading = "Migrate")]
+	pub backup_copy: bool,
+
+	/// With `--migrate`, on a new host, once: create the database when no
+	/// file is there, and migrate one that has never been migrated. Without
+	/// it, both are refused (`migrate`), since both are what a volume that is
+	/// not mounted looks like. A flag, not a variable, as `--port-fallback`
+	/// is: no deployment file can leave it on.
+	#[arg(long, default_value_t = false, requires = "migrate", help_heading = "Migrate")]
 	pub init_database: bool,
 
 	/// Rate limit, in requests per minute, per client (`main.rs`'s

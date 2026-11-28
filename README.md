@@ -435,30 +435,46 @@ rest of envctl; home has no python, and nothing home runs needs it):
    itself: `up` runs the envctl make built from the checkout, so a release
    that needs a newer envctl fails its preflight and is put back; `git pull`
    the checkout and run `make home-deploy` again.
-5. **`file_host` migrates as it starts** (`apps/servers/file_host/src/migrate.rs`):
-   with nothing pending it does nothing; otherwise it copies the database
-   (`VACUUM INTO ${STORAGE}/backups/hopium-<UTC>-before-<version>.db`),
-   checks the copy (`PRAGMA integrity_check`, the same applied migrations),
-   applies every pending migration, and keeps its newest 5 backups. So a
-   backup is taken only by a start that has a migration pending, and each is
-   a whole copy of the database less its free pages: the five take up to
-   five times `sqlite_db_bytes - sqlite_freelist_bytes`. Removing the sixth is a discard
-   site: a deleted account's rows live in the copies until then
-   (`docs/identity.md`, invariant 9). It refuses a missing or
-   never-migrated database file, which is what an unmounted volume looks
-   like; a new host starts it once with `--init-database`. Any refusal or
-   failed migration ends the process, so no build serves on a schema half
-   applied. The same happens on every start: a reboot, a restart, `make up`,
-   `make dev`.
-6. **It gates every service, up to 360 s**: `healthy` where it has a
+5. **Its migrate step runs before `file-host` starts** (`file-host-migrate`,
+   `file_host --migrate` on file-host's own image;
+   `apps/servers/file_host/src/migrate.rs`): compose runs it to completion
+   inside `up`, and starts `file-host` only once it exits 0. With nothing
+   pending it reads one table and exits. Otherwise its backup is
+   Litestream's replica (`infra/compose/litestream.yml`), which replicates
+   the database every second to `${STORAGE}/litestream`, on the same disk:
+   the step asks Litestream to sync and applies nothing until the replica
+   has caught up to the database's newest transaction, at a TXID its
+   level-1 files keep (Litestream's next compaction, within about 30 s; a
+   TXID only level 0 holds is gone 5 minutes later), then applies every
+   pending migration and prints that TXID (`migrate: backed up to
+   Litestream's replica at TXID …`). It copies nothing (C1620:
+   on 2026-11-28 the 6.68 GB copy the server took as it started outlasted
+   the healthcheck and rolled release 186 back). A replica not caught up
+   within 15 minutes is refused. Litestream's retention is a discard site:
+   a deleted account's rows live in the replica's snapshots until they age
+   out (`infra/litestream/litestream.yml`; `docs/identity.md`, invariant 9).
+   The step refuses a missing or never-migrated database file, which is
+   what an unmounted volume looks like; a new host runs it once with
+   `--init-database`, which a new database needs no backup for:
+   `make compose ARGS="run --rm --no-deps file-host-migrate --migrate --replica-socket /run/litestream/control.sock --replica-dir /app/dbs/litestream/hopium --init-database"`.
+   Any refusal or failed migration exits non-zero, so
+   compose starts no build on a schema half applied. `file-host` itself
+   never migrates: its start refuses a database behind its build, naming
+   the step, so a reboot or a restart (which starts it again on the image
+   its step already ran for) serves only a current schema. `make dev` runs
+   the step first too, backed up by a copy (`--backup-copy`), since no
+   Litestream watches its database.
+6. **It gates every service, up to 180 s**: `healthy` where it has a
    healthcheck (`file-host`'s is `file_host --health-check`: `/ready` ready
    or degraded), a one-shot once it has exited 0 under `restart: 'no'`
-   (`dashboard-builder`, never by running a while), otherwise running with no
+   (`dashboard-builder`, `file-host-migrate`, never by running a while), otherwise running with no
    restart for 60 s. A container that exits any other way, restarts or turns
    `unhealthy` fails at once; a one-shot that exits non-zero fails compose's
-   own `up`, and the deploy names it and prints its log. `file-host`'s
-   `start_period` is 300 s, so the backup and migrations of a large database
-   can finish before any failed probe counts, and the wait outlasts it.
+   own `up`, and the deploy names it and prints its log (a migrate step that
+   refused names why: a replica not caught up, a failed migration).
+   `file-host`'s `start_period` is 120 s, a start's own work: the
+   migrations and their backup are the step's, finished before it starts,
+   and the wait outlasts it.
 7. **A release that does not come up is rolled back whole**: the release
    last applied, its tree and its images, through the same `up` and the
    same gate, whichever service failed. The failed release's key is
@@ -492,12 +508,18 @@ database as it left it: a database ahead of its binary is one it serves
 `file_host` starts serving, and its writes land after it, so a restore
 would lose them; the deploy cannot show nothing was written since. To
 restore by hand: stop `file-host` (`make compose ARGS="stop file-host"`),
-move the live `${STORAGE}/hopium.db` aside under `${STORAGE}/backups/` with
-a name of its own (never delete it, and never a `-before-` name, which the
-prune would count among its own), copy the backup to
-`${STORAGE}/hopium.db`, and `make up`, which starts the release last applied
-(the one `make home-deploy` printed as serving), not the checkout's. When a
-run ends with exit 3 it names the backup that start took.
+restore the migrate step's TXID from the replica to a new file,
+`make compose ARGS="exec litestream litestream restore -txid <TXID> -o /app/dbs/restored.db /app/dbs/hopium.db"`,
+then stop Litestream (`make compose ARGS="stop litestream"`), move the live `${STORAGE}/hopium.db` and its
+`-wal` and `-shm` aside under `${STORAGE}/backups/` with a name of its own
+(never delete it, and never a `-before-` name, which the prune would count
+among its own), move `${STORAGE}/restored.db` to `${STORAGE}/hopium.db`,
+and `make up`, which starts the release last applied (the one `make
+home-deploy` printed as serving), not the checkout's; Litestream then
+replicates the restored database as a new generation. A copy the server
+took before 2026-11-28 (`${STORAGE}/backups/hopium-<UTC>-before-<version>.db`)
+restores the same way, copied to `${STORAGE}/hopium.db` instead. When a run
+ends with exit 3 it names the backup its migrate step took.
 
 This is not a zero-downtime deploy: the old container stops before the new
 one proves itself. Two instances behind Caddy is #409 (deferred) and AS20

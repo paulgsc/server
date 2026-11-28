@@ -42,7 +42,11 @@ per CLAUDE.md, "Drift is loud, not silent".
   - **A some-ui image:** the most recently pushed tag of its release's shape
     (a whole commit for render), never `latest`.
 - **RL4. Bytes, not names.** A reference CI writes always carries its digest.
-  A tag alone can move under a release.
+  A tag alone can move under a release. A service that runs another's image
+  runs it by the same reference: `file-host-migrate`, file_host's migrate
+  step, is `file-host`'s (C1620). `release_lock.py` follows both from the
+  same changesets, and `envctl check` refuses a release where they differ
+  (`release::SAME_IMAGE`).
 - **RL5. Held entries do not move.** An entry in `HELD` keeps whatever main
   says. `file-host` was freed by R4 (#793), which pinned it by digest once
   the deploy applies whole releases; www and resume-render, held since R8
@@ -99,7 +103,7 @@ per CLAUDE.md, "Drift is loud, not silent".
   it applied only once every service runs that release's image and is ready
   (`healthy`, or running a minute with no restart). A one-shot is ready once
   it has finished, and only if its restart policy is `no` and it exited 0
-  (`dashboard-builder`; C351); the home guard requires every service to state
+  (`dashboard-builder`, `file-host-migrate`; C351); the home guard requires every service to state
   its `restart:`, since one with none reads as `no`. A release whose `up`
   fails, or any of whose services does not come up, is put back: the release
   last applied, its tree and its images, already here, so the rollback pulls

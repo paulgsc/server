@@ -166,10 +166,14 @@ bytes.
 
 **Invariant: every SQLite file a binary here opens was written by this
 deployment.** That covers file_host's `DATABASE_URL` and its `-wal`, the
-backup `crate::migrate` writes with `VACUUM INTO` and reopens read-only to
-verify, and the `DATABASE_URL` an operator binary is pointed at. All of it
-lives under home's storage, which only file_host and the owner write.
-Restoring a backup is a manual owner step (README, "Deploying to home"). No
+copy `crate::migrate` writes with `VACUUM INTO` under `make dev` and reopens
+read-only to verify, and the `DATABASE_URL` an operator binary is pointed
+at. All of it lives under home's storage, which only file_host, Litestream
+(`infra/compose/litestream.yml`, which reads the database and its `-wal`,
+checkpoints it, and writes its replica to `${STORAGE}/litestream`) and the
+owner write. Restoring a backup is a manual owner step (README, "Deploying
+to home"), and a database restored from the replica is written by this
+deployment's Litestream from its own replica. No
 path opens a database or `-wal` that a client, an upload or another host
 supplied.
 

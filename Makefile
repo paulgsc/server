@@ -179,7 +179,13 @@ ENVCTL_RUN = $(ENVCTL) --repo $(REPO_ROOT)
 envctl: ## Build the config tooling (apps/envctl)
 	@$(IN_RUST_SHELL) cargo build -p envctl
 
-dev: envctl ## Run file_host from source on deploy/dev/file_host.sops.env: next free port from 3000, recorded for some-ui's vite dev
+# Its migrations first, as their own step, as home's file-host-migrate is
+# (apps/servers/file_host/src/migrate.rs): the server never migrates, and
+# refuses a database behind its build. No Litestream watches dev's database,
+# so the step's backup is a verified copy of it (--backup-copy; C1620).
+dev: envctl ## Migrate (backed up by a copy), then run file_host from source on deploy/dev/file_host.sops.env: next free port from 3000, recorded for some-ui's vite dev
+	@$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- $(IN_RUST_SHELL) \
+		cargo run -p file_host --bin file_host -- --migrate --backup-copy
 	@$(ENVCTL_RUN) run --role $(DEV_DEPLOY) --app file_host -- $(IN_RUST_SHELL) \
 		cargo run -p file_host --bin file_host -- --port-fallback true $(if $(DEV_PORT_FILE),--port-file $(DEV_PORT_FILE))
 

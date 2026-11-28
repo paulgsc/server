@@ -595,11 +595,19 @@ nowhere is marked as such and belongs to review.
 
    In the owner's deployment the only account is the owner's ("The owner's
    account"), so this deletion is of the owner's whole record, and home keeps
-   no copy beyond its migration backups: each start of `file_host` that
-   applies a migration first copies the whole database to `backups/` beside
-   it, and the newest 5 are kept (`file_host::migrate`, AS16 #563; the
-   owner's count, 2026-11-10). A deleted account's rows stay in those copies
-   until five later migrating starts have pruned them. Whether it should first make a durable copy, or stay as it is on
+   no copy beyond its backups. Since 2026-11-28 (C1620) the backup is
+   Litestream's replica on home's own disk (`${STORAGE}/litestream`,
+   `infra/compose/litestream.yml`), which every migrating run requires
+   caught up first (`file_host::migrate`, AS16 #563): a snapshot of the
+   whole database a day, and every transaction between, each snapshot
+   deleted once it is older than the retention
+   (`infra/litestream/litestream.yml`, a discard site; the numbers are the
+   owner's, C1623). A deleted account's rows stay in the replica until the
+   last snapshot that held them has aged out. The copies the server took of
+   the whole database before that, to `backups/`, the newest 5 kept (the
+   owner's count, 2026-11-10), stay until five later copying runs prune
+   them, and on home no run copies any more, so they stay as they are until
+   the owner removes them. Whether it should first make a durable copy, or stay as it is on
    the owner's explicit call, waits on the owner (#510; paulgsc/some-ui's
    "Never lose the record"). Until then the claim stands as written, and the
    code does what it says.
