@@ -28,10 +28,16 @@ socket:
 #
 # The numbers are policy, the owner's to set (C1623): until they rule, a
 # snapshot a day, kept 3 days. A migration's backup (its TXID) then restores
-# for 3 days after it ran, and the replica holds about 4 whole copies of the
-# database (6.68 GB each on 2026-11-28, the voice notes' audio being most of
-# it), under the 5 copies the server used to keep, so it needs no disk the
-# old backups did not take.
+# for 3 days after it ran.
+#
+# What it takes on disk, measured on 0.5.18 (2026-11-28): the first sync
+# writes the whole database once per level (level 0, gone after 5 minutes;
+# levels 1, 2 and 3, and the level-9 snapshot), and the level 1-3 copies stay
+# until the snapshot before them leaves the retention. So for its first days
+# the replica holds about 5 whole copies of the database (6.68 GB each on
+# 2026-11-28, the voice notes' audio being most of it), then about 3 snapshots
+# plus what changed since the oldest, three times over (once per level). The 5
+# copies the server took before C1620 stay in ${STORAGE}/backups beside it.
 snapshot:
   interval: 24h
   retention: 72h

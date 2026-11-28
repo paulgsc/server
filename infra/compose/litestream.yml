@@ -33,16 +33,18 @@ services:
       options:
         max-size: '10m'
         max-file: '3'
-    # Its own reads and writes are pages streamed to and from the disk; the
-    # cap bounds a snapshot or a compaction that would hold more.
-    mem_limit: 512M
+    # Measured on 0.5.18 (2026-11-28): the first sync and snapshot of a
+    # 2.15 GB database peaked at 326 MiB. Home's is 6.68 GB and nothing
+    # measured says how that scales, so the cap leaves room: a Litestream
+    # killed mid-snapshot starts it again, and a migrating deploy waits on it.
+    mem_limit: 1G
     cpus: 0.5
     pids_limit: 50
     deploy:
       resources:
         limits:
           cpus: '0.5'
-          memory: 512M
+          memory: 1G
           pids: 50
 
 volumes:

@@ -558,9 +558,9 @@ How much to reserve for them is decided with the refusal below, from home's
 published facts.
 
 It warns and never refuses. **Planned** (#709): a refusal, once home's
-facts are published nightly (part 1). The caps total 25.13 GiB (www's
+facts are published nightly (part 1). The caps total 25.63 GiB (www's
 256 MiB and resume-render's 1 GiB joined with R8, #853; Litestream's
-512 MiB and `file-host-migrate`'s 1 GiB with C1620, though the step has
+1 GiB and `file-host-migrate`'s 1 GiB with C1620, though the step has
 exited before `file-host` starts); `ollama`'s 8 GiB left with it (#705, D3).
 
 ## What a kill costs
