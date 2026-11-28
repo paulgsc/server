@@ -238,8 +238,9 @@ outran the healthcheck's window.
 
 This rule reverses one earlier choice: AS16 (#563) put the backup and the migration in
 `file_host`'s start on purpose, "so no deploy, restart or reboot can serve a schema behind its
-build" (`main.rs`, `README.md`, `docs/fault-conditions.md`). That guarantee stays; the work to
-keep it with the backup and the migration in their own processes is under way. Today's
+build" (`apps/servers/file_host/src/main.rs`; the same design in `README.md`, "Deploying to
+home", and `docs/fault-conditions.md`). That guarantee stays when the backup and the migration
+move into their own processes, which the owner chose on 2026-11-28 (#1276). Today's
 `file_host` holds several other jobs too. Splitting them is the owner's call, one job at a time;
 check this rule before adding another to it.
 
