@@ -214,6 +214,28 @@ If you notice you're relying on an invariant a subsystem doesn't have written do
 that subsystem's doc as part of the change. An invariant that exists only in someone's head
 drifts without anyone noticing.
 
+## One job per file, one job per process
+
+The owner (2026-11-28, close paraphrase): "This should be a general standing rule: we cannot
+have any God file or any God process. File host drifted silently into becoming a database, a
+server and other things. That pattern is an anti-pattern." It came from home's deploy of
+release 186 rolling back: file_host's own start copied the whole database (`migrate`'s VACUUM
+INTO) and migrated it before it could serve, and the copy outgrew the healthcheck's window.
+
+- **A process or service has one job,** named in one sentence without "and". Work with a
+  lifetime, schedule or failure mode of its own (a backup, a migration, a poller, a render, a
+  scheduled pass) runs as its own process, compose service or one-shot step, which the one it
+  serves waits on or reads from, never inside another's start, request path or loop. A job
+  that would ride an existing process instead says why in its PR.
+- **A file or module has one job** the same way. A change that would give one a second job
+  splits it first; a file that already holds several is split when a change next grows it.
+- **The drift is silent, so say it.** A PR that adds a job to a process or a file names the job,
+  and a solved problem is reached for (an existing tool, used as is) before it is rebuilt inside
+  the nearest process. paulgsc/some-ui's `CLAUDE.md` carries the same rule and its review text.
+
+Today's `file_host` holds several jobs at once. Splitting them is the owner's call, one job at a
+time; check this rule before adding another to it.
+
 ## Cold-start footguns worth not re-discovering
 
 These bite during ordinary implementation work, **before any PR exists** — read this at the
