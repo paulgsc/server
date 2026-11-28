@@ -1267,9 +1267,6 @@
     "clippy::let_underscore_must_use": {
       "fn exit_if_asked_for_contract_epoch": {
         "let _ = writeln!(std::io::stdout(), \"{}\", file_host::contract::CONTRACT_EPOCH);": 1
-      },
-      "fn migrate_on_start": {
-        "let _ = writeln!(out, \"migrate: {line}\");": 1
       }
     }
   },
