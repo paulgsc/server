@@ -620,16 +620,35 @@ pub(crate) fn apply(host: &mut dyn Host, target: &Target, options: &Options, clo
 }
 
 /// The backup the migrate step took this pass, from its log, if it took one.
+///
+/// The step's container is started again by every `up` while its image
+/// stays, and its log keeps every run's lines, so only the last run counts:
+/// a run that found nothing to apply (`migrate: current`), or was refused
+/// before it backed up, forgets an earlier run's backup. A failed migration
+/// names its backup in its own error (`migrate::Refused::Apply`), which is
+/// read instead.
 pub(crate) fn backup_from(lines: &[String]) -> Option<String> {
 	let mut found = None;
 	for line in lines {
 		if let Some(at) = line.find(BACKUP_LINE) {
-			let rest = &line[at + BACKUP_LINE.len()..];
-			found = Some(rest.strip_suffix(" (verified)").unwrap_or(rest).trim().to_owned());
+			let rest = line[at + BACKUP_LINE.len()..].trim();
+			let rest = rest.strip_suffix(" (verified)").or_else(|| rest.strip_suffix(" (sealed)")).unwrap_or(rest);
+			found = Some(rest.trim().to_owned());
+		} else if line.contains(CURRENT_LINE) {
+			found = None;
+		} else if line.contains(REFUSED_LINE) {
+			found = line.find(BEFORE_THIS_RUN).map(|at| line[at + BEFORE_THIS_RUN.len()..].trim().to_owned());
 		}
 	}
 	found
 }
+
+/// What the migrate step prints when nothing was pending, and how a run it
+/// refused or failed begins (`main.rs`, `migrate_step`), and where a failed
+/// migration names the backup it took (`migrate::backup_note`).
+const CURRENT_LINE: &str = "migrate: current, nothing to apply";
+const REFUSED_LINE: &str = "Error: migrate: ";
+const BEFORE_THIS_RUN: &str = "the database as it was before this run is ";
 
 pub(crate) const DATABASE_NOTE: &str = "The database stays where the migrations put it: the old image serves a database ahead of it \
 	(apps/servers/file_host/src/schema.rs). Nothing was restored or deleted.";
@@ -1468,7 +1487,7 @@ mod tests {
 	}
 
 	fn never_ready() -> Behaviour {
-		// start_period 300 s, then 5 failed probes 30 s apart.
+		// Unhealthy well past start_period (120 s) and the gate's bound.
 		Rc::new(|t| ("running", Some(if t >= 450.0 { "unhealthy" } else { "starting" }), 0, None, SERVICE))
 	}
 
@@ -1863,6 +1882,41 @@ mod tests {
 			"{backup}"
 		);
 		assert!(stuck_note(Some(&backup)).contains("litestream restore -txid 0000000000001234"));
+	}
+
+	/// The step's log keeps every run's lines: a later run that took no
+	/// backup forgets an earlier run's, and a failed migration's own error
+	/// names the backup it took.
+	#[test]
+	fn backup_from_reads_only_the_last_run() {
+		let backed = "migrate: backed up to Litestream's replica at TXID 0000000000000007, sealed for the run that started 2026-11-27T00:00:00Z (restore: litestream restore -txid 0000000000000007) (sealed)";
+		let lines = |more: &[&str]| -> Vec<String> { std::iter::once(backed).chain(more.iter().copied()).map(str::to_owned).collect() };
+		assert!(backup_from(&lines(&[])).unwrap().ends_with("-txid 0000000000000007)"));
+		assert_eq!(backup_from(&lines(&["migrate: current, nothing to apply"])), None);
+		assert_eq!(
+			backup_from(&lines(&[
+				"Error: migrate: Litestream's replica (its control socket /run/litestream/control.sock) holds no restorable TXID"
+			])),
+			None
+		);
+		let failed = "Error: migrate: applying migrations failed: boom. The ones before it stay applied; the database as it was before this run is Litestream's replica at TXID 0000000000000009, sealed for the run that started 2026-11-28T00:00:00Z (restore: litestream restore -txid 0000000000000009)";
+		assert!(backup_from(&lines(&[failed])).unwrap().contains("TXID 0000000000000009"));
+	}
+
+	/// The migrate step asks for the database at the path Litestream's
+	/// configuration replicates, and reads the replica where it writes it:
+	/// two files that must agree, or the step reads a directory nothing
+	/// writes (C1621).
+	#[test]
+	fn the_migrate_step_reads_the_replica_litestream_writes() {
+		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+		let config = std::fs::read_to_string(repo.join("infra/litestream/litestream.yml")).unwrap();
+		let compose = compose_file();
+		let replica = regex::Regex::new(r"(?m)^      path: (\S+)$").unwrap().captures(&config).unwrap()[1].to_owned();
+		let database = regex::Regex::new(r"(?m)^  - path: (\S+)$").unwrap().captures(&config).unwrap()[1].to_owned();
+		assert!(compose.contains(&["'--replica-dir', '", &replica, "'"].concat()), "{replica}");
+		assert!(compose.contains(&["DATABASE_URL=sqlite://", &database].concat()), "{database}");
+		assert!(compose.contains("'--replica-socket', '/run/litestream/control.sock'") && config.contains("path: /run/litestream/control.sock"));
 	}
 
 	#[test]

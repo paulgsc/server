@@ -92,9 +92,18 @@ pub(super) async fn sealed(socket: &Path, database: &Path, replica: &Path, withi
 	loop {
 		let left = deadline.saturating_duration_since(Instant::now());
 		let why = match tokio::time::timeout(left, ask(socket, database, left)).await {
-			Ok(Answer::CaughtUp(txid)) => match level_one_end(&level_one) {
-				Ok(Some(end)) if end >= txid => return Ok(end),
-				Ok(end) => [
+			Ok(Answer::CaughtUp(txid)) => match (level_one_end(&level_one), has_snapshot(&replica.join("ltx").join("9"))) {
+				(Err(why), _) | (_, Err(why)) => why,
+				(Ok(Some(end)), Ok(true)) if end >= txid => return Ok(end),
+				(Ok(Some(end)), Ok(false)) if end >= txid => [
+					"the replica's level 1 seals TXID ",
+					&Txid(end).to_string(),
+					" but it holds no snapshot to restore it from yet (",
+					&replica.join("ltx").join("9").display().to_string(),
+					")",
+				]
+				.concat(),
+				(Ok(end), _) => [
 					"the replica caught up to TXID ",
 					&Txid(txid).to_string(),
 					", and its level 1 (",
@@ -104,7 +113,6 @@ pub(super) async fn sealed(socket: &Path, database: &Path, replica: &Path, withi
 					": its next compaction seals it",
 				]
 				.concat(),
-				Err(why) => why,
 			},
 			Ok(Answer::Never(why)) => return Err(why),
 			Ok(Answer::NotYet(why)) => why,
@@ -117,17 +125,32 @@ pub(super) async fn sealed(socket: &Path, database: &Path, replica: &Path, withi
 	}
 }
 
-/// The highest TXID a level-1 file in `dir` ends at, by the files' names
-/// (`<min>-<max>.ltx`); `None` while there is none. A name of another shape
-/// is not Litestream's and is passed over.
+/// Whether `dir` (the replica's level 9) holds a snapshot that is not
+/// empty: a TXID restores from a snapshot and the files after it, so a
+/// replica with level 1 but no snapshot (a wiped or half-written directory)
+/// is no backup.
+fn has_snapshot(dir: &Path) -> Result<bool, String> {
+	Ok(ltx_files(dir)?.iter().any(|(_, len)| *len > 0))
+}
+
+/// The highest TXID a non-empty level-1 file in `dir` ends at, by the
+/// files' names (`<min>-<max>.ltx`); `None` while there is none.
 fn level_one_end(dir: &Path) -> Result<Option<u64>, String> {
-	let unreadable = |err: std::io::Error| ["the replica's level 1 (", &dir.display().to_string(), ") cannot be read: ", &err.to_string()].concat();
+	Ok(ltx_files(dir)?.into_iter().filter(|(_, len)| *len > 0).map(|(max, _)| max).max())
+}
+
+/// Each LTX file in `dir`: the TXID it ends at, by its name
+/// (`<min>-<max>.ltx`, 16 hex digits each), and its length. A name of
+/// another shape is not Litestream's and is passed over, and a missing
+/// `dir` holds none.
+fn ltx_files(dir: &Path) -> Result<Vec<(u64, u64)>, String> {
+	let unreadable = |err: std::io::Error| ["the replica's directory (", &dir.display().to_string(), ") cannot be read: ", &err.to_string()].concat();
 	let entries = match std::fs::read_dir(dir) {
 		Ok(entries) => entries,
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
 		Err(err) => return Err(unreadable(err)),
 	};
-	let mut end = None;
+	let mut files = Vec::new();
 	for entry in entries {
 		let entry = match entry {
 			Ok(entry) => entry,
@@ -140,11 +163,16 @@ fn level_one_end(dir: &Path) -> Result<Option<u64>, String> {
 		if min.len() != 16 || max.len() != 16 {
 			continue;
 		}
-		if let Ok(max) = u64::from_str_radix(max, 16) {
-			end = Some(end.map_or(max, |end: u64| end.max(max)));
-		}
+		let Ok(max) = u64::from_str_radix(max, 16) else {
+			continue;
+		};
+		let len = match entry.metadata() {
+			Ok(meta) => meta.len(),
+			Err(err) => return Err(unreadable(err)),
+		};
+		files.push((max, len));
 	}
-	Ok(end)
+	Ok(files)
 }
 
 /// One `POST /sync`, waiting at most `left` (Litestream's own `timeout`, in
@@ -285,11 +313,14 @@ mod tests {
 		for (min, max) in ends {
 			std::fs::write(
 				level_one.join([Txid(*min).to_string(), "-".to_owned(), Txid(*max).to_string(), ".ltx".to_owned()].concat()),
-				"",
+				"ltx",
 			)
 			.unwrap();
 		}
 		std::fs::write(level_one.join("not-litestreams.txt"), "").unwrap();
+		let snapshots = replica.join("ltx").join("9");
+		std::fs::create_dir_all(&snapshots).unwrap();
+		std::fs::write(snapshots.join("0000000000000001-0000000000000001.ltx"), "ltx").unwrap();
 		replica
 	}
 
@@ -298,7 +329,23 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		assert_eq!(level_one_end(&dir.path().join("none")), Ok(None));
 		let replica = replica(dir.path(), &[(1, 1), (2, 0x3f), (0x40, 0x41)]);
-		assert_eq!(level_one_end(&replica.join("ltx").join("1")), Ok(Some(0x41)));
+		let level_one = replica.join("ltx").join("1");
+		assert_eq!(level_one_end(&level_one), Ok(Some(0x41)));
+		std::fs::write(level_one.join("0000000000000042-0000000000000050.ltx"), "").unwrap();
+		assert_eq!(level_one_end(&level_one), Ok(Some(0x41)), "an empty file seals nothing");
+	}
+
+	/// A level 1 with no snapshot behind it (a wiped or half-written
+	/// replica) restores nothing, however far it reaches.
+	#[tokio::test]
+	async fn a_replica_with_no_snapshot_is_no_backup() {
+		let dir = tempfile::tempdir().unwrap();
+		let socket = dir.path().join("control.sock");
+		let replica = replica(dir.path(), &[(1, 9)]);
+		std::fs::remove_file(replica.join("ltx").join("9").join("0000000000000001-0000000000000001.ltx")).unwrap();
+		let _server = litestream(&socket, vec![http("200 OK", r#"{"status":"no_change","txid":9,"replicated_txid":9}"#); 100]);
+		let refused = sealed(&socket, Path::new("/app/dbs/hopium.db"), &replica, Duration::from_millis(1500)).await.unwrap_err();
+		assert!(refused.contains("no snapshot"), "{refused}");
 	}
 
 	#[tokio::test]
@@ -349,7 +396,7 @@ mod tests {
 		let level_one = replica.join("ltx").join("1");
 		let compaction = tokio::spawn(async move {
 			tokio::time::sleep(Duration::from_millis(1500)).await;
-			std::fs::write(level_one.join("0000000000000005-0000000000000007.ltx"), "").unwrap();
+			std::fs::write(level_one.join("0000000000000005-0000000000000007.ltx"), "ltx").unwrap();
 		});
 		assert_eq!(sealed(&socket, db, &replica, Duration::from_secs(10)).await, Ok(7));
 		compaction.await.unwrap();

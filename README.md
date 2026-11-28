@@ -514,9 +514,12 @@ then stop Litestream (`make compose ARGS="stop litestream"`), move the live `${S
 `-wal` and `-shm` aside under `${STORAGE}/backups/` with a name of its own
 (never delete it, and never a `-before-` name, which the prune would count
 among its own), move `${STORAGE}/restored.db` to `${STORAGE}/hopium.db`,
-and `make up`, which starts the release last applied (the one `make
-home-deploy` printed as serving), not the checkout's; Litestream then
-replicates the restored database as a new generation. A copy the server
+move `${STORAGE}/litestream` and `${STORAGE}/.hopium.db-litestream` aside
+too (the replica of the history you restored away from: a later migrating
+run must not take a TXID from it as its backup), and `make up`, which starts
+the release last applied (the one `make home-deploy` printed as serving),
+not the checkout's; Litestream then replicates the restored database into a
+new replica. A copy the server
 took before 2026-11-28 (`${STORAGE}/backups/hopium-<UTC>-before-<version>.db`)
 restores the same way, copied to `${STORAGE}/hopium.db` instead. When a run
 ends with exit 3 it names the backup its migrate step took.

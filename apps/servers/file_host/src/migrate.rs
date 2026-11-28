@@ -160,7 +160,7 @@ impl std::fmt::Display for Taken {
 			Self::Copy(path) => write!(f, "{}", path.display()),
 			Self::Replica { txid, at } => write!(
 				f,
-				"Litestream's replica at TXID {}, {} (restore: litestream restore -txid {})",
+				"Litestream's replica at TXID {}, sealed for the run that started {} (restore: litestream restore -txid {})",
 				replica::Txid(*txid),
 				at.format("%Y-%m-%dT%H:%M:%SZ"),
 				replica::Txid(*txid)
@@ -218,7 +218,12 @@ impl Outcome {
 				if let Some(backup) = backup {
 					let mut line = String::from("backed up to ");
 					line.push_str(&backup.to_string());
-					line.push_str(" (verified)");
+					// A copy passed integrity_check; a replica's TXID is
+					// sealed in a level-1 file with a snapshot behind it.
+					line.push_str(match backup {
+						Taken::Copy(_) => " (verified)",
+						Taken::Replica { .. } => " (sealed)",
+					});
 					lines.push(line);
 				}
 				let mut line = String::from("applied ");
@@ -858,7 +863,10 @@ mod tests {
 		let level_one = dir.join("litestream").join("ltx").join("1");
 		std::fs::create_dir_all(&level_one).unwrap();
 		let name = ["0000000000000001-", &replica::Txid(sealed).to_string(), ".ltx"].concat();
-		std::fs::write(level_one.join(name), "").unwrap();
+		std::fs::write(level_one.join(name), "ltx").unwrap();
+		let snapshots = dir.join("litestream").join("ltx").join("9");
+		std::fs::create_dir_all(&snapshots).unwrap();
+		std::fs::write(snapshots.join("0000000000000001-0000000000000001.ltx"), "ltx").unwrap();
 		Options {
 			backup: Backup::Replica {
 				socket: dir.join("control.sock"),
@@ -891,7 +899,9 @@ mod tests {
 		}
 		.lines();
 		assert!(
-			said[0].starts_with("backed up to Litestream's replica at TXID 0000000000001234") && said[0].contains("litestream restore -txid 0000000000001234"),
+			said[0].starts_with("backed up to Litestream's replica at TXID 0000000000001234")
+				&& said[0].contains("litestream restore -txid 0000000000001234")
+				&& said[0].ends_with(" (sealed)"),
 			"{said:?}"
 		);
 		let pool = open(&options).await;

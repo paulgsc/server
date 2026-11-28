@@ -9,7 +9,7 @@
 # - the service builds envctl as `user` (`make envctl`), then runs
 #   `envctl deploy --on-demand` (apps/envctl/src/deploy.rs): resolve main's
 #   release, read its file_host's epoch, apply the whole release only for a
-#   newer one (file_host migrates as it starts), gate every service, roll
+#   newer one (its migrate step runs before file_host starts), gate every service, roll
 #   back whole, record ${STORAGE}/deploy/state.json, and remove the marker.
 #   The applied and failed releases and their worktrees are the user's
 #   (~user/.local/state/server-deploy), shared with `make home-deploy`. It never restores the database. Nothing here runs python:
@@ -116,7 +116,9 @@ in {
           "--role ${cfg.role}"
           "--runtime-dir /run/home-deploy"
         ];
-        # Maybe envctl's first build, the release's pulls, and up to 360 s
+        # Maybe envctl's first build, the release's pulls, the migrate step
+        # inside `up` (up to 15 min waiting on Litestream's replica, the
+        # first sync beside a new replica its likeliest), and up to 180 s
         # of waiting, twice when it rolls back.
         TimeoutStartSec = "30min";
       };

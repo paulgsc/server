@@ -13,11 +13,11 @@
 //! set CI migrates its scratch database with — so the binary knows exactly
 //! which versions it expects. [`drift`] compares that list with
 //! `_sqlx_migrations` in the live database, read-only: it never creates the
-//! bookkeeping table or applies anything. Applying them is `file_host`'s own
-//! start (`crate::migrate`, AS16 #563), which refuses to serve until the
-//! database is current; this makes a database that changed under a running
-//! process visible, by name, in `/ready` (`handlers::readiness`) and at
-//! startup (`main.rs`).
+//! bookkeeping table or applies anything. Applying them is the migrate step
+//! (`file_host --migrate`, `crate::migrate`, AS16 #563; C1620), and the
+//! server's start refuses a database behind its build
+//! (`migrate::require_current`); this makes a database that changed under a
+//! running process visible, by name, in `/ready` (`handlers::readiness`).
 
 use sqlx::migrate::Migrator;
 use sqlx::{Row, SqlitePool};
