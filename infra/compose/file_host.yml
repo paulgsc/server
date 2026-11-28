@@ -82,6 +82,11 @@ services:
         condition: service_healthy
       nats:
         condition: service_started
+      # Its migrations, applied by their own step before it starts, every
+      # `up` (file-host-migrate, below). The server never migrates: its start
+      # refuses a database behind its build (migrate::require_current).
+      file-host-migrate:
+        condition: service_completed_successfully
     mem_limit: 4G
     # Three cores, so the transcriber hears on two threads: docs/home-compute.md.
     cpus: 3.0
@@ -97,19 +102,89 @@ services:
           memory: 1G
     # Fails only when /ready says unavailable (a critical dependency down),
     # not when it says degraded: see apps/servers/file_host/src/health.rs.
-    # The start includes the migrations file_host applies before it listens,
-    # after copying the whole database (AS16, #563), so start_period is
-    # long enough for a large one: no failed probe counts until it ends, and
-    # the first one that passes reads healthy at once. start_interval probes
+    # It covers serving and nothing else: the migrations and their backup
+    # are file-host-migrate's, which compose finishes before this container
+    # starts, so no migration's time counts against it (C1620: a start that
+    # copied the database first outlasted the old 300 s window and rolled
+    # release 186 back). start_period is a start's own: the server reads that
+    # the schema is current, opens its pool and listens. start_interval probes
     # every 5 s meanwhile (Docker Engine 25+), so a ready container reads
-    # healthy within seconds. Home's deploy (`make home-deploy`,
-    # `envctl deploy`, AS18 #564) waits on this to decide whether to roll
-    # the image back, and its bound (DEFAULT_READY_TIMEOUT) is above
-    # start_period, so a slow migrating start is not taken for a bad image.
+    # healthy within seconds. Home's deploy (`make home-deploy`, `envctl
+    # deploy`, AS18 #564) waits on this to decide whether to roll the image
+    # back, and its bound (DEFAULT_READY_TIMEOUT) is above start_period.
     healthcheck:
       test: ['CMD', '/usr/local/bin/file_host', '--health-check']
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 300s
+      start_period: 120s
       start_interval: 5s
+
+  # file_host's migrations, after a verified backup, as their own step: a
+  # one-shot on file-host's own image (`file_host --migrate`,
+  # apps/servers/file_host/src/migrate.rs), which compose runs to completion
+  # before it starts file-host, on every `up`: `make up`, `make home-deploy`
+  # and the deploy's rollback alike. With nothing pending it reads one table
+  # and exits. With migrations pending, the backup is Litestream's replica
+  # (infra/compose/litestream.yml): the step asks Litestream over its control
+  # socket to sync, and applies nothing until the replica has caught up to the
+  # database at a TXID its level 1 keeps, so it restores for the retention
+  # (owner, 2026-11-10: a backup on every migrating run, on the database's own
+  # disk). That waits for Litestream's next compaction, at most about 30 s. It copies nothing. A refusal or a failed migration
+  # exits non-zero, so compose does not start file-host on the build that
+  # needed it, and the deploy puts the previous release back.
+  #
+  # A reboot or a restart starts file-host again on the image this step
+  # already migrated for, so it is not run then (`restart: 'no'`); a file-host
+  # whose database is behind it refuses to start, naming this step.
+  file-host-migrate:
+    # file-host's image, the same reference (deploy/home/release.json; envctl
+    # check refuses a release where the two differ).
+    image: ${IMAGE_FILE_HOST_MIGRATE:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
+    container_name: file-host-migrate
+    # Who the kernel kills first when home runs out of memory: protected, as
+    # file-host is: it is file-host's own start (docs/home-compute.md).
+    oom_score_adj: -500
+    # The replica's directory is the one infra/litestream/litestream.yml
+    # names, as both containers mount ${STORAGE} at /app/dbs.
+    command: ['--migrate', '--replica-socket', '/run/litestream/control.sock', '--replica-dir', '/app/dbs/litestream/hopium']
+    # It parses file_host's whole configuration, as the server does, so it
+    # reads the same variables (infra/env/file_host.json, #504).
+    labels:
+      env-schema: file_host
+    env_file:
+      - path: ${ENV_DIR:?make sets ENV_DIR, so run compose through make up or make compose}/file_host.env
+        required: true
+    environment:
+      - RUST_BACKTRACE=1
+      - TRUSTED_PROXIES=gateway
+      - REDIS_URL=redis://redis:6379
+      - NATS_URL=nats://nats:4222
+      - DATABASE_URL=sqlite:///app/dbs/hopium.db
+    volumes:
+      # The database, at the path Litestream's configuration names it
+      # (infra/litestream/litestream.yml), so the step asks for the database
+      # it opens.
+      - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}:/app/dbs
+      # Litestream's control socket, read-only: connecting writes nothing.
+      - litestream_socket:/run/litestream:ro
+    restart: 'no'
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+    depends_on:
+      litestream:
+        condition: service_started
+    # A migration rebuilds a table through SQLite's page cache and temp
+    # files, not in memory, so it needs far less than the server.
+    mem_limit: 1G
+    cpus: 1.0
+    pids_limit: 50
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+          pids: 50

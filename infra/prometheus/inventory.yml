@@ -128,6 +128,16 @@ services:
     hoist_set: false
     scrape:
       reason: init container — builds the dashboards and exits, nothing to scrape
+  - service: file-host-migrate
+    container_name: file-host-migrate
+    hoist_set: false
+    scrape:
+      reason: one-shot — applies file_host's migrations before file-host starts and exits (C1620); what it did is its log, which the deploy prints
+  - service: litestream
+    container_name: litestream
+    hoist_set: false
+    scrape:
+      reason: its metrics listener (`addr:` in infra/litestream/litestream.yml) is not turned on; whether its replica is current is checked by every migrating run (C1621), not watched between them yet
 
   # ── operator tooling, not part of M5's sizing surface ───────────────────
   - service: redisinsight

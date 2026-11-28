@@ -13,11 +13,11 @@
 //! set CI migrates its scratch database with — so the binary knows exactly
 //! which versions it expects. [`drift`] compares that list with
 //! `_sqlx_migrations` in the live database, read-only: it never creates the
-//! bookkeeping table or applies anything. Applying them is `file_host`'s own
-//! start (`crate::migrate`, AS16 #563), which refuses to serve until the
-//! database is current; this makes a database that changed under a running
-//! process visible, by name, in `/ready` (`handlers::readiness`) and at
-//! startup (`main.rs`).
+//! bookkeeping table or applies anything. Applying them is the migrate step
+//! (`file_host --migrate`, `crate::migrate`, AS16 #563; C1620), and the
+//! server's start refuses a database behind its build
+//! (`migrate::require_current`); this makes a database that changed under a
+//! running process visible, by name, in `/ready` (`handlers::readiness`).
 
 use sqlx::migrate::Migrator;
 use sqlx::{Row, SqlitePool};
@@ -76,7 +76,7 @@ impl fmt::Display for Drift {
 		if !self.pending.is_empty() {
 			write!(
 				f,
-				"{} pending ({}); restart file_host, which applies them at start",
+				"{} pending ({}); run its migrate step, file_host --migrate (on home, compose's file-host-migrate, which every make up runs)",
 				self.pending.len(),
 				self.pending.join(", ")
 			)?;
@@ -193,7 +193,7 @@ mod tests {
 		assert_eq!(drift.pending.len(), 1);
 		assert!(drift.pending[0].starts_with(&latest.to_string()), "{:?}", drift.pending);
 		let message = drift.to_string();
-		assert!(message.contains("1 pending") && message.contains("applies them at start"), "{message}");
+		assert!(message.contains("1 pending") && message.contains("file_host --migrate"), "{message}");
 	}
 
 	#[tokio::test]
@@ -237,7 +237,7 @@ mod tests {
 		};
 		assert_eq!(
 			drift.to_string(),
-			"1 pending (3 c); restart file_host, which applies them at start; failed: [1]; modified after apply: [2]"
+			"1 pending (3 c); run its migrate step, file_host --migrate (on home, compose's file-host-migrate, which every make up runs); failed: [1]; modified after apply: [2]"
 		);
 		let drift = Drift {
 			modified: vec![2],

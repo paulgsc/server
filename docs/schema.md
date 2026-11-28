@@ -129,7 +129,10 @@ the seed). They are classified by today's code, and the call may move them.
 
 This doc keeps no list of its own. paulgsc/some-ui's `docs/discard-sites.md`, "On home", names
 every site where home deletes or rewrites what it keeps, with the owner's ruling where one
-exists (paulgsc/some-ui#2265 holds the rest). The two sweeps there are S12's call 1 (#492):
+exists (paulgsc/some-ui#2265 holds the rest). Two of them hold whole copies of the database,
+not rows: `file_host::migrate`'s prune of its `backups/` copies beyond the newest 5, and,
+since C1620, Litestream's retention of its replica's snapshots (`infra/litestream/litestream.yml`;
+docs/identity.md, invariant 9). The two sweeps there are S12's call 1 (#492):
 `activity_outcome` after 365 days, whose horizon the owner kept (#541), and `intervention_log`
 after 90 days. Both run only while the nudge is on (#556). Invariant 3 is what this repository
 adds to that list: an append-only table has no discard site except deletion with its account

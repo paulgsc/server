@@ -1,0 +1,51 @@
+# Litestream's configuration on home (infra/compose/litestream.yml mounts it
+# read-only at /etc/litestream.yml). Litestream 0.5, used as is: it replicates
+# file_host's database continuously to a replica on the same disk, and its
+# replica, caught up, is the backup every migrating run takes
+# (apps/servers/file_host/src/migrate.rs, step 3; C1620).
+#
+# The paths are the containers' own: ${STORAGE} is mounted at /app/dbs in
+# Litestream's container and in file-host-migrate's, so the database's path
+# here is the one file_host opens (DATABASE_URL), which is how the migrate
+# step names it when it asks.
+
+# The control socket the migrate step asks over (`POST /sync`, with `wait`).
+# On the litestream_socket volume, a tmpfs only uid 10000 can enter; 0600, so
+# only that uid (file_host's, which Litestream runs as) can connect.
+socket:
+  enabled: true
+  path: /run/litestream/control.sock
+  permissions: 0600
+
+# Retention: THIS IS A DISCARD SITE (docs/identity.md, invariant 9;
+# docs/schema.md, "Discard sites"). A snapshot is the whole database as it
+# was, a deleted account's rows included, and every transaction after it up
+# to the next is kept beside it, so any moment within the retention can be
+# restored (`litestream restore -timestamp` or `-txid`). A snapshot older
+# than the retention is deleted, with the transactions that lead up to the
+# next one; the newest is always kept. So a deleted account's rows leave the
+# replica one retention after the snapshot that last held them.
+#
+# The numbers are policy, the owner's (C1623, agreed 2026-11-28): a snapshot
+# a day, kept 3 days. A migration's backup (its TXID) then restores for 3
+# days after it ran.
+#
+# What it takes on disk, measured on 0.5.18 (2026-11-28): the first sync
+# writes the whole database once per level (level 0, gone after 5 minutes;
+# levels 1, 2 and 3, and the level-9 snapshot), and the level 1-3 copies stay
+# until the snapshot before them leaves the retention. So for its first days
+# the replica holds about 5 whole copies of the database (6.68 GB each on
+# 2026-11-28, the voice notes' audio being most of it), then about 3 snapshots
+# plus what changed since the oldest, three times over (once per level). Of
+# the 5 copies the server took before C1620 in ${STORAGE}/backups, the owner
+# keeps the newest and removes the other four by hand once the first deploy
+# with Litestream has succeeded (2026-11-28); nothing prunes them.
+snapshot:
+  interval: 24h
+  retention: 72h
+
+dbs:
+  - path: /app/dbs/hopium.db
+    replica:
+      type: file
+      path: /app/dbs/litestream/hopium

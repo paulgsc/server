@@ -51,16 +51,26 @@ fn register_zero_series() {
 	file_host::failure::register_all();
 }
 
-/// `file_host::migrate::bring_current` on this start's database, each line
-/// of what it did said on stdout as `migrate: …` (the deploy's log reads
-/// them), and a refusal returned as the process's error.
-async fn migrate_on_start(config: &Config) -> Result<()> {
-	use file_host::migrate::{bring_current, Options, DEFAULT_KEEP_BACKUPS};
+/// `file_host --migrate`: `file_host::migrate::bring_current` on the
+/// database, each line of what it did said on stdout as `migrate: …` (the
+/// deploy's log reads them), and a refusal returned as the process's error.
+/// Home's `file-host-migrate` step, which compose runs before `file-host`.
+async fn migrate_step(config: &Config) -> Result<()> {
+	use file_host::migrate::{bring_current, Backup, Options, DEFAULT_KEEP_BACKUPS, REPLICA_WITHIN};
 	use std::io::Write as _;
 
+	let backup = match (&config.replica_socket, &config.replica_dir, config.backup_copy) {
+		(Some(socket), Some(replica), false) => Backup::Replica {
+			socket: socket.clone(),
+			replica: replica.clone(),
+			within: REPLICA_WITHIN,
+		},
+		(None, None, true) => Backup::Copy { dir: None },
+		_ => anyhow::bail!("migrate: name its backup: --replica-socket <Litestream's control socket> with --replica-dir <its replica> (home's), or --backup-copy for a database no replicator watches"),
+	};
 	let options = Options {
 		database_url: config.database_url.clone(),
-		backup_dir: None,
+		backup,
 		keep: usize::from(DEFAULT_KEEP_BACKUPS),
 		init: config.init_database,
 	};
@@ -69,7 +79,7 @@ async fn migrate_on_start(config: &Config) -> Result<()> {
 		.map_err(|refused| anyhow::anyhow!("migrate: {refused}"))?;
 	let mut out = std::io::stdout().lock();
 	for line in outcome.lines() {
-		let _ = writeln!(out, "migrate: {line}");
+		writeln!(out, "migrate: {line}")?;
 	}
 	Ok(())
 }
@@ -126,6 +136,12 @@ async fn main() -> Result<()> {
 	}
 	held.unwrap_or_else(|err| err.exit());
 
+	// The migrate step is its own process (`file-host-migrate`), which
+	// compose runs to completion before it starts the server.
+	if config.migrate {
+		return migrate_step(&config).await;
+	}
+
 	// Installs the global `metrics` recorder — see #139 (P1). Every
 	// `counter!`/`histogram!` call anywhere in this process, direct or via
 	// `crate::metrics::instruments`, writes through this recorder from here
@@ -154,14 +170,17 @@ async fn main() -> Result<()> {
 	// fixed for the process's life, so no reason to recompute it every tick.
 	file_host::websocket::connection::instrument::set_guard_capacity(ws_conn_manager::MAX_GLOBAL);
 
-	// Its migrations, after a verified backup, before anything opens the
-	// database (AS16, #563; `file_host::migrate`). On every start, so no
-	// deploy, restart or reboot can serve a schema behind its build. A
-	// refusal or a failed migration ends the process: the deploy sees the
-	// container fail and puts the previous image back (`envctl deploy`).
-	// Said on stdout/stderr, not through tracing: the subscriber is not
+	// The server never migrates and never copies the database: its migrate
+	// step (`file_host --migrate`, compose's `file-host-migrate`) has done
+	// that before this start. This only reads that it did, before anything
+	// opens the database, so no start serves a schema behind its build: a
+	// database that is missing, never migrated, drifted or behind ends the
+	// process, naming the step. One ahead of it, after a rollback, is served
+	// (`schema`). Said on stderr, not through tracing: the subscriber is not
 	// installed until `AppState::build`, below.
-	migrate_on_start(&config).await?;
+	file_host::migrate::require_current(&config.database_url, &file_host::schema::MIGRATOR)
+		.await
+		.map_err(|refused| anyhow::anyhow!("start: {refused}"))?;
 
 	let config = Arc::new(config);
 	let connection_options = file_host::db::connect_options(&config.database_url)?.create_if_missing(true);
@@ -176,19 +195,6 @@ async fn main() -> Result<()> {
 	let shutdown_token = CancellationToken::new();
 
 	let app_state = AppState::build(config.clone(), pool, shutdown_token.clone()).await?;
-
-	// Not a gate: `/ready` already answers 503 for this (see `schema`), and
-	// refusing to start would take `/health` and `/metrics` down with it —
-	// the two things that would otherwise tell you why. This line is so the
-	// first thing in the log names the cause instead of whichever query hits
-	// the missing table first. After `AppState::build`, not before: that is
-	// where `OtelGuard::new` installs the tracing subscriber, and an event
-	// emitted earlier goes to the no-op default dispatcher.
-	match file_host::schema::drift(&app_state.core.shared_db, &file_host::schema::MIGRATOR).await {
-		Ok(drift) if drift.is_current() => {}
-		Ok(drift) => tracing::error!(database_url = %config.database_url, %drift, "database schema is behind this build"),
-		Err(err) => tracing::error!(database_url = %config.database_url, error = %err, "could not read the database's applied migrations"),
-	}
 
 	// Every route module comes from `inventory::modules`, the same list
 	// `dump-routes` reads, so what is served here and what the client's

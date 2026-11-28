@@ -127,7 +127,7 @@ mod tests {
 
 	const BEHIND: &str = r#"{"ready":false,"status":"degraded","dependencies":[
 		{"name":"sqlite","healthy":true,"critical":true},
-		{"name":"schema","healthy":false,"critical":false,"error":"5 pending (20261029000200 store_each_game_feed_body_once); restart file_host, which applies them at start"}]}"#;
+		{"name":"schema","healthy":false,"critical":false,"error":"5 pending (20261029000200 store_each_game_feed_body_once); run its migrate step, file_host --migrate (on home, compose's file-host-migrate, which every make up runs)"}]}"#;
 
 	#[test]
 	fn ready_passes() {

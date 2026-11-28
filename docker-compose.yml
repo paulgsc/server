@@ -3,6 +3,7 @@ include:
   # - path: ./infra/compose/caddy.yml We set caddy at NIXOS sys level
   - path: ./infra/compose/nats.yml
   - path: ./infra/compose/redis.yml
+  - path: ./infra/compose/litestream.yml
   - path: ./infra/compose/file_host.yml
   - path: ./infra/compose/rust_runner.yml
   - path: ./infra/compose/orchestrator.yml

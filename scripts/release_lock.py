@@ -111,6 +111,10 @@ SOURCES: dict[str, Changesets | Hub] = {
     # file_host is followed like any server image.
     "dashboard-builder": Changesets("dashboard-builder"),
     "file-host": Changesets("server"),
+    # file_host's migrate step (C1620): a one-shot on file-host's own image,
+    # so it follows the same changesets and always lands on the same
+    # reference (envctl check refuses a release where the two differ).
+    "file-host-migrate": Changesets("server"),
     "kokoro": Changesets("kokoro"),
     "orchestrator": Changesets("orchestrator"),
     # Since R4 (#793): file-host is pinned by digest, so the release pull
@@ -135,6 +139,7 @@ THIRD_PARTY = frozenset(
         "blackbox-exporter",
         "cadvisor",
         "grafana",
+        "litestream",
         "metabase",
         "nats",
         "nats-exporter",
@@ -512,6 +517,18 @@ class Tests(unittest.TestCase):
         self.assertIn("@sha256:", file_host)
         self.assertEqual(SOURCES["render"], Hub("pgathondu/render", COMMIT))
         self.assertEqual(SOURCES["file-host"], Changesets("server"))
+
+    def test_the_migrate_step_lands_on_file_host_s_own_reference(self) -> None:
+        """C1620: file-host-migrate runs file-host's image, so one reconcile moves both to the same bytes."""
+        self.assertEqual(SOURCES["file-host-migrate"], SOURCES["file-host"])
+        release = sample()
+        release["services"]["file-host-migrate"] = {"image": "pgathondu/server:latest"}
+        seen = world({("pgathondu/server", A): DA}, [changeset(A, "server")], [A])
+        both = {name: SOURCES[name] for name in ("file-host", "file-host-migrate")}
+        updated, _ = reconcile(release, seen, "main", both)
+        self.assertEqual(updated["services"]["file-host-migrate"], updated["services"]["file-host"])
+        checked_in = json.loads(RELEASE.read_text())["services"]
+        self.assertEqual(checked_in["file-host-migrate"], checked_in["file-host"])
 
     def test_the_checked_in_sources_name_real_services(self) -> None:
         release = json.loads(RELEASE.read_text())

@@ -1,0 +1,59 @@
+services:
+  # Litestream (open source, used as is: litestream.io) beside file-host. It
+  # replicates file_host's SQLite database continuously, every second, to a
+  # replica on home's own disk, ${STORAGE}/litestream, and its replica, caught
+  # up, is the backup every migrating run takes (file-host-migrate,
+  # infra/compose/file_host.yml; apps/servers/file_host/src/migrate.rs, step
+  # 3). The server never copies its database (C1620, the owner: "the backup
+  # is its own process"). Its configuration is infra/litestream/litestream.yml,
+  # whose retention is a discard site.
+  litestream:
+    image: ${IMAGE_LITESTREAM:?deploy/<role>/release.json sets it, so run compose through make up or make compose}
+    container_name: litestream
+    # Who the kernel kills first when home runs out of memory: protected
+    # (docs/home-compute.md, "Who is killed first"): the replica is home's
+    # state's backup, and a migrating deploy waits on it.
+    oom_score_adj: -500
+    command: ['replicate', '-config', '/etc/litestream.yml']
+    # file_host's own uid and group (infra/docker/Dockerfile.server), so what
+    # Litestream makes beside the database (its -wal and -shm, if it opens it
+    # first, and .hopium.db-litestream/) is file_host's to write.
+    user: '10000:10001'
+    volumes:
+      # The directory holding the database, at the path file_host opens it
+      # (infra/compose/file_host.yml); the replica is written inside it, in
+      # litestream/, on the same disk.
+      - ${STORAGE:?set STORAGE in deploy/<role>/compose.sops.env}:/app/dbs
+      - ${REPO_ROOT:?make sets REPO_ROOT, so run compose through make up or make compose}/infra/litestream/litestream.yml:/etc/litestream.yml:ro
+      # Its control socket, which file-host-migrate asks.
+      - litestream_socket:/run/litestream
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+    # Measured on 0.5.18 (2026-11-28): the first sync and snapshot of a
+    # 2.15 GB database peaked at 326 MiB. Home's is 6.68 GB and nothing
+    # measured says how that scales, so the cap leaves room: a Litestream
+    # killed mid-snapshot starts it again, and a migrating deploy waits on it.
+    mem_limit: 1G
+    cpus: 0.5
+    pids_limit: 50
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+          pids: 50
+
+volumes:
+  # tmpfs, so a stale socket goes with the host's restart. Only file_host's
+  # uid can enter it: Litestream, which listens, and file-host-migrate, which
+  # asks.
+  litestream_socket:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: 'size=1m,uid=10000,gid=10001,mode=0700'

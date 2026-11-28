@@ -38,6 +38,13 @@ pub(crate) const FILE: &str = "release.json";
 /// variable that starts with it is the release's: [`set_by_release`] is.
 const PREFIX: &str = "IMAGE_";
 
+/// Services that run another's image, by the same reference: `file_host`'s
+/// migrate step (`file-host-migrate`, a one-shot `file-host` waits on) runs
+/// `file-host`'s, so the migrations applied are the ones the server was
+/// built against (C1620). `release_lock.py` follows both from the same
+/// changesets; [`role_problems`] refuses a release where they differ.
+pub(crate) const SAME_IMAGE: [(&str, &str); 1] = [("file-host-migrate", "file-host")];
+
 /// One `${IMAGE_<SERVICE>:?message}`, the only shape an `image:` may take.
 static IMAGE_LINE: LazyLock<Regex> = LazyLock::new(|| crate::dotenv::regex(r"^\$\{(IMAGE_[A-Z0-9_]+):\?[^}]*\}$"));
 
@@ -169,6 +176,16 @@ pub(crate) fn role_problems(role: &str, raw: &Value, release: Option<&str>, comp
 			problems.push(format!("{shown} gives {service} `{}`, which is not an image reference", entry.image));
 		}
 	}
+	for (step, server) in SAME_IMAGE {
+		if let (Some(ran), Some(runs)) = (release.services.get(step), release.services.get(server)) {
+			if ran.image != runs.image {
+				problems.push(format!(
+					"{shown} gives {step} `{}` and {server} `{}`: {step} runs {server}'s image, by the same reference",
+					ran.image, runs.image
+				));
+			}
+		}
+	}
 	problems
 }
 
@@ -249,6 +266,20 @@ mod tests {
 				"deploy/home/release.json names ghost, which no compose service starts from an image".to_owned(),
 			]
 		);
+	}
+
+	#[test]
+	fn the_migrate_step_runs_file_host_s_own_reference() {
+		let raw = json!({"services": {
+			"file-host": {"image": "${IMAGE_FILE_HOST:?x}"},
+			"file-host-migrate": {"image": "${IMAGE_FILE_HOST_MIGRATE:?x}"}
+		}});
+		let same = r#"{"serial": 1, "services": {"file-host": {"image": "pgathondu/server:a"}, "file-host-migrate": {"image": "pgathondu/server:a"}}}"#;
+		assert_eq!(role_problems("home", &raw, Some(same), Some("")), Vec::<String>::new());
+		let apart = r#"{"serial": 1, "services": {"file-host": {"image": "pgathondu/server:a"}, "file-host-migrate": {"image": "pgathondu/server:b"}}}"#;
+		let found = role_problems("home", &raw, Some(apart), Some(""));
+		assert_eq!(found.len(), 1, "{found:?}");
+		assert!(found[0].contains("file-host-migrate runs file-host's image"), "{found:?}");
 	}
 
 	#[test]
