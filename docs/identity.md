@@ -601,13 +601,14 @@ nowhere is marked as such and belongs to review.
    caught up first (`file_host::migrate`, AS16 #563): a snapshot of the
    whole database a day, and every transaction between, each snapshot
    deleted once it is older than the retention
-   (`infra/litestream/litestream.yml`, a discard site; the numbers are the
-   owner's, C1623). A deleted account's rows stay in the replica until the
-   last snapshot that held them has aged out. The copies the server took of
-   the whole database before that, to `backups/`, the newest 5 kept (the
-   owner's count, 2026-11-10), stay until five later copying runs prune
-   them, and on home no run copies any more, so they stay as they are until
-   the owner removes them. Whether it should first make a durable copy, or stay as it is on
+   (`infra/litestream/litestream.yml`, a discard site; 3 days, the owner's,
+   C1623). A deleted account's rows stay in the replica until the last
+   snapshot that held them has aged out. Of the copies the server took of
+   the whole database before that, to `backups/` (the newest 5 kept, the
+   owner's count, 2026-11-10), the owner keeps the newest and removes the
+   other four by hand once the first deploy with Litestream has succeeded
+   (2026-11-28); no run on home copies or prunes any more, so the one kept
+   stays until the owner removes it. Whether it should first make a durable copy, or stay as it is on
    the owner's explicit call, waits on the owner (#510; paulgsc/some-ui's
    "Never lose the record"). Until then the claim stands as written, and the
    code does what it says.
