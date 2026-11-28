@@ -38,7 +38,7 @@ pub(crate) const FILE: &str = "release.json";
 /// variable that starts with it is the release's: [`set_by_release`] is.
 const PREFIX: &str = "IMAGE_";
 
-/// Services that run another's image, by the same reference: file_host's
+/// Services that run another's image, by the same reference: `file_host`'s
 /// migrate step (`file-host-migrate`, a one-shot `file-host` waits on) runs
 /// `file-host`'s, so the migrations applied are the ones the server was
 /// built against (C1620). `release_lock.py` follows both from the same

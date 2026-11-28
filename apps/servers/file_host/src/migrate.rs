@@ -1,5 +1,6 @@
-//! `file_host --migrate` applies its migrations, with a verified backup
-//! first (AS16, #563), as its own step: home's `file-host-migrate`, a
+//! `file_host --migrate`: the migrations, after a verified backup (AS16, #563).
+//!
+//! The step is its own process: home's `file-host-migrate`, a
 //! one-shot compose service on `file_host`'s own image, which `file-host`
 //! waits on (`condition: service_completed_successfully`,
 //! `infra/compose/file_host.yml`). The server itself never migrates and
@@ -106,7 +107,9 @@ pub const DEFAULT_KEEP_BACKUPS: u16 = 5;
 pub const BACKUP_DIR: &str = "backups";
 
 /// How long a migrating run waits for Litestream's replica to catch up
-/// before it refuses: 15 minutes. Caught up is ordinarily a second away,
+/// before it refuses: 15 minutes.
+///
+/// Caught up is ordinarily a second away,
 /// since Litestream syncs every second; the bound is for the first start
 /// beside a new replica, whose first sync uploads the whole database (6.68
 /// GB on 2026-11-28, to the same disk), and for a Litestream that is down,
@@ -157,8 +160,10 @@ impl std::fmt::Display for Taken {
 			Self::Copy(path) => write!(f, "{}", path.display()),
 			Self::Replica { txid, at } => write!(
 				f,
-				"Litestream's replica at TXID {txid:016x}, {} (restore: litestream restore -txid {txid:016x})",
-				at.format("%Y-%m-%dT%H:%M:%SZ")
+				"Litestream's replica at TXID {}, {} (restore: litestream restore -txid {})",
+				replica::Txid(*txid),
+				at.format("%Y-%m-%dT%H:%M:%SZ"),
+				replica::Txid(*txid)
 			),
 		}
 	}
@@ -312,9 +317,10 @@ async fn bring_current_at(options: &Options, migrator: &Migrator, now: DateTime<
 	result
 }
 
-/// What the server's start checks before it opens its pool: a database is
-/// there, has been migrated, has not drifted, and has nothing pending for
-/// this build (one ahead of it, after a rollback, is served: `schema`). It
+/// What the server's start checks before it opens its pool.
+///
+/// A database is there, has been migrated, has not drifted, and has nothing
+/// pending for this build (one ahead of it, after a rollback, is served: `schema`). It
 /// reads `_sqlx_migrations` and writes nothing, creating no file.
 ///
 /// # Errors
@@ -839,8 +845,8 @@ mod tests {
 			loop {
 				let (mut stream, _) = listener.accept().await.unwrap();
 				let mut asked = vec![0; 4096];
-				stream.read(&mut asked).await.unwrap();
-				let response = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{answer}", answer.len());
+				assert!(stream.read(&mut asked).await.unwrap() > 0);
+				let response = ["HTTP/1.0 200 OK\r\nContent-Length: ", &answer.len().to_string(), "\r\n\r\n", answer].concat();
 				stream.write_all(response.as_bytes()).await.unwrap();
 				stream.shutdown().await.unwrap();
 			}
@@ -851,7 +857,8 @@ mod tests {
 	fn replica(dir: &Path, within: Duration, sealed: u64) -> Options {
 		let level_one = dir.join("litestream").join("ltx").join("1");
 		std::fs::create_dir_all(&level_one).unwrap();
-		std::fs::write(level_one.join(format!("{:016x}-{sealed:016x}.ltx", 1)), "").unwrap();
+		let name = ["0000000000000001-", &replica::Txid(sealed).to_string(), ".ltx"].concat();
+		std::fs::write(level_one.join(name), "").unwrap();
 		Options {
 			backup: Backup::Replica {
 				socket: dir.join("control.sock"),

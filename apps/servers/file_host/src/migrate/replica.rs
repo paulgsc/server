@@ -41,6 +41,16 @@ use tokio::time::Instant;
 /// The pause between two asks.
 const AGAIN: Duration = Duration::from_secs(1);
 
+/// A TXID as Litestream writes it: 16 hex digits, the form
+/// `litestream restore -txid` takes.
+pub(super) struct Txid(pub(super) u64);
+
+impl std::fmt::Display for Txid {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:016x}", self.0)
+	}
+}
+
 /// What `POST /sync` answers when it synced.
 #[derive(Debug, Deserialize)]
 struct Synced {
@@ -84,19 +94,24 @@ pub(super) async fn sealed(socket: &Path, database: &Path, replica: &Path, withi
 		let why = match tokio::time::timeout(left, ask(socket, database, left)).await {
 			Ok(Answer::CaughtUp(txid)) => match level_one_end(&level_one) {
 				Ok(Some(end)) if end >= txid => return Ok(end),
-				Ok(end) => format!(
-					"the replica caught up to TXID {txid:016x}, and its level 1 ({}) ends {}: its next compaction seals it",
-					level_one.display(),
-					end.map_or_else(|| String::from("nowhere yet"), |end| format!("at {end:016x}"))
-				),
+				Ok(end) => [
+					"the replica caught up to TXID ",
+					&Txid(txid).to_string(),
+					", and its level 1 (",
+					&level_one.display().to_string(),
+					") ends ",
+					&end.map_or_else(|| String::from("nowhere yet"), |end| ["at ", &Txid(end).to_string()].concat()),
+					": its next compaction seals it",
+				]
+				.concat(),
 				Err(why) => why,
 			},
 			Ok(Answer::Never(why)) => return Err(why),
 			Ok(Answer::NotYet(why)) => why,
-			Err(elapsed) => format!("it had not answered when the wait ended ({elapsed})"),
+			Err(elapsed) => ["it had not answered when the wait ended (", &elapsed.to_string(), ")"].concat(),
 		};
 		if Instant::now() + AGAIN >= deadline {
-			return Err(format!("not within {} s; its last answer: {why}", within.as_secs()));
+			return Err(["not within ", &within.as_secs().to_string(), " s; its last answer: ", &why].concat());
 		}
 		tokio::time::sleep(AGAIN).await;
 	}
@@ -106,16 +121,17 @@ pub(super) async fn sealed(socket: &Path, database: &Path, replica: &Path, withi
 /// (`<min>-<max>.ltx`); `None` while there is none. A name of another shape
 /// is not Litestream's and is passed over.
 fn level_one_end(dir: &Path) -> Result<Option<u64>, String> {
+	let unreadable = |err: std::io::Error| ["the replica's level 1 (", &dir.display().to_string(), ") cannot be read: ", &err.to_string()].concat();
 	let entries = match std::fs::read_dir(dir) {
 		Ok(entries) => entries,
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-		Err(err) => return Err(format!("the replica's level 1 ({}) cannot be read: {err}", dir.display())),
+		Err(err) => return Err(unreadable(err)),
 	};
 	let mut end = None;
 	for entry in entries {
 		let entry = match entry {
 			Ok(entry) => entry,
-			Err(err) => return Err(format!("the replica's level 1 ({}) cannot be read: {err}", dir.display())),
+			Err(err) => return Err(unreadable(err)),
 		};
 		let name = entry.file_name();
 		let Some((min, max)) = name.to_str().and_then(|name| name.strip_suffix(".ltx")).and_then(|name| name.split_once('-')) else {
@@ -136,7 +152,7 @@ fn level_one_end(dir: &Path) -> Result<Option<u64>, String> {
 async fn ask(socket: &Path, database: &Path, left: Duration) -> Answer {
 	let mut stream = match UnixStream::connect(socket).await {
 		Ok(stream) => stream,
-		Err(err) => return Answer::NotYet(format!("its control socket {} does not answer: {err}", socket.display())),
+		Err(err) => return Answer::NotYet(["its control socket ", &socket.display().to_string(), " does not answer: ", &err.to_string()].concat()),
 	};
 	let body = serde_json::json!({
 		"path": database.to_string_lossy(),
@@ -144,16 +160,19 @@ async fn ask(socket: &Path, database: &Path, left: Duration) -> Answer {
 		"timeout": left.as_secs().max(1),
 	})
 	.to_string();
-	let request = format!(
-		"POST /sync HTTP/1.0\r\nHost: litestream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-		body.len()
-	);
+	let request = [
+		"POST /sync HTTP/1.0\r\nHost: litestream\r\nContent-Type: application/json\r\nContent-Length: ",
+		&body.len().to_string(),
+		"\r\n\r\n",
+		&body,
+	]
+	.concat();
 	if let Err(err) = stream.write_all(request.as_bytes()).await {
-		return Answer::NotYet(format!("asking it failed: {err}"));
+		return Answer::NotYet(["asking it failed: ", &err.to_string()].concat());
 	}
 	let mut response = Vec::new();
 	if let Err(err) = stream.read_to_end(&mut response).await {
-		return Answer::NotYet(format!("reading its answer failed: {err}"));
+		return Answer::NotYet(["reading its answer failed: ", &err.to_string()].concat());
 	}
 	read(&response, database)
 }
@@ -162,7 +181,7 @@ async fn ask(socket: &Path, database: &Path, left: Duration) -> Answer {
 fn read(response: &[u8], database: &Path) -> Answer {
 	let text = String::from_utf8_lossy(response);
 	let Some((head, body)) = text.split_once("\r\n\r\n") else {
-		return Answer::Never(format!("an answer that is not HTTP: {text}"));
+		return Answer::Never(["an answer that is not HTTP: ", &text].concat());
 	};
 	let status = head.split(' ').nth(1).unwrap_or("");
 	let error = || match serde_json::from_str::<Failed>(body) {
@@ -172,15 +191,28 @@ fn read(response: &[u8], database: &Path) -> Answer {
 	match status {
 		"200" => match serde_json::from_str::<Synced>(body) {
 			Ok(synced) if synced.txid > 0 && synced.replicated_txid >= synced.txid => Answer::CaughtUp(synced.txid),
-			Ok(synced) => Answer::NotYet(format!("the database is at TXID {:016x} and the replica at {:016x}", synced.txid, synced.replicated_txid)),
-			Err(err) => Answer::Never(format!("an answer it could not read ({err}): {body}")),
+			Ok(synced) => Answer::NotYet(
+				[
+					"the database is at TXID ",
+					&Txid(synced.txid).to_string(),
+					" and the replica at ",
+					&Txid(synced.replicated_txid).to_string(),
+				]
+				.concat(),
+			),
+			Err(err) => Answer::Never(["an answer it could not read (", &err.to_string(), "): ", body].concat()),
 		},
-		"404" => Answer::Never(format!(
-			"Litestream replicates no database at {} ({}): its configuration names another path",
-			database.display(),
-			error()
-		)),
-		_ => Answer::NotYet(format!("it answered {status}: {}", error())),
+		"404" => Answer::Never(
+			[
+				"Litestream replicates no database at ",
+				&database.display().to_string(),
+				" (",
+				&error(),
+				"): its configuration names another path",
+			]
+			.concat(),
+		),
+		_ => Answer::NotYet(["it answered ", status, ": ", &error()].concat()),
 	}
 }
 
@@ -190,7 +222,16 @@ mod tests {
 	use tokio::net::UnixListener;
 
 	fn http(status: &str, body: &str) -> Vec<u8> {
-		format!("HTTP/1.0 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
+		[
+			"HTTP/1.0 ",
+			status,
+			"\r\nContent-Type: application/json\r\nContent-Length: ",
+			&body.len().to_string(),
+			"\r\n\r\n",
+			body,
+		]
+		.concat()
+		.into_bytes()
 	}
 
 	/// The answers Litestream 0.5.18 gave on 2026-11-28, read as they were.
@@ -242,7 +283,11 @@ mod tests {
 		let level_one = replica.join("ltx").join("1");
 		std::fs::create_dir_all(&level_one).unwrap();
 		for (min, max) in ends {
-			std::fs::write(level_one.join(format!("{min:016x}-{max:016x}.ltx")), "").unwrap();
+			std::fs::write(
+				level_one.join([Txid(*min).to_string(), "-".to_owned(), Txid(*max).to_string(), ".ltx".to_owned()].concat()),
+				"",
+			)
+			.unwrap();
 		}
 		std::fs::write(level_one.join("not-litestreams.txt"), "").unwrap();
 		replica
@@ -304,7 +349,7 @@ mod tests {
 		let level_one = replica.join("ltx").join("1");
 		let compaction = tokio::spawn(async move {
 			tokio::time::sleep(Duration::from_millis(1500)).await;
-			std::fs::write(level_one.join(format!("{:016x}-{:016x}.ltx", 5, 7)), "").unwrap();
+			std::fs::write(level_one.join("0000000000000005-0000000000000007.ltx"), "").unwrap();
 		});
 		assert_eq!(sealed(&socket, db, &replica, Duration::from_secs(10)).await, Ok(7));
 		compaction.await.unwrap();
