@@ -214,6 +214,36 @@ If you notice you're relying on an invariant a subsystem doesn't have written do
 that subsystem's doc as part of the change. An invariant that exists only in someone's head
 drifts without anyone noticing.
 
+## One job per file, one job per process
+
+The owner (2026-11-28, close paraphrase): "This should be a general standing rule: we cannot
+have any God file or any God process. File host drifted silently into becoming a database, a
+server and other things. That pattern is an anti-pattern." It came from home's deploy of
+release 186 rolling back: file_host's own start, with migrations pending, copied the whole
+database (`migrate`'s VACUUM INTO, then an integrity check) before it could serve, and that
+outran the healthcheck's window.
+
+- **A process or service has one job,** named in one sentence without "and". Work with a
+  lifetime, schedule or failure mode of its own (a backup, a migration, a poller, a render, a
+  scheduled pass) runs as its own process, compose service or one-shot step, which the one it
+  serves waits on or reads from, never inside another's start, request path or loop. A job
+  that has to run inside an existing process instead says why in its PR.
+- **A file or module has one job** the same way. A change that would give one a second job
+  splits it first; a file that already holds several is split when a change next adds to one
+  of them, or the PR says why not.
+- **The drift is silent, so say it.** A PR that adds a job to a process or a file names the job.
+  Before building a job inside the nearest process, look for an existing tool or job that
+  already does it. paulgsc/some-ui's `CLAUDE.md` carries the same rule, and its `REVIEW.md` the
+  review text.
+
+This rule reverses one earlier choice: AS16 (#563) put the backup and the migration in
+`file_host`'s start on purpose, "so no deploy, restart or reboot can serve a schema behind its
+build" (`apps/servers/file_host/src/main.rs`; the same design in `README.md`, "Deploying to
+home", and `docs/fault-conditions.md`). That guarantee stays when the backup and the migration
+move into their own processes, which the owner chose on 2026-11-28 (#1276). Today's
+`file_host` holds several other jobs too. Splitting them is the owner's call, one job at a time;
+check this rule before adding another to it.
+
 ## Cold-start footguns worth not re-discovering
 
 These bite during ordinary implementation work, **before any PR exists** — read this at the
